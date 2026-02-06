@@ -1,0 +1,63 @@
+# Soli Proxy Configuration
+# Server settings
+[server]
+bind = "0.0.0.0:8008"
+https_port = 8443
+worker_threads = "auto"
+
+# TLS Configuration
+[tls]
+mode = "auto"  # "auto" for self-signed dev, "letsencrypt" for production
+cache_dir = "./certs"
+
+# Let's Encrypt (for production)
+[letsencrypt]
+staging = false
+email = "admin@example.com"
+terms_agreed = true
+
+# Logging Configuration
+[logging]
+level = "info"
+format = "json"
+output = "stdout"  # or "file:/var/log/soli-proxy.log"
+include_request_body = true
+include_response_body = true
+
+# Metrics Configuration
+[metrics]
+enabled = true
+endpoint = "/metrics"
+
+# Health Check Configuration
+[health]
+enabled = true
+liveness_path = "/health/live"
+readiness_path = "/health/ready"
+
+# Limits Configuration
+[limits]
+max_connections = 10000
+max_request_size = "10MB"
+keep_alive_timeout = 30
+request_timeout = 60
+
+# Rate Limiting Configuration
+[rate_limiting]
+enabled = true
+strategy = "token_bucket"
+requests_per_second = 1000
+burst_size = 2000
+redis_url = "redis://localhost:6379"
+
+# Authentication Configuration
+[auth]
+enabled = false
+auth_type = "basic"
+realm = "Restricted"
+# Uncomment and configure for production
+# enabled = true
+# auth_type = "jwt"
+# issuer = "https://auth.example.com"
+# audience = "soli-proxy"
+# jwks_url = "https://auth.example.com/.well-known/jwks.json"

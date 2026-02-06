@@ -1,0 +1,1117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Soli Proxy - HTTP/2 Forward Proxy Server</title>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-dark: #1d4ed8;
+            --bg: #f8fafc;
+            --surface: #ffffff;
+            --text: #1e293b;
+            --text-light: #64748b;
+            --border: #e2e8f0;
+            --code-bg: #1e293b;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --error: #ef4444;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 24px;
+        }
+
+        header {
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            padding: 20px 0;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        header .container {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo {
+            font-size: 24px;
+            font-weight: 700;
+            color: var(--primary);
+            text-decoration: none;
+        }
+
+        .logo span {
+            color: var(--text);
+        }
+
+        nav a {
+            margin-left: 24px;
+            color: var(--text-light);
+            text-decoration: none;
+            font-weight: 500;
+            transition: color 0.2s;
+        }
+
+        nav a:hover {
+            color: var(--primary);
+        }
+
+        .hero {
+            padding: 80px 0;
+            text-align: center;
+        }
+
+        .hero h1 {
+            font-size: 48px;
+            margin-bottom: 16px;
+            background: linear-gradient(135deg, var(--primary), #7c3aed);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .hero p {
+            font-size: 20px;
+            color: var(--text-light);
+            max-width: 600px;
+            margin: 0 auto 32px;
+        }
+
+        .btn {
+            display: inline-block;
+            padding: 12px 32px;
+            background: var(--primary);
+            color: white;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+
+        .btn:hover {
+            background: var(--primary-dark);
+            transform: translateY(-2px);
+        }
+
+        .btn-outline {
+            background: transparent;
+            border: 2px solid var(--border);
+            color: var(--text);
+        }
+
+        .btn-outline:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+        }
+
+        .features {
+            padding: 80px 0;
+            background: var(--surface);
+        }
+
+        .section-title {
+            text-align: center;
+            font-size: 36px;
+            margin-bottom: 48px;
+        }
+
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 32px;
+        }
+
+        .feature-card {
+            padding: 32px;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            transition: all 0.3s;
+        }
+
+        .feature-card:hover {
+            border-color: var(--primary);
+            box-shadow: 0 8px 32px rgba(37, 99, 235, 0.1);
+        }
+
+        .feature-icon {
+            width: 48px;
+            height: 48px;
+            background: #eff6ff;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            margin-bottom: 16px;
+        }
+
+        .feature-card h3 {
+            font-size: 20px;
+            margin-bottom: 8px;
+        }
+
+        .feature-card p {
+            color: var(--text-light);
+        }
+
+        .code-section {
+            padding: 80px 0;
+        }
+
+        .code-block {
+            background: var(--code-bg);
+            border-radius: 12px;
+            overflow: hidden;
+            margin: 24px 0;
+        }
+
+        .code-header {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 12px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .code-header span {
+            color: var(--text-light);
+            font-size: 14px;
+        }
+
+        .copy-btn {
+            background: rgba(255, 255, 255, 0.1);
+            border: none;
+            color: white;
+            padding: 6px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.2s;
+        }
+
+        .copy-btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        pre {
+            padding: 20px;
+            overflow-x: auto;
+            color: #e2e8f0;
+            font-family: 'Fira Code', 'Monaco', 'Consolas', monospace;
+            font-size: 14px;
+            line-height: 1.8;
+        }
+
+        code {
+            font-family: 'Fira Code', 'Monaco', 'Consolas', monospace;
+        }
+
+        .token-keyword { color: #c084fc; }
+        .token-string { color: #4ade80; }
+        .token-comment { color: #64748b; }
+        .token-function { color: #60a5fa; }
+        .token-number { color: #fb923c; }
+
+        .metrics-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 24px 0;
+        }
+
+        .metrics-table th,
+        .metrics-table td {
+            padding: 12px 16px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .metrics-table th {
+            background: var(--bg);
+            font-weight: 600;
+        }
+
+        .metrics-table code {
+            background: var(--bg);
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .status-stable {
+            background: #dcfce7;
+            color: #166534;
+        }
+
+        .status-beta {
+            background: #fef3c7;
+            color: #92400e;
+        }
+
+        .status-planned {
+            background: #e0e7ff;
+            color: #3730a3;
+        }
+
+        footer {
+            background: var(--surface);
+            border-top: 1px solid var(--border);
+            padding: 40px 0;
+            text-align: center;
+            color: var(--text-light);
+        }
+
+        .two-column {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 48px;
+            align-items: start;
+        }
+
+        @media (max-width: 768px) {
+            .hero h1 {
+                font-size: 32px;
+            }
+            .two-column {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .install-steps {
+            counter-reset: step;
+        }
+
+        .install-step {
+            position: relative;
+            padding-left: 48px;
+            margin-bottom: 24px;
+        }
+
+        .install-step::before {
+            counter-increment: step;
+            content: counter(step);
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 32px;
+            height: 32px;
+            background: var(--primary);
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .env-var {
+            display: grid;
+            grid-template-columns: 200px 1fr;
+            gap: 16px;
+            padding: 12px 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .env-var code {
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <a href="#" class="logo">Soli<span>Proxy</span></a>
+            <nav>
+                <a href="#features">Features</a>
+                <a href="#quickstart">Quick Start</a>
+                <a href="#configuration">Configuration</a>
+                <a href="#tls">TLS</a>
+                <a href="#metrics">Metrics</a>
+                <a href="#api">API</a>
+            </nav>
+        </div>
+    </header>
+
+    <section class="hero">
+        <div class="container">
+            <h1>HTTP/2 Reverse Proxy Server</h1>
+            <p>A high-performance, secure proxy server built with Rust and Hyper 1.0. Features automatic TLS, Prometheus metrics, hot config reloading, and multi-domain routing.</p>
+            <div>
+                <a href="#quickstart" class="btn">Get Started</a>
+                <a href="https://github.com" class="btn btn-outline" style="margin-left: 12px;">View on GitHub</a>
+            </div>
+        </div>
+    </section>
+
+    <section class="features" id="features">
+        <div class="container">
+            <h2 class="section-title">Key Features</h2>
+            <div class="features-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">🚀</div>
+                    <h3>HTTP/2 Support</h3>
+                    <p>Built on Hyper 1.0 with full HTTP/2 support for multiplexing and improved performance.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🔒</div>
+                    <h3>Automatic TLS</h3>
+                    <p>Self-signed certificates for development, or automatic Let's Encrypt certificates for production. HTTPS/2 enabled out of the box.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">📊</div>
+                    <h3>Prometheus Metrics</h3>
+                    <p>Built-in metrics endpoint at /metrics for monitoring with Prometheus and Grafana.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🔄</div>
+                    <h3>Hot Reload</h3>
+                    <p>Config changes applied instantly without restarting. Send SIGUSR1 to reload.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🌐</div>
+                    <h3>Multi-Domain Routing</h3>
+                    <p>Route traffic by domain, host headers, and paths. Perfect for multi-tenant applications and API gateways.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">✏️</div>
+                    <h3>HTML Path Rewriting</h3>
+                    <p>Automatically rewrites absolute paths in HTML responses for prefix-mounted apps, so assets and links resolve correctly.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">📜</div>
+                    <h3>Let's Encrypt</h3>
+                    <p>Automatic certificate issuance and renewal via ACME HTTP-01 challenges. Per-domain SNI-based cert selection with self-signed fallback.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">⚡</div>
+                    <h3>High Performance</h3>
+                    <p>Rust-powered for minimal memory footprint and maximum throughput.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="code-section" id="quickstart">
+        <div class="container">
+            <h2 class="section-title">Quick Start</h2>
+
+            <div class="two-column">
+                <div>
+                    <h3 style="margin-bottom: 24px;">Installation</h3>
+                    <div class="install-steps">
+                        <div class="install-step">
+                            <strong>Clone the repository</strong>
+                            <p style="color: var(--text-light); margin-top: 4px;">Clone the soli-proxy source code</p>
+                        </div>
+                        <div class="install-step">
+                            <strong>Build the project</strong>
+                            <p style="color: var(--text-light); margin-top: 4px;">Compile with Rust toolchain</p>
+                        </div>
+                        <div class="install-step">
+                            <strong>Create config file</strong>
+                            <p style="color: var(--text-light); margin-top: 4px;">Define your proxy rules</p>
+                        </div>
+                        <div class="install-step">
+                            <strong>Start the server</strong>
+                            <p style="color: var(--text-light); margin-top: 4px;">Run the proxy server</p>
+                        </div>
+                    </div>
+                </div>
+                <div>
+                    <div class="code-block">
+                        <div class="code-header">
+                            <span>Terminal</span>
+                            <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                        </div>
+                        <pre><code><span class="token-comment"># Clone and build</span>
+git clone https://github.com/your-org/soli-proxy.git
+cd soli-proxy
+cargo build --release
+
+<span class="token-comment"># Create multi-domain configuration</span>
+cat > proxy.conf << 'EOF'
+<span class="token-comment"># Domain-only rules (matches ALL paths on domain)</span>
+example.com -> http://backend1:8080
+api.example.com -> http://api-backend:8081
+
+<span class="token-comment"># Domain + path rules</span>
+app.example.com/admin/* -> http://admin:8082
+
+<span class="token-comment"># Path-only rules (matches any domain)</span>
+/api/* -> http://api-service:8083
+~^/admin/.*$ -> http://admin-service:8084
+
+<span class="token-comment"># Default fallback</span>
+default -> http://localhost:8080
+EOF
+
+<span class="token-comment"># Start the server</span>
+./target/release/soli-proxy</code></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="code-section" id="configuration">
+        <div class="container">
+            <h2 class="section-title">Configuration</h2>
+
+            <h3 style="margin: 32px 0 16px;">Configuration File</h3>
+            <p style="color: var(--text-light); margin-bottom: 24px;">The proxy uses a simple text-based configuration format. Each line defines a routing rule with domain and path matching.</p>
+
+            <div class="code-block">
+                <div class="code-header">
+                    <span>proxy.conf</span>
+                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                </div>
+                <pre><code><span class="token-comment"># Domain-only rules (matches ALL paths on that domain)</span>
+example.com -> http://web-backend:8080
+api.example.com -> http://api-backend:8081
+
+<span class="token-comment"># Domain + path prefix (matches specific paths on specific domain)</span>
+app.example.com/api/* -> http://app-api:8082
+app.example.com/admin/* -> http://admin:8083
+
+<span class="token-comment"># Domain + exact path</span>
+www.example.com/home -> http://home-page:8084
+
+<span class="token-comment"># Path-only rules (matches ANY domain with that path)</span>
+/api/* -> http://api-service:8090
+~^/v[0-9]+/.*$ -> http://versioned-api:8091
+
+<span class="token-comment"># Regex pattern matching</span>
+~^/v[0-9]+/users.*$ -> http://users-service:8080
+
+<span class="token-comment"># Default catch-all route</span>
+default -> http://localhost:8080</code></pre>
+            </div>
+
+            <h3 style="margin: 48px 0 16px;">Routing Priority</h3>
+            <p style="color: var(--text-light); margin-bottom: 24px;">Requests are matched in the following order:</p>
+            <ol style="color: var(--text-light); margin-bottom: 24px; padding-left: 24px; line-height: 2;">
+                <li><strong>Domain-only rules</strong> - Matches any path on the specified domain</li>
+                <li><strong>Domain + path rules</strong> - Matches specific paths on specific domains</li>
+                <li><strong>Path-only rules</strong> - Matches the path regardless of domain</li>
+                <li><strong>Default rule</strong> - Fallback for unmatched requests</li>
+            </ol>
+            <p style="color: var(--text-light); margin-bottom: 24px;">
+                Unknown domains (domains with no matching rule) receive a <code>421 Misdirected Request</code> response.
+            </p>
+
+            <h3 style="margin: 48px 0 16px;">Rule Syntax</h3>
+            <table class="metrics-table">
+                <thead>
+                    <tr>
+                        <th>Pattern</th>
+                        <th>Type</th>
+                        <th>Example</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>default</code> or <code>*</code></td>
+                        <td>Default Route</td>
+                        <td>Catch-all for unmatched requests</td>
+                    </tr>
+                    <tr>
+                        <td><code>/path/*</code></td>
+                        <td>Prefix Match</td>
+                        <td>Matches <code>/path/anything</code></td>
+                    </tr>
+                    <tr>
+                        <td><code>/exact/path</code></td>
+                        <td>Exact Match</td>
+                        <td>Matches only exact path</td>
+                    </tr>
+                    <tr>
+                        <td><code>~/regex/</code></td>
+                        <td>Regex Match</td>
+                        <td>Matches by regex pattern</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3 style="margin: 48px 0 16px;">HTML Path Rewriting</h3>
+            <p style="color: var(--text-light); margin-bottom: 24px;">
+                When an app is mounted behind a prefix rule (e.g. <code>/api/*</code>), the backend typically serves HTML with absolute paths like <code>/css/app.css</code> or <code>/js/main.js</code>. Without rewriting, the browser requests these at the proxy root, hitting the wrong backend.
+            </p>
+            <p style="color: var(--text-light); margin-bottom: 24px;">
+                Soli Proxy automatically rewrites HTML responses from prefix-matched rules. For a rule like <code>/api/* -> http://backend:8080</code>, all <code>href="/..."</code>, <code>src="/..."</code>, and <code>action="/..."</code> attributes in HTML responses are rewritten to include the prefix:
+            </p>
+            <div class="code-block">
+                <div class="code-header">
+                    <span>Before / After rewriting</span>
+                </div>
+                <pre><code><span class="token-comment"># Rule: /api/* -> http://localhost:8888</span>
+
+<span class="token-comment"># Backend returns:</span>
+&lt;link href=<span class="token-string">"/css/app.css"</span>&gt;
+&lt;script src=<span class="token-string">"/js/main.js"</span>&gt;
+&lt;a href=<span class="token-string">"/docs"</span>&gt;
+
+<span class="token-comment"># Proxy rewrites to:</span>
+&lt;link href=<span class="token-string">"/api/css/app.css"</span>&gt;
+&lt;script src=<span class="token-string">"/api/js/main.js"</span>&gt;
+&lt;a href=<span class="token-string">"/api/docs"</span>&gt;</code></pre>
+            </div>
+            <p style="color: var(--text-light); margin-bottom: 24px;">
+                Rewriting only applies to <code>text/html</code> responses. Non-HTML responses (CSS, JS, images, JSON) are passed through unchanged. This also works for <code>DomainPath</code> rules (e.g. <code>app.example.com/api/*</code>).
+            </p>
+
+            <h3 style="margin: 48px 0 16px;">Command Line Options</h3>
+            <p style="color: var(--text-light); margin-bottom: 24px;">
+                Run the proxy with optional flags:
+            </p>
+            <div class="code-block">
+                <div class="code-header">
+                    <span>Terminal</span>
+                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                </div>
+                <pre><code><span class="token-comment"># Run with default config (./proxy.conf)</span>
+./soli-proxy
+
+<span class="token-comment"># Run with custom config</span>
+./soli-proxy /path/to/custom.conf
+
+<span class="token-comment"># Run in daemon mode (background)</span>
+./soli-proxy -d
+./soli-proxy --daemon
+
+<span class="token-comment"># Daemon with custom config</span>
+./soli-proxy /path/to/custom.conf -d</code></pre>
+            </div>
+
+            <h4 style="margin: 32px 0 16px;">Daemon Mode Options</h4>
+            <table class="metrics-table">
+                <thead>
+                    <tr>
+                        <th>Environment Variable</th>
+                        <th>Default</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>SOLI_PID_DIR</code></td>
+                        <td><code>/run</code></td>
+                        <td>Directory for PID file (<code>soli-proxy.pid</code>)</td>
+                    </tr>
+                    <tr>
+                        <td><code>SOLI_LOG_DIR</code></td>
+                        <td><code>/var/log</code></td>
+                        <td>Directory for log file (<code>soli-proxy.log</code>)</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h4 style="margin: 32px 0 16px;">Daemon Management</h4>
+            <div class="code-block">
+                <div class="code-header">
+                    <span>Terminal</span>
+                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                </div>
+                <pre><code><span class="token-comment"># Reload configuration (while running)</span>
+kill -USR1 $(cat /run/soli-proxy.pid)
+
+<span class="token-comment"># Stop the daemon</span>
+kill $(cat /run/soli-proxy.pid)</code></pre>
+            </div>
+
+            <h3 style="margin: 48px 0 16px;">TOML Configuration</h3>
+            <p style="color: var(--text-light); margin-bottom: 24px;">Optional TOML config for server settings:</p>
+            <div class="code-block">
+                <div class="code-header">
+                    <span>config.toml</span>
+                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                </div>
+                <pre><code>[server]
+bind = "0.0.0.0:8008"
+https_port = 8443
+
+[tls]
+mode = "auto"           <span class="token-comment"># "auto" = self-signed, "letsencrypt" = ACME</span>
+cache_dir = "./certs"   <span class="token-comment"># where certs are stored on disk</span>
+
+<span class="token-comment"># Required when mode = "letsencrypt"</span>
+[letsencrypt]
+staging = true          <span class="token-comment"># use staging CA for testing (rate-limit safe)</span>
+email = "admin@example.com"
+terms_agreed = true</code></pre>
+            </div>
+
+            <h3 style="margin: 48px 0 16px;" id="tls">TLS &amp; Let's Encrypt</h3>
+            <p style="color: var(--text-light); margin-bottom: 24px;">
+                Soli Proxy supports two TLS modes configured via <code>[tls] mode</code> in <code>config.toml</code>:
+            </p>
+
+            <h4 style="margin: 24px 0 12px;">Mode: <code>auto</code> (default)</h4>
+            <p style="color: var(--text-light); margin-bottom: 16px;">
+                Generates a self-signed certificate for <code>localhost</code> / <code>127.0.0.1</code> on first startup. Good for development and internal services. No external dependencies.
+            </p>
+
+            <h4 style="margin: 24px 0 12px;">Mode: <code>letsencrypt</code></h4>
+            <p style="color: var(--text-light); margin-bottom: 16px;">
+                Automatically issues real TLS certificates from Let's Encrypt for every domain found in your <code>proxy.conf</code> rules. How it works:
+            </p>
+            <ol style="color: var(--text-light); margin-bottom: 24px; padding-left: 24px; line-height: 2;">
+                <li><strong>Domain discovery</strong> &mdash; extracts unique hostnames from <code>Domain</code> and <code>DomainPath</code> rules in <code>proxy.conf</code> (IPs and <code>localhost</code> are skipped)</li>
+                <li><strong>ACME account</strong> &mdash; creates (or restores) a Let's Encrypt account, persisted to <code>{cache_dir}/account_credentials.json</code></li>
+                <li><strong>HTTP-01 challenges</strong> &mdash; serves challenge responses on the HTTP port at <code>/.well-known/acme-challenge/{token}</code></li>
+                <li><strong>Certificate issuance</strong> &mdash; after validation, the signed certificate chain and private key are saved per-domain (<code>{domain}.cert.pem</code>, <code>{domain}.key.pem</code>)</li>
+                <li><strong>SNI routing</strong> &mdash; incoming TLS connections are served the correct certificate based on the SNI hostname</li>
+                <li><strong>Auto-renewal</strong> &mdash; a background task checks all certificates every 12 hours and renews any expiring within 30 days</li>
+                <li><strong>Self-signed fallback</strong> &mdash; unknown domains or ACME failures always fall back to the self-signed certificate so the proxy never goes down</li>
+            </ol>
+
+            <h4 style="margin: 24px 0 12px;">Certificate Storage Layout</h4>
+            <div class="code-block">
+                <div class="code-header">
+                    <span>./certs/</span>
+                </div>
+                <pre><code>./certs/
+  account_credentials.json    <span class="token-comment"># ACME account key (0600)</span>
+  self-signed.cert.pem        <span class="token-comment"># fallback self-signed cert</span>
+  self-signed.key.pem         <span class="token-comment"># fallback self-signed key</span>
+  example.com.cert.pem        <span class="token-comment"># full cert chain from Let's Encrypt</span>
+  example.com.key.pem         <span class="token-comment"># private key (0600)</span>
+  api.example.com.cert.pem
+  api.example.com.key.pem</code></pre>
+            </div>
+
+            <h4 style="margin: 24px 0 12px;">Requirements for Let's Encrypt</h4>
+            <ul style="color: var(--text-light); margin-bottom: 24px; padding-left: 24px; line-height: 2;">
+                <li>Port 80 (HTTP) must be reachable from the internet for ACME HTTP-01 challenges</li>
+                <li>Domain DNS must point to the server running soli-proxy</li>
+                <li>Set <code>staging = true</code> first to test without hitting Let's Encrypt rate limits</li>
+                <li>Set <code>staging = false</code> for production (real browser-trusted certificates)</li>
+            </ul>
+
+            <h4 style="margin: 24px 0 12px;">Quick Verification</h4>
+            <div class="code-block">
+                <div class="code-header">
+                    <span>Terminal</span>
+                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                </div>
+                <pre><code><span class="token-comment"># Check ACME challenge endpoint is active</span>
+curl http://localhost:8008/.well-known/acme-challenge/test-token
+<span class="token-comment"># Expected: 404 "Challenge not found" (no active challenge)</span>
+
+<span class="token-comment"># Verify self-signed fallback works</span>
+curl -k https://localhost:8443/
+
+<span class="token-comment"># Check issued cert for a domain</span>
+openssl s_client -connect yourdomain.com:8443 -servername yourdomain.com
+
+<span class="token-comment"># Inspect stored certs</span>
+ls -la ./certs/</code></pre>
+            </div>
+        </div>
+    </section>
+
+    <section class="code-section" id="metrics" style="background: var(--surface);">
+        <div class="container">
+            <h2 class="section-title">Prometheus Metrics</h2>
+
+            <p style="color: var(--text-light); margin-bottom: 24px;">
+                The proxy exposes metrics at <code>/metrics</code> endpoint in Prometheus format.
+                These metrics can be scraped by Prometheus and visualized with Grafana.
+            </p>
+
+            <div class="code-block">
+                <div class="code-header">
+                    <span>Example Metrics Output</span>
+                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                </div>
+                <pre><code><span class="token-comment"># HELP proxy_requests_total Total number of HTTP requests</span>
+<span class="token-comment"># TYPE proxy_requests_total counter</span>
+proxy_requests_total 1247
+
+<span class="token-comment"># HELP proxy_requests_in_flight Number of requests currently being processed</span>
+<span class="token-comment"># TYPE proxy_requests_in_flight gauge</span>
+proxy_requests_in_flight 5
+
+<span class="token-comment"># HELP proxy_bytes_received Total bytes received from clients</span>
+<span class="token-comment"># TYPE proxy_bytes_received counter</span>
+proxy_bytes_received 456789
+
+<span class="token-comment"># HELP proxy_bytes_sent Total bytes sent to clients</span>
+<span class="token-comment"># TYPE proxy_bytes_sent counter</span>
+proxy_bytes_sent 2345678
+
+<span class="token-comment"># HELP proxy_response_time_seconds Average response time in seconds</span>
+<span class="token-comment"># TYPE proxy_response_time_seconds gauge</span>
+proxy_response_time_seconds 0.023
+
+<span class="token-comment"># HELP proxy_tls_connections_total Total number of TLS connections</span>
+<span class="token-comment"># TYPE proxy_tls_connections_total counter</span>
+proxy_tls_connections_total 312
+
+<span class="token-comment"># HELP proxy_errors_total Total number of proxy errors</span>
+<span class="token-comment"># TYPE proxy_errors_total counter</span>
+proxy_errors_total 5
+
+<span class="token-comment"># HELP proxy_response_status_codes_total HTTP response status codes</span>
+<span class="token-comment"># TYPE proxy_response_status_codes_total counter</span>
+proxy_response_status_codes_total{code="200"} 1100
+proxy_response_status_codes_total{code="404"} 45
+proxy_response_status_codes_total{code="502"} 3
+proxy_response_status_codes_total{code="503"} 2</code></pre>
+            </div>
+
+            <h3 style="margin: 48px 0 16px;">Available Metrics</h3>
+            <table class="metrics-table">
+                <thead>
+                    <tr>
+                        <th>Metric</th>
+                        <th>Type</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>proxy_requests_total</code></td>
+                        <td><span class="status-badge status-stable">Counter</span></td>
+                        <td>Total HTTP requests processed</td>
+                    </tr>
+                    <tr>
+                        <td><code>proxy_requests_in_flight</code></td>
+                        <td><span class="status-badge status-stable">Gauge</span></td>
+                        <td>Currently processing requests</td>
+                    </tr>
+                    <tr>
+                        <td><code>proxy_bytes_received</code></td>
+                        <td><span class="status-badge status-stable">Counter</span></td>
+                        <td>Total bytes from clients</td>
+                    </tr>
+                    <tr>
+                        <td><code>proxy_bytes_sent</code></td>
+                        <td><span class="status-badge status-stable">Counter</span></td>
+                        <td>Total bytes to clients</td>
+                    </tr>
+                    <tr>
+                        <td><code>proxy_response_time_seconds</code></td>
+                        <td><span class="status-badge status-stable">Gauge</span></td>
+                        <td>Average response time</td>
+                    </tr>
+                    <tr>
+                        <td><code>proxy_tls_connections_total</code></td>
+                        <td><span class="status-badge status-stable">Counter</span></td>
+                        <td>Total TLS handshakes</td>
+                    </tr>
+                    <tr>
+                        <td><code>proxy_errors_total</code></td>
+                        <td><span class="status-badge status-stable">Counter</span></td>
+                        <td>Total proxy errors</td>
+                    </tr>
+                    <tr>
+                        <td><code>proxy_response_status_codes_total</code></td>
+                        <td><span class="status-badge status-stable">Counter</span></td>
+                        <td>Response by status code</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="code-section" id="api">
+        <div class="container">
+            <h2 class="section-title">API Endpoints</h2>
+
+            <table class="metrics-table">
+                <thead>
+                    <tr>
+                        <th>Endpoint</th>
+                        <th>Method</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>/</code></td>
+                        <td>Any</td>
+                        <td>Proxy request based on routing rules</td>
+                    </tr>
+                    <tr>
+                        <td><code>/metrics</code></td>
+                        <td>GET</td>
+                        <td>Prometheus metrics in text format</td>
+                    </tr>
+                    <tr>
+                        <td><code>/.well-known/acme-challenge/{token}</code></td>
+                        <td>GET</td>
+                        <td>ACME HTTP-01 challenge response (active during certificate issuance)</td>
+                    </tr>
+                    <tr>
+                        <td><code>/health</code></td>
+                        <td>GET</td>
+                        <td>Health check endpoint</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3 style="margin: 48px 0 16px;">Signal Handling</h3>
+            <p style="color: var(--text-light); margin-bottom: 24px;">
+                Send <code>SIGUSR1</code> to reload configuration without restarting:
+            </p>
+
+            <div class="code-block">
+                <div class="code-header">
+                    <span>Terminal</span>
+                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                </div>
+                <pre><code><span class="token-comment"># Reload configuration</span>
+kill -USR1 $(pgrep soli-proxy)</code></pre>
+            </div>
+        </div>
+    </section>
+
+    <section class="code-section" id="benchmark">
+        <div class="container">
+            <h2 class="section-title">Benchmarking</h2>
+
+            <h3 style="margin: 32px 0 16px;">Routing Performance Benchmark</h3>
+            <p style="color: var(--text-light); margin-bottom: 24px;">
+                Run an in-memory benchmark of the routing engine to measure request matching performance:
+            </p>
+            <div class="code-block">
+                <div class="code-header">
+                    <span>Terminal</span>
+                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                </div>
+                <pre><code><span class="token-comment"># Build and run routing benchmark</span>
+cargo run --bin benchmark
+
+<span class="token-comment"># Output example:</span>
+<span class="token-comment"># ==========================================</span>
+<span class="token-comment"># Soli Proxy - Routing Performance Benchmark</span>
+<span class="token-comment"># ==========================================</span>
+<span class="token-comment"># Rules configured: 5</span>
+<span class="token-comment"># Domain-only (root)       234 ns/op   4,273,504 ops/s</span>
+<span class="token-comment"># Domain-only (nested)     245 ns/op   4,081,632 ops/s</span>
+<span class="token-comment"># Domain+exact-path        312 ns/op   3,205,128 ops/s</span>
+<span class="token-comment"># Domain+path prefix       298 ns/op   3,355,704 ops/s</span>
+<span class="token-comment"># Path-only match          156 ns/op   6,410,256 ops/s</span>
+<span class="token-comment"># Regex match              892 ns/op   1,121,076 ops/s</span>
+<span class="token-comment"># ==========================================</span>
+<span class="token-comment"># Average: 356 ns/op</span></code></pre>
+            </div>
+
+            <h3 style="margin: 48px 0 16px;">HTTP Load Testing</h3>
+            <p style="color: var(--text-light); margin-bottom: 24px;">
+                Use the included benchmark script to load test the running proxy server:
+            </p>
+            <div class="code-block">
+                <div class="code-header">
+                    <span>scripts/benchmark.sh</span>
+                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                </div>
+                <pre><code><span class="token-comment"># Run load test against running proxy</span>
+./scripts/benchmark.sh localhost:8008 10s 200
+
+<span class="token-comment"># Parameters: &lt;host&gt; &lt;duration&gt; &lt;connections&gt;</span>
+<span class="token-comment"># Default: localhost:8008 5s 100</span>
+
+<span class="token-comment"># Requires 'hey' HTTP load tester</span>
+<span class="token-comment"># Install: go install github.com/rakyll/hey@latest</span></code></pre>
+            </div>
+
+            <h3 style="margin: 48px 0 16px;">Quick Test Commands</h3>
+            <div class="code-block">
+                <div class="code-header">
+                    <span>Terminal</span>
+                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                </div>
+                <pre><code><span class="token-comment"># Using curl (basic test)</span>
+curl -v http://localhost:8008/
+
+<span class="token-comment"># Using hey (requires: go install github.com/rakyll/hey@latest)</span>
+hey -n 1000 -c 10 http://localhost:8008/
+
+<span class="token-comment"># With Host header (domain routing test)</span>
+hey -n 1000 -c 10 -host "example.com" http://localhost:8008/api/users
+
+<span class="token-comment"># Concurrent load test</span>
+hey -n 10000 -c 100 -q 100 http://localhost:8008/</code></pre>
+            </div>
+        </div>
+    </section>
+
+    <section class="code-section" style="background: var(--surface);">
+        <div class="container">
+            <h2 class="section-title">Docker Deployment</h2>
+
+            <div class="code-block">
+                <div class="code-header">
+                    <span>Dockerfile</span>
+                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                </div>
+                <pre><code><span class="token-keyword">FROM</span> rust:1.75-slim <span class="token-keyword">as</span> builder
+
+<span class="token-keyword">WORKDIR</span> /app
+COPY . .
+<span class="token-keyword">RUN</span> cargo build --release --bin soli-proxy
+
+<span class="token-keyword">FROM</span> debian:bookworm-slim
+<span class="token-keyword">RUN</span> apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates && rm -rf /var/lib/apt/lists/*
+
+<span class="token-keyword">COPY</span> --from=builder /app/target/release/soli-proxy /usr/local/bin/
+<span class="token-keyword">COPY</span> proxy.conf /etc/soli-proxy/
+
+<span class="token-keyword">EXPOSE</span> 8008 8443
+<span class="token-keyword">CMD</span> ["/usr/local/bin/soli-proxy"]</code></pre>
+            </div>
+
+            <div class="code-block">
+                <div class="code-header">
+                    <span>docker-compose.yml</span>
+                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                </div>
+                <pre><code><span class="token-keyword">version</span>: <span class="token-string">'3.8'</span>
+
+<span class="token-function">services</span>:
+  soli-proxy:
+    <span class="token-keyword">build</span>: .
+    <span class="token-keyword">ports</span>:
+      - <span class="token-string">"8008:8008"</span>
+      - <span class="token-string">"8443:8443"</span>
+    <span class="token-keyword">volumes</span>:
+      - ./proxy.conf:/etc/soli-proxy/proxy.conf:ro
+    <span class="token-keyword">restart</span>: unless-stopped</code></pre>
+            </div>
+        </div>
+    </section>
+
+    <section class="code-section">
+        <div class="container">
+            <h2 class="section-title">Project Roadmap</h2>
+            <table class="metrics-table">
+                <thead>
+                    <tr>
+                        <th>Feature</th>
+                        <th>Status</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>HTTP/2 Proxy</td>
+                        <td><span class="status-badge status-stable">Stable</span></td>
+                        <td>Core HTTP/2 proxy functionality</td>
+                    </tr>
+                    <tr>
+                        <td>Automatic TLS</td>
+                        <td><span class="status-badge status-stable">Stable</span></td>
+                        <td>Self-signed certificate generation</td>
+                    </tr>
+                    <tr>
+                        <td>Let's Encrypt (ACME)</td>
+                        <td><span class="status-badge status-stable">Stable</span></td>
+                        <td>Automatic certificate issuance and renewal via HTTP-01 challenges</td>
+                    </tr>
+                    <tr>
+                        <td>Prometheus Metrics</td>
+                        <td><span class="status-badge status-stable">Stable</span></td>
+                        <td>Full metrics endpoint with /metrics</td>
+                    </tr>
+                    <tr>
+                        <td>Hot Config Reload</td>
+                        <td><span class="status-badge status-stable">Stable</span></td>
+                        <td>SIGUSR1 for config reload</td>
+                    </tr>
+                    <tr>
+                        <td>HTML Path Rewriting</td>
+                        <td><span class="status-badge status-stable">Stable</span></td>
+                        <td>Auto-rewrite absolute paths in HTML for prefix-mounted apps</td>
+                    </tr>
+                    <tr>
+                        <td>WebSocket Proxy</td>
+                        <td><span class="status-badge status-beta">Beta</span></td>
+                        <td>WebSocket connection streaming</td>
+                    </tr>
+                    <tr>
+                        <td>Rate Limiting</td>
+                        <td><span class="status-badge status-planned">Planned</span></td>
+                        <td>Request rate limiting per route</td>
+                    </tr>
+                    <tr>
+                        <td>Load Balancing</td>
+                        <td><span class="status-badge status-planned">Planned</span></td>
+                        <td>Weighted round-robin load balancing</td>
+                    </tr>
+                    <tr>
+                        <td>Authentication</td>
+                        <td><span class="status-badge status-planned">Planned</span></td>
+                        <td>Basic auth and JWT validation</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <footer>
+        <div class="container">
+            <p>SoliProxy - HTTP/2 Forward Proxy Server built with Rust</p>
+            <p style="margin-top: 8px; font-size: 14px;">Released under MIT License</p>
+        </div>
+    </footer>
+
+    <script>
+        function copyCode(btn) {
+            const codeBlock = btn.closest('.code-block');
+            const code = codeBlock.querySelector('code').textContent;
+
+            navigator.clipboard.writeText(code).then(() => {
+                const originalText = btn.textContent;
+                btn.textContent = 'Copied!';
+                setTimeout(() => {
+                    btn.textContent = originalText;
+                }, 2000);
+            });
+        }
+
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function (e) {
+                e.preventDefault();
+                const target = document.querySelector(this.getAttribute('href'));
+                if (target) {
+                    target.scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'start'
+                    });
+                }
+            });
+        });
+    </script>
+</body>
+</html>
