@@ -1,0 +1,29 @@
+#!/bin/sh
+# Enforce Conventional Commits for semantic release.
+# If the first line doesn't match type(scope): pattern, prefix it with "chore: ".
+# Install: cp scripts/git-hooks/prepare-commit-msg .git/hooks/prepare-commit-msg && chmod +x .git/hooks/prepare-commit-msg
+
+COMMIT_MSG_FILE=$1
+COMMIT_SOURCE=$2
+
+# Only normalize normal commits (message or template), not merge/squash/amend
+case "$COMMIT_SOURCE" in
+  merge|squash|commit) exit 0 ;;
+  *) ;;
+esac
+
+# Skip if first line already matches conventional type
+first_line=$(sed -n '1p' "$COMMIT_MSG_FILE")
+if echo "$first_line" | grep -qE '^(feat|fix|docs|style|refactor|perf|test|chore|ci|build)(\([^)]*\))?!?:'; then
+  exit 0
+fi
+
+# Skip comment lines or empty
+if echo "$first_line" | grep -qE '^#|^[[:space:]]*$'; then
+  exit 0
+fi
+
+# Prepend "chore: " so semantic release accepts the commit
+sed -i.bak "1s/^/chore: /" "$COMMIT_MSG_FILE"
+rm -f "${COMMIT_MSG_FILE}.bak"
+exit 0

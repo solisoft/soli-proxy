@@ -5,7 +5,7 @@ alwaysApply: true
 
 # Commit Messages — Conventional Commits (Semantic Release)
 
-When generating or suggesting commit messages (e.g. in Cursor's commit UI or when asked to propose a commit), **always** use [Conventional Commits](https://www.conventionalcommits.org/) so they work with semantic release.
+When generating or suggesting a git commit message (including Cursor's Generate commit message / sparkle in the Git panel), you MUST use [Conventional Commits](https://www.conventionalcommits.org/) so they work with semantic release. Output format: `<type>[optional scope]: <description>`.
 
 ## Format
 

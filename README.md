@@ -182,6 +182,17 @@ Configuration changes are detected automatically:
 4. Existing connections continue with old config
 5. Graceful draining of old connections
 
+## Commit messages
+
+This project uses [Conventional Commits](https://www.conventionalcommits.org/) for semantic release. Use the format `type(scope): description` (e.g. `feat(proxy): add retry`). Allowed types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`, `ci`, `build`.
+
+Optional setup:
+
+- **Commit template** (reminder in the message box):  
+  `git config commit.template .gitmessage`
+- **Auto-fix non-conventional messages** (prepend `chore: ` if the first line doesn’t match):  
+  `cp scripts/git-hooks/prepare-commit-msg .git/hooks/prepare-commit-msg && chmod +x .git/hooks/prepare-commit-msg`
+
 ## License
 
 MIT
