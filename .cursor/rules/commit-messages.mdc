@@ -1,0 +1,39 @@
+---
+description: Use Conventional Commits (semantic release) for all generated commit messages
+alwaysApply: true
+---
+
+# Commit Messages — Conventional Commits (Semantic Release)
+
+When generating or suggesting commit messages (e.g. in Cursor's commit UI or when asked to propose a commit), **always** use [Conventional Commits](https://www.conventionalcommits.org/) so they work with semantic release.
+
+## Format
+
+```
+<type>[optional scope]: <description>
+
+[optional body]
+
+[optional footer(s)]
+```
+
+- **type** (required): one of `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`, `ci`, `build`.
+- **scope** (optional): short context, e.g. `api`, `auth`, `proxy`.
+- **description** (required): short, imperative, lowercase after the colon (e.g. "add retry" not "added retries").
+
+## Types and semantic release
+
+- `feat:` → minor release (new feature).
+- `fix:` → patch release (bug fix).
+- `docs:`, `style:`, `refactor:`, `perf:`, `test:`, `chore:`, `ci:`, `build:` → no version bump by default (unless configured otherwise).
+- `BREAKING CHANGE:` in body or footer, or type suffix `!` (e.g. `feat!: ...`) → major release.
+
+## Examples
+
+- `feat(proxy): add TLS client certificate validation`
+- `fix(auth): correct token expiry check`
+- `docs: update README with deployment steps`
+- `chore(deps): bump rust to 1.75`
+- `feat(api)!: remove deprecated /v1 endpoint` (breaking change)
+
+Never suggest generic messages like "Update code" or "Fix bug"; always use a proper type and a clear, imperative description.
