@@ -354,10 +354,10 @@
                 <a href="#features">Features</a>
                 <a href="#quickstart">Quick Start</a>
                 <a href="#configuration">Configuration</a>
+                <a href="#admin-api">Admin API</a>
                 <a href="#scripting">Scripting</a>
                 <a href="#tls">TLS</a>
                 <a href="#metrics">Metrics</a>
-                <a href="#api">API</a>
             </nav>
         </div>
     </header>
@@ -416,6 +416,11 @@
                     <div class="feature-icon">⚡</div>
                     <h3>High Performance</h3>
                     <p>Rust-powered for minimal memory footprint and maximum throughput.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🎛</div>
+                    <h3>Admin REST API</h3>
+                    <p>Inspect and modify configuration at runtime via a dedicated admin port. Add, update, and delete routes without restarts. Changes persist to disk.</p>
                 </div>
                 <div class="feature-card">
                     <div class="feature-icon">🧩</div>
@@ -569,6 +574,23 @@ default -> http://localhost:8080</code></pre>
                 </tbody>
             </table>
 
+            <h3 style="margin: 48px 0 16px;">Line Continuation</h3>
+            <p style="color: var(--text-light); margin-bottom: 24px;">
+                Long lines can be split using a backslash (<code>\</code>) at the end of the line, similar to Makefiles and shell scripts. The next line is trimmed and appended:
+            </p>
+            <div class="code-block">
+                <div class="code-header">
+                    <span>proxy.conf</span>
+                </div>
+                <pre><code><span class="token-comment"># Multi-backend route split across lines</span>
+/api/* -> http://backend1:8080, \
+          http://backend2:8080, \
+          http://backend3:8080
+
+<span class="token-comment"># Equivalent single-line form</span>
+/api/* -> http://backend1:8080, http://backend2:8080, http://backend3:8080</code></pre>
+            </div>
+
             <h3 style="margin: 48px 0 16px;">HTML Path Rewriting</h3>
             <p style="color: var(--text-light); margin-bottom: 24px;">
                 When an app is mounted behind a prefix rule (e.g. <code>/api/*</code>), the backend typically serves HTML with absolute paths like <code>/css/app.css</code> or <code>/js/main.js</code>. Without rewriting, the browser requests these at the proxy root, hitting the wrong backend.
@@ -675,6 +697,12 @@ cache_dir = "./certs"   <span class="token-comment"># where certs are stored on 
 staging = true          <span class="token-comment"># use staging CA for testing (rate-limit safe)</span>
 email = "admin@example.com"
 terms_agreed = true
+
+<span class="token-comment"># Admin REST API</span>
+[admin]
+enabled = true          <span class="token-comment"># enable the admin API server</span>
+bind = "127.0.0.1:9090" <span class="token-comment"># admin port (localhost only by default)</span>
+<span class="token-comment"># api_key = "your-secret-key"  # optional API key auth</span>
 
 <span class="token-comment"># Lua scripting (requires --features scripting)</span>
 [scripting]
@@ -1201,9 +1229,241 @@ proxy_response_status_codes_total{code="503"} 2</code></pre>
         </div>
     </section>
 
+    <section class="code-section" id="admin-api">
+        <div class="container">
+            <h2 class="section-title">Admin REST API</h2>
+
+            <p style="color: var(--text-light); margin-bottom: 24px;">
+                Soli Proxy includes a built-in Admin REST API on a dedicated port for runtime configuration management. Inspect routes, trigger reloads, and perform full CRUD on routing rules &mdash; all via HTTP. Changes are applied immediately in memory and persisted to <code>proxy.conf</code> on disk.
+            </p>
+
+            <h3 style="margin: 32px 0 16px;">Enabling the Admin API</h3>
+            <div class="code-block">
+                <div class="code-header">
+                    <span>config.toml</span>
+                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                </div>
+                <pre><code>[admin]
+enabled = <span class="token-keyword">true</span>
+bind = <span class="token-string">"127.0.0.1:9090"</span>       <span class="token-comment"># separate from proxy port</span>
+<span class="token-comment"># api_key = "your-secret-key"  # set to require X-Api-Key header</span></code></pre>
+            </div>
+            <p style="color: var(--text-light); margin: 16px 0 24px;">
+                The admin server runs on its own port, completely isolated from the proxy data plane. When <code>api_key</code> is set, all requests must include an <code>X-Api-Key</code> header. When omitted, no authentication is required (suitable for development or localhost-only access).
+            </p>
+
+            <h3 style="margin: 48px 0 16px;">Endpoints</h3>
+            <table class="metrics-table">
+                <thead>
+                    <tr>
+                        <th>Method</th>
+                        <th>Path</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><span class="status-badge status-stable">GET</span></td>
+                        <td><code>/api/v1/status</code></td>
+                        <td>Server version, uptime, route count, bind addresses, TLS mode</td>
+                    </tr>
+                    <tr>
+                        <td><span class="status-badge status-stable">GET</span></td>
+                        <td><code>/api/v1/config</code></td>
+                        <td>Full configuration as JSON</td>
+                    </tr>
+                    <tr>
+                        <td><span class="status-badge status-stable">GET</span></td>
+                        <td><code>/api/v1/routes</code></td>
+                        <td>List all proxy routing rules</td>
+                    </tr>
+                    <tr>
+                        <td><span class="status-badge status-stable">GET</span></td>
+                        <td><code>/api/v1/routes/{index}</code></td>
+                        <td>Get a single route by index</td>
+                    </tr>
+                    <tr>
+                        <td><span class="status-badge status-stable">GET</span></td>
+                        <td><code>/api/v1/metrics</code></td>
+                        <td>Prometheus metrics (text format)</td>
+                    </tr>
+                    <tr>
+                        <td><span class="status-badge status-stable">POST</span></td>
+                        <td><code>/api/v1/reload</code></td>
+                        <td>Reload configuration from disk (same as SIGUSR1)</td>
+                    </tr>
+                    <tr>
+                        <td><span class="status-badge status-stable">POST</span></td>
+                        <td><code>/api/v1/routes</code></td>
+                        <td>Add a new route (persisted to disk)</td>
+                    </tr>
+                    <tr>
+                        <td><span class="status-badge status-stable">PUT</span></td>
+                        <td><code>/api/v1/routes/{index}</code></td>
+                        <td>Replace a route at index (persisted to disk)</td>
+                    </tr>
+                    <tr>
+                        <td><span class="status-badge status-stable">DELETE</span></td>
+                        <td><code>/api/v1/routes/{index}</code></td>
+                        <td>Remove a route (persisted to disk)</td>
+                    </tr>
+                    <tr>
+                        <td><span class="status-badge status-stable">PUT</span></td>
+                        <td><code>/api/v1/config</code></td>
+                        <td>Replace all routes and global scripts</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3 style="margin: 48px 0 16px;">Response Format</h3>
+            <p style="color: var(--text-light); margin-bottom: 24px;">
+                All JSON endpoints return a consistent envelope:
+            </p>
+            <div class="two-column">
+                <div class="code-block">
+                    <div class="code-header">
+                        <span>Success</span>
+                    </div>
+                    <pre><code>{
+  <span class="token-string">"ok"</span>: <span class="token-keyword">true</span>,
+  <span class="token-string">"data"</span>: { ... }
+}</code></pre>
+                </div>
+                <div class="code-block">
+                    <div class="code-header">
+                        <span>Error</span>
+                    </div>
+                    <pre><code>{
+  <span class="token-string">"ok"</span>: <span class="token-keyword">false</span>,
+  <span class="token-string">"error"</span>: <span class="token-string">"description"</span>
+}</code></pre>
+                </div>
+            </div>
+
+            <h3 style="margin: 48px 0 16px;">Route JSON Format</h3>
+            <p style="color: var(--text-light); margin-bottom: 24px;">
+                Routes are represented as JSON objects with a matcher, targets, headers, and scripts:
+            </p>
+            <div class="code-block">
+                <div class="code-header">
+                    <span>Route Object</span>
+                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                </div>
+                <pre><code>{
+  <span class="token-string">"matcher"</span>: { <span class="token-string">"type"</span>: <span class="token-string">"prefix"</span>, <span class="token-string">"value"</span>: <span class="token-string">"/api/"</span> },
+  <span class="token-string">"targets"</span>: [{ <span class="token-string">"url"</span>: <span class="token-string">"http://localhost:8888/"</span>, <span class="token-string">"weight"</span>: <span class="token-number">100</span> }],
+  <span class="token-string">"headers"</span>: [],
+  <span class="token-string">"scripts"</span>: [<span class="token-string">"auth.lua"</span>]
+}</code></pre>
+            </div>
+
+            <h4 style="margin: 24px 0 12px;">Matcher Types</h4>
+            <table class="metrics-table">
+                <thead>
+                    <tr>
+                        <th>Type</th>
+                        <th>JSON</th>
+                        <th>proxy.conf equivalent</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Default</td>
+                        <td><code>{"type": "default"}</code></td>
+                        <td><code>default</code></td>
+                    </tr>
+                    <tr>
+                        <td>Exact path</td>
+                        <td><code>{"type": "exact", "value": "/path"}</code></td>
+                        <td><code>/path</code></td>
+                    </tr>
+                    <tr>
+                        <td>Prefix</td>
+                        <td><code>{"type": "prefix", "value": "/api/"}</code></td>
+                        <td><code>/api/*</code></td>
+                    </tr>
+                    <tr>
+                        <td>Regex</td>
+                        <td><code>{"type": "regex", "value": "^/v[0-9]+/"}</code></td>
+                        <td><code>~^/v[0-9]+/</code></td>
+                    </tr>
+                    <tr>
+                        <td>Domain</td>
+                        <td><code>{"type": "domain", "value": "example.com"}</code></td>
+                        <td><code>example.com</code></td>
+                    </tr>
+                    <tr>
+                        <td>Domain + Path</td>
+                        <td><code>{"type": "domain_path", "domain": "api.example.com", "path": "/v1/"}</code></td>
+                        <td><code>api.example.com/v1/*</code></td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3 style="margin: 48px 0 16px;">Examples</h3>
+            <div class="code-block">
+                <div class="code-header">
+                    <span>Terminal</span>
+                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                </div>
+                <pre><code><span class="token-comment"># Check server status</span>
+curl http://127.0.0.1:9090/api/v1/status
+<span class="token-comment"># {"ok":true,"data":{"version":"0.1.0","uptime_secs":42,...}}</span>
+
+<span class="token-comment"># List all routes</span>
+curl http://127.0.0.1:9090/api/v1/routes
+
+<span class="token-comment"># Get a specific route</span>
+curl http://127.0.0.1:9090/api/v1/routes/0
+
+<span class="token-comment"># Add a new route</span>
+curl -X POST http://127.0.0.1:9090/api/v1/routes \
+  -H "Content-Type: application/json" \
+  -d '{
+    "matcher": {"type": "prefix", "value": "/new/"},
+    "targets": [{"url": "http://localhost:9999/", "weight": 100}],
+    "headers": [],
+    "scripts": []
+  }'
+
+<span class="token-comment"># Update an existing route</span>
+curl -X PUT http://127.0.0.1:9090/api/v1/routes/1 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "matcher": {"type": "prefix", "value": "/api/v2/"},
+    "targets": [{"url": "http://localhost:7777/", "weight": 100}],
+    "headers": [],
+    "scripts": ["auth.lua"]
+  }'
+
+<span class="token-comment"># Delete a route</span>
+curl -X DELETE http://127.0.0.1:9090/api/v1/routes/2
+
+<span class="token-comment"># Reload config from disk</span>
+curl -X POST http://127.0.0.1:9090/api/v1/reload
+
+<span class="token-comment"># With API key authentication</span>
+curl -H "X-Api-Key: your-secret-key" http://127.0.0.1:9090/api/v1/status</code></pre>
+            </div>
+
+            <h3 style="margin: 48px 0 16px;">Write-Through Persistence</h3>
+            <p style="color: var(--text-light); margin-bottom: 24px;">
+                When you add, update, or delete routes via the API, changes are:
+            </p>
+            <ol style="color: var(--text-light); margin-bottom: 24px; padding-left: 24px; line-height: 2;">
+                <li><strong>Applied immediately</strong> &mdash; the in-memory routing table is swapped atomically via ArcSwap</li>
+                <li><strong>Persisted to disk</strong> &mdash; the <code>proxy.conf</code> file is rewritten with the updated rules</li>
+                <li><strong>File watcher suppressed</strong> &mdash; the file watcher is temporarily suppressed to avoid a redundant reload cycle</li>
+            </ol>
+            <p style="color: var(--text-light); margin-bottom: 24px;">
+                This ensures changes survive restarts while taking effect without any downtime.
+            </p>
+        </div>
+    </section>
+
     <section class="code-section" id="api">
         <div class="container">
-            <h2 class="section-title">API Endpoints</h2>
+            <h2 class="section-title">Proxy Endpoints</h2>
 
             <table class="metrics-table">
                 <thead>
@@ -1229,11 +1489,6 @@ proxy_response_status_codes_total{code="503"} 2</code></pre>
                         <td>GET</td>
                         <td>ACME HTTP-01 challenge response (active during certificate issuance)</td>
                     </tr>
-                    <tr>
-                        <td><code>/health</code></td>
-                        <td>GET</td>
-                        <td>Health check endpoint</td>
-                    </tr>
                 </tbody>
             </table>
 
@@ -1247,8 +1502,11 @@ proxy_response_status_codes_total{code="503"} 2</code></pre>
                     <span>Terminal</span>
                     <button class="copy-btn" onclick="copyCode(this)">Copy</button>
                 </div>
-                <pre><code><span class="token-comment"># Reload configuration</span>
-kill -USR1 $(pgrep soli-proxy)</code></pre>
+                <pre><code><span class="token-comment"># Reload configuration (signal)</span>
+kill -USR1 $(pgrep soli-proxy)
+
+<span class="token-comment"># Or via Admin API</span>
+curl -X POST http://127.0.0.1:9090/api/v1/reload</code></pre>
             </div>
         </div>
     </section>

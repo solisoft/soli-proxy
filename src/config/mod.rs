@@ -446,7 +446,20 @@ fn parse_proxy_config(content: &str) -> Result<(Vec<ProxyRule>, Vec<String>)> {
     let mut rules = Vec::new();
     let mut global_scripts = Vec::new();
 
+    // Join continuation lines (backslash at end of line)
+    let mut joined_lines: Vec<String> = Vec::new();
     for line in content.lines() {
+        if let Some(current) = joined_lines.last_mut() {
+            if current.ends_with('\\') {
+                current.pop(); // remove the backslash
+                current.push_str(line.trim());
+                continue;
+            }
+        }
+        joined_lines.push(line.to_string());
+    }
+
+    for line in &joined_lines {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
@@ -515,3 +528,62 @@ fn parse_proxy_config(content: &str) -> Result<(Vec<ProxyRule>, Vec<String>)> {
 }
 
 use std::path::Path;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_backslash_continuation_joins_lines() {
+        let config = "/api/* -> http://backend1:8080, \\\n          http://backend2:8080\n";
+        let (rules, _) = parse_proxy_config(config).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].targets.len(), 2);
+        assert_eq!(rules[0].targets[0].url.as_str(), "http://backend1:8080/");
+        assert_eq!(rules[0].targets[1].url.as_str(), "http://backend2:8080/");
+    }
+
+    #[test]
+    fn test_multiple_continuation_lines() {
+        let config = "/api/* -> http://backend1:8080, \\\n\
+                       http://backend2:8080, \\\n\
+                       http://backend3:8080\n";
+        let (rules, _) = parse_proxy_config(config).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].targets.len(), 3);
+        assert_eq!(rules[0].targets[2].url.as_str(), "http://backend3:8080/");
+    }
+
+    #[test]
+    fn test_backslash_mid_line_not_continuation() {
+        let config = "/path -> http://localhost:8080\n\
+                       ~^/foo\\dbar$ -> http://localhost:9090\n";
+        let (rules, _) = parse_proxy_config(config).unwrap();
+        assert_eq!(rules.len(), 2);
+    }
+
+    #[test]
+    fn test_continuation_trims_whitespace() {
+        let config = "/api/* -> http://a:8080,   \\\n   http://b:8080,  \\\n   http://c:8080\n";
+        let (rules, _) = parse_proxy_config(config).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].targets.len(), 3);
+    }
+
+    #[test]
+    fn test_continuation_with_scripts() {
+        let config = "/api/* -> http://a:8080, \\\n\
+                       http://b:8080 @script:auth.lua\n";
+        let (rules, _) = parse_proxy_config(config).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].targets.len(), 2);
+        assert_eq!(rules[0].scripts, vec!["auth.lua"]);
+    }
+
+    #[test]
+    fn test_no_continuation_normal_config() {
+        let config = "/api/* -> http://backend:8080\ndefault -> http://localhost:3000\n";
+        let (rules, _) = parse_proxy_config(config).unwrap();
+        assert_eq!(rules.len(), 2);
+    }
+}
