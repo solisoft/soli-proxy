@@ -123,6 +123,68 @@ async fn main() -> Result<()> {
     let metrics = new_metrics();
     let challenge_store = new_challenge_store();
 
+    // Initialize Lua scripting engine if feature is enabled and config says so
+    #[cfg(feature = "scripting")]
+    let lua_engine: Option<soli_proxy::LuaEngine> = {
+        let cfg = config_ref.get_config();
+        if cfg.scripting.enabled {
+            let scripts_dir = std::path::PathBuf::from(
+                cfg.scripting.scripts_dir.as_deref().unwrap_or("./scripts/lua"),
+            );
+            let hook_timeout = std::time::Duration::from_millis(
+                cfg.scripting.hook_timeout_ms.unwrap_or(10),
+            );
+            let num_states = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4);
+
+            // Collect unique route script names from all rules
+            let mut route_script_names: Vec<String> = cfg
+                .rules
+                .iter()
+                .flat_map(|r| r.scripts.iter().cloned())
+                .collect();
+            route_script_names.sort();
+            route_script_names.dedup();
+
+            let has_named_scripts =
+                !cfg.global_scripts.is_empty() || !route_script_names.is_empty();
+
+            let result = if has_named_scripts {
+                tracing::info!(
+                    "Lua scripting: {} global scripts, {} unique route scripts",
+                    cfg.global_scripts.len(),
+                    route_script_names.len()
+                );
+                soli_proxy::LuaEngine::with_route_scripts(
+                    &scripts_dir,
+                    num_states,
+                    hook_timeout,
+                    &cfg.global_scripts,
+                    &route_script_names,
+                )
+            } else {
+                soli_proxy::LuaEngine::new(&scripts_dir, num_states, hook_timeout)
+            };
+
+            match result {
+                Ok(engine) => {
+                    tracing::info!("Lua scripting engine initialized ({} states)", num_states);
+                    Some(engine)
+                }
+                Err(e) => {
+                    tracing::error!("Failed to initialize Lua scripting engine: {}", e);
+                    None
+                }
+            }
+        } else {
+            tracing::info!("Lua scripting disabled");
+            None
+        }
+    };
+    #[cfg(not(feature = "scripting"))]
+    let lua_engine = ();
+
     let cfg = config_ref.get_config();
 
     let mut tls_manager = TlsManager::new(&cfg.tls)?;
@@ -157,6 +219,7 @@ async fn main() -> Result<()> {
                 https_addr,
                 metrics,
                 challenge_store.clone(),
+                lua_engine,
             )?
         }
         None => {
@@ -166,6 +229,7 @@ async fn main() -> Result<()> {
                 shutdown,
                 metrics,
                 challenge_store.clone(),
+                lua_engine,
             )?
         }
     };

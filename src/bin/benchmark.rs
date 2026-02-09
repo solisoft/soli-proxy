@@ -109,6 +109,7 @@ fn parse_proxy_config(content: &str) -> Result<Vec<soli_proxy::config::ProxyRule
                 matcher,
                 targets: vec![target],
                 headers: vec![],
+                scripts: vec![],
             });
         }
     }

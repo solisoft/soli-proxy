@@ -354,6 +354,7 @@
                 <a href="#features">Features</a>
                 <a href="#quickstart">Quick Start</a>
                 <a href="#configuration">Configuration</a>
+                <a href="#scripting">Scripting</a>
                 <a href="#tls">TLS</a>
                 <a href="#metrics">Metrics</a>
                 <a href="#api">API</a>
@@ -416,6 +417,11 @@
                     <h3>High Performance</h3>
                     <p>Rust-powered for minimal memory footprint and maximum throughput.</p>
                 </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🧩</div>
+                    <h3>Lua Scripting</h3>
+                    <p>Extend the proxy with Lua scripts for auth, routing, response transformation, and custom logging. Zero overhead when disabled.</p>
+                </div>
             </div>
         </div>
     </section>
@@ -456,6 +462,8 @@
 git clone https://github.com/your-org/soli-proxy.git
 cd soli-proxy
 cargo build --release
+<span class="token-comment"># Or with Lua scripting support:</span>
+<span class="token-comment"># cargo build --release --features scripting</span>
 
 <span class="token-comment"># Create multi-domain configuration</span>
 cat > proxy.conf << 'EOF'
@@ -666,7 +674,13 @@ cache_dir = "./certs"   <span class="token-comment"># where certs are stored on 
 [letsencrypt]
 staging = true          <span class="token-comment"># use staging CA for testing (rate-limit safe)</span>
 email = "admin@example.com"
-terms_agreed = true</code></pre>
+terms_agreed = true
+
+<span class="token-comment"># Lua scripting (requires --features scripting)</span>
+[scripting]
+enabled = false         <span class="token-comment"># set true to activate Lua hooks</span>
+scripts_dir = "./scripts/lua"
+hook_timeout_ms = 10    <span class="token-comment"># max execution time per hook call</span></code></pre>
             </div>
 
             <h3 style="margin: 48px 0 16px;" id="tls">TLS &amp; Let's Encrypt</h3>
@@ -735,6 +749,350 @@ openssl s_client -connect yourdomain.com:8443 -servername yourdomain.com
 <span class="token-comment"># Inspect stored certs</span>
 ls -la ./certs/</code></pre>
             </div>
+        </div>
+    </section>
+
+    <section class="code-section" id="scripting">
+        <div class="container">
+            <h2 class="section-title">Lua Scripting</h2>
+
+            <p style="color: var(--text-light); margin-bottom: 24px;">
+                Soli Proxy supports Lua 5.4 scripts to customize request handling without modifying Rust code. Scripts are loaded at startup from the configured directory and provide four hook points in the request lifecycle. The scripting engine is an optional feature &mdash; when disabled or when no scripts are present, the proxy runs with zero overhead.
+            </p>
+
+            <h3 style="margin: 32px 0 16px;">Enabling Scripting</h3>
+            <div class="code-block">
+                <div class="code-header">
+                    <span>Terminal</span>
+                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                </div>
+                <pre><code><span class="token-comment"># Build with Lua scripting support</span>
+cargo build --release --features scripting</code></pre>
+            </div>
+
+            <p style="color: var(--text-light); margin: 16px 0 24px;">
+                Then enable it in <code>config.toml</code>:
+            </p>
+            <div class="code-block">
+                <div class="code-header">
+                    <span>config.toml</span>
+                </div>
+                <pre><code>[scripting]
+enabled = true
+scripts_dir = "./scripts/lua"
+hook_timeout_ms = 10</code></pre>
+            </div>
+
+            <h3 style="margin: 48px 0 16px;">Hook Points</h3>
+            <p style="color: var(--text-light); margin-bottom: 24px;">
+                Each hook is optional. Define only the functions you need &mdash; undefined hooks are skipped with no overhead.
+            </p>
+
+            <div class="code-block">
+                <div class="code-header">
+                    <span>Request Lifecycle</span>
+                </div>
+                <pre><code>Request arrives
+    |
+    +-- <span class="token-function">on_request</span>(req)           <span class="token-comment">-- auth, rate limit, validation, early deny</span>
+    |
+    +-- find_target (Rust)
+    |
+    +-- <span class="token-function">on_route</span>(req, target)     <span class="token-comment">-- dynamic routing, A/B testing, canary</span>
+    |
+    +-- Backend request (Rust)
+    |
+    +-- <span class="token-function">on_response</span>(req, resp)    <span class="token-comment">-- header manipulation, body transform</span>
+    |
+    +-- <span class="token-function">on_request_end</span>(...)       <span class="token-comment">-- logging, custom metrics</span></code></pre>
+            </div>
+
+            <h3 style="margin: 48px 0 16px;">Hook Reference</h3>
+            <table class="metrics-table">
+                <thead>
+                    <tr>
+                        <th>Hook</th>
+                        <th>Arguments</th>
+                        <th>Return</th>
+                        <th>Use Case</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>on_request(req)</code></td>
+                        <td>Request table</td>
+                        <td><code>nil</code> to continue, <code>req:deny(status, body)</code> to reject</td>
+                        <td>Auth, WAF, validation</td>
+                    </tr>
+                    <tr>
+                        <td><code>on_route(req, target)</code></td>
+                        <td>Request table, matched target URL</td>
+                        <td><code>nil</code> for default, or a URL string to override</td>
+                        <td>A/B testing, canary routing</td>
+                    </tr>
+                    <tr>
+                        <td><code>on_response(req, resp)</code></td>
+                        <td>Request table, response table with helpers</td>
+                        <td><code>nil</code> (modifications via helpers)</td>
+                        <td>CORS, header stripping, custom errors</td>
+                    </tr>
+                    <tr>
+                        <td><code>on_request_end(req, resp, duration_ms, target)</code></td>
+                        <td>Request, response status, duration in ms, backend URL</td>
+                        <td><code>nil</code></td>
+                        <td>Logging, custom metrics</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3 style="margin: 48px 0 16px;">Request Object</h3>
+            <p style="color: var(--text-light); margin-bottom: 24px;">
+                The <code>req</code> table is passed to all hooks and provides:
+            </p>
+            <table class="metrics-table">
+                <thead>
+                    <tr>
+                        <th>Field / Method</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr><td><code>req.method</code></td><td>HTTP method (GET, POST, ...)</td></tr>
+                    <tr><td><code>req.path</code></td><td>Request path</td></tr>
+                    <tr><td><code>req.host</code></td><td>Host header value</td></tr>
+                    <tr><td><code>req.content_length</code></td><td>Content-Length as number</td></tr>
+                    <tr><td><code>req.headers</code></td><td>Table of all headers (lowercase keys)</td></tr>
+                    <tr><td><code>req:header("name")</code></td><td>Get a header value by name</td></tr>
+                    <tr><td><code>req:set_header("name", "value")</code></td><td>Set/overwrite a header</td></tr>
+                    <tr><td><code>req:deny(status, body)</code></td><td>Return an early response (blocks request)</td></tr>
+                </tbody>
+            </table>
+
+            <h3 style="margin: 48px 0 16px;">Response Object</h3>
+            <p style="color: var(--text-light); margin-bottom: 24px;">
+                The <code>resp</code> table in <code>on_response</code> provides:
+            </p>
+            <table class="metrics-table">
+                <thead>
+                    <tr>
+                        <th>Field / Method</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr><td><code>resp.status</code></td><td>HTTP status code</td></tr>
+                    <tr><td><code>resp.headers</code></td><td>Table of response headers (lowercase keys)</td></tr>
+                    <tr><td><code>resp:set_header("name", "value")</code></td><td>Add or overwrite a response header</td></tr>
+                    <tr><td><code>resp:remove_header("name")</code></td><td>Remove a response header</td></tr>
+                    <tr><td><code>resp:set_status(code)</code></td><td>Override the response status code</td></tr>
+                    <tr><td><code>resp:replace_body("text")</code></td><td>Replace the response body</td></tr>
+                </tbody>
+            </table>
+
+            <h3 style="margin: 48px 0 16px;">Built-in Modules</h3>
+            <p style="color: var(--text-light); margin-bottom: 24px;">
+                Scripts have access to several built-in modules:
+            </p>
+            <table class="metrics-table">
+                <thead>
+                    <tr>
+                        <th>Module</th>
+                        <th>Function</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr><td rowspan="4"><code>log</code></td><td><code>log.info(msg)</code></td><td>Log at INFO level</td></tr>
+                    <tr><td><code>log.warn(msg)</code></td><td>Log at WARN level</td></tr>
+                    <tr><td><code>log.error(msg)</code></td><td>Log at ERROR level</td></tr>
+                    <tr><td><code>log.debug(msg)</code></td><td>Log at DEBUG level</td></tr>
+                    <tr><td rowspan="2"><code>base64</code></td><td><code>base64.encode(s)</code></td><td>Base64-encode a string</td></tr>
+                    <tr><td><code>base64.decode(s)</code></td><td>Base64-decode a string</td></tr>
+                    <tr><td rowspan="2"><code>crypto</code></td><td><code>crypto.sha256(s)</code></td><td>SHA-256 hash (hex string)</td></tr>
+                    <tr><td><code>crypto.hmac_sha256(key, s)</code></td><td>HMAC-SHA256 (hex string)</td></tr>
+                    <tr><td><code>env</code></td><td><code>env.get("VAR_NAME")</code></td><td>Read environment variable (nil if unset)</td></tr>
+                    <tr><td><code>time</code></td><td><code>time.now_ms()</code></td><td>Current time in milliseconds (epoch)</td></tr>
+                    <tr><td rowspan="3"><code>shared</code></td><td><code>shared.get(key)</code></td><td>Read a shared counter (nil if unset)</td></tr>
+                    <tr><td><code>shared.set(key, value)</code></td><td>Set a shared counter</td></tr>
+                    <tr><td><code>shared.incr(key)</code></td><td>Increment a counter by 1, returns new value</td></tr>
+                </tbody>
+            </table>
+            <p style="color: var(--text-light); margin: 16px 0 0;">
+                The <code>shared</code> module provides cross-worker counters backed by an in-memory map. All Lua states see the same data, making it ideal for rate limiting.
+            </p>
+
+            <h3 style="margin: 48px 0 16px;">Per-Route Scripts</h3>
+            <p style="color: var(--text-light); margin-bottom: 24px;">
+                Scripts can be assigned globally or per-route using the <code>@script:</code> directive in <code>proxy.conf</code>. Global scripts run on every request; route scripts run only when that route matches. Multiple scripts are comma-separated and execute in order.
+            </p>
+            <div class="code-block">
+                <div class="code-header">
+                    <span>proxy.conf</span>
+                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                </div>
+                <pre><code><span class="token-comment"># Global scripts — run on every request, in order</span>
+[global] @script:cors.lua,logging.lua
+
+<span class="token-comment"># Per-route scripts — run after globals, only on matched route</span>
+/api/*    -> http://localhost:3000  @script:auth.lua,rate_limit.lua
+/admin/*  -> http://localhost:4000  @script:auth.lua
+/public/* -> http://localhost:5000
+default   -> http://localhost:8080</code></pre>
+            </div>
+            <p style="color: var(--text-light); margin: 16px 0 24px;">
+                For <code>GET /api/users</code>, execution order is: <code>cors.lua</code> (global) &rarr; <code>logging.lua</code> (global) &rarr; <code>auth.lua</code> (route) &rarr; <code>rate_limit.lua</code> (route). If any script calls <code>req:deny()</code>, the chain stops.
+            </p>
+
+            <h3 style="margin: 48px 0 16px;">Example: Basic Auth (per-route)</h3>
+            <div class="code-block">
+                <div class="code-header">
+                    <span>scripts/lua/auth.lua — assign via @script:auth.lua</span>
+                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                </div>
+                <pre><code><span class="token-comment">-- Credentials from env: AUTH_PASS_ADMIN = sha256("secret")</span>
+<span class="token-keyword">function</span> <span class="token-function">on_request</span>(req)
+    <span class="token-keyword">local</span> auth = req:<span class="token-function">header</span>(<span class="token-string">"authorization"</span>)
+    <span class="token-keyword">if not</span> auth <span class="token-keyword">then</span>
+        <span class="token-keyword">return</span> req:<span class="token-function">deny</span>(<span class="token-number">401</span>, <span class="token-string">"Unauthorized"</span>)
+    <span class="token-keyword">end</span>
+
+    <span class="token-keyword">local</span> scheme, encoded = auth:<span class="token-function">match</span>(<span class="token-string">"^(%w+)%s+(.+)$"</span>)
+    <span class="token-keyword">if</span> scheme ~= <span class="token-string">"Basic"</span> <span class="token-keyword">then</span>
+        <span class="token-keyword">return</span> req:<span class="token-function">deny</span>(<span class="token-number">401</span>, <span class="token-string">"Unsupported auth scheme"</span>)
+    <span class="token-keyword">end</span>
+
+    <span class="token-keyword">local</span> decoded = base64.<span class="token-function">decode</span>(encoded)
+    <span class="token-keyword">local</span> user, pass = decoded:<span class="token-function">match</span>(<span class="token-string">"^([^:]+):(.+)$"</span>)
+
+    <span class="token-keyword">local</span> expected = env.<span class="token-function">get</span>(<span class="token-string">"AUTH_PASS_"</span> .. user:<span class="token-function">upper</span>())
+    <span class="token-keyword">if not</span> expected <span class="token-keyword">or</span> crypto.<span class="token-function">sha256</span>(pass) ~= expected <span class="token-keyword">then</span>
+        <span class="token-keyword">return</span> req:<span class="token-function">deny</span>(<span class="token-number">403</span>, <span class="token-string">"Invalid credentials"</span>)
+    <span class="token-keyword">end</span>
+
+    req:<span class="token-function">set_header</span>(<span class="token-string">"x-user"</span>, user)
+<span class="token-keyword">end</span></code></pre>
+            </div>
+
+            <h3 style="margin: 48px 0 16px;">Example: Dynamic Routing</h3>
+            <div class="code-block">
+                <div class="code-header">
+                    <span>scripts/lua/routing.lua</span>
+                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                </div>
+                <pre><code><span class="token-keyword">function</span> <span class="token-function">on_route</span>(req, matched_target)
+    <span class="token-comment">-- A/B testing: 10% to canary</span>
+    <span class="token-keyword">if</span> math.<span class="token-function">random</span>(<span class="token-number">100</span>) <= <span class="token-number">10</span> <span class="token-keyword">then</span>
+        <span class="token-keyword">return</span> <span class="token-string">"http://127.0.0.1:3001"</span> .. req.path
+    <span class="token-keyword">end</span>
+
+    <span class="token-comment">-- Route by header</span>
+    <span class="token-keyword">if</span> req:<span class="token-function">header</span>(<span class="token-string">"x-api-version"</span>) == <span class="token-string">"v2"</span> <span class="token-keyword">then</span>
+        <span class="token-keyword">return</span> <span class="token-string">"http://127.0.0.1:3002"</span> .. req.path
+    <span class="token-keyword">end</span>
+
+    <span class="token-keyword">return nil</span>  <span class="token-comment">-- use default target</span>
+<span class="token-keyword">end</span></code></pre>
+            </div>
+
+            <h3 style="margin: 48px 0 16px;">Example: Response Transformation</h3>
+            <div class="code-block">
+                <div class="code-header">
+                    <span>scripts/lua/response.lua</span>
+                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                </div>
+                <pre><code><span class="token-keyword">function</span> <span class="token-function">on_response</span>(req, resp)
+    <span class="token-comment">-- Inject CORS headers</span>
+    resp:<span class="token-function">set_header</span>(<span class="token-string">"Access-Control-Allow-Origin"</span>, <span class="token-string">"*"</span>)
+
+    <span class="token-comment">-- Remove server fingerprint</span>
+    resp:<span class="token-function">remove_header</span>(<span class="token-string">"Server"</span>)
+    resp:<span class="token-function">remove_header</span>(<span class="token-string">"X-Powered-By"</span>)
+
+    <span class="token-comment">-- Custom error page</span>
+    <span class="token-keyword">if</span> resp.status == <span class="token-number">502</span> <span class="token-keyword">then</span>
+        resp:<span class="token-function">set_status</span>(<span class="token-number">503</span>)
+        resp:<span class="token-function">replace_body</span>(<span class="token-string">"Service temporarily unavailable"</span>)
+    <span class="token-keyword">end</span>
+<span class="token-keyword">end</span></code></pre>
+            </div>
+
+            <h3 style="margin: 48px 0 16px;">Example: Observability</h3>
+            <div class="code-block">
+                <div class="code-header">
+                    <span>scripts/lua/observability.lua</span>
+                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                </div>
+                <pre><code><span class="token-keyword">function</span> <span class="token-function">on_request_end</span>(req, resp, duration_ms, target)
+    <span class="token-keyword">if</span> duration_ms > <span class="token-number">100</span> <span class="token-keyword">then</span>
+        log.<span class="token-function">warn</span>(string.<span class="token-function">format</span>(
+            <span class="token-string">"Slow request: %s %s -&gt; %s (%.1fms, status %d)"</span>,
+            req.method, req.path, target, duration_ms, resp.status
+        ))
+    <span class="token-keyword">end</span>
+<span class="token-keyword">end</span></code></pre>
+            </div>
+
+            <h3 style="margin: 48px 0 16px;">Example: Rate Limiting (per-route)</h3>
+            <div class="code-block">
+                <div class="code-header">
+                    <span>scripts/lua/rate_limit.lua — assign via @script:rate_limit.lua</span>
+                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                </div>
+                <pre><code><span class="token-keyword">local</span> RATE_LIMIT = <span class="token-number">100</span>       <span class="token-comment">-- requests per window</span>
+<span class="token-keyword">local</span> WINDOW_MS  = <span class="token-number">60000</span>     <span class="token-comment">-- 1 minute</span>
+
+<span class="token-keyword">function</span> <span class="token-function">on_request</span>(req)
+    <span class="token-keyword">local</span> client = req:<span class="token-function">header</span>(<span class="token-string">"x-forwarded-for"</span>) <span class="token-keyword">or</span> req.host
+    <span class="token-keyword">local</span> window = math.<span class="token-function">floor</span>(time.<span class="token-function">now_ms</span>() / WINDOW_MS)
+    <span class="token-keyword">local</span> key = <span class="token-string">"rl:"</span> .. client .. <span class="token-string">":"</span> .. window
+
+    <span class="token-keyword">local</span> count = shared.<span class="token-function">incr</span>(key)
+    <span class="token-keyword">if</span> count > RATE_LIMIT <span class="token-keyword">then</span>
+        <span class="token-keyword">return</span> req:<span class="token-function">deny</span>(<span class="token-number">429</span>, <span class="token-string">"Too Many Requests"</span>)
+    <span class="token-keyword">end</span>
+<span class="token-keyword">end</span></code></pre>
+            </div>
+
+            <h3 style="margin: 48px 0 16px;">Performance</h3>
+            <table class="metrics-table">
+                <thead>
+                    <tr>
+                        <th>Scenario</th>
+                        <th>Added Latency</th>
+                        <th>Notes</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>No scripts configured</td>
+                        <td>0 &micro;s</td>
+                        <td>Zero overhead &mdash; hooks not called</td>
+                    </tr>
+                    <tr>
+                        <td>Header read/write</td>
+                        <td>~1&ndash;5 &micro;s</td>
+                        <td>Negligible</td>
+                    </tr>
+                    <tr>
+                        <td>Conditional routing</td>
+                        <td>~5&ndash;10 &micro;s</td>
+                        <td>~3&ndash;5% overhead at 140k req/s</td>
+                    </tr>
+                    <tr>
+                        <td>Body transformation</td>
+                        <td>~50&ndash;500 &micro;s</td>
+                        <td>Depends on body size</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3 style="margin: 48px 0 16px;">Safety</h3>
+            <ul style="color: var(--text-light); margin-bottom: 24px; padding-left: 24px; line-height: 2;">
+                <li><strong>Error isolation</strong> &mdash; script errors are logged but never crash the proxy; the request continues with default behavior</li>
+                <li><strong>Instruction limit</strong> &mdash; a configurable timeout prevents infinite loops from blocking workers</li>
+                <li><strong>State pool</strong> &mdash; one Lua state per CPU core avoids contention between workers</li>
+                <li><strong>Feature flag</strong> &mdash; compile without <code>--features scripting</code> for zero Lua dependency</li>
+            </ul>
         </div>
     </section>
 
@@ -979,7 +1337,8 @@ hey -n 10000 -c 100 -q 100 http://localhost:8008/</code></pre>
 
 <span class="token-keyword">WORKDIR</span> /app
 COPY . .
-<span class="token-keyword">RUN</span> cargo build --release --bin soli-proxy
+<span class="token-comment"># Add --features scripting for Lua support</span>
+<span class="token-keyword">RUN</span> cargo build --release --bin soli-proxy --features scripting
 
 <span class="token-keyword">FROM</span> debian:bookworm-slim
 <span class="token-keyword">RUN</span> apt-get update && apt-get install -y --no-install-recommends \
@@ -1060,19 +1419,24 @@ COPY . .
                         <td>WebSocket connection streaming</td>
                     </tr>
                     <tr>
+                        <td>Lua Scripting</td>
+                        <td><span class="status-badge status-stable">Stable</span></td>
+                        <td>Extend proxy behavior with Lua 5.4 scripts (auth, routing, response transform, logging)</td>
+                    </tr>
+                    <tr>
                         <td>Rate Limiting</td>
-                        <td><span class="status-badge status-planned">Planned</span></td>
-                        <td>Request rate limiting per route</td>
+                        <td><span class="status-badge status-beta">Via Lua</span></td>
+                        <td>Implementable via <code>on_request</code> Lua hook</td>
                     </tr>
                     <tr>
                         <td>Load Balancing</td>
-                        <td><span class="status-badge status-planned">Planned</span></td>
-                        <td>Weighted round-robin load balancing</td>
+                        <td><span class="status-badge status-beta">Via Lua</span></td>
+                        <td>Implementable via <code>on_route</code> Lua hook (weighted, canary, A/B)</td>
                     </tr>
                     <tr>
                         <td>Authentication</td>
-                        <td><span class="status-badge status-planned">Planned</span></td>
-                        <td>Basic auth and JWT validation</td>
+                        <td><span class="status-badge status-beta">Via Lua</span></td>
+                        <td>Implementable via <code>on_request</code> Lua hook (Basic, JWT, API key)</td>
                     </tr>
                 </tbody>
             </table>

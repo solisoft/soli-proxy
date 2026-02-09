@@ -50,6 +50,17 @@ requests_per_second = 1000
 burst_size = 2000
 redis_url = "redis://localhost:6379"
 
+# Lua Scripting Configuration
+# When enabled, scripts are loaded from scripts_dir.
+# Scripts can be assigned globally or per-route in proxy.conf:
+#   [global] @script:cors.lua,logging.lua
+#   /api/* -> http://localhost:3000  @script:auth.lua,rate_limit.lua
+# Built-in modules: log, base64, crypto, env, time, shared
+[scripting]
+enabled = false
+scripts_dir = "./scripts/lua"
+hook_timeout_ms = 10  # Max execution time per hook call in milliseconds
+
 # Authentication Configuration
 [auth]
 enabled = false

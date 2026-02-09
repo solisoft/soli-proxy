@@ -13,6 +13,14 @@ pub struct TomlConfig {
     pub server: ServerConfig,
     pub tls: TlsConfig,
     pub letsencrypt: Option<LetsEncryptConfig>,
+    pub scripting: Option<ScriptingTomlConfig>,
+}
+
+#[derive(Deserialize, Clone, Debug, Default)]
+pub struct ScriptingTomlConfig {
+    pub enabled: bool,
+    pub scripts_dir: Option<String>,
+    pub hook_timeout_ms: Option<u64>,
 }
 
 #[derive(Deserialize, Default, Clone, Debug)]
@@ -39,14 +47,18 @@ pub struct Config {
     pub server: ServerConfig,
     pub tls: TlsConfig,
     pub letsencrypt: Option<LetsEncryptConfig>,
+    pub scripting: ScriptingTomlConfig,
     pub rules: Vec<ProxyRule>,
+    pub global_scripts: Vec<String>,
 }
+
 
 #[derive(Clone, Debug)]
 pub struct ProxyRule {
     pub matcher: RuleMatcher,
     pub targets: Vec<Target>,
     pub headers: Vec<HeaderRule>,
+    pub scripts: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -132,7 +144,7 @@ impl ConfigManager {
 
     fn load_config(proxy_conf_path: &Path, config_path: &Path) -> Result<Config> {
         let content = std::fs::read_to_string(proxy_conf_path)?;
-        let rules = parse_proxy_config(&content)?;
+        let (rules, global_scripts) = parse_proxy_config(&content)?;
         let toml_content = std::fs::read_to_string(
             config_path
                 .parent()
@@ -149,7 +161,9 @@ impl ConfigManager {
             server: toml_config.server,
             tls: toml_config.tls,
             letsencrypt: toml_config.letsencrypt,
+            scripting: toml_config.scripting.unwrap_or_default(),
             rules,
+            global_scripts,
         })
     }
 
@@ -196,8 +210,27 @@ impl ConfigManager {
     }
 }
 
-fn parse_proxy_config(content: &str) -> Result<Vec<ProxyRule>> {
+/// Extract `@script:a.lua,b.lua` from a string, returning (remaining_str, scripts_vec).
+fn extract_scripts(s: &str) -> (&str, Vec<String>) {
+    if let Some(idx) = s.find("@script:") {
+        let before = s[..idx].trim();
+        let after = &s[idx + "@script:".len()..];
+        // Scripts are comma-separated, ending at whitespace or end-of-string
+        let script_part = after.split_whitespace().next().unwrap_or(after);
+        let scripts: Vec<String> = script_part
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        (before, scripts)
+    } else {
+        (s, Vec::new())
+    }
+}
+
+fn parse_proxy_config(content: &str) -> Result<(Vec<ProxyRule>, Vec<String>)> {
     let mut rules = Vec::new();
+    let mut global_scripts = Vec::new();
 
     for line in content.lines() {
         let trimmed = line.trim();
@@ -205,9 +238,18 @@ fn parse_proxy_config(content: &str) -> Result<Vec<ProxyRule>> {
             continue;
         }
 
+        // Handle [global] @script:cors.lua,logging.lua
+        if trimmed.starts_with("[global]") {
+            let rest = trimmed.strip_prefix("[global]").unwrap().trim();
+            let (_, scripts) = extract_scripts(rest);
+            global_scripts.extend(scripts);
+            continue;
+        }
+
         if let Some((source, target_str)) = trimmed.split_once("->") {
             let source = source.trim();
-            let target_str = target_str.trim();
+            // Extract @script: from the target side
+            let (target_str, route_scripts) = extract_scripts(target_str.trim());
 
             let matcher = if source == "default" || source == "*" {
                 RuleMatcher::Default
@@ -250,11 +292,12 @@ fn parse_proxy_config(content: &str) -> Result<Vec<ProxyRule>> {
                 matcher,
                 targets,
                 headers: vec![],
+                scripts: route_scripts,
             });
         }
     }
 
-    Ok(rules)
+    Ok((rules, global_scripts))
 }
 
 use std::path::Path;

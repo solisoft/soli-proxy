@@ -1,9 +1,9 @@
-use std::collections::HashMap;
-use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::sync::RwLock;
 use std::time::Instant;
+
+/// Status code array size: covers HTTP codes 100-599
+const STATUS_ARRAY_SIZE: usize = 512;
 
 #[derive(Clone)]
 pub struct Metrics {
@@ -11,11 +11,16 @@ pub struct Metrics {
     requests_in_flight: Arc<AtomicUsize>,
     bytes_received: Arc<AtomicU64>,
     bytes_sent: Arc<AtomicU64>,
-    response_times: Arc<RwLock<VecDeque<std::time::Duration>>>,
-    status_codes: Arc<RwLock<HashMap<u16, Arc<AtomicU64>>>>,
+    // EWMA response time: store nanos sum and count for running average
+    response_time_nanos_sum: Arc<AtomicU64>,
+    response_time_count: Arc<AtomicU64>,
+    // Lock-free status code tracking: array indexed by (code - 100)
+    status_codes: Arc<[AtomicU64; STATUS_ARRAY_SIZE]>,
     tls_connections: Arc<AtomicU64>,
     errors_total: Arc<AtomicU64>,
-    last_request_time: Arc<RwLock<Option<Instant>>>,
+    // Nanos since epoch_start for last request time
+    last_request_nanos: Arc<AtomicU64>,
+    epoch_start: Instant,
 }
 
 impl Default for Metrics {
@@ -31,11 +36,13 @@ impl Metrics {
             requests_in_flight: Arc::new(AtomicUsize::new(0)),
             bytes_received: Arc::new(AtomicU64::new(0)),
             bytes_sent: Arc::new(AtomicU64::new(0)),
-            response_times: Arc::new(RwLock::new(VecDeque::with_capacity(1001))),
-            status_codes: Arc::new(RwLock::new(HashMap::new())),
+            response_time_nanos_sum: Arc::new(AtomicU64::new(0)),
+            response_time_count: Arc::new(AtomicU64::new(0)),
+            status_codes: Arc::new(std::array::from_fn(|_| AtomicU64::new(0))),
             tls_connections: Arc::new(AtomicU64::new(0)),
             errors_total: Arc::new(AtomicU64::new(0)),
-            last_request_time: Arc::new(RwLock::new(None)),
+            last_request_nanos: Arc::new(AtomicU64::new(0)),
+            epoch_start: Instant::now(),
         }
     }
 
@@ -50,26 +57,19 @@ impl Metrics {
         self.bytes_received.fetch_add(bytes_in, Ordering::Relaxed);
         self.bytes_sent.fetch_add(bytes_out, Ordering::Relaxed);
 
-        {
-            let mut times = self.response_times.write().unwrap();
-            times.push_back(duration);
-            if times.len() > 1000 {
-                times.pop_front();
-            }
+        // Lock-free EWMA: accumulate nanos sum and count
+        self.response_time_nanos_sum
+            .fetch_add(duration.as_nanos() as u64, Ordering::Relaxed);
+        self.response_time_count.fetch_add(1, Ordering::Relaxed);
+
+        // Lock-free status code: index by (code - 100), bounds-checked
+        if status >= 100 && (status as usize - 100) < STATUS_ARRAY_SIZE {
+            self.status_codes[status as usize - 100].fetch_add(1, Ordering::Relaxed);
         }
 
-        {
-            let mut codes = self.status_codes.write().unwrap();
-            codes
-                .entry(status)
-                .or_insert_with(|| Arc::new(AtomicU64::new(0)))
-                .fetch_add(1, Ordering::Relaxed);
-        }
-
-        {
-            let mut last = self.last_request_time.write().unwrap();
-            *last = Some(Instant::now());
-        }
+        // Lock-free last request time
+        let nanos = self.epoch_start.elapsed().as_nanos() as u64;
+        self.last_request_nanos.store(nanos, Ordering::Relaxed);
     }
 
     pub fn inc_in_flight(&self) {
@@ -97,23 +97,23 @@ impl Metrics {
         let errors = self.errors_total.load(Ordering::Relaxed);
 
         let avg_response_time = {
-            let times = self.response_times.read().unwrap();
-            if times.is_empty() {
+            let count = self.response_time_count.load(Ordering::Relaxed);
+            if count == 0 {
                 0.0
             } else {
-                times.iter().sum::<std::time::Duration>().as_secs_f64() / times.len() as f64
+                let sum = self.response_time_nanos_sum.load(Ordering::Relaxed);
+                (sum as f64) / (count as f64) / 1_000_000_000.0
             }
         };
 
-        let status_codes: Vec<(u16, u64)> = {
-            let codes = self.status_codes.read().unwrap();
-            codes
-                .iter()
-                .map(|(&k, v)| (k, v.load(Ordering::Relaxed)))
-                .collect()
-        };
-        let mut sorted: Vec<_> = status_codes;
-        sorted.sort_by_key(|&(k, _)| k);
+        // Collect non-zero status codes from the array
+        let mut status_entries: Vec<(u16, u64)> = Vec::new();
+        for i in 0..STATUS_ARRAY_SIZE {
+            let count = self.status_codes[i].load(Ordering::Relaxed);
+            if count > 0 {
+                status_entries.push(((i + 100) as u16, count));
+            }
+        }
 
         let mut output = String::new();
         output.push_str("# HELP proxy_requests_total Total number of HTTP requests\n");
@@ -151,7 +151,7 @@ impl Metrics {
 
         output.push_str("# HELP proxy_response_status_codes_total HTTP response status codes\n");
         output.push_str("# TYPE proxy_response_status_codes_total counter\n");
-        for (code, count) in sorted.iter() {
+        for (code, count) in status_entries.iter() {
             output.push_str(&format!(
                 "proxy_response_status_codes_total{{code=\"{}\"}} {}\n",
                 code, count
