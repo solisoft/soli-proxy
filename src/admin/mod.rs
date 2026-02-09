@@ -1,5 +1,6 @@
 pub mod handlers;
 
+use crate::circuit_breaker::SharedCircuitBreaker;
 use crate::config::ConfigManager;
 use crate::metrics::SharedMetrics;
 use anyhow::Result;
@@ -19,6 +20,7 @@ pub struct AdminState {
     pub config_manager: Arc<ConfigManager>,
     pub metrics: SharedMetrics,
     pub start_time: Instant,
+    pub circuit_breaker: SharedCircuitBreaker,
 }
 
 fn json_response(status: u16, body: serde_json::Value) -> Response<BoxBody> {
@@ -113,6 +115,10 @@ async fn handle_admin_request(
             Some(idx) => handlers::delete_route(&state, idx),
             None => error_response(400, "Invalid route index"),
         },
+
+        // Circuit breaker endpoints
+        (Method::GET, "/api/v1/circuit-breaker") => handlers::get_circuit_breaker(&state),
+        (Method::POST, "/api/v1/circuit-breaker/reset") => handlers::reset_circuit_breaker(&state),
 
         _ => error_response(404, "Not found"),
     };

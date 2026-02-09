@@ -20,6 +20,15 @@ pub struct TomlConfig {
     pub letsencrypt: Option<LetsEncryptConfig>,
     pub scripting: Option<ScriptingTomlConfig>,
     pub admin: Option<AdminConfig>,
+    pub circuit_breaker: Option<CircuitBreakerTomlConfig>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct CircuitBreakerTomlConfig {
+    pub failure_threshold: Option<u32>,
+    pub recovery_timeout_secs: Option<u64>,
+    pub success_threshold: Option<u32>,
+    pub failure_status_codes: Option<Vec<u16>>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -72,6 +81,7 @@ pub struct Config {
     pub letsencrypt: Option<LetsEncryptConfig>,
     pub scripting: ScriptingTomlConfig,
     pub admin: AdminConfig,
+    pub circuit_breaker: Option<CircuitBreakerTomlConfig>,
     pub rules: Vec<ProxyRule>,
     pub global_scripts: Vec<String>,
 }
@@ -317,6 +327,7 @@ impl ConfigManager {
             letsencrypt: toml_config.letsencrypt,
             scripting: toml_config.scripting.unwrap_or_default(),
             admin: toml_config.admin.unwrap_or_default(),
+            circuit_breaker: toml_config.circuit_breaker,
             rules,
             global_scripts,
         })

@@ -119,6 +119,22 @@ pub fn delete_route(state: &Arc<AdminState>, index: usize) -> Response<BoxBody> 
     }
 }
 
+pub fn get_circuit_breaker(state: &Arc<AdminState>) -> Response<BoxBody> {
+    let states = state.circuit_breaker.get_states();
+    match serde_json::to_value(states) {
+        Ok(val) => ok_response(val),
+        Err(e) => error_response(
+            500,
+            &format!("Failed to serialize circuit breaker state: {}", e),
+        ),
+    }
+}
+
+pub fn reset_circuit_breaker(state: &Arc<AdminState>) -> Response<BoxBody> {
+    state.circuit_breaker.reset();
+    ok_response(serde_json::json!({ "message": "Circuit breaker states reset" }))
+}
+
 pub fn put_config(state: &Arc<AdminState>, body: &str) -> Response<BoxBody> {
     #[derive(serde::Deserialize)]
     struct ConfigUpdate {

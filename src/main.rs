@@ -1,5 +1,6 @@
 use anyhow::Result;
 use soli_proxy::acme;
+use soli_proxy::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 use soli_proxy::new_challenge_store;
 use soli_proxy::new_metrics;
 use soli_proxy::AdminState;
@@ -125,6 +126,11 @@ async fn main() -> Result<()> {
     let metrics = new_metrics();
     let challenge_store = new_challenge_store();
 
+    // Create circuit breaker from config
+    let cb_config =
+        CircuitBreakerConfig::from_toml(config_ref.get_config().circuit_breaker.as_ref());
+    let circuit_breaker = Arc::new(CircuitBreaker::new(cb_config));
+
     // Initialize Lua scripting engine if feature is enabled and config says so
     #[cfg(feature = "scripting")]
     let lua_engine: Option<soli_proxy::LuaEngine> = {
@@ -226,6 +232,7 @@ async fn main() -> Result<()> {
                 metrics,
                 challenge_store.clone(),
                 lua_engine,
+                circuit_breaker.clone(),
             )?
         }
         None => {
@@ -236,6 +243,7 @@ async fn main() -> Result<()> {
                 metrics,
                 challenge_store.clone(),
                 lua_engine,
+                circuit_breaker.clone(),
             )?
         }
     };
@@ -324,6 +332,7 @@ async fn main() -> Result<()> {
             config_manager: config_ref.clone(),
             metrics: admin_metrics,
             start_time: Instant::now(),
+            circuit_breaker: circuit_breaker.clone(),
         });
         tokio::spawn(async move {
             if let Err(e) = soli_proxy::run_admin_server(admin_state).await {

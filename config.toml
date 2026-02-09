@@ -50,6 +50,15 @@ requests_per_second = 1000
 burst_size = 2000
 redis_url = "redis://localhost:6379"
 
+# Circuit Breaker Configuration
+# Tracks backend health and stops sending traffic to failing backends.
+# When all targets for a route are open, returns 503 Service Unavailable.
+[circuit_breaker]
+failure_threshold = 5               # consecutive failures before opening breaker
+recovery_timeout_secs = 30          # seconds before probing an open backend
+success_threshold = 2               # successful probes to close breaker
+failure_status_codes = [502, 503, 504]  # HTTP codes that count as failures
+
 # Admin REST API Configuration
 [admin]
 enabled = true

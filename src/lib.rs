@@ -1,5 +1,6 @@
 pub mod acme;
 pub mod admin;
+pub mod circuit_breaker;
 pub mod config;
 pub mod metrics;
 pub mod pool;

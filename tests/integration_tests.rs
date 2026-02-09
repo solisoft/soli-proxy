@@ -1009,6 +1009,7 @@ mod scripting_tests {
 mod admin_tests {
     use super::*;
     use soli_proxy::admin::{run_admin_server, AdminState};
+    use soli_proxy::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
     use soli_proxy::new_metrics;
     use std::sync::Arc;
     use std::time::Instant;
@@ -1034,6 +1035,7 @@ mod admin_tests {
             config_manager: config_ref.clone(),
             metrics: new_metrics(),
             start_time: Instant::now(),
+            circuit_breaker: Arc::new(CircuitBreaker::new(CircuitBreakerConfig::default())),
         });
 
         tokio::spawn(async move {
@@ -1294,6 +1296,7 @@ mod admin_tests {
             config_manager: config_ref,
             metrics: new_metrics(),
             start_time: Instant::now(),
+            circuit_breaker: Arc::new(CircuitBreaker::new(CircuitBreakerConfig::default())),
         });
         tokio::spawn(async move {
             let _ = run_admin_server(state).await;

@@ -2,6 +2,7 @@
 #![allow(clippy::let_unit_value, clippy::clone_on_copy, clippy::unit_arg)]
 
 use crate::acme::ChallengeStore;
+use crate::circuit_breaker::SharedCircuitBreaker;
 use crate::config::ConfigManager;
 use crate::metrics::SharedMetrics;
 use crate::shutdown::ShutdownCoordinator;
@@ -75,6 +76,7 @@ pub struct ProxyServer {
     metrics: SharedMetrics,
     challenge_store: ChallengeStore,
     lua_engine: OptionalLuaEngine,
+    circuit_breaker: SharedCircuitBreaker,
 }
 
 impl ProxyServer {
@@ -84,6 +86,7 @@ impl ProxyServer {
         metrics: SharedMetrics,
         challenge_store: ChallengeStore,
         lua_engine: OptionalLuaEngine,
+        circuit_breaker: SharedCircuitBreaker,
     ) -> Result<Self> {
         Ok(Self {
             config,
@@ -93,9 +96,11 @@ impl ProxyServer {
             metrics,
             challenge_store,
             lua_engine,
+            circuit_breaker,
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn with_https(
         config: Arc<ConfigManager>,
         shutdown: ShutdownCoordinator,
@@ -104,6 +109,7 @@ impl ProxyServer {
         metrics: SharedMetrics,
         challenge_store: ChallengeStore,
         lua_engine: OptionalLuaEngine,
+        circuit_breaker: SharedCircuitBreaker,
     ) -> Result<Self> {
         Ok(Self {
             config,
@@ -113,6 +119,7 @@ impl ProxyServer {
             metrics,
             challenge_store,
             lua_engine,
+            circuit_breaker,
         })
     }
 
@@ -134,6 +141,7 @@ impl ProxyServer {
             let metrics_clone = self.metrics.clone();
             let challenge_store_clone = self.challenge_store.clone();
             let lua_clone = self.lua_engine.clone();
+            let cb_clone = self.circuit_breaker.clone();
 
             tokio::spawn(async move {
                 if let Err(e) = run_http_server(
@@ -143,6 +151,7 @@ impl ProxyServer {
                     metrics_clone,
                     challenge_store_clone,
                     lua_clone,
+                    cb_clone,
                 )
                 .await
                 {
@@ -159,6 +168,7 @@ impl ProxyServer {
                 let metrics_clone = self.metrics.clone();
                 let challenge_store_clone = self.challenge_store.clone();
                 let lua_clone = self.lua_engine.clone();
+                let cb_clone = self.circuit_breaker.clone();
 
                 tokio::spawn(async move {
                     if let Err(e) = run_https_server(
@@ -169,6 +179,7 @@ impl ProxyServer {
                         metrics_clone,
                         challenge_store_clone,
                         lua_clone,
+                        cb_clone,
                     )
                     .await
                     {
@@ -210,6 +221,7 @@ async fn run_http_server(
     metrics: SharedMetrics,
     challenge_store: ChallengeStore,
     lua_engine: OptionalLuaEngine,
+    circuit_breaker: SharedCircuitBreaker,
 ) -> Result<()> {
     let listener = create_listener(addr)?;
     let client = create_client();
@@ -227,9 +239,10 @@ async fn run_http_server(
                 let metrics = metrics.clone();
                 let cs = challenge_store.clone();
                 let lua = lua_engine.clone();
+                let cb = circuit_breaker.clone();
                 tokio::spawn(async move {
                     if let Err(e) =
-                        handle_http11_connection(stream, client, config, metrics, cs, lua).await
+                        handle_http11_connection(stream, client, config, metrics, cs, lua, cb).await
                     {
                         tracing::debug!("HTTP/1.1 connection error: {}", e);
                     }
@@ -244,6 +257,7 @@ async fn run_http_server(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_https_server(
     addr: SocketAddr,
     config: Arc<ConfigManager>,
@@ -252,6 +266,7 @@ async fn run_https_server(
     metrics: SharedMetrics,
     challenge_store: ChallengeStore,
     lua_engine: OptionalLuaEngine,
+    circuit_breaker: SharedCircuitBreaker,
 ) -> Result<()> {
     let listener = create_listener(addr)?;
     let client = create_client();
@@ -270,12 +285,13 @@ async fn run_https_server(
                 let metrics = metrics.clone();
                 let cs = challenge_store.clone();
                 let lua = lua_engine.clone();
+                let cb = circuit_breaker.clone();
                 tokio::spawn(async move {
                     match acceptor.accept(stream).await {
                         Ok(tls_stream) => {
                             metrics.inc_tls_connections();
                             if let Err(e) = handle_https2_connection(
-                                tls_stream, client, config, metrics, cs, lua,
+                                tls_stream, client, config, metrics, cs, lua, cb,
                             )
                             .await
                             {
@@ -304,6 +320,7 @@ async fn handle_http11_connection(
     metrics: SharedMetrics,
     challenge_store: ChallengeStore,
     lua_engine: OptionalLuaEngine,
+    circuit_breaker: SharedCircuitBreaker,
 ) -> Result<()> {
     let io = TokioIo::new(stream);
     let svc = service_fn(move |req| {
@@ -314,6 +331,7 @@ async fn handle_http11_connection(
             metrics.clone(),
             challenge_store.clone(),
             lua_engine.clone(),
+            circuit_breaker.clone(),
         )
     });
 
@@ -336,6 +354,7 @@ async fn handle_https2_connection(
     metrics: SharedMetrics,
     challenge_store: ChallengeStore,
     lua_engine: OptionalLuaEngine,
+    circuit_breaker: SharedCircuitBreaker,
 ) -> Result<()> {
     let is_h2 = stream.get_ref().1.alpn_protocol() == Some(b"h2");
 
@@ -351,6 +370,7 @@ async fn handle_https2_connection(
                 metrics.clone(),
                 challenge_store.clone(),
                 lua_engine.clone(),
+                circuit_breaker.clone(),
             )
         });
         let conn = hyper::server::conn::http2::Builder::new(exec)
@@ -370,6 +390,7 @@ async fn handle_https2_connection(
                 metrics.clone(),
                 challenge_store.clone(),
                 lua_engine.clone(),
+                circuit_breaker.clone(),
             )
         });
         let conn = hyper::server::conn::http1::Builder::new()
@@ -447,6 +468,7 @@ async fn handle_request(
     metrics: SharedMetrics,
     challenge_store: ChallengeStore,
     lua_engine: OptionalLuaEngine,
+    circuit_breaker: SharedCircuitBreaker,
 ) -> Result<Response<BoxBody>, hyper::Error> {
     let start_time = std::time::Instant::now();
     metrics.inc_in_flight();
@@ -501,7 +523,7 @@ async fn handle_request(
         return handle_websocket_request(req, client, &config, &metrics, start_time).await;
     }
 
-    let result = handle_regular_request(req, client, &config, &lua_engine).await;
+    let result = handle_regular_request(req, client, &config, &lua_engine, &circuit_breaker).await;
     let duration = start_time.elapsed();
 
     metrics.dec_in_flight();
@@ -631,12 +653,36 @@ async fn handle_regular_request(
     client: ClientType,
     config: &crate::config::Config,
     lua_engine: &OptionalLuaEngine,
+    circuit_breaker: &SharedCircuitBreaker,
 ) -> Result<(Response<BoxBody>, String, Vec<String>), hyper::Error> {
-    let target_result = find_target(&req, &config.rules);
+    let route = find_matching_rule(&req, &config.rules);
 
-    match target_result {
+    match route {
         #[allow(unused_mut, unused_variables)]
-        Some((mut target_url, from_domain_rule, matched_prefix, route_scripts)) => {
+        Some(matched_route) => {
+            let path = req.uri().path().to_string();
+            let from_domain_rule = matched_route.from_domain_rule;
+            let matched_prefix = matched_route.matched_prefix();
+            let route_scripts = matched_route.route_scripts.clone();
+
+            // Select an available target via circuit breaker
+            let target_selection = select_target(&matched_route, &path, circuit_breaker);
+            let (mut target_url, base_url) = match target_selection {
+                Some((url, base)) => (url, base),
+                None => {
+                    // All targets are circuit-broken
+                    let body =
+                        http_body_util::Full::new(Bytes::from("Service Unavailable")).boxed();
+                    return Ok((
+                        Response::builder()
+                            .status(503)
+                            .body(body)
+                            .expect("Failed to build response"),
+                        String::new(),
+                        route_scripts,
+                    ));
+                }
+            };
             // --- Lua route-specific on_request hooks ---
             #[cfg(feature = "scripting")]
             if let Some(ref engine) = lua_engine {
@@ -713,6 +759,14 @@ async fn handle_regular_request(
 
             match client.request(request).await {
                 Ok(response) => {
+                    // --- Circuit breaker: record success or failure ---
+                    let status_code = response.status().as_u16();
+                    if circuit_breaker.is_failure_status(status_code) {
+                        circuit_breaker.record_failure(&base_url);
+                    } else {
+                        circuit_breaker.record_success(&base_url);
+                    }
+
                     // --- Lua on_response hooks (global + route) ---
                     #[cfg(feature = "scripting")]
                     if let Some(ref engine) = lua_engine {
@@ -863,6 +917,7 @@ async fn handle_regular_request(
                     ))
                 }
                 Err(e) => {
+                    circuit_breaker.record_failure(&base_url);
                     tracing::error!("Backend request failed: {} (target: {})", e, target_url);
                     let body = http_body_util::Full::new(Bytes::from("Bad Gateway")).boxed();
                     Ok((
@@ -892,11 +947,61 @@ async fn handle_regular_request(
     }
 }
 
-/// Returns (target_url, from_domain_rule, matched_prefix, route_scripts)
-fn find_target(
+/// How the target URL is resolved from the matched route
+enum UrlResolution {
+    /// Domain, Default: append full request path
+    AppendPath,
+    /// DomainPath, Prefix: strip prefix, append suffix
+    StripPrefix(String),
+    /// Exact, Regex: use target URL as-is
+    Identity,
+}
+
+/// A matched routing rule with all the info needed to resolve a target URL
+struct MatchedRoute<'a> {
+    targets: &'a [crate::config::Target],
+    from_domain_rule: bool,
+    resolution: UrlResolution,
+    route_scripts: Vec<String>,
+}
+
+impl<'a> MatchedRoute<'a> {
+    fn matched_prefix(&self) -> Option<String> {
+        match &self.resolution {
+            UrlResolution::StripPrefix(prefix) => Some(prefix.trim_end_matches('/').to_string()),
+            _ => None,
+        }
+    }
+}
+
+/// Resolve a target URL based on the resolution strategy
+fn resolve_target_url(
+    target: &crate::config::Target,
+    path: &str,
+    resolution: &UrlResolution,
+) -> String {
+    let target_str = target.url.as_str();
+    match resolution {
+        UrlResolution::AppendPath => {
+            if target_str.ends_with('/') {
+                format!("{}{}", target_str, &path[1..])
+            } else {
+                format!("{}{}", target_str, path)
+            }
+        }
+        UrlResolution::StripPrefix(prefix) => {
+            let suffix = &path[prefix.len()..];
+            format!("{}{}", target_str, suffix)
+        }
+        UrlResolution::Identity => target_str.to_owned(),
+    }
+}
+
+/// Pure routing: find which rule matches the request
+fn find_matching_rule<'a>(
     req: &Request<Incoming>,
-    rules: &[crate::config::ProxyRule],
-) -> Option<(String, bool, Option<String>, Vec<String>)> {
+    rules: &'a [crate::config::ProxyRule],
+) -> Option<MatchedRoute<'a>> {
     let host = req
         .uri()
         .host()
@@ -911,26 +1016,24 @@ fn find_target(
             crate::config::RuleMatcher::Domain(domain) => {
                 if domain == host {
                     matched_domain = true;
-                    if let Some(target) = rule.targets.first() {
-                        let target_str = target.url.as_str();
-                        let final_url = if target_str.ends_with('/') {
-                            format!("{}{}", target_str, &path[1..])
-                        } else {
-                            format!("{}{}", target_str, path)
-                        };
-                        return Some((final_url, true, None, rule.scripts.clone()));
+                    if !rule.targets.is_empty() {
+                        return Some(MatchedRoute {
+                            targets: &rule.targets,
+                            from_domain_rule: true,
+                            resolution: UrlResolution::AppendPath,
+                            route_scripts: rule.scripts.clone(),
+                        });
                     }
                 }
             }
             crate::config::RuleMatcher::DomainPath(domain, path_prefix) => {
-                if domain == host && path.starts_with(path_prefix) {
-                    if let Some(target) = rule.targets.first() {
-                        let target_str = target.url.as_str();
-                        let suffix = &path[path_prefix.len()..];
-                        let final_url = format!("{}{}", target_str, suffix);
-                        let prefix = path_prefix.trim_end_matches('/').to_string();
-                        return Some((final_url, true, Some(prefix), rule.scripts.clone()));
-                    }
+                if domain == host && path.starts_with(path_prefix) && !rule.targets.is_empty() {
+                    return Some(MatchedRoute {
+                        targets: &rule.targets,
+                        from_domain_rule: true,
+                        resolution: UrlResolution::StripPrefix(path_prefix.clone()),
+                        route_scripts: rule.scripts.clone(),
+                    });
                 }
             }
             _ => {}
@@ -945,43 +1048,33 @@ fn find_target(
     for rule in rules {
         match &rule.matcher {
             crate::config::RuleMatcher::Exact(exact) => {
-                if path == exact {
-                    if let Some(target) = rule.targets.first() {
-                        return Some((
-                            target.url.as_str().to_owned(),
-                            false,
-                            None,
-                            rule.scripts.clone(),
-                        ));
-                    }
+                if path == exact && !rule.targets.is_empty() {
+                    return Some(MatchedRoute {
+                        targets: &rule.targets,
+                        from_domain_rule: false,
+                        resolution: UrlResolution::Identity,
+                        route_scripts: rule.scripts.clone(),
+                    });
                 }
             }
             crate::config::RuleMatcher::Prefix(prefix) => {
-                if path.starts_with(prefix) {
-                    if let Some(target) = rule.targets.first() {
-                        let target_str = target.url.as_str();
-                        let suffix = &path[prefix.len()..];
-                        let final_url = format!("{}{}", target_str, suffix);
-                        let matched_prefix = prefix.trim_end_matches('/').to_string();
-                        return Some((
-                            final_url,
-                            false,
-                            Some(matched_prefix),
-                            rule.scripts.clone(),
-                        ));
-                    }
+                if path.starts_with(prefix) && !rule.targets.is_empty() {
+                    return Some(MatchedRoute {
+                        targets: &rule.targets,
+                        from_domain_rule: false,
+                        resolution: UrlResolution::StripPrefix(prefix.clone()),
+                        route_scripts: rule.scripts.clone(),
+                    });
                 }
             }
             crate::config::RuleMatcher::Regex(ref rm) => {
-                if rm.is_match(path) {
-                    if let Some(target) = rule.targets.first() {
-                        return Some((
-                            target.url.as_str().to_owned(),
-                            false,
-                            None,
-                            rule.scripts.clone(),
-                        ));
-                    }
+                if rm.is_match(path) && !rule.targets.is_empty() {
+                    return Some(MatchedRoute {
+                        targets: &rule.targets,
+                        from_domain_rule: false,
+                        resolution: UrlResolution::Identity,
+                        route_scripts: rule.scripts.clone(),
+                    });
                 }
             }
             _ => {}
@@ -991,17 +1084,51 @@ fn find_target(
     // Fall back to Default rule
     for rule in rules {
         if let crate::config::RuleMatcher::Default = &rule.matcher {
-            if let Some(target) = rule.targets.first() {
-                let target_str = target.url.as_str();
-                let final_url = if target_str.ends_with('/') {
-                    format!("{}{}", target_str, &path[1..])
-                } else {
-                    format!("{}{}", target_str, path)
-                };
-                return Some((final_url, false, None, rule.scripts.clone()));
+            if !rule.targets.is_empty() {
+                return Some(MatchedRoute {
+                    targets: &rule.targets,
+                    from_domain_rule: false,
+                    resolution: UrlResolution::AppendPath,
+                    route_scripts: rule.scripts.clone(),
+                });
             }
         }
     }
 
     None
+}
+
+/// Select the first available target (circuit breaker aware).
+/// Returns (resolved_url, base_url) for logging and circuit breaker tracking.
+fn select_target(
+    route: &MatchedRoute<'_>,
+    path: &str,
+    circuit_breaker: &crate::circuit_breaker::CircuitBreaker,
+) -> Option<(String, String)> {
+    for target in route.targets {
+        let base_url = target.url.as_str().to_owned();
+        if circuit_breaker.is_available(&base_url) {
+            let resolved = resolve_target_url(target, path, &route.resolution);
+            return Some((resolved, base_url));
+        }
+    }
+    None
+}
+
+/// Backward-compatible wrapper: returns (target_url, from_domain_rule, matched_prefix, route_scripts)
+fn find_target(
+    req: &Request<Incoming>,
+    rules: &[crate::config::ProxyRule],
+) -> Option<(String, bool, Option<String>, Vec<String>)> {
+    let route = find_matching_rule(req, rules)?;
+    let path = req.uri().path();
+    let target = route.targets.first()?;
+    let resolved = resolve_target_url(target, path, &route.resolution);
+    let matched_prefix = route.matched_prefix();
+    Some((
+        resolved,
+        route.from_domain_rule,
+        matched_prefix,
+        route.route_scripts,
+    ))
 }
