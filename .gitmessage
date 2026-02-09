@@ -1,0 +1,5 @@
+# Conventional Commits (semantic release)
+# Format: type(scope): description
+# Types: feat, fix, docs, style, refactor, perf, test, chore, ci, build
+#
+# Example: feat(proxy): add retry logic
