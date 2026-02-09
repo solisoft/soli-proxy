@@ -69,7 +69,11 @@ impl LuaEngine {
     ///
     /// `num_states` should match the number of worker threads.
     /// `hook_timeout` is the max execution time per hook call.
-    pub fn new(scripts_dir: &Path, num_states: usize, hook_timeout: Duration) -> anyhow::Result<Self> {
+    pub fn new(
+        scripts_dir: &Path,
+        num_states: usize,
+        hook_timeout: Duration,
+    ) -> anyhow::Result<Self> {
         let num_states = num_states.max(1);
         let shared_state: SharedState = Arc::new(std::sync::RwLock::new(HashMap::new()));
 
@@ -105,7 +109,10 @@ impl LuaEngine {
         let has_on_request = probe_lua.globals().get::<Function>("on_request").is_ok();
         let has_on_route = probe_lua.globals().get::<Function>("on_route").is_ok();
         let has_on_response = probe_lua.globals().get::<Function>("on_response").is_ok();
-        let has_on_request_end = probe_lua.globals().get::<Function>("on_request_end").is_ok();
+        let has_on_request_end = probe_lua
+            .globals()
+            .get::<Function>("on_request_end")
+            .is_ok();
 
         tracing::info!(
             "Lua hooks: on_request={}, on_route={}, on_response={}, on_request_end={}",
@@ -169,7 +176,10 @@ impl LuaEngine {
         let has_on_request = probe_lua.globals().get::<Function>("on_request").is_ok();
         let has_on_route = probe_lua.globals().get::<Function>("on_route").is_ok();
         let has_on_response = probe_lua.globals().get::<Function>("on_response").is_ok();
-        let has_on_request_end = probe_lua.globals().get::<Function>("on_request_end").is_ok();
+        let has_on_request_end = probe_lua
+            .globals()
+            .get::<Function>("on_request_end")
+            .is_ok();
 
         tracing::info!(
             "Global Lua hooks: on_request={}, on_route={}, on_response={}, on_request_end={}",
@@ -598,7 +608,12 @@ impl LuaEngine {
         }
     }
 
-    fn do_on_route(&self, lua: &Lua, req: &LuaRequest, matched_target: &str) -> LuaResult<RouteHookResult> {
+    fn do_on_route(
+        &self,
+        lua: &Lua,
+        req: &LuaRequest,
+        matched_target: &str,
+    ) -> LuaResult<RouteHookResult> {
         let func: Function = lua.globals().get("on_route")?;
         let req_table = self.lua_request_table(lua, req)?;
 
@@ -695,11 +710,13 @@ impl LuaEngine {
         let mods_ref = mods_table.clone();
         resp_table.set(
             "set_header",
-            lua.create_function(move |_lua, (_self_table, name, value): (Table, String, String)| {
-                let sh: Table = mods_ref.get("set_headers")?;
-                sh.set(name, value)?;
-                Ok(())
-            })?,
+            lua.create_function(
+                move |_lua, (_self_table, name, value): (Table, String, String)| {
+                    let sh: Table = mods_ref.get("set_headers")?;
+                    sh.set(name, value)?;
+                    Ok(())
+                },
+            )?,
         )?;
 
         let mods_ref = mods_table.clone();
@@ -857,10 +874,12 @@ impl LuaEngine {
         // Helper method: req:set_header("Name", "Value")
         table.set(
             "set_header",
-            lua.create_function(move |_lua, (_self_table, name, value): (Table, String, String)| {
-                headers_ref2.set(name.to_lowercase().as_str(), value.as_str())?;
-                Ok(())
-            })?,
+            lua.create_function(
+                move |_lua, (_self_table, name, value): (Table, String, String)| {
+                    headers_ref2.set(name.to_lowercase().as_str(), value.as_str())?;
+                    Ok(())
+                },
+            )?,
         )?;
 
         // Helper method: req:deny(status, body)
@@ -877,7 +896,12 @@ impl LuaEngine {
         Ok(table)
     }
 
-    fn read_back_request(&self, _lua: &Lua, req_table: &Table, req: &mut LuaRequest) -> LuaResult<()> {
+    fn read_back_request(
+        &self,
+        _lua: &Lua,
+        req_table: &Table,
+        req: &mut LuaRequest,
+    ) -> LuaResult<()> {
         // Read back modified headers
         if let Ok(headers_table) = req_table.get::<Table>("headers") {
             let mut new_headers = HashMap::new();

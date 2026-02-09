@@ -647,7 +647,8 @@ mod scripting_tests {
         }
 
         // With auth header → continue
-        let mut req = make_request_with_headers("GET", "/api/test", vec![("authorization", "Bearer tok")]);
+        let mut req =
+            make_request_with_headers("GET", "/api/test", vec![("authorization", "Bearer tok")]);
         let result = engine.call_route_on_request("auth.lua", &mut req);
         assert!(matches!(result, RequestHookResult::Continue(_)));
     }
@@ -656,14 +657,9 @@ mod scripting_tests {
     fn test_route_script_missing_script_continues() {
         let dir = tempdir().unwrap();
 
-        let engine = LuaEngine::with_route_scripts(
-            dir.path(),
-            1,
-            Duration::from_millis(100),
-            &[],
-            &[],
-        )
-        .unwrap();
+        let engine =
+            LuaEngine::with_route_scripts(dir.path(), 1, Duration::from_millis(100), &[], &[])
+                .unwrap();
 
         // Calling a non-existent route script should continue
         let mut req = make_request("GET", "/test");
@@ -978,14 +974,9 @@ mod scripting_tests {
         let bad_path = dir.path().join("nonexistent");
 
         // Should succeed with empty scripts
-        let engine = LuaEngine::with_route_scripts(
-            &bad_path,
-            1,
-            Duration::from_millis(100),
-            &[],
-            &[],
-        )
-        .unwrap();
+        let engine =
+            LuaEngine::with_route_scripts(&bad_path, 1, Duration::from_millis(100), &[], &[])
+                .unwrap();
 
         assert!(!engine.has_on_request());
     }

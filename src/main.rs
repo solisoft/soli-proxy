@@ -129,11 +129,13 @@ async fn main() -> Result<()> {
         let cfg = config_ref.get_config();
         if cfg.scripting.enabled {
             let scripts_dir = std::path::PathBuf::from(
-                cfg.scripting.scripts_dir.as_deref().unwrap_or("./scripts/lua"),
+                cfg.scripting
+                    .scripts_dir
+                    .as_deref()
+                    .unwrap_or("./scripts/lua"),
             );
-            let hook_timeout = std::time::Duration::from_millis(
-                cfg.scripting.hook_timeout_ms.unwrap_or(10),
-            );
+            let hook_timeout =
+                std::time::Duration::from_millis(cfg.scripting.hook_timeout_ms.unwrap_or(10));
             let num_states = std::thread::available_parallelism()
                 .map(|n| n.get())
                 .unwrap_or(4);

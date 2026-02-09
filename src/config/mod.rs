@@ -52,7 +52,6 @@ pub struct Config {
     pub global_scripts: Vec<String>,
 }
 
-
 #[derive(Clone, Debug)]
 pub struct ProxyRule {
     pub matcher: RuleMatcher,

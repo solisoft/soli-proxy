@@ -274,9 +274,10 @@ async fn run_https_server(
                     match acceptor.accept(stream).await {
                         Ok(tls_stream) => {
                             metrics.inc_tls_connections();
-                            if let Err(e) =
-                                handle_https2_connection(tls_stream, client, config, metrics, cs, lua)
-                                    .await
+                            if let Err(e) = handle_https2_connection(
+                                tls_stream, client, config, metrics, cs, lua,
+                            )
+                            .await
                             {
                                 tracing::debug!("HTTPS/2 connection error: {}", e);
                             }
@@ -480,10 +481,7 @@ async fn handle_request(
                     let duration = start_time.elapsed();
                     metrics.record_request(0, body.len() as u64, status, duration);
                     let resp_body = http_body_util::Full::new(Bytes::from(body)).boxed();
-                    return Ok(Response::builder()
-                        .status(status)
-                        .body(resp_body)
-                        .unwrap());
+                    return Ok(Response::builder().status(status).body(resp_body).unwrap());
                 }
                 RequestHookResult::Continue(updated_req) => {
                     // Apply any header modifications back to the hyper request
@@ -527,12 +525,7 @@ async fn handle_request(
 
                 // Global on_request_end
                 if engine.has_on_request_end() {
-                    engine.call_on_request_end(
-                        &lua_req,
-                        status,
-                        duration_ms,
-                        &_target_url,
-                    );
+                    engine.call_on_request_end(&lua_req, status, duration_ms, &_target_url);
                 }
 
                 // Route-specific on_request_end
@@ -651,13 +644,9 @@ async fn handle_regular_request(
                     let mut lua_req = build_lua_request(&req);
                     match engine.call_route_on_request(script_name, &mut lua_req) {
                         RequestHookResult::Deny { status, body } => {
-                            let resp_body =
-                                http_body_util::Full::new(Bytes::from(body)).boxed();
+                            let resp_body = http_body_util::Full::new(Bytes::from(body)).boxed();
                             return Ok((
-                                Response::builder()
-                                    .status(status)
-                                    .body(resp_body)
-                                    .unwrap(),
+                                Response::builder().status(status).body(resp_body).unwrap(),
                                 target_url,
                                 route_scripts.clone(),
                             ));
@@ -746,11 +735,18 @@ async fn handle_regular_request(
                             // Collect all mods: global first, then route scripts
                             let mut all_mods: Vec<ResponseMod> = Vec::new();
                             if has_global {
-                                all_mods.push(engine.call_on_response(&lua_req, resp_status, &resp_headers));
+                                all_mods.push(engine.call_on_response(
+                                    &lua_req,
+                                    resp_status,
+                                    &resp_headers,
+                                ));
                             }
                             for script_name in &route_scripts {
                                 all_mods.push(engine.call_route_on_response(
-                                    script_name, &lua_req, resp_status, &resp_headers,
+                                    script_name,
+                                    &lua_req,
+                                    resp_status,
+                                    &resp_headers,
                                 ));
                             }
 
@@ -781,7 +777,8 @@ async fn handle_regular_request(
                                 }
 
                                 for name in &merged.remove_headers {
-                                    if let Ok(header_name) = name.parse::<hyper::header::HeaderName>()
+                                    if let Ok(header_name) =
+                                        name.parse::<hyper::header::HeaderName>()
                                     {
                                         parts.headers.remove(header_name);
                                     }
@@ -849,13 +846,21 @@ async fn handle_regular_request(
                                 rewritten_bytes.len().to_string().parse().unwrap(),
                             );
                             let boxed = http_body_util::Full::new(rewritten_bytes).boxed();
-                            return Ok((Response::from_parts(parts, boxed), target_url, route_scripts.clone()));
+                            return Ok((
+                                Response::from_parts(parts, boxed),
+                                target_url,
+                                route_scripts.clone(),
+                            ));
                         }
                     }
 
                     let (parts, body) = response.into_parts();
                     let boxed = body.map_err(|_| unreachable!()).boxed();
-                    Ok((Response::from_parts(parts, boxed), target_url, route_scripts))
+                    Ok((
+                        Response::from_parts(parts, boxed),
+                        target_url,
+                        route_scripts,
+                    ))
                 }
                 Err(e) => {
                     tracing::error!("Backend request failed: {} (target: {})", e, target_url);
@@ -942,7 +947,12 @@ fn find_target(
             crate::config::RuleMatcher::Exact(exact) => {
                 if path == exact {
                     if let Some(target) = rule.targets.first() {
-                        return Some((target.url.as_str().to_owned(), false, None, rule.scripts.clone()));
+                        return Some((
+                            target.url.as_str().to_owned(),
+                            false,
+                            None,
+                            rule.scripts.clone(),
+                        ));
                     }
                 }
             }
@@ -953,14 +963,24 @@ fn find_target(
                         let suffix = &path[prefix.len()..];
                         let final_url = format!("{}{}", target_str, suffix);
                         let matched_prefix = prefix.trim_end_matches('/').to_string();
-                        return Some((final_url, false, Some(matched_prefix), rule.scripts.clone()));
+                        return Some((
+                            final_url,
+                            false,
+                            Some(matched_prefix),
+                            rule.scripts.clone(),
+                        ));
                     }
                 }
             }
             crate::config::RuleMatcher::Regex(regex) => {
                 if regex.is_match(path) {
                     if let Some(target) = rule.targets.first() {
-                        return Some((target.url.as_str().to_owned(), false, None, rule.scripts.clone()));
+                        return Some((
+                            target.url.as_str().to_owned(),
+                            false,
+                            None,
+                            rule.scripts.clone(),
+                        ));
                     }
                 }
             }
