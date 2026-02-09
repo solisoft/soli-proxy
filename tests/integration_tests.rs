@@ -1003,3 +1003,326 @@ mod scripting_tests {
         assert!(matches!(result, RequestHookResult::Continue(_)));
     }
 }
+
+// ---- Admin API tests ----
+
+mod admin_tests {
+    use super::*;
+    use soli_proxy::admin::{run_admin_server, AdminState};
+    use soli_proxy::new_metrics;
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    /// Helper: start an admin server on a random port and return (port, config_manager)
+    async fn start_admin(proxy_conf_content: &str) -> (u16, Arc<ConfigManager>) {
+        let temp_dir = tempdir().unwrap();
+        let config_path = temp_dir.path().join("proxy.conf");
+        let toml_path = temp_dir.path().join("config.toml");
+
+        std::fs::write(&config_path, proxy_conf_content).unwrap();
+        let port = portpicker::pick_unused_port().unwrap_or(19090);
+        std::fs::write(
+            &toml_path,
+            format!("[admin]\nenabled = true\nbind = \"127.0.0.1:{}\"\n", port),
+        )
+        .unwrap();
+
+        let manager = ConfigManager::new(config_path.to_str().unwrap()).unwrap();
+        let config_ref = Arc::new(manager);
+
+        let state = Arc::new(AdminState {
+            config_manager: config_ref.clone(),
+            metrics: new_metrics(),
+            start_time: Instant::now(),
+        });
+
+        tokio::spawn(async move {
+            let _ = run_admin_server(state).await;
+        });
+
+        // Wait for server to accept connections
+        wait_for_port(port).await;
+
+        // Keep temp_dir alive by leaking it (test-only)
+        std::mem::forget(temp_dir);
+
+        (port, config_ref)
+    }
+
+    async fn wait_for_port(port: u16) {
+        for _ in 0..50 {
+            if tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port))
+                .await
+                .is_ok()
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!(
+            "Admin server did not start on port {} within 1 second",
+            port
+        );
+    }
+
+    async fn get(port: u16, path: &str) -> (u16, String) {
+        let url = format!("http://127.0.0.1:{}{}", port, path);
+        let client = reqwest::Client::new();
+        let resp = client.get(&url).send().await.unwrap();
+        let status = resp.status().as_u16();
+        let body = resp.text().await.unwrap();
+        (status, body)
+    }
+
+    async fn post(port: u16, path: &str, body: &str) -> (u16, String) {
+        let url = format!("http://127.0.0.1:{}{}", port, path);
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .body(body.to_string())
+            .send()
+            .await
+            .unwrap();
+        let status = resp.status().as_u16();
+        let text = resp.text().await.unwrap();
+        (status, text)
+    }
+
+    async fn put(port: u16, path: &str, body: &str) -> (u16, String) {
+        let url = format!("http://127.0.0.1:{}{}", port, path);
+        let client = reqwest::Client::new();
+        let resp = client
+            .put(&url)
+            .header("Content-Type", "application/json")
+            .body(body.to_string())
+            .send()
+            .await
+            .unwrap();
+        let status = resp.status().as_u16();
+        let text = resp.text().await.unwrap();
+        (status, text)
+    }
+
+    async fn delete(port: u16, path: &str) -> u16 {
+        let url = format!("http://127.0.0.1:{}{}", port, path);
+        let client = reqwest::Client::new();
+        let resp = client.delete(&url).send().await.unwrap();
+        resp.status().as_u16()
+    }
+
+    #[tokio::test]
+    async fn test_admin_get_status() {
+        let (port, _mgr) = start_admin("default -> http://localhost:3000\n").await;
+
+        let (status, body) = get(port, "/api/v1/status").await;
+        assert_eq!(status, 200);
+
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["ok"], true);
+        assert!(json["data"]["version"].is_string());
+        assert_eq!(json["data"]["route_count"], 1);
+    }
+
+    #[tokio::test]
+    async fn test_admin_get_routes() {
+        let (port, _mgr) =
+            start_admin("default -> http://localhost:3000\n/api/* -> http://localhost:8888\n")
+                .await;
+
+        let (status, body) = get(port, "/api/v1/routes").await;
+        assert_eq!(status, 200);
+
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["ok"], true);
+        let routes = json["data"].as_array().unwrap();
+        assert_eq!(routes.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_admin_get_route_by_index() {
+        let (port, _mgr) =
+            start_admin("default -> http://localhost:3000\n/api/* -> http://localhost:8888\n")
+                .await;
+
+        let (status, body) = get(port, "/api/v1/routes/0").await;
+        assert_eq!(status, 200);
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["data"]["matcher"]["type"], "default");
+
+        let (status, body) = get(port, "/api/v1/routes/1").await;
+        assert_eq!(status, 200);
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["data"]["matcher"]["type"], "prefix");
+
+        // Out of range
+        let (status, _) = get(port, "/api/v1/routes/99").await;
+        assert_eq!(status, 404);
+    }
+
+    #[tokio::test]
+    async fn test_admin_get_config() {
+        let (port, _mgr) = start_admin("default -> http://localhost:3000\n").await;
+
+        let (status, body) = get(port, "/api/v1/config").await;
+        assert_eq!(status, 200);
+
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["ok"], true);
+        assert!(json["data"]["server"].is_object());
+        assert!(json["data"]["rules"].is_array());
+    }
+
+    #[tokio::test]
+    async fn test_admin_get_metrics() {
+        let (port, _mgr) = start_admin("default -> http://localhost:3000\n").await;
+
+        let (status, body) = get(port, "/api/v1/metrics").await;
+        assert_eq!(status, 200);
+        assert!(body.contains("proxy_requests_total"));
+    }
+
+    #[tokio::test]
+    async fn test_admin_post_reload() {
+        let (port, mgr) = start_admin("default -> http://localhost:3000\n").await;
+
+        assert_eq!(mgr.get_config().rules.len(), 1);
+
+        // Write a new config file
+        let config_path = mgr.config_path().to_path_buf();
+        std::fs::write(
+            &config_path,
+            "default -> http://localhost:4000\n/new/* -> http://localhost:5000\n",
+        )
+        .unwrap();
+
+        let (status, body) = post(port, "/api/v1/reload", "").await;
+        assert_eq!(status, 200);
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["ok"], true);
+
+        assert_eq!(mgr.get_config().rules.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_admin_post_route() {
+        let (port, mgr) = start_admin("default -> http://localhost:3000\n").await;
+        assert_eq!(mgr.get_config().rules.len(), 1);
+
+        let new_route = serde_json::json!({
+            "matcher": { "type": "prefix", "value": "/new/" },
+            "targets": [{ "url": "http://localhost:9999/", "weight": 100 }],
+            "headers": [],
+            "scripts": []
+        });
+
+        let (status, body) = post(port, "/api/v1/routes", &new_route.to_string()).await;
+        assert_eq!(status, 201);
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["ok"], true);
+
+        assert_eq!(mgr.get_config().rules.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_admin_put_route() {
+        let (port, mgr) =
+            start_admin("default -> http://localhost:3000\n/api/* -> http://localhost:8888\n")
+                .await;
+
+        let updated_route = serde_json::json!({
+            "matcher": { "type": "prefix", "value": "/api/v2/" },
+            "targets": [{ "url": "http://localhost:7777/", "weight": 100 }],
+            "headers": [],
+            "scripts": []
+        });
+
+        let (status, _) = put(port, "/api/v1/routes/1", &updated_route.to_string()).await;
+        assert_eq!(status, 200);
+
+        let cfg = mgr.get_config();
+        assert_eq!(cfg.rules.len(), 2);
+        match &cfg.rules[1].matcher {
+            RuleMatcher::Prefix(p) => assert_eq!(p, "/api/v2/"),
+            _ => panic!("Expected Prefix matcher"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_admin_delete_route() {
+        let (port, mgr) =
+            start_admin("default -> http://localhost:3000\n/api/* -> http://localhost:8888\n")
+                .await;
+        assert_eq!(mgr.get_config().rules.len(), 2);
+
+        let status = delete(port, "/api/v1/routes/1").await;
+        assert_eq!(status, 204);
+
+        assert_eq!(mgr.get_config().rules.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_admin_not_found() {
+        let (port, _mgr) = start_admin("default -> http://localhost:3000\n").await;
+
+        let (status, body) = get(port, "/nonexistent").await;
+        assert_eq!(status, 404);
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["ok"], false);
+    }
+
+    #[tokio::test]
+    async fn test_admin_auth_required() {
+        let temp_dir = tempdir().unwrap();
+        let config_path = temp_dir.path().join("proxy.conf");
+        let toml_path = temp_dir.path().join("config.toml");
+
+        std::fs::write(&config_path, "default -> http://localhost:3000\n").unwrap();
+        let port = portpicker::pick_unused_port().unwrap_or(19091);
+        std::fs::write(
+            &toml_path,
+            format!(
+                "[admin]\nenabled = true\nbind = \"127.0.0.1:{}\"\napi_key = \"secret123\"\n",
+                port
+            ),
+        )
+        .unwrap();
+
+        let manager = ConfigManager::new(config_path.to_str().unwrap()).unwrap();
+        let config_ref = Arc::new(manager);
+        let state = Arc::new(AdminState {
+            config_manager: config_ref,
+            metrics: new_metrics(),
+            start_time: Instant::now(),
+        });
+        tokio::spawn(async move {
+            let _ = run_admin_server(state).await;
+        });
+        wait_for_port(port).await;
+        std::mem::forget(temp_dir);
+
+        // No auth header → 401
+        let (status, _) = get(port, "/api/v1/status").await;
+        assert_eq!(status, 401);
+
+        // With correct auth header → 200
+        let url = format!("http://127.0.0.1:{}/api/v1/status", port);
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(&url)
+            .header("X-Api-Key", "secret123")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+
+        // Wrong key → 401
+        let resp = client
+            .get(&url)
+            .header("X-Api-Key", "wrong")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 401);
+    }
+}

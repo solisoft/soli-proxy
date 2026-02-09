@@ -1,58 +1,82 @@
+pub mod serializer;
+
 use anyhow::Result;
 use arc_swap::ArcSwap;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use url::Url;
 
 #[derive(Deserialize, Default, Clone, Debug)]
 pub struct TomlConfig {
+    #[serde(default)]
     pub server: ServerConfig,
+    #[serde(default)]
     pub tls: TlsConfig,
     pub letsencrypt: Option<LetsEncryptConfig>,
     pub scripting: Option<ScriptingTomlConfig>,
+    pub admin: Option<AdminConfig>,
 }
 
-#[derive(Deserialize, Clone, Debug, Default)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct AdminConfig {
+    pub enabled: bool,
+    pub bind: String,
+    pub api_key: Option<String>,
+}
+
+impl Default for AdminConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind: "127.0.0.1:9090".to_string(),
+            api_key: None,
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct ScriptingTomlConfig {
     pub enabled: bool,
     pub scripts_dir: Option<String>,
     pub hook_timeout_ms: Option<u64>,
 }
 
-#[derive(Deserialize, Default, Clone, Debug)]
+#[derive(Deserialize, Serialize, Default, Clone, Debug)]
 pub struct ServerConfig {
     pub bind: String,
     pub https_port: u16,
 }
 
-#[derive(Deserialize, Default, Clone, Debug)]
+#[derive(Deserialize, Serialize, Default, Clone, Debug)]
 pub struct TlsConfig {
     pub mode: String,
     pub cache_dir: String,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct LetsEncryptConfig {
     pub staging: bool,
     pub email: String,
     pub terms_agreed: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Config {
     pub server: ServerConfig,
     pub tls: TlsConfig,
     pub letsencrypt: Option<LetsEncryptConfig>,
     pub scripting: ScriptingTomlConfig,
+    pub admin: AdminConfig,
     pub rules: Vec<ProxyRule>,
     pub global_scripts: Vec<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProxyRule {
     pub matcher: RuleMatcher,
     pub targets: Vec<Target>,
@@ -64,19 +88,139 @@ pub struct ProxyRule {
 pub enum RuleMatcher {
     Default,
     Prefix(String),
-    Regex(Regex),
+    Regex(RegexMatcher),
     Exact(String),
     Domain(String),
     DomainPath(String, String),
 }
 
+/// Wrapper around Regex that stores the original pattern for serialization
 #[derive(Clone, Debug)]
+pub struct RegexMatcher {
+    pub pattern: String,
+    pub regex: Regex,
+}
+
+impl RegexMatcher {
+    pub fn new(pattern: &str) -> Result<Self> {
+        Ok(Self {
+            pattern: pattern.to_string(),
+            regex: Regex::new(pattern)?,
+        })
+    }
+
+    pub fn is_match(&self, text: &str) -> bool {
+        self.regex.is_match(text)
+    }
+}
+
+impl Serialize for RuleMatcher {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(2))?;
+        match self {
+            RuleMatcher::Default => {
+                map.serialize_entry("type", "default")?;
+            }
+            RuleMatcher::Prefix(v) => {
+                map.serialize_entry("type", "prefix")?;
+                map.serialize_entry("value", v)?;
+            }
+            RuleMatcher::Regex(rm) => {
+                map.serialize_entry("type", "regex")?;
+                map.serialize_entry("value", &rm.pattern)?;
+            }
+            RuleMatcher::Exact(v) => {
+                map.serialize_entry("type", "exact")?;
+                map.serialize_entry("value", v)?;
+            }
+            RuleMatcher::Domain(v) => {
+                map.serialize_entry("type", "domain")?;
+                map.serialize_entry("value", v)?;
+            }
+            RuleMatcher::DomainPath(d, p) => {
+                map.serialize_entry("type", "domain_path")?;
+                map.serialize_entry("domain", d)?;
+                map.serialize_entry("path", p)?;
+            }
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for RuleMatcher {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+        let value: serde_json::Value = Deserialize::deserialize(deserializer)?;
+        let obj = value
+            .as_object()
+            .ok_or_else(|| D::Error::custom("expected object"))?;
+        let matcher_type = obj
+            .get("type")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| D::Error::custom("missing 'type' field"))?;
+
+        match matcher_type {
+            "default" => Ok(RuleMatcher::Default),
+            "exact" => {
+                let v = obj
+                    .get("value")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| D::Error::custom("missing 'value'"))?;
+                Ok(RuleMatcher::Exact(v.to_string()))
+            }
+            "prefix" => {
+                let v = obj
+                    .get("value")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| D::Error::custom("missing 'value'"))?;
+                Ok(RuleMatcher::Prefix(v.to_string()))
+            }
+            "regex" => {
+                let v = obj
+                    .get("value")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| D::Error::custom("missing 'value'"))?;
+                let rm = RegexMatcher::new(v)
+                    .map_err(|e| D::Error::custom(format!("invalid regex: {}", e)))?;
+                Ok(RuleMatcher::Regex(rm))
+            }
+            "domain" => {
+                let v = obj
+                    .get("value")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| D::Error::custom("missing 'value'"))?;
+                Ok(RuleMatcher::Domain(v.to_string()))
+            }
+            "domain_path" => {
+                let d = obj
+                    .get("domain")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| D::Error::custom("missing 'domain'"))?;
+                let p = obj
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| D::Error::custom("missing 'path'"))?;
+                Ok(RuleMatcher::DomainPath(d.to_string(), p.to_string()))
+            }
+            other => Err(D::Error::custom(format!("unknown matcher type: {}", other))),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Target {
     pub url: Url,
     pub weight: u8,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HeaderRule {
     pub name: String,
     pub value: String,
@@ -114,6 +258,7 @@ pub struct ConfigManager {
     config: ArcSwap<Config>,
     config_path: PathBuf,
     _watcher: Option<RecommendedWatcher>,
+    suppress_watch: Arc<AtomicBool>,
 }
 
 impl Clone for ConfigManager {
@@ -122,6 +267,7 @@ impl Clone for ConfigManager {
             config: ArcSwap::new(self.config.load().clone()),
             config_path: self.config_path.clone(),
             _watcher: None,
+            suppress_watch: self.suppress_watch.clone(),
         }
     }
 }
@@ -138,7 +284,16 @@ impl ConfigManager {
             config: ArcSwap::new(Arc::new(config)),
             config_path: path,
             _watcher: None,
+            suppress_watch: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    pub fn config_path(&self) -> &Path {
+        &self.config_path
+    }
+
+    pub fn suppress_watch(&self) -> &Arc<AtomicBool> {
+        &self.suppress_watch
     }
 
     fn load_config(proxy_conf_path: &Path, config_path: &Path) -> Result<Config> {
@@ -161,6 +316,7 @@ impl ConfigManager {
             tls: toml_config.tls,
             letsencrypt: toml_config.letsencrypt,
             scripting: toml_config.scripting.unwrap_or_default(),
+            admin: toml_config.admin.unwrap_or_default(),
             rules,
             global_scripts,
         })
@@ -173,6 +329,7 @@ impl ConfigManager {
     pub fn start_watcher(&self) -> Result<()> {
         let (tx, mut rx) = mpsc::channel(1);
         let config_path = self.config_path.clone();
+        let suppress = self.suppress_watch.clone();
 
         let mut watcher = RecommendedWatcher::new(
             move |res| {
@@ -190,6 +347,12 @@ impl ConfigManager {
                 match res {
                     Ok(event) => {
                         if event.kind.is_modify() {
+                            if suppress.swap(false, Ordering::SeqCst) {
+                                tracing::debug!(
+                                    "Suppressing file watcher reload (admin API write)"
+                                );
+                                continue;
+                            }
                             tracing::info!("Config file changed, reloading...");
                         }
                     }
@@ -206,6 +369,58 @@ impl ConfigManager {
         self.config.store(Arc::new(new_config));
         tracing::info!("Configuration reloaded successfully");
         Ok(())
+    }
+
+    /// Persist current rules to proxy.conf and swap in-memory config
+    fn persist_rules(&self, rules: Vec<ProxyRule>, global_scripts: Vec<String>) -> Result<()> {
+        let content = serializer::serialize_proxy_conf(&rules, &global_scripts);
+        self.suppress_watch.store(true, Ordering::SeqCst);
+        std::fs::write(&self.config_path, &content)?;
+        let mut config = (*self.config.load().as_ref()).clone();
+        config.rules = rules;
+        config.global_scripts = global_scripts;
+        self.config.store(Arc::new(config));
+        tracing::info!("Configuration persisted to {}", self.config_path.display());
+        Ok(())
+    }
+
+    pub fn add_route(&self, rule: ProxyRule) -> Result<()> {
+        let cfg = self.get_config();
+        let mut rules = cfg.rules.clone();
+        rules.push(rule);
+        self.persist_rules(rules, cfg.global_scripts.clone())
+    }
+
+    pub fn update_route(&self, index: usize, rule: ProxyRule) -> Result<()> {
+        let cfg = self.get_config();
+        let mut rules = cfg.rules.clone();
+        if index >= rules.len() {
+            anyhow::bail!(
+                "Route index {} out of range (have {} routes)",
+                index,
+                rules.len()
+            );
+        }
+        rules[index] = rule;
+        self.persist_rules(rules, cfg.global_scripts.clone())
+    }
+
+    pub fn remove_route(&self, index: usize) -> Result<()> {
+        let cfg = self.get_config();
+        let mut rules = cfg.rules.clone();
+        if index >= rules.len() {
+            anyhow::bail!(
+                "Route index {} out of range (have {} routes)",
+                index,
+                rules.len()
+            );
+        }
+        rules.remove(index);
+        self.persist_rules(rules, cfg.global_scripts.clone())
+    }
+
+    pub fn update_rules(&self, rules: Vec<ProxyRule>, global_scripts: Vec<String>) -> Result<()> {
+        self.persist_rules(rules, global_scripts)
     }
 }
 
@@ -253,7 +468,7 @@ fn parse_proxy_config(content: &str) -> Result<(Vec<ProxyRule>, Vec<String>)> {
             let matcher = if source == "default" || source == "*" {
                 RuleMatcher::Default
             } else if let Some(pattern) = source.strip_prefix("~") {
-                RuleMatcher::Regex(Regex::new(pattern)?)
+                RuleMatcher::Regex(RegexMatcher::new(pattern)?)
             } else if !source.starts_with('/')
                 && (source.contains('.') || source.parse::<std::net::IpAddr>().is_ok())
             {

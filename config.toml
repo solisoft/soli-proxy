@@ -50,6 +50,12 @@ requests_per_second = 1000
 burst_size = 2000
 redis_url = "redis://localhost:6379"
 
+# Admin REST API Configuration
+[admin]
+enabled = true
+bind = "127.0.0.1:9090"
+# api_key = "your-secret-key"
+
 # Lua Scripting Configuration
 # When enabled, scripts are loaded from scripts_dir.
 # Scripts can be assigned globally or per-route in proxy.conf:

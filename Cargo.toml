@@ -35,7 +35,7 @@ serde_json = "1.0"
 base64 = "0.22"
 sha2 = "0.10"
 hmac = { version = "0.12", optional = true }
-url = "2.5"
+url = { version = "2.5", features = ["serde"] }
 arc-swap = "1.7"
 tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
 futures-util = "0.3"
@@ -55,6 +55,8 @@ scripting = ["mlua", "hmac"]
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3"
+reqwest = "0.12"
+portpicker = "0.1"
 
 [profile.release]
 lto = true

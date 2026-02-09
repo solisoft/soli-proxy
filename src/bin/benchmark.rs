@@ -75,7 +75,10 @@ fn parse_proxy_config(content: &str) -> Result<Vec<soli_proxy::config::ProxyRule
             let matcher = if source == "default" || source == "*" {
                 RuleMatcher::Default
             } else if let Some(pattern) = source.strip_prefix("~") {
-                RuleMatcher::Regex(regex::Regex::new(pattern)?)
+                RuleMatcher::Regex(
+                    soli_proxy::config::RegexMatcher::new(pattern)
+                        .map_err(|_| regex::Error::Syntax("bad regex".to_string()))?,
+                )
             } else if !source.starts_with('/')
                 && (source.contains('.') || source.parse::<std::net::IpAddr>().is_ok())
             {
@@ -181,8 +184,8 @@ fn find_target(
                     }
                 }
             }
-            RuleMatcher::Regex(regex) => {
-                if regex.is_match(path) {
+            RuleMatcher::Regex(ref rm) => {
+                if rm.is_match(path) {
                     if let Some(target) = rule.targets.first() {
                         return Some((target.url.to_string(), false));
                     }

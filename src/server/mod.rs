@@ -972,8 +972,8 @@ fn find_target(
                     }
                 }
             }
-            crate::config::RuleMatcher::Regex(regex) => {
-                if regex.is_match(path) {
+            crate::config::RuleMatcher::Regex(ref rm) => {
+                if rm.is_match(path) {
                     if let Some(target) = rule.targets.first() {
                         return Some((
                             target.url.as_str().to_owned(),

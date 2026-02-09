@@ -2,6 +2,7 @@ use anyhow::Result;
 use soli_proxy::acme;
 use soli_proxy::new_challenge_store;
 use soli_proxy::new_metrics;
+use soli_proxy::AdminState;
 use soli_proxy::ConfigManager;
 use soli_proxy::ProxyServer;
 use soli_proxy::ShutdownCoordinator;
@@ -9,6 +10,7 @@ use soli_proxy::TlsManager;
 use std::fs;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::signal;
 use tokio_rustls::TlsAcceptor;
 
@@ -209,6 +211,8 @@ async fn main() -> Result<()> {
     // Build the TLS ServerConfig with the cert resolver
     tls_manager.build()?;
 
+    let admin_metrics = metrics.clone();
+
     let server = match tls_manager.server_config() {
         Some(config) => {
             let https_addr: SocketAddr = format!("0.0.0.0:{}", cfg.server.https_port).parse()?;
@@ -312,6 +316,20 @@ async fn main() -> Result<()> {
         } else {
             tracing::warn!("TLS mode is 'letsencrypt' but [letsencrypt] config section is missing");
         }
+    }
+
+    // Spawn admin API server if enabled
+    if cfg.admin.enabled {
+        let admin_state = Arc::new(AdminState {
+            config_manager: config_ref.clone(),
+            metrics: admin_metrics,
+            start_time: Instant::now(),
+        });
+        tokio::spawn(async move {
+            if let Err(e) = soli_proxy::run_admin_server(admin_state).await {
+                tracing::error!("Admin server error: {}", e);
+            }
+        });
     }
 
     tokio::spawn(async move {
