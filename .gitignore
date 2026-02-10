@@ -3,3 +3,4 @@ target
 sites/*
 !sites/_admin
 proxy.conf
+run
