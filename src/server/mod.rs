@@ -2,6 +2,7 @@
 #![allow(clippy::let_unit_value, clippy::clone_on_copy, clippy::unit_arg)]
 
 use crate::acme::ChallengeStore;
+use crate::app::AppManager;
 use crate::circuit_breaker::SharedCircuitBreaker;
 use crate::config::ConfigManager;
 use crate::metrics::SharedMetrics;
@@ -36,6 +37,27 @@ type BoxBody = http_body_util::combinators::BoxBody<Bytes, std::convert::Infalli
 type OptionalLuaEngine = Option<LuaEngine>;
 #[cfg(not(feature = "scripting"))]
 type OptionalLuaEngine = ();
+
+/// Helper to record app-specific metrics
+fn record_app_metrics(
+    metrics: &SharedMetrics,
+    app_manager: &Option<Arc<AppManager>>,
+    target_url: &str,
+    bytes_in: u64,
+    bytes_out: u64,
+    status: u16,
+    duration: Duration,
+) {
+    if let Some(ref manager) = app_manager {
+        if let Ok(url) = url::Url::parse(target_url) {
+            if let Some(port) = url.port() {
+                if let Some(app_name) = futures::executor::block_on(manager.get_app_name(port)) {
+                    metrics.record_app_request(&app_name, bytes_in, bytes_out, status, duration);
+                }
+            }
+        }
+    }
+}
 
 /// Pre-parsed header value for X-Forwarded-For to avoid parsing on every request
 static X_FORWARDED_FOR_VALUE: std::sync::LazyLock<HeaderValue> =
@@ -78,6 +100,7 @@ pub struct ProxyServer {
     challenge_store: ChallengeStore,
     lua_engine: OptionalLuaEngine,
     circuit_breaker: SharedCircuitBreaker,
+    app_manager: Option<Arc<AppManager>>,
 }
 
 impl ProxyServer {
@@ -88,6 +111,7 @@ impl ProxyServer {
         challenge_store: ChallengeStore,
         lua_engine: OptionalLuaEngine,
         circuit_breaker: SharedCircuitBreaker,
+        app_manager: Option<Arc<AppManager>>,
     ) -> Result<Self> {
         Ok(Self {
             config,
@@ -98,6 +122,7 @@ impl ProxyServer {
             challenge_store,
             lua_engine,
             circuit_breaker,
+            app_manager,
         })
     }
 
@@ -111,6 +136,7 @@ impl ProxyServer {
         challenge_store: ChallengeStore,
         lua_engine: OptionalLuaEngine,
         circuit_breaker: SharedCircuitBreaker,
+        app_manager: Option<Arc<AppManager>>,
     ) -> Result<Self> {
         Ok(Self {
             config,
@@ -121,6 +147,7 @@ impl ProxyServer {
             challenge_store,
             lua_engine,
             circuit_breaker,
+            app_manager,
         })
     }
 
@@ -136,6 +163,7 @@ impl ProxyServer {
 
         // Spawn N HTTP accept loops with SO_REUSEPORT
         // Each listener gets its own client with its own connection pool to avoid contention
+        let app_manager = self.app_manager.clone();
         for i in 0..num_listeners {
             let config_clone = self.config.clone();
             let shutdown_clone = self.shutdown.clone();
@@ -143,6 +171,7 @@ impl ProxyServer {
             let challenge_store_clone = self.challenge_store.clone();
             let lua_clone = self.lua_engine.clone();
             let cb_clone = self.circuit_breaker.clone();
+            let am_clone = app_manager.clone();
 
             tokio::spawn(async move {
                 if let Err(e) = run_http_server(
@@ -153,6 +182,7 @@ impl ProxyServer {
                     challenge_store_clone,
                     lua_clone,
                     cb_clone,
+                    am_clone,
                 )
                 .await
                 {
@@ -170,6 +200,7 @@ impl ProxyServer {
                 let challenge_store_clone = self.challenge_store.clone();
                 let lua_clone = self.lua_engine.clone();
                 let cb_clone = self.circuit_breaker.clone();
+                let am_clone = app_manager.clone();
 
                 tokio::spawn(async move {
                     if let Err(e) = run_https_server(
@@ -181,6 +212,7 @@ impl ProxyServer {
                         challenge_store_clone,
                         lua_clone,
                         cb_clone,
+                        am_clone,
                     )
                     .await
                     {
@@ -223,6 +255,7 @@ async fn run_http_server(
     challenge_store: ChallengeStore,
     lua_engine: OptionalLuaEngine,
     circuit_breaker: SharedCircuitBreaker,
+    app_manager: Option<Arc<AppManager>>,
 ) -> Result<()> {
     let listener = create_listener(addr)?;
     let client = create_client();
@@ -236,14 +269,16 @@ async fn run_http_server(
             Ok((stream, _)) => {
                 let _ = stream.set_nodelay(true);
                 let client = client.clone();
-                let config = config.get_config();
+                let config = config.clone();
                 let metrics = metrics.clone();
                 let cs = challenge_store.clone();
                 let lua = lua_engine.clone();
                 let cb = circuit_breaker.clone();
+                let am = app_manager.clone();
                 tokio::spawn(async move {
                     if let Err(e) =
-                        handle_http11_connection(stream, client, config, metrics, cs, lua, cb).await
+                        handle_http11_connection(stream, client, config, metrics, cs, lua, cb, am)
+                            .await
                     {
                         tracing::debug!("HTTP/1.1 connection error: {}", e);
                     }
@@ -268,6 +303,7 @@ async fn run_https_server(
     challenge_store: ChallengeStore,
     lua_engine: OptionalLuaEngine,
     circuit_breaker: SharedCircuitBreaker,
+    app_manager: Option<Arc<AppManager>>,
 ) -> Result<()> {
     let listener = create_listener(addr)?;
     let client = create_client();
@@ -281,18 +317,19 @@ async fn run_https_server(
             Ok((stream, _)) => {
                 let _ = stream.set_nodelay(true);
                 let client = client.clone();
-                let config = config.get_config();
+                let config = config.clone();
                 let acceptor = acceptor.clone();
                 let metrics = metrics.clone();
                 let cs = challenge_store.clone();
                 let lua = lua_engine.clone();
                 let cb = circuit_breaker.clone();
+                let am = app_manager.clone();
                 tokio::spawn(async move {
                     match acceptor.accept(stream).await {
                         Ok(tls_stream) => {
                             metrics.inc_tls_connections();
                             if let Err(e) = handle_https2_connection(
-                                tls_stream, client, config, metrics, cs, lua, cb,
+                                tls_stream, client, config, metrics, cs, lua, cb, am,
                             )
                             .await
                             {
@@ -317,11 +354,12 @@ async fn run_https_server(
 async fn handle_http11_connection(
     stream: tokio::net::TcpStream,
     client: ClientType,
-    config: Arc<crate::config::Config>,
+    config: Arc<ConfigManager>,
     metrics: SharedMetrics,
     challenge_store: ChallengeStore,
     lua_engine: OptionalLuaEngine,
     circuit_breaker: SharedCircuitBreaker,
+    app_manager: Option<Arc<AppManager>>,
 ) -> Result<()> {
     let io = TokioIo::new(stream);
     let svc = service_fn(move |req| {
@@ -333,6 +371,7 @@ async fn handle_http11_connection(
             challenge_store.clone(),
             lua_engine.clone(),
             circuit_breaker.clone(),
+            app_manager.clone(),
         )
     });
 
@@ -352,11 +391,12 @@ async fn handle_http11_connection(
 async fn handle_https2_connection(
     stream: tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
     client: ClientType,
-    config: Arc<crate::config::Config>,
+    config: Arc<ConfigManager>,
     metrics: SharedMetrics,
     challenge_store: ChallengeStore,
     lua_engine: OptionalLuaEngine,
     circuit_breaker: SharedCircuitBreaker,
+    app_manager: Option<Arc<AppManager>>,
 ) -> Result<()> {
     let is_h2 = stream.get_ref().1.alpn_protocol() == Some(b"h2");
 
@@ -373,6 +413,7 @@ async fn handle_https2_connection(
                 challenge_store.clone(),
                 lua_engine.clone(),
                 circuit_breaker.clone(),
+                app_manager.clone(),
             )
         });
         let conn = hyper::server::conn::http2::Builder::new(exec)
@@ -393,6 +434,7 @@ async fn handle_https2_connection(
                 challenge_store.clone(),
                 lua_engine.clone(),
                 circuit_breaker.clone(),
+                app_manager.clone(),
             )
         });
         let conn = hyper::server::conn::http1::Builder::new()
@@ -467,14 +509,16 @@ fn extract_response_headers(
 async fn handle_request(
     req: Request<Incoming>,
     client: ClientType,
-    config: Arc<crate::config::Config>,
+    config_manager: Arc<ConfigManager>,
     metrics: SharedMetrics,
     challenge_store: ChallengeStore,
     lua_engine: OptionalLuaEngine,
     circuit_breaker: SharedCircuitBreaker,
+    app_manager: Option<Arc<AppManager>>,
 ) -> Result<Response<BoxBody>, hyper::Error> {
     let start_time = std::time::Instant::now();
     metrics.inc_in_flight();
+    let config = config_manager.get_config();
 
     // ACME challenge check — must come before all other routing
     if let Some(response) = handle_acme_challenge(&req, &challenge_store) {
@@ -523,10 +567,26 @@ async fn handle_request(
     let is_websocket = is_websocket_request(&req);
 
     if is_websocket {
-        return handle_websocket_request(req, client, &config, &metrics, start_time).await;
+        return handle_websocket_request(
+            req,
+            client,
+            &config,
+            &metrics,
+            start_time,
+            app_manager.clone(),
+        )
+        .await;
     }
 
-    let result = handle_regular_request(req, client, &config, &lua_engine, &circuit_breaker).await;
+    let result = handle_regular_request(
+        req,
+        client,
+        &config,
+        &lua_engine,
+        &circuit_breaker,
+        app_manager.clone(),
+    )
+    .await;
     let duration = start_time.elapsed();
 
     metrics.dec_in_flight();
@@ -566,6 +626,7 @@ async fn handle_request(
             }
 
             metrics.record_request(0, 0, status, duration);
+            record_app_metrics(&metrics, &app_manager, &_target_url, 0, 0, status, duration);
             let (parts, body) = response.into_parts();
             let boxed = body.map_err(|_| unreachable!()).boxed();
             Ok(Response::from_parts(parts, boxed))
@@ -626,6 +687,7 @@ async fn handle_websocket_request(
     config: &crate::config::Config,
     metrics: &SharedMetrics,
     _start_time: std::time::Instant,
+    _app_manager: Option<Arc<AppManager>>,
 ) -> Result<Response<BoxBody>, hyper::Error> {
     let target_result = find_target(&req, &config.rules);
 
@@ -815,6 +877,7 @@ async fn handle_regular_request(
     config: &crate::config::Config,
     lua_engine: &OptionalLuaEngine,
     circuit_breaker: &SharedCircuitBreaker,
+    app_manager: Option<Arc<AppManager>>,
 ) -> Result<(Response<BoxBody>, String, Vec<String>), hyper::Error> {
     let route = find_matching_rule(&req, &config.rules);
 
@@ -902,6 +965,7 @@ async fn handle_regular_request(
             // Move headers directly instead of cloning one by one
             let uri: hyper::Uri = target_url.parse().expect("valid URI");
             parts.uri = uri;
+            parts.version = http::Version::HTTP_11;
             parts.extensions = http::Extensions::new();
 
             let mut request = Request::from_parts(parts, body);
@@ -1048,13 +1112,47 @@ async fn handle_regular_request(
                                 .await
                                 .map(|collected| collected.to_bytes())
                                 .unwrap_or_default();
-                            let html = String::from_utf8_lossy(&body_bytes);
+
+                            // Decompress gzip/deflate body before rewriting
+                            let is_gzip = parts
+                                .headers
+                                .get("content-encoding")
+                                .and_then(|v| v.to_str().ok())
+                                .map(|v| v.contains("gzip"))
+                                .unwrap_or(false);
+                            let is_deflate = parts
+                                .headers
+                                .get("content-encoding")
+                                .and_then(|v| v.to_str().ok())
+                                .map(|v| v.contains("deflate"))
+                                .unwrap_or(false);
+
+                            let raw_bytes = if is_gzip {
+                                use std::io::Read;
+                                let mut decoder =
+                                    flate2::read::GzDecoder::new(&body_bytes[..]);
+                                let mut decoded = Vec::new();
+                                decoder.read_to_end(&mut decoded).unwrap_or_default();
+                                Bytes::from(decoded)
+                            } else if is_deflate {
+                                use std::io::Read;
+                                let mut decoder =
+                                    flate2::read::DeflateDecoder::new(&body_bytes[..]);
+                                let mut decoded = Vec::new();
+                                decoder.read_to_end(&mut decoded).unwrap_or_default();
+                                Bytes::from(decoded)
+                            } else {
+                                body_bytes
+                            };
+
+                            let html = String::from_utf8_lossy(&raw_bytes);
                             let rewritten = html
                                 .replace("href=\"/", &format!("href=\"{}/", prefix))
                                 .replace("src=\"/", &format!("src=\"{}/", prefix))
                                 .replace("action=\"/", &format!("action=\"{}/", prefix));
                             let rewritten_bytes = Bytes::from(rewritten);
                             let mut parts = parts;
+                            parts.headers.remove("content-encoding");
                             parts.headers.remove("content-length");
                             parts.headers.insert(
                                 "content-length",
@@ -1151,7 +1249,11 @@ fn resolve_target_url(
             }
         }
         UrlResolution::StripPrefix(prefix) => {
-            let suffix = &path[prefix.len()..];
+            let suffix = if path.len() >= prefix.len() {
+                &path[prefix.len()..]
+            } else {
+                ""
+            };
             format!("{}{}", target_str, suffix)
         }
         UrlResolution::Identity => target_str.to_owned(),
@@ -1188,13 +1290,17 @@ fn find_matching_rule<'a>(
                 }
             }
             crate::config::RuleMatcher::DomainPath(domain, path_prefix) => {
-                if domain == host && path.starts_with(path_prefix) && !rule.targets.is_empty() {
-                    return Some(MatchedRoute {
-                        targets: &rule.targets,
-                        from_domain_rule: true,
-                        resolution: UrlResolution::StripPrefix(path_prefix.clone()),
-                        route_scripts: rule.scripts.clone(),
-                    });
+                if domain == host && !rule.targets.is_empty() {
+                    let matches = path.starts_with(path_prefix)
+                        || (path_prefix.ends_with('/') && path == path_prefix.trim_end_matches('/'));
+                    if matches {
+                        return Some(MatchedRoute {
+                            targets: &rule.targets,
+                            from_domain_rule: true,
+                            resolution: UrlResolution::StripPrefix(path_prefix.clone()),
+                            route_scripts: rule.scripts.clone(),
+                        });
+                    }
                 }
             }
             _ => {}
@@ -1219,13 +1325,18 @@ fn find_matching_rule<'a>(
                 }
             }
             crate::config::RuleMatcher::Prefix(prefix) => {
-                if path.starts_with(prefix) && !rule.targets.is_empty() {
-                    return Some(MatchedRoute {
-                        targets: &rule.targets,
-                        from_domain_rule: false,
-                        resolution: UrlResolution::StripPrefix(prefix.clone()),
-                        route_scripts: rule.scripts.clone(),
-                    });
+                if !rule.targets.is_empty() {
+                    // Match /db against prefix /db/ (path without trailing slash)
+                    let matches = path.starts_with(prefix)
+                        || (prefix.ends_with('/') && path == prefix.trim_end_matches('/'));
+                    if matches {
+                        return Some(MatchedRoute {
+                            targets: &rule.targets,
+                            from_domain_rule: false,
+                            resolution: UrlResolution::StripPrefix(prefix.clone()),
+                            route_scripts: rule.scripts.clone(),
+                        });
+                    }
                 }
             }
             crate::config::RuleMatcher::Regex(ref rm) => {

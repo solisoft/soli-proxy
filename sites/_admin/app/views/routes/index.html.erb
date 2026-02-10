@@ -19,13 +19,12 @@
                     <th class="text-left px-4 py-3 text-xs font-medium text-slate-500 uppercase tracking-wider">Matcher</th>
                     <th class="text-left px-4 py-3 text-xs font-medium text-slate-500 uppercase tracking-wider">Pattern</th>
                     <th class="text-left px-4 py-3 text-xs font-medium text-slate-500 uppercase tracking-wider">Targets</th>
-                    <th class="text-left px-4 py-3 text-xs font-medium text-slate-500 uppercase tracking-wider">Headers</th>
                     <th class="text-left px-4 py-3 text-xs font-medium text-slate-500 uppercase tracking-wider">Script</th>
                     <th class="text-right px-4 py-3 text-xs font-medium text-slate-500 uppercase tracking-wider">Actions</th>
                 </tr>
             </thead>
             <tbody id="routes-table-body" class="divide-y divide-white/5">
-                <tr><td colspan="7" class="px-4 py-8 text-center text-slate-500">Loading routes...</td></tr>
+                <tr><td colspan="6" class="px-4 py-8 text-center text-slate-500">Loading routes...</td></tr>
             </tbody>
         </table>
     </div>
@@ -41,35 +40,27 @@ var RouteManager = {
             RouteManager.render();
         }).catch(function() {
             document.getElementById('routes-table-body').innerHTML =
-                '<tr><td colspan="7" class="px-4 py-8 text-center text-rose-400">Failed to load routes</td></tr>';
+                '<tr><td colspan="6" class="px-4 py-8 text-center text-rose-400">Failed to load routes</td></tr>';
         });
     },
 
     render: function() {
         var tbody = document.getElementById('routes-table-body');
         if (!this.routes.length) {
-            tbody.innerHTML = '<tr><td colspan="7" class="px-4 py-8 text-center text-slate-500">No routes configured</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-8 text-center text-slate-500">No routes configured</td></tr>';
             return;
         }
         tbody.innerHTML = this.routes.map(function(r, i) {
-            var targets = (r.targets || []).map(function(t) {
-                var w = t.weight ? ' <span class="text-slate-600">(' + t.weight + ')</span>' : '';
+            var targetList = r.targets || [];
+            var showWeights = targetList.length > 1;
+            var targets = targetList.map(function(t) {
+                var w = showWeights && t.weight ? ' <span class="text-slate-600">(' + t.weight + ')</span>' : '';
                 return '<span class="font-mono text-xs">' + AdminAPI.esc(t.url || '') + w + '</span>';
             }).join('<br>');
 
             // matcher is {type, value}
             var matcherType = (r.matcher && r.matcher.type) ? r.matcher.type : 'default';
             var matcherValue = (r.matcher && r.matcher.value) ? r.matcher.value : '-';
-
-            // headers is an array of strings
-            var headers = '';
-            if (r.headers && r.headers.length) {
-                headers = r.headers.map(function(h) {
-                    return '<span class="text-xs">' + AdminAPI.esc(h) + '</span>';
-                }).join('<br>');
-            } else {
-                headers = '<span class="text-slate-600">-</span>';
-            }
 
             // scripts is an array
             var scripts = '';
@@ -87,7 +78,6 @@ var RouteManager = {
                 '<td class="px-4 py-3"><span class="px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-400 text-xs font-medium">' + AdminAPI.esc(matcherType) + '</span></td>' +
                 '<td class="px-4 py-3 font-mono text-xs text-white">' + AdminAPI.esc(matcherValue) + '</td>' +
                 '<td class="px-4 py-3">' + targets + '</td>' +
-                '<td class="px-4 py-3">' + headers + '</td>' +
                 '<td class="px-4 py-3">' + scripts + '</td>' +
                 '<td class="px-4 py-3 text-right">' +
                     '<button onclick="RouteManager.showEditModal(' + i + ')" class="p-1.5 rounded hover:bg-white/10 text-slate-400 hover:text-white transition-colors" title="Edit">' +
@@ -101,7 +91,7 @@ var RouteManager = {
     },
 
     showAddModal: function() {
-        this._showModal('Add Route', -1, {matcher: {type: 'prefix', value: ''}, targets: [{url: '', weight: 100}], headers: [], scripts: []});
+        this._showModal('Add Route', -1, {matcher: {type: 'prefix', value: ''}, targets: [{url: '', weight: 100}], scripts: []});
     },
 
     showEditModal: function(index) {
@@ -109,31 +99,48 @@ var RouteManager = {
         this._showModal('Edit Route #' + index, index, route);
     },
 
-    _showModal: function(title, index, route) {
-        var matcherType = (route.matcher && route.matcher.type) || 'default';
-        var matcherValue = (route.matcher && route.matcher.value) || '';
-        var targets = (route.targets || []).map(function(t) { return t.url || ''; }).join('\n');
-        var headers = (route.headers || []).join('\n');
-        var scripts = (route.scripts || []).join('\n');
+    _matcherToString: function(matcher) {
+        if (!matcher) return '';
+        var t = matcher.type || 'default';
+        if (t === 'default') return 'default';
+        if (t === 'domain_path') return (matcher.domain || '') + (matcher.path || '');
+        if (t === 'regex') return '~' + (matcher.value || '');
+        if (t === 'prefix') return (matcher.value || '') + '*';
+        return matcher.value || '';
+    },
 
-        var types = ['default', 'domain', 'prefix', 'exact', 'regex', 'websocket'];
-        var typeOptions = types.map(function(t) {
-            return '<option value="' + t + '"' + (matcherType === t ? ' selected' : '') + '>' + t + '</option>';
-        }).join('');
+    _stringToMatcher: function(s) {
+        s = s.trim();
+        if (!s || s === 'default' || s === '*') return {type: 'default'};
+        if (s.charAt(0) === '~') return {type: 'regex', value: s.substring(1)};
+        var looksLikeDomain = s.indexOf('.') !== -1 && s.charAt(0) !== '/';
+        if (looksLikeDomain) {
+            var slashIdx = s.indexOf('/');
+            if (slashIdx > 0) {
+                var domain = s.substring(0, slashIdx);
+                var path = s.substring(slashIdx);
+                if (path === '/' || path === '/*') return {type: 'domain', value: domain};
+                return {type: 'domain_path', domain: domain, path: path.replace(/\*$/, '')};
+            }
+            return {type: 'domain', value: s};
+        }
+        if (s.endsWith('/*') || s.endsWith('*')) return {type: 'prefix', value: s.replace(/\*$/, '')};
+        return {type: 'exact', value: s};
+    },
+
+    _showModal: function(title, index, route) {
+        var matcherStr = this._matcherToString(route.matcher);
+        var targets = (route.targets || []).map(function(t) { return t.url || ''; }).join('\n');
+        var scripts = (route.scripts || []).join('\n');
 
         var html = '<div class="p-6">' +
             '<h2 class="text-lg font-semibold text-white mb-6">' + title + '</h2>' +
             '<div class="space-y-4">' +
-                '<div><label class="block text-xs font-medium text-slate-400 mb-1.5">Matcher Type</label>' +
-                '<select id="route-matcher" class="w-full bg-slate-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500/50">' +
-                    typeOptions +
-                '</select></div>' +
-                '<div><label class="block text-xs font-medium text-slate-400 mb-1.5">Value (domain, prefix, pattern...)</label>' +
-                '<input id="route-value" type="text" value="' + AdminAPI.esc(matcherValue) + '" class="w-full bg-slate-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-emerald-500/50" placeholder="example.com or /api/*"></div>' +
+                '<div><label class="block text-xs font-medium text-slate-400 mb-1.5">Match</label>' +
+                '<input id="route-value" type="text" value="' + AdminAPI.esc(matcherStr) + '" class="w-full bg-slate-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-emerald-500/50" placeholder="example.com, /api/*, ~^/admin/.*$, default">' +
+                '<div class="text-xs text-slate-600 mt-1">domain.com, /path/*, ~regex, default</div></div>' +
                 '<div><label class="block text-xs font-medium text-slate-400 mb-1.5">Targets (one URL per line)</label>' +
                 '<textarea id="route-targets" rows="3" class="w-full bg-slate-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-emerald-500/50" placeholder="http://localhost:3000">' + AdminAPI.esc(targets) + '</textarea></div>' +
-                '<div><label class="block text-xs font-medium text-slate-400 mb-1.5">Headers (one per line)</label>' +
-                '<textarea id="route-headers" rows="2" class="w-full bg-slate-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-emerald-500/50" placeholder="X-Forwarded-For: $remote_addr">' + AdminAPI.esc(headers) + '</textarea></div>' +
                 '<div><label class="block text-xs font-medium text-slate-400 mb-1.5">Scripts (one per line, optional)</label>' +
                 '<textarea id="route-scripts" rows="2" class="w-full bg-slate-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-emerald-500/50">' + AdminAPI.esc(scripts) + '</textarea></div>' +
             '</div>' +
@@ -149,20 +156,19 @@ var RouteManager = {
         var targets = document.getElementById('route-targets').value.split('\n').filter(function(l){return l.trim()}).map(function(l) {
             return {url: l.trim(), weight: 100};
         });
-        var headers = document.getElementById('route-headers').value.split('\n').filter(function(l){return l.trim()});
         var scripts = document.getElementById('route-scripts').value.split('\n').filter(function(l){return l.trim()});
 
-        var matcherType = document.getElementById('route-matcher').value;
-        var matcherValue = document.getElementById('route-value').value;
-        var matcher = {type: matcherType};
-        if (matcherValue) matcher.value = matcherValue;
+        var matcher = RouteManager._stringToMatcher(document.getElementById('route-value').value);
 
         var route = {
             matcher: matcher,
             targets: targets,
-            headers: headers,
+            headers: [],
             scripts: scripts
         };
+
+        var saveBtn = document.querySelector('#modal-container button');
+        AdminAPI.setButtonLoading(saveBtn, true, 'Saving...');
 
         var promise = index === -1 ? AdminAPI.addRoute(route) : AdminAPI.updateRoute(index, route);
         promise.then(function() {
@@ -171,6 +177,7 @@ var RouteManager = {
             RouteManager.load();
         }).catch(function(err) {
             AdminAPI.toast('Failed: ' + err.message, 'error');
+            AdminAPI.setButtonLoading(saveBtn, false);
         });
     },
 

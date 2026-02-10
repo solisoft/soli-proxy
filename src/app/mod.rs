@@ -66,6 +66,18 @@ pub enum InstanceStatus {
     Failed,
 }
 
+impl std::fmt::Display for InstanceStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InstanceStatus::Stopped => write!(f, "Stopped"),
+            InstanceStatus::Starting => write!(f, "Starting"),
+            InstanceStatus::Running => write!(f, "Running"),
+            InstanceStatus::Unhealthy => write!(f, "Unhealthy"),
+            InstanceStatus::Failed => write!(f, "Failed"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppInfo {
     pub config: AppConfig,
@@ -517,11 +529,21 @@ impl AppManager {
     }
 
     pub async fn list_apps(&self) -> Vec<AppInfo> {
-        self.apps.lock().await.values().cloned().collect()
+        self.apps
+            .lock()
+            .await
+            .values()
+            .filter(|&a| a.config.name != "_admin")
+            .cloned()
+            .collect()
     }
 
     pub async fn get_app(&self, name: &str) -> Option<AppInfo> {
         self.apps.lock().await.get(name).cloned()
+    }
+
+    pub async fn get_app_name(&self, port: u16) -> Option<String> {
+        self.port_allocator.get_app_name(port).await
     }
 
     pub async fn allocate_ports(&self, app_name: &str) -> Result<(u16, u16), anyhow::Error> {
@@ -531,20 +553,65 @@ impl AppManager {
     }
 
     pub async fn deploy(&self, app_name: &str, slot: &str) -> Result<(), anyhow::Error> {
+        tracing::info!("Starting deploy for {} to slot {}", app_name, slot);
+
         let app = {
             let apps = self.apps.lock().await;
-            apps.get(app_name)
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("App not found: {}", app_name))?
+            match apps.get(app_name) {
+                Some(app) => {
+                    tracing::debug!(
+                        "Found app {}: blue={}:{}, green={}:{}",
+                        app_name,
+                        app.blue.status,
+                        app.blue.port,
+                        app.green.status,
+                        app.green.port
+                    );
+                    app.clone()
+                }
+                None => {
+                    tracing::error!("App not found: {}", app_name);
+                    return Err(anyhow::anyhow!("App not found: {}", app_name));
+                }
+            }
         };
 
+        tracing::info!("Deploying {} to slot {}", app.config.name, slot);
         let pid = self.deployment_manager.deploy(&app, slot).await?;
+        tracing::info!("Deploy started, PID: {}", pid);
 
-        // Update app info: mark slot as running, store PID, and set current_slot
+        // Get the old slot name and PID before updating
+        let old_slot_name;
+        let old_pid;
+        {
+            let apps = self.apps.lock().await;
+            match apps.get(app_name) {
+                Some(a) => {
+                    old_slot_name = a.current_slot.clone();
+                    old_pid = if old_slot_name == "blue" {
+                        a.blue.pid
+                    } else {
+                        a.green.pid
+                    };
+                    tracing::info!(
+                        "Current slot: {}, old_slot_name: {}, old_pid: {:?}",
+                        app_name,
+                        old_slot_name,
+                        old_pid
+                    );
+                }
+                None => {
+                    old_slot_name = "unknown".to_string();
+                    old_pid = None;
+                    tracing::error!("App {} not found in apps map!", app_name);
+                }
+            }
+        }
+
+        // Update app info: mark new slot as running, store PID, and switch traffic
         {
             let mut apps = self.apps.lock().await;
             if let Some(app_info) = apps.get_mut(app_name) {
-                app_info.current_slot = slot.to_string();
                 let instance = if slot == "blue" {
                     &mut app_info.blue
                 } else {
@@ -552,10 +619,51 @@ impl AppManager {
                 };
                 instance.status = InstanceStatus::Running;
                 instance.pid = Some(pid);
+                instance.last_started = Some(chrono::Utc::now().to_rfc3339());
+
+                // Switch traffic
+                app_info.current_slot = slot.to_string();
+                tracing::info!("Switched traffic from {} to {}", old_slot_name, slot);
+            } else {
+                tracing::error!("App {} not found in map after deploy!", app_name);
+            }
+        }
+
+        // Stop the old slot if it was running
+        tracing::info!(
+            "Checking if should stop old slot: old_slot_name={}, slot={}",
+            old_slot_name,
+            slot
+        );
+        if old_slot_name != "unknown" && old_slot_name != slot {
+            if let Some(pid) = old_pid {
+                tracing::info!("Stopping old slot {} (PID: {})", old_slot_name, pid);
+                self.deployment_manager
+                    .stop_instance(&app, &old_slot_name)
+                    .await?;
+                tracing::info!("Old slot {} stopped", old_slot_name);
+
+                // Update old slot status to Stopped
+                let mut apps = self.apps.lock().await;
+                if let Some(app_info) = apps.get_mut(app_name) {
+                    let old_instance = if old_slot_name == "blue" {
+                        &mut app_info.blue
+                    } else {
+                        &mut app_info.green
+                    };
+                    old_instance.status = InstanceStatus::Stopped;
+                    old_instance.pid = None;
+                }
+            } else {
+                tracing::warn!(
+                    "No PID found for old slot {} (status may already be stopped)",
+                    old_slot_name
+                );
             }
         }
 
         self.sync_routes().await;
+        tracing::info!("Deploy completed for {} to slot {}", app_name, slot);
         Ok(())
     }
 
@@ -573,7 +681,7 @@ impl AppManager {
     }
 
     pub async fn rollback(&self, app_name: &str) -> Result<(), anyhow::Error> {
-        let (app, target_slot) = {
+        let (app, target_slot, old_slot) = {
             let apps = self.apps.lock().await;
             let app = apps
                 .get(app_name)
@@ -584,7 +692,11 @@ impl AppManager {
             } else {
                 "blue"
             };
-            (app, target_slot.to_string())
+            (
+                app.clone(),
+                target_slot.to_string(),
+                app.current_slot.clone(),
+            )
         };
 
         let pid = self.deployment_manager.deploy(&app, &target_slot).await?;
@@ -600,6 +712,39 @@ impl AppManager {
                 };
                 instance.status = InstanceStatus::Running;
                 instance.pid = Some(pid);
+            }
+        }
+
+        // Stop the old slot
+        let old_pid = {
+            let apps = self.apps.lock().await;
+            apps.get(app_name).and_then(|a| {
+                if old_slot == "blue" {
+                    a.blue.pid
+                } else {
+                    a.green.pid
+                }
+            })
+        };
+        if let Some(pid) = old_pid {
+            tracing::info!(
+                "Stopping old slot {} (PID: {}) during rollback",
+                old_slot,
+                pid
+            );
+            self.deployment_manager
+                .stop_instance(&app, &old_slot)
+                .await?;
+            // Update old slot status
+            let mut apps = self.apps.lock().await;
+            if let Some(app_info) = apps.get_mut(app_name) {
+                let old_instance = if old_slot == "blue" {
+                    &mut app_info.blue
+                } else {
+                    &mut app_info.green
+                };
+                old_instance.status = InstanceStatus::Stopped;
+                old_instance.pid = None;
             }
         }
 
@@ -634,6 +779,43 @@ impl AppManager {
         }
 
         Ok(())
+    }
+
+    pub async fn stop_all(&self) {
+        let apps: Vec<String> = {
+            let apps_guard = self.apps.lock().await;
+            apps_guard.keys().cloned().collect()
+        };
+
+        for app_name in apps {
+            // Stop both blue and green slots
+            let app = {
+                let apps_guard = self.apps.lock().await;
+                apps_guard.get(&app_name).cloned()
+            };
+            if let Some(app) = app {
+                // Stop blue slot
+                if app.blue.status == InstanceStatus::Running && app.blue.pid.is_some() {
+                    if let Err(e) = self.deployment_manager.stop_instance(&app, "blue").await {
+                        tracing::error!("Failed to stop blue slot for {}: {}", app_name, e);
+                    }
+                }
+                // Stop green slot
+                if app.green.status == InstanceStatus::Running && app.green.pid.is_some() {
+                    if let Err(e) = self.deployment_manager.stop_instance(&app, "green").await {
+                        tracing::error!("Failed to stop green slot for {}: {}", app_name, e);
+                    }
+                }
+                // Update status in map
+                let mut apps_guard = self.apps.lock().await;
+                if let Some(app_info) = apps_guard.get_mut(&app_name) {
+                    app_info.blue.status = InstanceStatus::Stopped;
+                    app_info.blue.pid = None;
+                    app_info.green.status = InstanceStatus::Stopped;
+                    app_info.green.pid = None;
+                }
+            }
+        }
     }
 }
 

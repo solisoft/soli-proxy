@@ -44,26 +44,56 @@ fn daemonize() -> Result<()> {
 }
 
 fn get_pid_dir() -> String {
-    std::env::var("SOLI_PID_DIR").unwrap_or_else(|_| "/run".to_string())
+    std::env::var("SOLI_PID_DIR").unwrap_or_else(|_| ".".to_string())
 }
 
 fn get_log_dir() -> String {
-    std::env::var("SOLI_LOG_DIR").unwrap_or_else(|_| "/var/log".to_string())
+    std::env::var("SOLI_LOG_DIR").unwrap_or_else(|_| ".".to_string())
+}
+
+fn get_pid_path() -> String {
+    format!("{}/proxy.pid", get_pid_dir())
+}
+
+fn get_log_path() -> String {
+    format!("{}/proxy.log", get_log_dir())
 }
 
 fn write_pid_file() -> Result<String> {
-    let pid_dir = get_pid_dir();
-    let pid_path = format!("{}/soli-proxy.pid", pid_dir);
-    fs::create_dir_all(&pid_dir).ok();
+    let pid_path = get_pid_path();
+    let pid_dir = std::path::Path::new(&pid_path).parent().unwrap();
+    fs::create_dir_all(pid_dir).ok();
     fs::write(&pid_path, std::process::id().to_string())?;
     Ok(pid_path)
 }
 
+fn cleanup_pid() {
+    let pid_path = get_pid_path();
+    let _ = fs::remove_file(&pid_path);
+}
+
+fn kill_existing_daemon() -> Result<()> {
+    let pid_path = get_pid_path();
+    if let Ok(content) = fs::read_to_string(&pid_path) {
+        if let Ok(pid) = content.trim().parse::<i32>() {
+            if pid > 0 {
+                println!("Stopping existing daemon (PID: {})...", pid);
+                unsafe {
+                    libc::kill(pid, libc::SIGTERM);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        }
+        let _ = fs::remove_file(&pid_path);
+    }
+    Ok(())
+}
+
 fn setup_logging(daemon: bool) -> Result<()> {
     if daemon {
-        let log_dir = get_log_dir();
-        let log_path = format!("{}/soli-proxy.log", log_dir);
-        fs::create_dir_all(&log_dir).ok();
+        let log_path = get_log_path();
+        let log_dir = std::path::Path::new(&log_path).parent().unwrap();
+        fs::create_dir_all(log_dir).ok();
 
         let file = fs::OpenOptions::new()
             .create(true)
@@ -85,11 +115,6 @@ fn setup_logging(daemon: bool) -> Result<()> {
     Ok(())
 }
 
-fn cleanup_pid() {
-    let pid_path = format!("{}/soli-proxy.pid", get_pid_dir());
-    let _ = fs::remove_file(&pid_path);
-}
-
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
 
@@ -108,6 +133,7 @@ fn main() -> Result<()> {
     }
 
     if daemon_mode {
+        kill_existing_daemon()?;
         daemonize()?;
         let _ = write_pid_file()?;
     }
@@ -229,38 +255,7 @@ async fn run_server(config_path: &str, daemon_mode: bool, dev_mode: bool) -> Res
     // Build the TLS ServerConfig with the cert resolver
     tls_manager.build()?;
 
-    let admin_metrics = metrics.clone();
-
-    let server = match tls_manager.server_config() {
-        Some(config) => {
-            let https_addr: SocketAddr = format!("0.0.0.0:{}", cfg.server.https_port).parse()?;
-            let tls_acceptor = TlsAcceptor::from(config.clone());
-            tracing::info!("HTTPS enabled on port {}", cfg.server.https_port);
-            ProxyServer::with_https(
-                config_ref.clone(),
-                shutdown,
-                tls_acceptor,
-                https_addr,
-                metrics,
-                challenge_store.clone(),
-                lua_engine,
-                circuit_breaker.clone(),
-            )?
-        }
-        None => {
-            tracing::warn!("TLS not available. HTTPS disabled.");
-            ProxyServer::new(
-                config_ref.clone(),
-                shutdown,
-                metrics,
-                challenge_store.clone(),
-                lua_engine,
-                circuit_breaker.clone(),
-            )?
-        }
-    };
-
-    // Initialize app manager (needed by both ACME and admin)
+    // Initialize app manager (needed by both ProxyServer and ACME)
     let app_manager = if cfg.admin.enabled {
         let port_manager = Arc::new(PortManager::new("./run").unwrap());
         let _ = port_manager.load().await;
@@ -282,6 +277,40 @@ async fn run_server(config_path: &str, daemon_mode: bool, dev_mode: bool) -> Res
         }
     } else {
         None
+    };
+
+    let admin_metrics = metrics.clone();
+    let server_app_manager = app_manager.clone();
+
+    let server = match tls_manager.server_config() {
+        Some(config) => {
+            let https_addr: SocketAddr = format!("0.0.0.0:{}", cfg.server.https_port).parse()?;
+            let tls_acceptor = TlsAcceptor::from(config.clone());
+            tracing::info!("HTTPS enabled on port {}", cfg.server.https_port);
+            ProxyServer::with_https(
+                config_ref.clone(),
+                shutdown,
+                tls_acceptor,
+                https_addr,
+                metrics,
+                challenge_store.clone(),
+                lua_engine,
+                circuit_breaker.clone(),
+                server_app_manager,
+            )?
+        }
+        None => {
+            tracing::warn!("TLS not available. HTTPS disabled.");
+            ProxyServer::new(
+                config_ref.clone(),
+                shutdown,
+                metrics,
+                challenge_store.clone(),
+                lua_engine,
+                circuit_breaker.clone(),
+                server_app_manager,
+            )?
+        }
     };
 
     // Spawn ACME certificate issuance if mode is letsencrypt
@@ -407,7 +436,7 @@ async fn run_server(config_path: &str, daemon_mode: bool, dev_mode: bool) -> Res
             metrics: admin_metrics,
             start_time: Instant::now(),
             circuit_breaker: circuit_breaker.clone(),
-            app_manager,
+            app_manager: app_manager.clone(),
         });
         tokio::spawn(async move {
             if let Err(e) = soli_proxy::run_admin_server(admin_state).await {
@@ -415,6 +444,8 @@ async fn run_server(config_path: &str, daemon_mode: bool, dev_mode: bool) -> Res
             }
         });
     }
+
+    let app_manager_for_signal = app_manager;
 
     tokio::spawn(async move {
         let mut sigusr1 = signal::unix::signal(signal::unix::SignalKind::user_defined1()).unwrap();
@@ -430,8 +461,15 @@ async fn run_server(config_path: &str, daemon_mode: bool, dev_mode: bool) -> Res
     let daemon_clone = daemon_mode;
     tokio::spawn(async move {
         let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate()).unwrap();
-        sigterm.recv().await;
-        tracing::info!("Received SIGTERM, shutting down...");
+        let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt()).unwrap();
+        tokio::select! {
+            _ = sigterm.recv() => {},
+            _ = sigint.recv() => {},
+        }
+        tracing::info!("Received shutdown signal, stopping all apps...");
+        if let Some(manager) = app_manager_for_signal {
+            manager.stop_all().await;
+        }
         if daemon_clone {
             cleanup_pid();
         }

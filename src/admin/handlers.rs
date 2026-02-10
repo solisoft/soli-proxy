@@ -55,14 +55,28 @@ pub async fn get_app(state: &Arc<AdminState>, name: &str) -> Response<BoxBody> {
 
 pub async fn post_app_deploy(state: &Arc<AdminState>, name: &str) -> Response<BoxBody> {
     match &state.app_manager {
-        Some(manager) => match manager.deploy(name, "green").await {
-            Ok(()) => ok_response(serde_json::json!({
-                "message": "Deployment started",
-                "app": name,
-                "slot": "green"
-            })),
-            Err(e) => error_response(500, &format!("Deployment failed: {}", e)),
-        },
+        Some(manager) => {
+            // Determine target slot based on current slot (alternate)
+            let target_slot = manager
+                .get_app(name)
+                .await
+                .map_or("blue".to_string(), |app| {
+                    if app.current_slot == "blue" {
+                        "green".to_string()
+                    } else {
+                        "blue".to_string()
+                    }
+                });
+
+            match manager.deploy(name, &target_slot).await {
+                Ok(()) => ok_response(serde_json::json!({
+                    "message": "Deployment started",
+                    "app": name,
+                    "slot": target_slot
+                })),
+                Err(e) => error_response(500, &format!("Deployment failed: {}", e)),
+            }
+        }
         None => error_response(501, "App management not configured"),
     }
 }
@@ -103,6 +117,35 @@ pub async fn post_app_stop(state: &Arc<AdminState>, name: &str) -> Response<BoxB
             Err(e) => error_response(500, &format!("Stop failed: {}", e)),
         },
         None => error_response(501, "App management not configured"),
+    }
+}
+
+pub async fn get_app_metrics(state: &Arc<AdminState>, name: &str) -> Response<BoxBody> {
+    match &state.app_manager {
+        Some(manager) => {
+            // First check if app exists
+            match manager.get_app(name).await {
+                Some(_) => {
+                    let metrics = state.metrics.get_app_metrics(name);
+                    match serde_json::to_value(metrics) {
+                        Ok(val) => ok_response(val),
+                        Err(e) => {
+                            error_response(500, &format!("Failed to serialize metrics: {}", e))
+                        }
+                    }
+                }
+                None => error_response(404, &format!("App not found: {}", name)),
+            }
+        }
+        None => error_response(501, "App management not configured"),
+    }
+}
+
+pub fn get_all_app_metrics(state: &Arc<AdminState>) -> Response<BoxBody> {
+    let metrics = state.metrics.get_all_app_metrics();
+    match serde_json::to_value(metrics) {
+        Ok(val) => ok_response(val),
+        Err(e) => error_response(500, &format!("Failed to serialize metrics: {}", e)),
     }
 }
 

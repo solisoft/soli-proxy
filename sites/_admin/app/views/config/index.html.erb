@@ -33,11 +33,15 @@ var ConfigViewer = {
     },
 
     reload: function() {
+        var btn = document.querySelector('button[onclick="ConfigViewer.reload()"]');
+        AdminAPI.setButtonLoading(btn, true, 'Reloading...');
         AdminAPI.reloadConfig().then(function() {
             AdminAPI.toast('Configuration reloaded from disk', 'success');
             ConfigViewer.load();
+            AdminAPI.setButtonLoading(btn, false);
         }).catch(function(err) {
             AdminAPI.toast('Reload failed: ' + err.message, 'error');
+            AdminAPI.setButtonLoading(btn, false);
         });
     },
 

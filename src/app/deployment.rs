@@ -96,6 +96,7 @@ impl DeploymentManager {
                 .arg("-c")
                 .arg(&script)
                 .current_dir(&app.path)
+                .env("PATH", std::env::var("PATH").unwrap_or_default())
                 .env("PORT", port.to_string())
                 .env("WORKERS", app.config.workers.to_string())
                 .stdout(std::process::Stdio::from(output.try_clone()?))

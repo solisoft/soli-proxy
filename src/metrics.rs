@@ -1,6 +1,45 @@
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AppMetricsJson {
+    pub requests: u64,
+    pub bytes_received: u64,
+    pub bytes_sent: u64,
+    pub avg_response_time_ms: f64,
+    pub errors: u64,
+}
+
+#[derive(Clone)]
+pub struct AppMetrics {
+    pub requests_total: Arc<AtomicU64>,
+    pub bytes_received: Arc<AtomicU64>,
+    pub bytes_sent: Arc<AtomicU64>,
+    pub response_time_nanos_sum: Arc<AtomicU64>,
+    pub response_time_count: Arc<AtomicU64>,
+    pub errors_total: Arc<AtomicU64>,
+}
+
+impl AppMetrics {
+    pub fn new() -> Self {
+        Self {
+            requests_total: Arc::new(AtomicU64::new(0)),
+            bytes_received: Arc::new(AtomicU64::new(0)),
+            bytes_sent: Arc::new(AtomicU64::new(0)),
+            response_time_nanos_sum: Arc::new(AtomicU64::new(0)),
+            response_time_count: Arc::new(AtomicU64::new(0)),
+            errors_total: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
+impl Default for AppMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Status code array size: covers HTTP codes 100-599
 const STATUS_ARRAY_SIZE: usize = 512;
@@ -11,16 +50,14 @@ pub struct Metrics {
     requests_in_flight: Arc<AtomicUsize>,
     bytes_received: Arc<AtomicU64>,
     bytes_sent: Arc<AtomicU64>,
-    // EWMA response time: store nanos sum and count for running average
     response_time_nanos_sum: Arc<AtomicU64>,
     response_time_count: Arc<AtomicU64>,
-    // Lock-free status code tracking: array indexed by (code - 100)
     status_codes: Arc<[AtomicU64; STATUS_ARRAY_SIZE]>,
     tls_connections: Arc<AtomicU64>,
     errors_total: Arc<AtomicU64>,
-    // Nanos since epoch_start for last request time
     last_request_nanos: Arc<AtomicU64>,
     epoch_start: Instant,
+    app_metrics: Arc<parking_lot::RwLock<HashMap<String, AppMetrics>>>,
 }
 
 impl Default for Metrics {
@@ -43,7 +80,53 @@ impl Metrics {
             errors_total: Arc::new(AtomicU64::new(0)),
             last_request_nanos: Arc::new(AtomicU64::new(0)),
             epoch_start: Instant::now(),
+            app_metrics: Arc::new(parking_lot::RwLock::new(HashMap::new())),
         }
+    }
+
+    pub fn get_app_metrics(&self, app_name: &str) -> Option<AppMetricsJson> {
+        let apps = self.app_metrics.read();
+        apps.get(app_name).map(|m| AppMetricsJson {
+            requests: m.requests_total.load(Ordering::Relaxed),
+            bytes_received: m.bytes_received.load(Ordering::Relaxed),
+            bytes_sent: m.bytes_sent.load(Ordering::Relaxed),
+            avg_response_time_ms: {
+                let count = m.response_time_count.load(Ordering::Relaxed);
+                if count == 0 {
+                    0.0
+                } else {
+                    let sum = m.response_time_nanos_sum.load(Ordering::Relaxed);
+                    (sum as f64) / (count as f64) / 1_000_000.0
+                }
+            },
+            errors: m.errors_total.load(Ordering::Relaxed),
+        })
+    }
+
+    pub fn get_all_app_metrics(&self) -> HashMap<String, AppMetricsJson> {
+        let apps = self.app_metrics.read();
+        apps.iter()
+            .map(|(name, m)| {
+                (
+                    name.clone(),
+                    AppMetricsJson {
+                        requests: m.requests_total.load(Ordering::Relaxed),
+                        bytes_received: m.bytes_received.load(Ordering::Relaxed),
+                        bytes_sent: m.bytes_sent.load(Ordering::Relaxed),
+                        avg_response_time_ms: {
+                            let count = m.response_time_count.load(Ordering::Relaxed);
+                            if count == 0 {
+                                0.0
+                            } else {
+                                let sum = m.response_time_nanos_sum.load(Ordering::Relaxed);
+                                (sum as f64) / (count as f64) / 1_000_000.0
+                            }
+                        },
+                        errors: m.errors_total.load(Ordering::Relaxed),
+                    },
+                )
+            })
+            .collect()
     }
 
     pub fn record_request(
@@ -70,6 +153,53 @@ impl Metrics {
         // Lock-free last request time
         let nanos = self.epoch_start.elapsed().as_nanos() as u64;
         self.last_request_nanos.store(nanos, Ordering::Relaxed);
+    }
+
+    pub fn record_app_request(
+        &self,
+        app_name: &str,
+        bytes_in: u64,
+        bytes_out: u64,
+        status: u16,
+        duration: std::time::Duration,
+    ) {
+        let success = status >= 200 && status < 400;
+        self.record_app_request_with_success(app_name, bytes_in, bytes_out, duration, success);
+    }
+
+    pub fn record_app_request_with_success(
+        &self,
+        app_name: &str,
+        bytes_in: u64,
+        bytes_out: u64,
+        duration: std::time::Duration,
+        success: bool,
+    ) {
+        let app_name = app_name.to_string();
+        {
+            let mut apps = self.app_metrics.write();
+            apps.entry(app_name.clone()).or_insert_with(AppMetrics::new);
+        }
+
+        let app_metrics = {
+            let apps = self.app_metrics.read();
+            apps.get(&app_name).cloned()
+        };
+
+        if let Some(metrics) = app_metrics {
+            metrics.requests_total.fetch_add(1, Ordering::Relaxed);
+            metrics
+                .bytes_received
+                .fetch_add(bytes_in, Ordering::Relaxed);
+            metrics.bytes_sent.fetch_add(bytes_out, Ordering::Relaxed);
+            metrics
+                .response_time_nanos_sum
+                .fetch_add(duration.as_nanos() as u64, Ordering::Relaxed);
+            metrics.response_time_count.fetch_add(1, Ordering::Relaxed);
+            if !success {
+                metrics.errors_total.fetch_add(1, Ordering::Relaxed);
+            }
+        }
     }
 
     pub fn inc_in_flight(&self) {

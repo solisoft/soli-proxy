@@ -140,6 +140,11 @@ impl PortManager {
     pub async fn get_port(&self, app_name: &str, slot: &str) -> Option<u16> {
         self.allocator.lock().await.get_port(app_name, slot)
     }
+
+    pub async fn get_app_name(&self, port: u16) -> Option<String> {
+        let allocator = self.allocator.lock().await;
+        allocator.used_ports.get(&port).map(|a| a.app_name.clone())
+    }
 }
 
 #[cfg(test)]

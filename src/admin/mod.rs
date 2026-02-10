@@ -117,6 +117,7 @@ async fn handle_admin_request(
         (Method::GET, "/api/v1/config") => handlers::get_config(&state),
         (Method::GET, "/api/v1/routes") => handlers::get_routes(&state),
         (Method::GET, "/api/v1/metrics") => handlers::get_metrics(&state),
+        (Method::GET, "/api/v1/app-metrics") => handlers::get_all_app_metrics(&state),
         (Method::POST, "/api/v1/reload") => handlers::post_reload(&state).await,
 
         // App management endpoints
@@ -125,6 +126,13 @@ async fn handle_admin_request(
             let app_name = p.strip_prefix("/api/v1/apps/").unwrap_or("");
             if method == Method::GET && !app_name.is_empty() && !app_name.contains('/') {
                 handlers::get_app(&state, app_name).await
+            } else if method == Method::GET && app_name.ends_with("/metrics") {
+                let name = app_name.strip_suffix("/metrics").unwrap_or("");
+                if name.is_empty() {
+                    error_response(400, "Invalid app name")
+                } else {
+                    handlers::get_app_metrics(&state, name).await
+                }
             } else if app_name.ends_with("/deploy") {
                 let name = app_name.strip_suffix("/deploy").unwrap_or("");
                 if name.is_empty() {

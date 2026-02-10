@@ -76,11 +76,15 @@ var CBManager = {
 
     resetAll: function() {
         if (!confirm('Reset all circuit breaker states?')) return;
+        var btn = document.querySelector('button[onclick="CBManager.resetAll()"]');
+        AdminAPI.setButtonLoading(btn, true, 'Resetting...');
         AdminAPI.resetCircuitBreaker().then(function() {
             AdminAPI.toast('Circuit breakers reset', 'success');
             CBManager.load();
+            AdminAPI.setButtonLoading(btn, false);
         }).catch(function(err) {
             AdminAPI.toast('Failed: ' + err.message, 'error');
+            AdminAPI.setButtonLoading(btn, false);
         });
     }
 };

@@ -1,0 +1,73 @@
+{"timestamp":"2026-02-10T13:07:26.969006Z","level":"INFO","fields":{"message":"Watching config file: ./proxy.conf"},"target":"soli_proxy::config"}
+{"timestamp":"2026-02-10T13:07:26.969081Z","level":"INFO","fields":{"message":"Lua scripting disabled"},"target":"soli_proxy"}
+{"timestamp":"2026-02-10T13:07:26.969303Z","level":"INFO","fields":{"message":"Loaded existing self-signed fallback certificate"},"target":"soli_proxy::tls"}
+{"timestamp":"2026-02-10T13:07:26.969331Z","level":"INFO","fields":{"message":"HTTPS enabled on port 443"},"target":"soli_proxy"}
+{"timestamp":"2026-02-10T13:07:26.969365Z","level":"INFO","fields":{"message":"App manager initialized for ./sites"},"target":"soli_proxy"}
+{"timestamp":"2026-02-10T13:07:26.969377Z","level":"INFO","fields":{"message":"Proxy server starting on port 8008"},"target":"soli_proxy"}
+{"timestamp":"2026-02-10T13:07:26.969406Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-10T13:07:26.969420Z","level":"INFO","fields":{"message":"Admin API listening on 0.0.0.0:9090"},"target":"soli_proxy::admin"}
+{"timestamp":"2026-02-10T13:07:26.969469Z","level":"INFO","fields":{"message":"HTTP/1.1 server listening on 0.0.0.0:80 (16 accept loops)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969479Z","level":"INFO","fields":{"message":"HTTPS/2 server listening on 0.0.0.0:443 (16 accept loops)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969481Z","level":"INFO","fields":{"message":"Discovered new app: proxy.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-10T13:07:26.969477Z","level":"ERROR","fields":{"message":"HTTP/1.1 server error (listener 0): Permission denied (os error 13)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969481Z","level":"ERROR","fields":{"message":"HTTP/1.1 server error (listener 1): Permission denied (os error 13)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969485Z","level":"ERROR","fields":{"message":"HTTP/1.1 server error (listener 2): Permission denied (os error 13)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969497Z","level":"ERROR","fields":{"message":"HTTP/1.1 server error (listener 6): Permission denied (os error 13)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969510Z","level":"ERROR","fields":{"message":"HTTP/1.1 server error (listener 10): Permission denied (os error 13)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969512Z","level":"ERROR","fields":{"message":"HTTP/1.1 server error (listener 12): Permission denied (os error 13)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969498Z","level":"ERROR","fields":{"message":"HTTP/1.1 server error (listener 4): Permission denied (os error 13)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969505Z","level":"ERROR","fields":{"message":"HTTP/1.1 server error (listener 8): Permission denied (os error 13)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969516Z","level":"INFO","fields":{"message":"Discovered new app: _admin"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-10T13:07:26.969519Z","level":"ERROR","fields":{"message":"HTTP/1.1 server error (listener 3): Permission denied (os error 13)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969530Z","level":"ERROR","fields":{"message":"HTTP/1.1 server error (listener 7): Permission denied (os error 13)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969533Z","level":"ERROR","fields":{"message":"HTTP/1.1 server error (listener 11): Permission denied (os error 13)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969534Z","level":"ERROR","fields":{"message":"HTTP/1.1 server error (listener 13): Permission denied (os error 13)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969542Z","level":"ERROR","fields":{"message":"HTTP/1.1 server error (listener 5): Permission denied (os error 13)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969548Z","level":"ERROR","fields":{"message":"HTTP/1.1 server error (listener 9): Permission denied (os error 13)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969555Z","level":"ERROR","fields":{"message":"HTTP/1.1 server error (listener 14): Permission denied (os error 13)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969570Z","level":"ERROR","fields":{"message":"HTTPS/2 server error (listener 3): Permission denied (os error 13)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969567Z","level":"ERROR","fields":{"message":"HTTPS/2 server error (listener 0): Permission denied (os error 13)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969574Z","level":"ERROR","fields":{"message":"HTTPS/2 server error (listener 5): Permission denied (os error 13)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969577Z","level":"ERROR","fields":{"message":"HTTPS/2 server error (listener 6): Permission denied (os error 13)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969581Z","level":"ERROR","fields":{"message":"HTTPS/2 server error (listener 8): Permission denied (os error 13)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969585Z","level":"ERROR","fields":{"message":"HTTPS/2 server error (listener 2): Permission denied (os error 13)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969592Z","level":"ERROR","fields":{"message":"HTTPS/2 server error (listener 10): Permission denied (os error 13)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969594Z","level":"ERROR","fields":{"message":"HTTP/1.1 server error (listener 15): Permission denied (os error 13)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969609Z","level":"ERROR","fields":{"message":"HTTPS/2 server error (listener 9): Permission denied (os error 13)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969596Z","level":"ERROR","fields":{"message":"HTTPS/2 server error (listener 13): Permission denied (os error 13)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969598Z","level":"ERROR","fields":{"message":"HTTPS/2 server error (listener 11): Permission denied (os error 13)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969597Z","level":"ERROR","fields":{"message":"HTTPS/2 server error (listener 4): Permission denied (os error 13)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969602Z","level":"ERROR","fields":{"message":"HTTPS/2 server error (listener 1): Permission denied (os error 13)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969605Z","level":"ERROR","fields":{"message":"HTTPS/2 server error (listener 14): Permission denied (os error 13)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969605Z","level":"ERROR","fields":{"message":"HTTPS/2 server error (listener 7): Permission denied (os error 13)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969623Z","level":"ERROR","fields":{"message":"HTTPS/2 server error (listener 12): Permission denied (os error 13)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:26.969610Z","level":"ERROR","fields":{"message":"HTTPS/2 server error (listener 15): Permission denied (os error 13)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-10T13:07:27.033417Z","level":"INFO","fields":{"message":"Auto-starting app: proxy.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-10T13:07:27.033469Z","level":"INFO","fields":{"message":"Starting deployment of proxy.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-10T13:07:27.035065Z","level":"INFO","fields":{"message":"Started proxy.solisoft.net slot blue with PID 127286"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-10T13:07:28.068632Z","level":"INFO","fields":{"message":"Health check passed for proxy.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-10T13:07:28.069389Z","level":"INFO","fields":{"message":"Health check passed for proxy.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-10T13:07:28.069435Z","level":"INFO","fields":{"message":"Auto-starting app: _admin"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-10T13:07:28.069446Z","level":"INFO","fields":{"message":"Starting deployment of _admin to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-10T13:07:28.071105Z","level":"INFO","fields":{"message":"Started _admin slot blue with PID 127326"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-10T13:07:29.097887Z","level":"INFO","fields":{"message":"Health check passed for _admin slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-10T13:07:29.098623Z","level":"INFO","fields":{"message":"Health check passed for _admin slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-10T13:07:57.310226Z","level":"INFO","fields":{"message":"Starting deployment of proxy.solisoft.net to slot green"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-10T13:07:57.311783Z","level":"INFO","fields":{"message":"Started proxy.solisoft.net slot green with PID 127778"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-10T13:07:58.343904Z","level":"INFO","fields":{"message":"Health check passed for proxy.solisoft.net slot green after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-10T13:07:58.344569Z","level":"INFO","fields":{"message":"Health check passed for proxy.solisoft.net slot green"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-10T13:07:58.344595Z","level":"INFO","fields":{"message":"Updated route for domain proxy.solisoft.net -> http://localhost:21175"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-10T13:07:58.344760Z","level":"INFO","fields":{"message":"Configuration persisted to ./proxy.conf"},"target":"soli_proxy::config"}
+{"timestamp":"2026-02-10T13:08:05.471411Z","level":"INFO","fields":{"message":"Starting deployment of proxy.solisoft.net to slot green"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-10T13:08:05.472749Z","level":"INFO","fields":{"message":"Started proxy.solisoft.net slot green with PID 127881"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-10T13:08:06.505286Z","level":"INFO","fields":{"message":"Health check passed for proxy.solisoft.net slot green after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-10T13:08:06.505706Z","level":"INFO","fields":{"message":"Health check passed for proxy.solisoft.net slot green"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-10T13:08:35.777305Z","level":"INFO","fields":{"message":"Starting deployment of proxy.solisoft.net to slot green"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-10T13:08:35.778664Z","level":"INFO","fields":{"message":"Started proxy.solisoft.net slot green with PID 128336"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-10T13:08:36.810014Z","level":"INFO","fields":{"message":"Health check passed for proxy.solisoft.net slot green after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-10T13:08:36.810610Z","level":"INFO","fields":{"message":"Health check passed for proxy.solisoft.net slot green"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-10T13:09:04.601562Z","level":"INFO","fields":{"message":"Starting deployment of proxy.solisoft.net to slot green"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-10T13:09:04.603736Z","level":"INFO","fields":{"message":"Started proxy.solisoft.net slot green with PID 128820"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-10T13:09:05.637522Z","level":"INFO","fields":{"message":"Health check passed for proxy.solisoft.net slot green after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-10T13:09:05.637935Z","level":"INFO","fields":{"message":"Health check passed for proxy.solisoft.net slot green"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-10T13:17:19.600891Z","level":"INFO","fields":{"message":"Received SIGTERM, shutting down..."},"target":"soli_proxy"}

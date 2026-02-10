@@ -92,6 +92,8 @@ var AdminAPI = (function() {
         return _post('/api/v1/apps/' + encodeURIComponent(name) + '/' + action);
     }
 
+    function getAllAppMetrics() { return _fetch('/api/v1/app-metrics'); }
+
     function setBaseUrl(url) {
         _baseUrl = url;
         localStorage.setItem('admin_api_url', url);
@@ -191,6 +193,32 @@ var AdminAPI = (function() {
         }, 3000);
     }
 
+    // ---- Loading Button State ----
+
+    function setButtonLoading(btn, loading, originalText) {
+        if (!btn) return;
+        if (loading) {
+            btn._originalText = btn.innerHTML;
+            btn._originalDisabled = btn.disabled;
+            btn.disabled = true;
+            var text = btn.dataset.loadingText || 'Loading...';
+            btn.innerHTML = '<span class="flex items-center justify-center gap-2"><svg class="animate-spin h-4 w-4" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>' + text + '</span>';
+            btn.classList.add('opacity-75', 'cursor-not-allowed', 'whitespace-nowrap');
+        } else {
+            btn.disabled = btn._originalDisabled !== undefined ? btn._originalDisabled : false;
+            btn.innerHTML = btn._originalText || btn.innerHTML;
+            btn.classList.remove('opacity-75', 'cursor-not-allowed', 'whitespace-nowrap');
+        }
+    }
+
+    // Find button by name and action and set loading
+    function setActionButtonLoading(name, action, loading) {
+        var btn = document.querySelector('[data-app="' + esc(name) + '"][data-action="' + esc(action) + '"]');
+        if (btn) {
+            setButtonLoading(btn, loading);
+        }
+    }
+
     // ---- Modal System ----
 
     function showModal(html) {
@@ -280,6 +308,7 @@ var AdminAPI = (function() {
         getApps: getApps,
         getApp: getApp,
         getAppLogs: getAppLogs,
+        getAllAppMetrics: getAllAppMetrics,
         addRoute: addRoute,
         updateRoute: updateRoute,
         deleteRoute: deleteRoute,
@@ -295,6 +324,8 @@ var AdminAPI = (function() {
         esc: esc,
         toast: toast,
         showModal: showModal,
-        closeModal: closeModal
+        closeModal: closeModal,
+        setButtonLoading: setButtonLoading,
+        setActionButtonLoading: setActionButtonLoading
     };
 })();
