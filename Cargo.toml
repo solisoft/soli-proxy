@@ -4,6 +4,7 @@ version = "0.3.0"
 edition = "2021"
 description = "A fast, configurable reverse proxy with automatic HTTPS, Lua scripting, and blue-green deployments"
 license = "MIT"
+repository = "https://github.com/solisoft/soli-proxy"
 
 [[bin]]
 name = "benchmark"
