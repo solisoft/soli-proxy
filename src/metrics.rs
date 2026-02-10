@@ -163,7 +163,7 @@ impl Metrics {
         status: u16,
         duration: std::time::Duration,
     ) {
-        let success = status >= 200 && status < 400;
+        let success = (200..400).contains(&status);
         self.record_app_request_with_success(app_name, bytes_in, bytes_out, duration, success);
     }
 
@@ -178,7 +178,7 @@ impl Metrics {
         let app_name = app_name.to_string();
         {
             let mut apps = self.app_metrics.write();
-            apps.entry(app_name.clone()).or_insert_with(AppMetrics::new);
+            apps.entry(app_name.clone()).or_default();
         }
 
         let app_metrics = {

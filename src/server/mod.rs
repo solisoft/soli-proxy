@@ -247,6 +247,7 @@ impl ProxyServer {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_http_server(
     addr: SocketAddr,
     config: Arc<ConfigManager>,
@@ -351,6 +352,7 @@ async fn run_https_server(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_http11_connection(
     stream: tokio::net::TcpStream,
     client: ClientType,
@@ -388,6 +390,7 @@ async fn handle_http11_connection(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_https2_connection(
     stream: tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
     client: ClientType,
@@ -506,6 +509,7 @@ fn extract_response_headers(
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_request(
     req: Request<Incoming>,
     client: ClientType,
