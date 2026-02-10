@@ -1,0 +1,189 @@
+<!-- Header -->
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <p class="text-sm text-slate-400">Manage proxy routing rules. Changes take effect immediately.</p>
+    </div>
+    <button onclick="RouteManager.showAddModal()" class="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-2">
+        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
+        Add Route
+    </button>
+</div>
+
+<!-- Routes Table -->
+<div class="bg-slate-900/60 border border-white/5 rounded-xl overflow-hidden">
+    <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead>
+                <tr class="border-b border-white/5">
+                    <th class="text-left px-4 py-3 text-xs font-medium text-slate-500 uppercase tracking-wider">#</th>
+                    <th class="text-left px-4 py-3 text-xs font-medium text-slate-500 uppercase tracking-wider">Matcher</th>
+                    <th class="text-left px-4 py-3 text-xs font-medium text-slate-500 uppercase tracking-wider">Pattern</th>
+                    <th class="text-left px-4 py-3 text-xs font-medium text-slate-500 uppercase tracking-wider">Targets</th>
+                    <th class="text-left px-4 py-3 text-xs font-medium text-slate-500 uppercase tracking-wider">Headers</th>
+                    <th class="text-left px-4 py-3 text-xs font-medium text-slate-500 uppercase tracking-wider">Script</th>
+                    <th class="text-right px-4 py-3 text-xs font-medium text-slate-500 uppercase tracking-wider">Actions</th>
+                </tr>
+            </thead>
+            <tbody id="routes-table-body" class="divide-y divide-white/5">
+                <tr><td colspan="7" class="px-4 py-8 text-center text-slate-500">Loading routes...</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+var RouteManager = {
+    routes: [],
+
+    load: function() {
+        AdminAPI.getRoutes().then(function(d) {
+            RouteManager.routes = d.data;
+            RouteManager.render();
+        }).catch(function() {
+            document.getElementById('routes-table-body').innerHTML =
+                '<tr><td colspan="7" class="px-4 py-8 text-center text-rose-400">Failed to load routes</td></tr>';
+        });
+    },
+
+    render: function() {
+        var tbody = document.getElementById('routes-table-body');
+        if (!this.routes.length) {
+            tbody.innerHTML = '<tr><td colspan="7" class="px-4 py-8 text-center text-slate-500">No routes configured</td></tr>';
+            return;
+        }
+        tbody.innerHTML = this.routes.map(function(r, i) {
+            var targets = (r.targets || []).map(function(t) {
+                var w = t.weight ? ' <span class="text-slate-600">(' + t.weight + ')</span>' : '';
+                return '<span class="font-mono text-xs">' + AdminAPI.esc(t.url || '') + w + '</span>';
+            }).join('<br>');
+
+            // matcher is {type, value}
+            var matcherType = (r.matcher && r.matcher.type) ? r.matcher.type : 'default';
+            var matcherValue = (r.matcher && r.matcher.value) ? r.matcher.value : '-';
+
+            // headers is an array of strings
+            var headers = '';
+            if (r.headers && r.headers.length) {
+                headers = r.headers.map(function(h) {
+                    return '<span class="text-xs">' + AdminAPI.esc(h) + '</span>';
+                }).join('<br>');
+            } else {
+                headers = '<span class="text-slate-600">-</span>';
+            }
+
+            // scripts is an array
+            var scripts = '';
+            if (r.scripts && r.scripts.length) {
+                scripts = r.scripts.map(function(s) {
+                    var display = s.length > 30 ? s.substring(0, 30) + '...' : s;
+                    return '<span class="text-xs text-cyan-400 font-mono">' + AdminAPI.esc(display) + '</span>';
+                }).join('<br>');
+            } else {
+                scripts = '<span class="text-slate-600">-</span>';
+            }
+
+            return '<tr class="hover:bg-white/[0.02] transition-colors">' +
+                '<td class="px-4 py-3 text-slate-500 font-mono">' + i + '</td>' +
+                '<td class="px-4 py-3"><span class="px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-400 text-xs font-medium">' + AdminAPI.esc(matcherType) + '</span></td>' +
+                '<td class="px-4 py-3 font-mono text-xs text-white">' + AdminAPI.esc(matcherValue) + '</td>' +
+                '<td class="px-4 py-3">' + targets + '</td>' +
+                '<td class="px-4 py-3">' + headers + '</td>' +
+                '<td class="px-4 py-3">' + scripts + '</td>' +
+                '<td class="px-4 py-3 text-right">' +
+                    '<button onclick="RouteManager.showEditModal(' + i + ')" class="p-1.5 rounded hover:bg-white/10 text-slate-400 hover:text-white transition-colors" title="Edit">' +
+                        '<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125" /></svg>' +
+                    '</button>' +
+                    '<button onclick="RouteManager.deleteRoute(' + i + ')" class="p-1.5 rounded hover:bg-rose-500/10 text-slate-400 hover:text-rose-400 transition-colors ml-1" title="Delete">' +
+                        '<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" /></svg>' +
+                    '</button>' +
+                '</td></tr>';
+        }).join('');
+    },
+
+    showAddModal: function() {
+        this._showModal('Add Route', -1, {matcher: {type: 'prefix', value: ''}, targets: [{url: '', weight: 100}], headers: [], scripts: []});
+    },
+
+    showEditModal: function(index) {
+        var route = this.routes[index];
+        this._showModal('Edit Route #' + index, index, route);
+    },
+
+    _showModal: function(title, index, route) {
+        var matcherType = (route.matcher && route.matcher.type) || 'default';
+        var matcherValue = (route.matcher && route.matcher.value) || '';
+        var targets = (route.targets || []).map(function(t) { return t.url || ''; }).join('\n');
+        var headers = (route.headers || []).join('\n');
+        var scripts = (route.scripts || []).join('\n');
+
+        var types = ['default', 'domain', 'prefix', 'exact', 'regex', 'websocket'];
+        var typeOptions = types.map(function(t) {
+            return '<option value="' + t + '"' + (matcherType === t ? ' selected' : '') + '>' + t + '</option>';
+        }).join('');
+
+        var html = '<div class="p-6">' +
+            '<h2 class="text-lg font-semibold text-white mb-6">' + title + '</h2>' +
+            '<div class="space-y-4">' +
+                '<div><label class="block text-xs font-medium text-slate-400 mb-1.5">Matcher Type</label>' +
+                '<select id="route-matcher" class="w-full bg-slate-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500/50">' +
+                    typeOptions +
+                '</select></div>' +
+                '<div><label class="block text-xs font-medium text-slate-400 mb-1.5">Value (domain, prefix, pattern...)</label>' +
+                '<input id="route-value" type="text" value="' + AdminAPI.esc(matcherValue) + '" class="w-full bg-slate-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-emerald-500/50" placeholder="example.com or /api/*"></div>' +
+                '<div><label class="block text-xs font-medium text-slate-400 mb-1.5">Targets (one URL per line)</label>' +
+                '<textarea id="route-targets" rows="3" class="w-full bg-slate-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-emerald-500/50" placeholder="http://localhost:3000">' + AdminAPI.esc(targets) + '</textarea></div>' +
+                '<div><label class="block text-xs font-medium text-slate-400 mb-1.5">Headers (one per line)</label>' +
+                '<textarea id="route-headers" rows="2" class="w-full bg-slate-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-emerald-500/50" placeholder="X-Forwarded-For: $remote_addr">' + AdminAPI.esc(headers) + '</textarea></div>' +
+                '<div><label class="block text-xs font-medium text-slate-400 mb-1.5">Scripts (one per line, optional)</label>' +
+                '<textarea id="route-scripts" rows="2" class="w-full bg-slate-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-emerald-500/50">' + AdminAPI.esc(scripts) + '</textarea></div>' +
+            '</div>' +
+            '<div class="flex gap-3 mt-6">' +
+                '<button onclick="RouteManager.saveRoute(' + index + ')" class="flex-1 px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-medium rounded-lg transition-colors">Save</button>' +
+                '<button onclick="AdminAPI.closeModal()" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-medium rounded-lg transition-colors border border-white/10">Cancel</button>' +
+            '</div></div>';
+
+        AdminAPI.showModal(html);
+    },
+
+    saveRoute: function(index) {
+        var targets = document.getElementById('route-targets').value.split('\n').filter(function(l){return l.trim()}).map(function(l) {
+            return {url: l.trim(), weight: 100};
+        });
+        var headers = document.getElementById('route-headers').value.split('\n').filter(function(l){return l.trim()});
+        var scripts = document.getElementById('route-scripts').value.split('\n').filter(function(l){return l.trim()});
+
+        var matcherType = document.getElementById('route-matcher').value;
+        var matcherValue = document.getElementById('route-value').value;
+        var matcher = {type: matcherType};
+        if (matcherValue) matcher.value = matcherValue;
+
+        var route = {
+            matcher: matcher,
+            targets: targets,
+            headers: headers,
+            scripts: scripts
+        };
+
+        var promise = index === -1 ? AdminAPI.addRoute(route) : AdminAPI.updateRoute(index, route);
+        promise.then(function() {
+            AdminAPI.closeModal();
+            AdminAPI.toast(index === -1 ? 'Route added' : 'Route updated', 'success');
+            RouteManager.load();
+        }).catch(function(err) {
+            AdminAPI.toast('Failed: ' + err.message, 'error');
+        });
+    },
+
+    deleteRoute: function(index) {
+        if (!confirm('Delete route #' + index + '?')) return;
+        AdminAPI.deleteRoute(index).then(function() {
+            AdminAPI.toast('Route deleted', 'success');
+            RouteManager.load();
+        }).catch(function(err) {
+            AdminAPI.toast('Failed: ' + err.message, 'error');
+        });
+    }
+};
+
+RouteManager.load();
+</script>

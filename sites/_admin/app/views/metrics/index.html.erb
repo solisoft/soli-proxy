@@ -1,0 +1,123 @@
+<!-- Header -->
+<div class="flex items-center justify-between mb-6">
+    <p class="text-sm text-slate-400">Live metrics from the proxy. Auto-refreshes every 3 seconds.</p>
+    <div class="flex items-center gap-2">
+        <div class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></div>
+        <span class="text-xs text-slate-500">Live</span>
+    </div>
+</div>
+
+<!-- Metric Cards -->
+<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6" id="metrics-cards">
+    <div class="bg-slate-900/60 border border-white/5 rounded-xl p-5 col-span-full text-center">
+        <span class="text-slate-500">Loading metrics...</span>
+    </div>
+</div>
+
+<!-- Status Code Breakdown -->
+<div class="bg-slate-900/60 border border-white/5 rounded-xl overflow-hidden mb-6">
+    <div class="px-5 py-4 border-b border-white/5">
+        <h3 class="text-sm font-semibold text-white">Status Code Breakdown</h3>
+    </div>
+    <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead>
+                <tr class="border-b border-white/5">
+                    <th class="text-left px-4 py-3 text-xs font-medium text-slate-500 uppercase">Status</th>
+                    <th class="text-left px-4 py-3 text-xs font-medium text-slate-500 uppercase">Method</th>
+                    <th class="text-right px-4 py-3 text-xs font-medium text-slate-500 uppercase">Count</th>
+                </tr>
+            </thead>
+            <tbody id="status-table-body" class="divide-y divide-white/5">
+                <tr><td colspan="3" class="px-4 py-4 text-center text-slate-500">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Raw Metrics -->
+<details class="bg-slate-900/60 border border-white/5 rounded-xl overflow-hidden">
+    <summary class="px-5 py-4 text-sm font-semibold text-white cursor-pointer hover:bg-white/[0.02] transition-colors">Raw Prometheus Output</summary>
+    <pre id="raw-metrics" class="px-5 py-4 text-xs text-slate-400 font-mono max-h-96 overflow-auto whitespace-pre-wrap border-t border-white/5">Loading...</pre>
+</details>
+
+<script>
+(function() {
+    function load() {
+        AdminAPI.getMetrics().then(function(text) {
+            var m = AdminAPI.parsePrometheus(text);
+
+            // Build metric cards
+            var cards = [];
+            function addCard(label, value, color, icon) {
+                cards.push(
+                    '<div class="bg-slate-900/60 border border-white/5 rounded-xl p-5">' +
+                        '<div class="text-xs font-medium text-slate-500 uppercase tracking-wider mb-2">' + label + '</div>' +
+                        '<div class="text-2xl font-bold text-' + color + '">' + value + '</div>' +
+                    '</div>'
+                );
+            }
+
+            var totalReqs = AdminAPI.metricVal(m, 'proxy_requests_total');
+            addCard('Requests Total', AdminAPI.formatNumber(totalReqs), 'white');
+
+            var inflight = AdminAPI.metricVal(m, 'proxy_requests_in_flight');
+            addCard('In-Flight', inflight, 'indigo-400');
+
+            var bytesIn = AdminAPI.metricVal(m, 'proxy_bytes_received');
+            addCard('Bytes Received', AdminAPI.formatBytes(bytesIn), 'cyan-400');
+
+            var bytesOut = AdminAPI.metricVal(m, 'proxy_bytes_sent');
+            addCard('Bytes Sent', AdminAPI.formatBytes(bytesOut), 'emerald-400');
+
+            var avgTime = AdminAPI.metricVal(m, 'proxy_response_time_seconds');
+            addCard('Avg Response Time', (avgTime * 1000).toFixed(2) + 'ms', 'amber-400');
+
+            var tlsConns = AdminAPI.metricVal(m, 'proxy_tls_connections_total');
+            addCard('TLS Connections', AdminAPI.formatNumber(tlsConns), 'purple-400');
+
+            var errors = AdminAPI.metricVal(m, 'proxy_errors_total');
+            addCard('Errors', errors, errors > 0 ? 'rose-400' : 'emerald-400');
+
+            var statusCodes = m['proxy_response_status_codes_total'] || {};
+            var total5xx = 0, total4xx = 0;
+            Object.keys(statusCodes).forEach(function(k) {
+                if (k.indexOf('code="5') !== -1) total5xx += statusCodes[k];
+                if (k.indexOf('code="4') !== -1) total4xx += statusCodes[k];
+            });
+            addCard('5xx / 4xx', total5xx + ' / ' + total4xx, (total5xx > 0 ? 'rose-400' : 'emerald-400'));
+
+            document.getElementById('metrics-cards').innerHTML = cards.join('');
+
+            // Status code table
+            var rows = [];
+            Object.keys(statusCodes).sort().forEach(function(k) {
+                var codeMatch = k.match(/code="(\d+)"/);
+                var count = statusCodes[k];
+                var statusCode = codeMatch ? codeMatch[1] : '-';
+                var statusColor = 'text-slate-300';
+                if (statusCode.charAt(0) === '2') statusColor = 'text-emerald-400';
+                else if (statusCode.charAt(0) === '3') statusColor = 'text-cyan-400';
+                else if (statusCode.charAt(0) === '4') statusColor = 'text-amber-400';
+                else if (statusCode.charAt(0) === '5') statusColor = 'text-rose-400';
+
+                rows.push('<tr class="hover:bg-white/[0.02]">' +
+                    '<td class="px-4 py-2.5 font-mono text-xs ' + statusColor + '">' + statusCode + '</td>' +
+                    '<td class="px-4 py-2.5 text-xs text-slate-400">-</td>' +
+                    '<td class="px-4 py-2.5 text-right font-mono text-xs text-white">' + AdminAPI.formatNumber(count) + '</td>' +
+                '</tr>');
+            });
+            document.getElementById('status-table-body').innerHTML = rows.join('') || '<tr><td colspan="3" class="px-4 py-4 text-center text-slate-500">No request data yet</td></tr>';
+
+            // Raw output
+            document.getElementById('raw-metrics').textContent = text;
+        }).catch(function() {
+            document.getElementById('metrics-cards').innerHTML =
+                '<div class="bg-slate-900/60 border border-white/5 rounded-xl p-8 text-center col-span-full"><span class="text-rose-400">Failed to load metrics</span></div>';
+        });
+    }
+
+    load();
+    setInterval(load, 3000);
+})();
+</script>

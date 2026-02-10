@@ -1,0 +1,71 @@
+<!-- Header -->
+<div class="flex items-center justify-between mb-6">
+    <p class="text-sm text-slate-400">Read-only view of the current proxy configuration.</p>
+    <button onclick="ConfigViewer.reload()" class="px-4 py-2 bg-indigo-500 hover:bg-indigo-600 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-2">
+        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182" /></svg>
+        Reload from Disk
+    </button>
+</div>
+
+<!-- Config Display -->
+<div class="bg-slate-900/60 border border-white/5 rounded-xl overflow-hidden">
+    <div class="px-5 py-4 border-b border-white/5 flex items-center justify-between">
+        <h3 class="text-sm font-semibold text-white">proxy configuration</h3>
+        <button onclick="ConfigViewer.copy()" class="text-xs text-slate-400 hover:text-white transition-colors flex items-center gap-1">
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.666 3.888A2.25 2.25 0 0013.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 01-.75.75H9.75a.75.75 0 01-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 01-2.25 2.25H6.75A2.25 2.25 0 014.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 011.927-.184" /></svg>
+            Copy
+        </button>
+    </div>
+    <pre id="config-json" class="p-5 text-sm text-slate-300 font-mono max-h-[70vh] overflow-auto whitespace-pre-wrap">Loading configuration...</pre>
+</div>
+
+<script>
+var ConfigViewer = {
+    configText: '',
+
+    load: function() {
+        AdminAPI.getConfig().then(function(d) {
+            ConfigViewer.configText = JSON.stringify(d.data, null, 2);
+            document.getElementById('config-json').innerHTML = ConfigViewer.syntaxHighlight(ConfigViewer.configText);
+        }).catch(function() {
+            document.getElementById('config-json').innerHTML = '<span class="text-rose-400">Failed to load configuration</span>';
+        });
+    },
+
+    reload: function() {
+        AdminAPI.reloadConfig().then(function() {
+            AdminAPI.toast('Configuration reloaded from disk', 'success');
+            ConfigViewer.load();
+        }).catch(function(err) {
+            AdminAPI.toast('Reload failed: ' + err.message, 'error');
+        });
+    },
+
+    copy: function() {
+        navigator.clipboard.writeText(ConfigViewer.configText).then(function() {
+            AdminAPI.toast('Copied to clipboard', 'success');
+        });
+    },
+
+    syntaxHighlight: function(json) {
+        json = json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        return json.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, function(match) {
+            var cls = 'text-amber-300'; // number
+            if (/^"/.test(match)) {
+                if (/:$/.test(match)) {
+                    cls = 'text-cyan-400'; // key
+                } else {
+                    cls = 'text-emerald-400'; // string
+                }
+            } else if (/true|false/.test(match)) {
+                cls = 'text-purple-400'; // boolean
+            } else if (/null/.test(match)) {
+                cls = 'text-slate-500'; // null
+            }
+            return '<span class="' + cls + '">' + match + '</span>';
+        });
+    }
+};
+
+ConfigViewer.load();
+</script>

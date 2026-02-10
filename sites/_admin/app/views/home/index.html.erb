@@ -1,0 +1,216 @@
+<!-- Status Cards -->
+<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+    <!-- Version / Uptime -->
+    <div class="bg-slate-900/60 border border-white/5 rounded-xl p-5">
+        <div class="flex items-center justify-between mb-3">
+            <span class="text-xs font-medium text-slate-500 uppercase tracking-wider">Proxy Version</span>
+            <div class="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center">
+                <svg class="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M12 5l7 7-7 7" /></svg>
+            </div>
+        </div>
+        <div class="text-2xl font-bold text-white" id="dash-version">-</div>
+        <div class="text-xs text-slate-500 mt-1">Uptime: <span id="dash-uptime">-</span></div>
+    </div>
+
+    <!-- Total Requests -->
+    <div class="bg-slate-900/60 border border-white/5 rounded-xl p-5">
+        <div class="flex items-center justify-between mb-3">
+            <span class="text-xs font-medium text-slate-500 uppercase tracking-wider">Total Requests</span>
+            <div class="w-8 h-8 rounded-lg bg-indigo-500/10 flex items-center justify-center">
+                <svg class="w-4 h-4 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75z" /></svg>
+            </div>
+        </div>
+        <div class="text-2xl font-bold text-white" id="dash-requests">-</div>
+        <div class="text-xs text-slate-500 mt-1">In-flight: <span id="dash-inflight">0</span></div>
+    </div>
+
+    <!-- Error Rate -->
+    <div class="bg-slate-900/60 border border-white/5 rounded-xl p-5">
+        <div class="flex items-center justify-between mb-3">
+            <span class="text-xs font-medium text-slate-500 uppercase tracking-wider">Error Rate</span>
+            <div class="w-8 h-8 rounded-lg bg-rose-500/10 flex items-center justify-center">
+                <svg class="w-4 h-4 text-rose-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126z" /></svg>
+            </div>
+        </div>
+        <div class="text-2xl font-bold text-white" id="dash-error-rate">-</div>
+        <div class="text-xs text-slate-500 mt-1">5xx errors: <span id="dash-5xx">0</span></div>
+    </div>
+
+    <!-- Avg Response Time -->
+    <div class="bg-slate-900/60 border border-white/5 rounded-xl p-5">
+        <div class="flex items-center justify-between mb-3">
+            <span class="text-xs font-medium text-slate-500 uppercase tracking-wider">Avg Response</span>
+            <div class="w-8 h-8 rounded-lg bg-cyan-500/10 flex items-center justify-center">
+                <svg class="w-4 h-4 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+            </div>
+        </div>
+        <div class="text-2xl font-bold text-white" id="dash-response-time">-</div>
+        <div class="text-xs text-slate-500 mt-1">Bytes in/out: <span id="dash-bytes">-</span></div>
+    </div>
+</div>
+
+<!-- Summary Row -->
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-8">
+    <!-- Routes Summary -->
+    <div class="bg-slate-900/60 border border-white/5 rounded-xl p-5">
+        <div class="flex items-center justify-between mb-4">
+            <h3 class="text-sm font-semibold text-white">Routes</h3>
+            <a href="/routes" class="text-xs text-emerald-400 hover:text-emerald-300 transition-colors">View all &rarr;</a>
+        </div>
+        <div class="text-3xl font-bold text-white mb-2" id="dash-route-count">-</div>
+        <div class="flex gap-3 text-xs text-slate-400" id="dash-route-types">
+            <span>Loading...</span>
+        </div>
+    </div>
+
+    <!-- Apps Summary -->
+    <div class="bg-slate-900/60 border border-white/5 rounded-xl p-5">
+        <div class="flex items-center justify-between mb-4">
+            <h3 class="text-sm font-semibold text-white">Applications</h3>
+            <a href="/apps" class="text-xs text-emerald-400 hover:text-emerald-300 transition-colors">View all &rarr;</a>
+        </div>
+        <div class="text-3xl font-bold text-white mb-2" id="dash-app-count">-</div>
+        <div class="flex gap-3 text-xs" id="dash-app-status">
+            <span class="text-slate-400">Loading...</span>
+        </div>
+    </div>
+
+    <!-- Circuit Breaker Summary -->
+    <div class="bg-slate-900/60 border border-white/5 rounded-xl p-5">
+        <div class="flex items-center justify-between mb-4">
+            <h3 class="text-sm font-semibold text-white">Circuit Breakers</h3>
+            <a href="/circuit-breaker" class="text-xs text-emerald-400 hover:text-emerald-300 transition-colors">View all &rarr;</a>
+        </div>
+        <div class="flex gap-4 mt-2">
+            <div class="text-center">
+                <div class="text-2xl font-bold text-emerald-400" id="dash-cb-closed">-</div>
+                <div class="text-xs text-slate-500">Closed</div>
+            </div>
+            <div class="text-center">
+                <div class="text-2xl font-bold text-amber-400" id="dash-cb-half">-</div>
+                <div class="text-xs text-slate-500">Half-Open</div>
+            </div>
+            <div class="text-center">
+                <div class="text-2xl font-bold text-rose-400" id="dash-cb-open">-</div>
+                <div class="text-xs text-slate-500">Open</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Server Info -->
+<div class="bg-slate-900/60 border border-white/5 rounded-xl p-5">
+    <h3 class="text-sm font-semibold text-white mb-4">Server Information</h3>
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
+        <div>
+            <div class="text-xs text-slate-500 mb-1">Bind Address</div>
+            <div class="text-white font-mono text-xs" id="dash-bind">-</div>
+        </div>
+        <div>
+            <div class="text-xs text-slate-500 mb-1">HTTPS Port</div>
+            <div class="text-white font-mono text-xs" id="dash-https-port">-</div>
+        </div>
+        <div>
+            <div class="text-xs text-slate-500 mb-1">TLS Mode</div>
+            <div class="text-white font-mono text-xs" id="dash-tls">-</div>
+        </div>
+        <div>
+            <div class="text-xs text-slate-500 mb-1">Admin API</div>
+            <div class="text-white font-mono text-xs" id="dash-admin-bind">-</div>
+        </div>
+    </div>
+</div>
+
+<script>
+(function() {
+    var refreshInterval = 5000;
+    function load() {
+        AdminAPI.getStatus().then(function(d) {
+            var s = d.data;
+            document.getElementById('dash-version').textContent = 'v' + s.version;
+            document.getElementById('dash-uptime').textContent = AdminAPI.formatUptime(s.uptime_secs);
+            document.getElementById('dash-bind').textContent = s.bind;
+            document.getElementById('dash-https-port').textContent = s.https_port || '-';
+            document.getElementById('dash-tls').textContent = s.tls_mode || 'none';
+            document.getElementById('dash-admin-bind').textContent = s.admin_bind;
+            document.getElementById('dash-route-count').textContent = s.route_count;
+            document.getElementById('dash-app-count').textContent = s.app_count;
+            document.getElementById('sidebar-version').textContent = 'v' + s.version;
+            document.getElementById('sidebar-uptime').textContent = 'Up ' + AdminAPI.formatUptime(s.uptime_secs);
+            document.getElementById('topbar-version').textContent = 'v' + s.version;
+        }).catch(function() {
+            document.getElementById('topbar-status').className = 'hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-rose-500/10 text-rose-400 border border-rose-500/20';
+            document.getElementById('topbar-status').innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-rose-400"></span> Disconnected';
+        });
+
+        AdminAPI.getMetrics().then(function(text) {
+            var m = AdminAPI.parsePrometheus(text);
+            var totalReqs = AdminAPI.metricVal(m, 'proxy_requests_total');
+            document.getElementById('dash-requests').textContent = AdminAPI.formatNumber(totalReqs);
+            document.getElementById('dash-inflight').textContent = AdminAPI.metricVal(m, 'proxy_requests_in_flight');
+
+            var total5xx = 0;
+            var statusCodes = m['proxy_response_status_codes_total'] || {};
+            Object.keys(statusCodes).forEach(function(k) {
+                if (k.indexOf('code="5') !== -1) total5xx += statusCodes[k];
+            });
+            document.getElementById('dash-5xx').textContent = total5xx;
+            document.getElementById('dash-error-rate').textContent = totalReqs > 0 ? (total5xx / totalReqs * 100).toFixed(1) + '%' : '0%';
+
+            var avgTime = AdminAPI.metricVal(m, 'proxy_response_time_seconds');
+            document.getElementById('dash-response-time').textContent = (avgTime * 1000).toFixed(1) + 'ms';
+
+            var bytesIn = AdminAPI.metricVal(m, 'proxy_bytes_received');
+            var bytesOut = AdminAPI.metricVal(m, 'proxy_bytes_sent');
+            document.getElementById('dash-bytes').textContent = AdminAPI.formatBytes(bytesIn) + ' / ' + AdminAPI.formatBytes(bytesOut);
+        }).catch(function(){});
+
+        AdminAPI.getRoutes().then(function(d) {
+            var routes = d.data;
+            var types = {};
+            routes.forEach(function(r) {
+                var t = (r.matcher && r.matcher.type) || 'unknown';
+                types[t] = (types[t] || 0) + 1;
+            });
+            var html = Object.keys(types).map(function(t) {
+                return '<span class="px-2 py-0.5 rounded bg-white/5 text-slate-300">' + t + ': ' + types[t] + '</span>';
+            }).join('');
+            document.getElementById('dash-route-types').innerHTML = html || '<span class="text-slate-500">No routes</span>';
+        }).catch(function(){});
+
+        AdminAPI.getApps().then(function(d) {
+            var apps = d.data;
+            var running = 0, stopped = 0;
+            apps.forEach(function(a) {
+                var slot = a.current_slot || 'blue';
+                var status = (a[slot] && a[slot].status) ? a[slot].status.toLowerCase() : 'stopped';
+                if (status === 'running') running++; else stopped++;
+            });
+            document.getElementById('dash-app-status').innerHTML =
+                '<span class="text-emerald-400">' + running + ' running</span>' +
+                '<span class="text-slate-500">' + stopped + ' stopped</span>';
+        }).catch(function() {
+            document.getElementById('dash-app-status').innerHTML = '<span class="text-slate-500">Unavailable</span>';
+        });
+
+        AdminAPI.getCircuitBreaker().then(function(d) {
+            var states = d.data;
+            var closed = 0, halfOpen = 0, open = 0;
+            if (typeof states === 'object') {
+                Object.values(states).forEach(function(s) {
+                    var st = (s.state || '').toLowerCase();
+                    if (st === 'closed') closed++;
+                    else if (st === 'half_open' || st === 'halfopen' || st === 'half-open') halfOpen++;
+                    else if (st === 'open') open++;
+                });
+            }
+            document.getElementById('dash-cb-closed').textContent = closed;
+            document.getElementById('dash-cb-half').textContent = halfOpen;
+            document.getElementById('dash-cb-open').textContent = open;
+        }).catch(function(){});
+    }
+
+    load();
+    setInterval(load, refreshInterval);
+})();
+</script>
