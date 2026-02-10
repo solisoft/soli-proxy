@@ -78,12 +78,13 @@ pub struct AppInfo {
 impl AppInfo {
     pub fn from_path(path: &std::path::Path) -> Result<Self, anyhow::Error> {
         let app_infos_path = path.join("app.infos");
-        if !app_infos_path.exists() {
-            anyhow::bail!("app.infos not found in {}", path.display());
-        }
 
-        let content = std::fs::read_to_string(&app_infos_path)?;
-        let config: AppConfig = toml::from_str(&content)?;
+        let config = if app_infos_path.exists() {
+            let content = std::fs::read_to_string(&app_infos_path)?;
+            toml::from_str(&content)?
+        } else {
+            AppConfig::default()
+        };
 
         let app_name = path
             .file_name()
