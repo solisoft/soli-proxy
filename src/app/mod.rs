@@ -91,7 +91,7 @@ impl AppInfo {
     pub fn from_path(path: &std::path::Path) -> Result<Self, anyhow::Error> {
         let app_infos_path = path.join("app.infos");
 
-        let config = if app_infos_path.exists() {
+        let mut config = if app_infos_path.exists() {
             let content = std::fs::read_to_string(&app_infos_path)?;
             toml::from_str(&content)?
         } else {
@@ -103,6 +103,20 @@ impl AppInfo {
             .and_then(|n| n.to_str())
             .unwrap_or_default()
             .to_string();
+
+        // Name fallback: use directory name if not set in app.infos
+        if config.name.is_empty() {
+            config.name = app_name.clone();
+        }
+
+        // LuaOnBeans auto-detection: if no start_script and luaonbeans.org binary exists
+        if config.start_script.is_none() && path.join("luaonbeans.org").exists() {
+            config.start_script = Some("./luaonbeans.org -D . -p $PORT -s".to_string());
+            config.health_check = Some("/".to_string());
+            if config.domain.is_empty() {
+                config.domain = app_name.clone();
+            }
+        }
 
         Ok(Self {
             config,
@@ -873,5 +887,86 @@ port_range_end = 9999
         assert!(!is_acme_eligible("localhost"));
         assert!(!is_acme_eligible("app.localhost"));
         assert!(is_acme_eligible("app.example.com"));
+    }
+
+    #[test]
+    fn test_luaonbeans_auto_detected_no_app_infos() {
+        let temp_dir = TempDir::new().unwrap();
+        let app_path = temp_dir.path().join("myapp.example.com");
+        std::fs::create_dir_all(&app_path).unwrap();
+        std::fs::write(app_path.join("luaonbeans.org"), b"").unwrap();
+
+        let app_info = AppInfo::from_path(&app_path).unwrap();
+        assert_eq!(app_info.config.name, "myapp.example.com");
+        assert_eq!(app_info.config.domain, "myapp.example.com");
+        assert_eq!(
+            app_info.config.start_script,
+            Some("./luaonbeans.org -D . -p $PORT -s".to_string())
+        );
+        assert_eq!(app_info.config.health_check, Some("/".to_string()));
+    }
+
+    #[test]
+    fn test_luaonbeans_auto_detected_with_partial_app_infos() {
+        let temp_dir = TempDir::new().unwrap();
+        let app_path = temp_dir.path().join("myapp");
+        std::fs::create_dir_all(&app_path).unwrap();
+        std::fs::write(app_path.join("luaonbeans.org"), b"").unwrap();
+
+        let app_infos = r#"
+name = "myapp"
+domain = "custom.example.com"
+graceful_timeout = 30
+port_range_start = 9000
+port_range_end = 9999
+"#;
+        std::fs::write(app_path.join("app.infos"), app_infos).unwrap();
+
+        let app_info = AppInfo::from_path(&app_path).unwrap();
+        assert_eq!(app_info.config.name, "myapp");
+        assert_eq!(app_info.config.domain, "custom.example.com");
+        assert_eq!(
+            app_info.config.start_script,
+            Some("./luaonbeans.org -D . -p $PORT -s".to_string())
+        );
+        assert_eq!(app_info.config.health_check, Some("/".to_string()));
+    }
+
+    #[test]
+    fn test_no_override_when_start_script_set() {
+        let temp_dir = TempDir::new().unwrap();
+        let app_path = temp_dir.path().join("myapp");
+        std::fs::create_dir_all(&app_path).unwrap();
+        std::fs::write(app_path.join("luaonbeans.org"), b"").unwrap();
+
+        let app_infos = r#"
+name = "myapp"
+domain = "myapp.example.com"
+start_script = "./custom-start.sh"
+health_check = "/health"
+graceful_timeout = 30
+port_range_start = 9000
+port_range_end = 9999
+"#;
+        std::fs::write(app_path.join("app.infos"), app_infos).unwrap();
+
+        let app_info = AppInfo::from_path(&app_path).unwrap();
+        assert_eq!(
+            app_info.config.start_script,
+            Some("./custom-start.sh".to_string())
+        );
+        assert_eq!(app_info.config.health_check, Some("/health".to_string()));
+    }
+
+    #[test]
+    fn test_no_detection_without_luaonbeans_or_app_infos() {
+        let temp_dir = TempDir::new().unwrap();
+        let app_path = temp_dir.path().join("emptyapp");
+        std::fs::create_dir_all(&app_path).unwrap();
+
+        let app_info = AppInfo::from_path(&app_path).unwrap();
+        assert_eq!(app_info.config.name, "emptyapp");
+        assert!(app_info.config.start_script.is_none());
+        assert_eq!(app_info.config.health_check, Some("/health".to_string()));
     }
 }
