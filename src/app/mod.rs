@@ -163,7 +163,7 @@ fn affected_app_names(sites_dir: &Path, paths: &HashSet<PathBuf>) -> HashSet<Str
             if let std::path::Component::Normal(s) = c {
                 IGNORED_SEGMENTS
                     .iter()
-                    .any(|ignored| s.to_str().map_or(false, |s| s == *ignored))
+                    .any(|ignored| s.to_str() == Some(*ignored))
             } else {
                 false
             }
@@ -487,7 +487,7 @@ impl AppManager {
                             app_names
                                 .into_iter()
                                 .filter(|name| {
-                                    apps.get(name).map_or(false, |app| {
+                                    apps.get(name).is_some_and(|app| {
                                         let instance = if app.current_slot == "blue" {
                                             &app.blue
                                         } else {
@@ -667,8 +667,14 @@ port_range_end = 9999
 
     #[test]
     fn test_dev_domain() {
-        assert_eq!(dev_domain("soli.solisoft.net"), Some("soli.solisoft.test".to_string()));
-        assert_eq!(dev_domain("app.example.com"), Some("app.example.test".to_string()));
+        assert_eq!(
+            dev_domain("soli.solisoft.net"),
+            Some("soli.solisoft.test".to_string())
+        );
+        assert_eq!(
+            dev_domain("app.example.com"),
+            Some("app.example.test".to_string())
+        );
         assert_eq!(dev_domain("example.org"), Some("example.test".to_string()));
         // Already .test — skip
         assert_eq!(dev_domain("app.example.test"), None);

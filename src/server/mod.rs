@@ -639,7 +639,11 @@ async fn handle_websocket_request(
 
     // Extract host:port from target URL (e.g. "http://127.0.0.1:3000/path" -> "127.0.0.1:3000")
     let backend_addr = match url::Url::parse(&target_url) {
-        Ok(u) => format!("{}:{}", u.host_str().unwrap_or("127.0.0.1"), u.port().unwrap_or(80)),
+        Ok(u) => format!(
+            "{}:{}",
+            u.host_str().unwrap_or("127.0.0.1"),
+            u.port().unwrap_or(80)
+        ),
         Err(_) => {
             metrics.inc_errors();
             let body = http_body_util::Full::new(Bytes::from("Bad backend URL")).boxed();
@@ -678,7 +682,12 @@ async fn handle_websocket_request(
         .unwrap_or(&backend_addr)
         .to_string();
 
-    tracing::info!("WebSocket upgrade request to {}{}{}", backend_addr, path, query);
+    tracing::info!(
+        "WebSocket upgrade request to {}{}{}",
+        backend_addr,
+        path,
+        query
+    );
 
     // Connect to the backend
     let backend = match TcpStream::connect(&backend_addr).await {
@@ -738,8 +747,8 @@ async fn handle_websocket_request(
             response_str.lines().next().unwrap_or("")
         );
         metrics.inc_errors();
-        let body = http_body_util::Full::new(Bytes::from("Backend rejected WebSocket upgrade"))
-            .boxed();
+        let body =
+            http_body_util::Full::new(Bytes::from("Backend rejected WebSocket upgrade")).boxed();
         return Ok(Response::builder().status(502).body(body).unwrap());
     }
 

@@ -261,7 +261,12 @@ async fn main() -> Result<()> {
         let port_manager = Arc::new(PortManager::new("./run").unwrap());
         let _ = port_manager.load().await;
 
-        match AppManager::new("./sites", port_manager.clone(), config_ref.clone(), dev_mode) {
+        match AppManager::new(
+            "./sites",
+            port_manager.clone(),
+            config_ref.clone(),
+            dev_mode,
+        ) {
             Ok(m) => {
                 tracing::info!("App manager initialized for ./sites");
                 Some(Arc::new(m))
@@ -353,10 +358,7 @@ async fn main() -> Result<()> {
                             manager.set_acme_service(acme_service).await;
                             // Re-run discover to issue certs for already-discovered domains
                             if let Err(e) = manager.discover_apps().await {
-                                tracing::error!(
-                                    "Failed to re-sync apps after ACME init: {}",
-                                    e
-                                );
+                                tracing::error!("Failed to re-sync apps after ACME init: {}", e);
                             }
                         }
 

@@ -86,8 +86,7 @@ impl DeploymentManager {
             base_script.clone()
         };
 
-        let output_file =
-            PathBuf::from(format!("run/logs/{}/{}.log", app.config.name, slot));
+        let output_file = PathBuf::from(format!("run/logs/{}/{}.log", app.config.name, slot));
         std::fs::create_dir_all(output_file.parent().unwrap())?;
 
         let output = std::fs::File::create(&output_file)?;

@@ -119,12 +119,8 @@ impl AcmeService {
             return Ok(());
         }
         tracing::info!("Issuing certificate for new domain: {}", domain);
-        let (cert_pem, key_pem) = issue_certificate(
-            &self.account,
-            &[domain.to_string()],
-            &self.challenge_store,
-        )
-        .await?;
+        let (cert_pem, key_pem) =
+            issue_certificate(&self.account, &[domain.to_string()], &self.challenge_store).await?;
         save_certificate(&self.cache_dir, domain, &cert_pem, &key_pem)?;
         let ck = certified_key_from_pem(cert_pem.as_bytes(), key_pem.as_bytes())?;
         self.resolver.set_cert(domain, Arc::new(ck));

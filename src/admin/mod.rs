@@ -358,7 +358,10 @@ async fn proxy_websocket_to_admin_app(
 
     let response_str = String::from_utf8_lossy(&response_buf[..n]);
     if !response_str.contains("101") {
-        tracing::error!("Backend rejected WebSocket upgrade: {}", response_str.lines().next().unwrap_or(""));
+        tracing::error!(
+            "Backend rejected WebSocket upgrade: {}",
+            response_str.lines().next().unwrap_or("")
+        );
         return error_response(502, "Backend rejected WebSocket upgrade");
     }
 
