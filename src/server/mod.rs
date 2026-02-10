@@ -22,7 +22,8 @@ use socket2::{Domain, Protocol, Socket, Type};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::net::TcpListener;
+use tokio::io::AsyncWriteExt;
+use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
 
 #[cfg(feature = "scripting")]
@@ -338,7 +339,8 @@ async fn handle_http11_connection(
     let conn = hyper::server::conn::http1::Builder::new()
         .keep_alive(true)
         .pipeline_flush(true)
-        .serve_connection(io, svc);
+        .serve_connection(io, svc)
+        .with_upgrades();
 
     if let Err(e) = conn.await {
         tracing::debug!("HTTP/1.1 connection error: {}", e);
@@ -396,7 +398,8 @@ async fn handle_https2_connection(
         let conn = hyper::server::conn::http1::Builder::new()
             .keep_alive(true)
             .pipeline_flush(true)
-            .serve_connection(io, svc);
+            .serve_connection(io, svc)
+            .with_upgrades();
         if let Err(e) = conn.await {
             tracing::debug!("HTTPS/1.1 connection error: {}", e);
         }
@@ -633,18 +636,167 @@ async fn handle_websocket_request(
     }
 
     let (target_url, _, _, _) = target_result.unwrap();
-    let path = req.uri().path();
 
-    let ws_url = format!("ws://{}{}", target_url, path);
+    // Extract host:port from target URL (e.g. "http://127.0.0.1:3000/path" -> "127.0.0.1:3000")
+    let backend_addr = match url::Url::parse(&target_url) {
+        Ok(u) => format!("{}:{}", u.host_str().unwrap_or("127.0.0.1"), u.port().unwrap_or(80)),
+        Err(_) => {
+            metrics.inc_errors();
+            let body = http_body_util::Full::new(Bytes::from("Bad backend URL")).boxed();
+            return Ok(Response::builder().status(502).body(body).unwrap());
+        }
+    };
 
-    tracing::info!("WebSocket upgrade request to {}", ws_url);
+    let path = req.uri().path().to_string();
+    let query = req
+        .uri()
+        .query()
+        .map(|q| format!("?{}", q))
+        .unwrap_or_default();
 
-    metrics.inc_errors();
-    let body = http_body_util::Full::new(Bytes::from(
-        "WebSocket proxy requires separate connection handling",
-    ))
-    .boxed();
-    Ok(Response::builder().status(101).body(body).unwrap())
+    let ws_key = req
+        .headers()
+        .get("sec-websocket-key")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let ws_version = req
+        .headers()
+        .get("sec-websocket-version")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("13")
+        .to_string();
+    let ws_protocol = req
+        .headers()
+        .get("sec-websocket-protocol")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let host_header = req
+        .headers()
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or(&backend_addr)
+        .to_string();
+
+    tracing::info!("WebSocket upgrade request to {}{}{}", backend_addr, path, query);
+
+    // Connect to the backend
+    let backend = match TcpStream::connect(&backend_addr).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("Failed to connect to backend for WebSocket: {}", e);
+            metrics.inc_errors();
+            let body = http_body_util::Full::new(Bytes::from("Backend not reachable")).boxed();
+            return Ok(Response::builder().status(502).body(body).unwrap());
+        }
+    };
+
+    // Send the upgrade request to the backend
+    let mut handshake = format!(
+        "GET {}{} HTTP/1.1\r\n\
+         Host: {}\r\n\
+         Upgrade: websocket\r\n\
+         Connection: Upgrade\r\n\
+         Sec-WebSocket-Key: {}\r\n\
+         Sec-WebSocket-Version: {}\r\n",
+        path, query, host_header, ws_key, ws_version,
+    );
+    if let Some(proto) = &ws_protocol {
+        handshake.push_str(&format!("Sec-WebSocket-Protocol: {}\r\n", proto));
+    }
+    handshake.push_str("\r\n");
+
+    let (mut backend_read, mut backend_write) = backend.into_split();
+    if let Err(e) = backend_write.write_all(handshake.as_bytes()).await {
+        tracing::error!("Failed to send WebSocket handshake to backend: {}", e);
+        metrics.inc_errors();
+        let body =
+            http_body_util::Full::new(Bytes::from("Failed to initiate WebSocket with backend"))
+                .boxed();
+        return Ok(Response::builder().status(502).body(body).unwrap());
+    }
+
+    // Read the backend's 101 response
+    let mut response_buf = vec![0u8; 4096];
+    let n = match tokio::io::AsyncReadExt::read(&mut backend_read, &mut response_buf).await {
+        Ok(n) if n > 0 => n,
+        _ => {
+            tracing::error!("No response from backend for WebSocket upgrade");
+            metrics.inc_errors();
+            let body = http_body_util::Full::new(Bytes::from(
+                "Backend did not respond to WebSocket upgrade",
+            ))
+            .boxed();
+            return Ok(Response::builder().status(502).body(body).unwrap());
+        }
+    };
+
+    let response_str = String::from_utf8_lossy(&response_buf[..n]);
+    if !response_str.contains("101") {
+        tracing::error!(
+            "Backend rejected WebSocket upgrade: {}",
+            response_str.lines().next().unwrap_or("")
+        );
+        metrics.inc_errors();
+        let body = http_body_util::Full::new(Bytes::from("Backend rejected WebSocket upgrade"))
+            .boxed();
+        return Ok(Response::builder().status(502).body(body).unwrap());
+    }
+
+    // Extract headers from backend 101 response
+    let mut accept_key = String::new();
+    let mut resp_protocol = None;
+    for line in response_str.lines().skip(1) {
+        if line.trim().is_empty() {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            let name_lower = name.trim().to_lowercase();
+            let value = value.trim().to_string();
+            if name_lower == "sec-websocket-accept" {
+                accept_key = value;
+            } else if name_lower == "sec-websocket-protocol" {
+                resp_protocol = Some(value);
+            }
+        }
+    }
+
+    // Use hyper::upgrade::on to get the client-side stream after we return 101
+    let client_upgrade = hyper::upgrade::on(req);
+
+    // Reunite the backend halves
+    let backend_stream = backend_read.reunite(backend_write).unwrap();
+
+    // Spawn the bidirectional copy task
+    tokio::spawn(async move {
+        match client_upgrade.await {
+            Ok(upgraded) => {
+                let mut client_stream = TokioIo::new(upgraded);
+                let (mut br, mut bw) = tokio::io::split(backend_stream);
+                let (mut cr, mut cw) = tokio::io::split(&mut client_stream);
+                let _ = tokio::join!(
+                    tokio::io::copy(&mut br, &mut cw),
+                    tokio::io::copy(&mut cr, &mut bw),
+                );
+            }
+            Err(e) => {
+                tracing::error!("WebSocket client upgrade failed: {}", e);
+            }
+        }
+    });
+
+    // Return 101 Switching Protocols to the client
+    let mut resp = Response::builder()
+        .status(101)
+        .header("Upgrade", "websocket")
+        .header("Connection", "Upgrade")
+        .header("Sec-WebSocket-Accept", accept_key);
+    if let Some(proto) = resp_protocol {
+        resp = resp.header("Sec-WebSocket-Protocol", proto);
+    }
+    Ok(resp
+        .body(http_body_util::Full::new(Bytes::new()).boxed())
+        .unwrap())
 }
 
 /// Returns (Response, target_url_for_logging, route_scripts)

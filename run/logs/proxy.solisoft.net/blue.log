@@ -1,0 +1,20 @@
+Starting MVC server from .
+Loading controller: home_controller
+Loading controller: docs_controller
+Template engine initialized from ./app/views
+Starting Tailwind CSS in watch mode...
+   ✓ Tailwind CSS watch process started (PID: 3728190)
+
+Server listening on http://0.0.0.0:16613
+Development mode - hot reload enabled, no caching
+  Edit controllers/middleware/views to see changes
+  Browsers will auto-refresh on changes
+Static files served from ./public
+Using hyper async HTTP server with 2 worker threads
+
+Hot reload: Watching 14 files
+PANIC: panicked at src/serve/mod.rs:478:58:
+Failed to bind: Os { code: 98, kind: AddrInUse, message: "Address already in use" }
+Started 2 worker threads
+Worker 1: Error loading models: Failed to read models directory: No such file or directory (os error 2) at 0:0
+Worker 0: Error loading models: Failed to read models directory: No such file or directory (os error 2) at 0:0

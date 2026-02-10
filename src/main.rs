@@ -1,5 +1,6 @@
 use anyhow::Result;
 use soli_proxy::acme;
+use soli_proxy::app::{AppManager, PortManager};
 use soli_proxy::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 use soli_proxy::new_challenge_store;
 use soli_proxy::new_metrics;
@@ -95,10 +96,13 @@ async fn main() -> Result<()> {
 
     let mut config_path = "./proxy.conf";
     let mut daemon_mode = false;
+    let mut dev_mode = false;
 
     for arg in &args {
         if arg == "-d" || arg == "--daemon" {
             daemon_mode = true;
+        } else if arg == "--dev" {
+            dev_mode = true;
         } else if !arg.starts_with('-') && arg != &args[0] {
             config_path = arg.as_str();
         }
@@ -113,6 +117,10 @@ async fn main() -> Result<()> {
 
     if daemon_mode {
         eprintln!("Started in daemon mode. PID: {}", std::process::id());
+    }
+
+    if dev_mode {
+        tracing::info!("Dev mode enabled: apps will be started with --dev flag");
     }
 
     // Install default crypto provider for rustls 0.23
@@ -248,6 +256,25 @@ async fn main() -> Result<()> {
         }
     };
 
+    // Initialize app manager (needed by both ACME and admin)
+    let app_manager = if cfg.admin.enabled {
+        let port_manager = Arc::new(PortManager::new("./run").unwrap());
+        let _ = port_manager.load().await;
+
+        match AppManager::new("./sites", port_manager.clone(), config_ref.clone(), dev_mode) {
+            Ok(m) => {
+                tracing::info!("App manager initialized for ./sites");
+                Some(Arc::new(m))
+            }
+            Err(e) => {
+                tracing::error!("Failed to initialize app manager: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Spawn ACME certificate issuance if mode is letsencrypt
     if is_letsencrypt {
         if let Some(le_config) = &cfg.letsencrypt {
@@ -256,10 +283,14 @@ async fn main() -> Result<()> {
             let resolver = tls_manager.cert_resolver();
             let cs = challenge_store.clone();
             let acme_domains = domains.clone();
+            let config_ref_clone = config_ref.clone();
+            let app_manager_for_acme = app_manager.clone();
 
             tokio::spawn(async move {
                 match acme::get_or_create_account(&le_config, &cache_dir).await {
                     Ok(account) => {
+                        let account = Arc::new(account);
+
                         // Issue certs for domains that need them
                         for domain in &acme_domains {
                             if !acme::cert_expires_soon(&cache_dir, domain) {
@@ -310,8 +341,33 @@ async fn main() -> Result<()> {
                             }
                         }
 
-                        // Start renewal loop
-                        acme::spawn_renewal_task(account, acme_domains, cache_dir, cs, resolver);
+                        // Create AcmeService and set on AppManager for dynamic cert issuance
+                        let acme_service = Arc::new(soli_proxy::AcmeService::new(
+                            account.clone(),
+                            cs.clone(),
+                            resolver.clone(),
+                            cache_dir.clone(),
+                        ));
+
+                        if let Some(ref manager) = app_manager_for_acme {
+                            manager.set_acme_service(acme_service).await;
+                            // Re-run discover to issue certs for already-discovered domains
+                            if let Err(e) = manager.discover_apps().await {
+                                tracing::error!(
+                                    "Failed to re-sync apps after ACME init: {}",
+                                    e
+                                );
+                            }
+                        }
+
+                        // Start renewal loop with dynamic domain list
+                        acme::spawn_renewal_task(
+                            account,
+                            config_ref_clone,
+                            cache_dir,
+                            cs,
+                            resolver,
+                        );
                     }
                     Err(e) => {
                         tracing::error!(
@@ -328,11 +384,24 @@ async fn main() -> Result<()> {
 
     // Spawn admin API server if enabled
     if cfg.admin.enabled {
+        if let Some(ref manager) = app_manager {
+            let manager_clone = manager.clone();
+            tokio::spawn(async move {
+                if let Err(e) = manager_clone.discover_apps().await {
+                    tracing::error!("Failed to discover apps: {}", e);
+                }
+                if let Err(e) = manager_clone.start_watcher().await {
+                    tracing::error!("Failed to start app watcher: {}", e);
+                }
+            });
+        }
+
         let admin_state = Arc::new(AdminState {
             config_manager: config_ref.clone(),
             metrics: admin_metrics,
             start_time: Instant::now(),
             circuit_breaker: circuit_breaker.clone(),
+            app_manager,
         });
         tokio::spawn(async move {
             if let Err(e) = soli_proxy::run_admin_server(admin_state).await {

@@ -1036,6 +1036,7 @@ mod admin_tests {
             metrics: new_metrics(),
             start_time: Instant::now(),
             circuit_breaker: Arc::new(CircuitBreaker::new(CircuitBreakerConfig::default())),
+            app_manager: None,
         });
 
         tokio::spawn(async move {
@@ -1297,6 +1298,7 @@ mod admin_tests {
             metrics: new_metrics(),
             start_time: Instant::now(),
             circuit_breaker: Arc::new(CircuitBreaker::new(CircuitBreakerConfig::default())),
+            app_manager: None,
         });
         tokio::spawn(async move {
             let _ = run_admin_server(state).await;

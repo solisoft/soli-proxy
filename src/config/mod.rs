@@ -5,11 +5,20 @@ use arc_swap::ArcSwap;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use url::Url;
+
+#[async_trait::async_trait]
+pub trait ConfigManagerTrait: Send + Sync {
+    async fn reload(&self) -> Result<()>;
+    fn get_config(&self) -> Arc<Config>;
+    fn update_rules(&self, rules: Vec<ProxyRule>, global_scripts: Vec<String>) -> Result<()>;
+    fn add_route(&self, rule: ProxyRule) -> Result<()>;
+    fn remove_route(&self, index: usize) -> Result<()>;
+}
 
 #[derive(Deserialize, Default, Clone, Debug)]
 pub struct TomlConfig {
@@ -285,10 +294,6 @@ impl Clone for ConfigManager {
 impl ConfigManager {
     pub fn new(config_path: &str) -> Result<Self> {
         let path = PathBuf::from(config_path);
-        if !path.exists() {
-            anyhow::bail!("Config file not found: {}", config_path);
-        }
-
         let config = Self::load_config(&path, &path)?;
         Ok(Self {
             config: ArcSwap::new(Arc::new(config)),
@@ -307,7 +312,7 @@ impl ConfigManager {
     }
 
     fn load_config(proxy_conf_path: &Path, config_path: &Path) -> Result<Config> {
-        let content = std::fs::read_to_string(proxy_conf_path)?;
+        let content = std::fs::read_to_string(proxy_conf_path).unwrap_or_default();
         let (rules, global_scripts) = parse_proxy_config(&content)?;
         let toml_content = std::fs::read_to_string(
             config_path
@@ -338,6 +343,14 @@ impl ConfigManager {
     }
 
     pub fn start_watcher(&self) -> Result<()> {
+        // Ensure the file exists so the watcher has something to watch
+        if !self.config_path.exists() {
+            if let Some(parent) = self.config_path.parent() {
+                std::fs::create_dir_all(parent).ok();
+            }
+            std::fs::write(&self.config_path, "")?;
+        }
+
         let (tx, mut rx) = mpsc::channel(1);
         let config_path = self.config_path.clone();
         let suppress = self.suppress_watch.clone();
@@ -432,6 +445,29 @@ impl ConfigManager {
 
     pub fn update_rules(&self, rules: Vec<ProxyRule>, global_scripts: Vec<String>) -> Result<()> {
         self.persist_rules(rules, global_scripts)
+    }
+}
+
+#[async_trait::async_trait]
+impl ConfigManagerTrait for ConfigManager {
+    async fn reload(&self) -> Result<()> {
+        self.reload().await
+    }
+
+    fn get_config(&self) -> Arc<Config> {
+        self.get_config()
+    }
+
+    fn update_rules(&self, rules: Vec<ProxyRule>, global_scripts: Vec<String>) -> Result<()> {
+        self.update_rules(rules, global_scripts)
+    }
+
+    fn add_route(&self, rule: ProxyRule) -> Result<()> {
+        self.add_route(rule)
+    }
+
+    fn remove_route(&self, index: usize) -> Result<()> {
+        self.remove_route(index)
     }
 }
 
@@ -537,8 +573,6 @@ fn parse_proxy_config(content: &str) -> Result<(Vec<ProxyRule>, Vec<String>)> {
 
     Ok((rules, global_scripts))
 }
-
-use std::path::Path;
 
 #[cfg(test)]
 mod tests {

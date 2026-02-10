@@ -9,15 +9,123 @@ pub fn get_status(state: &Arc<AdminState>) -> Response<BoxBody> {
     let cfg = state.config_manager.get_config();
     let uptime = state.start_time.elapsed();
 
+    let app_count = state
+        .app_manager
+        .as_ref()
+        .map(|m| futures::executor::block_on(m.list_apps()).len())
+        .unwrap_or(0);
+
     ok_response(serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
         "uptime_secs": uptime.as_secs(),
         "route_count": cfg.rules.len(),
+        "app_count": app_count,
         "bind": cfg.server.bind,
         "https_port": cfg.server.https_port,
         "tls_mode": cfg.tls.mode,
         "admin_bind": cfg.admin.bind,
     }))
+}
+
+pub async fn get_apps(state: &Arc<AdminState>) -> Response<BoxBody> {
+    match &state.app_manager {
+        Some(manager) => {
+            let apps = manager.list_apps().await;
+            match serde_json::to_value(&apps) {
+                Ok(val) => ok_response(val),
+                Err(e) => error_response(500, &format!("Failed to serialize apps: {}", e)),
+            }
+        }
+        None => error_response(501, "App management not configured"),
+    }
+}
+
+pub async fn get_app(state: &Arc<AdminState>, name: &str) -> Response<BoxBody> {
+    match &state.app_manager {
+        Some(manager) => match manager.get_app(name).await {
+            Some(app) => match serde_json::to_value(&app) {
+                Ok(val) => ok_response(val),
+                Err(e) => error_response(500, &format!("Failed to serialize app: {}", e)),
+            },
+            None => error_response(404, &format!("App not found: {}", name)),
+        },
+        None => error_response(501, "App management not configured"),
+    }
+}
+
+pub async fn post_app_deploy(state: &Arc<AdminState>, name: &str) -> Response<BoxBody> {
+    match &state.app_manager {
+        Some(manager) => match manager.deploy(name, "green").await {
+            Ok(()) => ok_response(serde_json::json!({
+                "message": "Deployment started",
+                "app": name,
+                "slot": "green"
+            })),
+            Err(e) => error_response(500, &format!("Deployment failed: {}", e)),
+        },
+        None => error_response(501, "App management not configured"),
+    }
+}
+
+pub async fn post_app_restart(state: &Arc<AdminState>, name: &str) -> Response<BoxBody> {
+    match &state.app_manager {
+        Some(manager) => match manager.restart(name).await {
+            Ok(()) => ok_response(serde_json::json!({
+                "message": "Restart started",
+                "app": name
+            })),
+            Err(e) => error_response(500, &format!("Restart failed: {}", e)),
+        },
+        None => error_response(501, "App management not configured"),
+    }
+}
+
+pub async fn post_app_rollback(state: &Arc<AdminState>, name: &str) -> Response<BoxBody> {
+    match &state.app_manager {
+        Some(manager) => match manager.rollback(name).await {
+            Ok(()) => ok_response(serde_json::json!({
+                "message": "Rollback started",
+                "app": name
+            })),
+            Err(e) => error_response(500, &format!("Rollback failed: {}", e)),
+        },
+        None => error_response(501, "App management not configured"),
+    }
+}
+
+pub async fn post_app_stop(state: &Arc<AdminState>, name: &str) -> Response<BoxBody> {
+    match &state.app_manager {
+        Some(manager) => match manager.stop(name).await {
+            Ok(()) => ok_response(serde_json::json!({
+                "message": "App stopped",
+                "app": name
+            })),
+            Err(e) => error_response(500, &format!("Stop failed: {}", e)),
+        },
+        None => error_response(501, "App management not configured"),
+    }
+}
+
+pub async fn get_app_logs(state: &Arc<AdminState>, name: &str) -> Response<BoxBody> {
+    match &state.app_manager {
+        Some(manager) => {
+            let blue_log_result = manager
+                .deployment_manager
+                .get_deployment_log(name, "blue")
+                .await;
+            let green_log_result = manager
+                .deployment_manager
+                .get_deployment_log(name, "green")
+                .await;
+
+            ok_response(serde_json::json!({
+                "app": name,
+                "blue": blue_log_result.unwrap_or_default(),
+                "green": green_log_result.unwrap_or_default(),
+            }))
+        }
+        None => error_response(501, "App management not configured"),
+    }
 }
 
 pub fn get_config(state: &Arc<AdminState>) -> Response<BoxBody> {
@@ -50,7 +158,7 @@ pub fn get_route(state: &Arc<AdminState>, index: usize) -> Response<BoxBody> {
 pub fn get_metrics(state: &Arc<AdminState>) -> Response<BoxBody> {
     let metrics_text = state.metrics.format_metrics();
     let bytes = bytes::Bytes::from(metrics_text);
-    Response::builder()
+    super::cors_headers(Response::builder())
         .status(200)
         .header("Content-Type", "text/plain")
         .body(http_body_util::Full::new(bytes).boxed())

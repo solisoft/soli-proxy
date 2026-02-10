@@ -1,8 +1,8 @@
 # Soli Proxy Configuration
 # Server settings
 [server]
-bind = "0.0.0.0:8008"
-https_port = 8443
+bind = "0.0.0.0:80"
+https_port = 443
 worker_threads = "auto"
 
 # TLS Configuration
@@ -62,7 +62,7 @@ failure_status_codes = [502, 503, 504]  # HTTP codes that count as failures
 # Admin REST API Configuration
 [admin]
 enabled = true
-bind = "127.0.0.1:9090"
+bind = "0.0.0.0:9090"
 # api_key = "your-secret-key"
 
 # Lua Scripting Configuration

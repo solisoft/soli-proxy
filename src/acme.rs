@@ -14,7 +14,7 @@ use tokio_rustls::rustls::server::ResolvesServerCert;
 use tokio_rustls::rustls::sign::CertifiedKey;
 use tokio_rustls::rustls::ServerConfig;
 
-use crate::config::LetsEncryptConfig;
+use crate::config::{ConfigManagerTrait, LetsEncryptConfig};
 
 /// Shared store for ACME HTTP-01 challenge tokens.
 /// Maps token -> key_authorization.
@@ -87,6 +87,48 @@ impl ResolvesServerCert for AcmeCertResolver {
         }
 
         None
+    }
+}
+
+/// Service that encapsulates ACME cert issuance logic, shareable across components.
+pub struct AcmeService {
+    account: Arc<Account>,
+    challenge_store: ChallengeStore,
+    resolver: Arc<AcmeCertResolver>,
+    cache_dir: PathBuf,
+}
+
+impl AcmeService {
+    pub fn new(
+        account: Arc<Account>,
+        challenge_store: ChallengeStore,
+        resolver: Arc<AcmeCertResolver>,
+        cache_dir: PathBuf,
+    ) -> Self {
+        Self {
+            account,
+            challenge_store,
+            resolver,
+            cache_dir,
+        }
+    }
+
+    /// Issue a cert for `domain` if one doesn't exist or is expiring.
+    pub async fn ensure_certificate(&self, domain: &str) -> Result<()> {
+        if !cert_expires_soon(&self.cache_dir, domain) {
+            return Ok(());
+        }
+        tracing::info!("Issuing certificate for new domain: {}", domain);
+        let (cert_pem, key_pem) = issue_certificate(
+            &self.account,
+            &[domain.to_string()],
+            &self.challenge_store,
+        )
+        .await?;
+        save_certificate(&self.cache_dir, domain, &cert_pem, &key_pem)?;
+        let ck = certified_key_from_pem(cert_pem.as_bytes(), key_pem.as_bytes())?;
+        self.resolver.set_cert(domain, Arc::new(ck));
+        Ok(())
     }
 }
 
@@ -344,9 +386,10 @@ pub fn cert_expires_soon(cache_dir: &Path, domain: &str) -> bool {
 }
 
 /// Spawn a background task that checks and renews certificates every 12 hours.
+/// Reads the current domain list from config each cycle to pick up dynamically added domains.
 pub fn spawn_renewal_task(
-    account: Account,
-    domains: Vec<String>,
+    account: Arc<Account>,
+    config_manager: Arc<dyn ConfigManagerTrait + Send + Sync>,
     cache_dir: PathBuf,
     challenge_store: ChallengeStore,
     resolver: Arc<AcmeCertResolver>,
@@ -357,6 +400,8 @@ pub fn spawn_renewal_task(
         loop {
             tokio::time::sleep(interval).await;
 
+            // Re-read domains from config each cycle to include dynamically added ones
+            let domains = config_manager.get_config().acme_domains();
             tracing::info!("ACME renewal check: examining {} domain(s)", domains.len());
 
             for domain in &domains {

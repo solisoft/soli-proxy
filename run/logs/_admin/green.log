@@ -1,0 +1,25 @@
+Starting MVC server from .
+Loading middleware:
+  [auth] authenticate (order: 20) [scope_only]
+  [cors] add_cors_headers (order: 5) [global_only]
+Loaded 6 view helper(s) from ./app/helpers
+Loading controller: apps_controller
+Loading controller: config_controller
+Loading controller: home_controller
+Loading controller: circuit_breaker_controller
+Loading controller: metrics_controller
+Loading controller: routes_controller
+Template engine initialized from ./app/views
+Admin routes loaded!
+Starting Tailwind CSS in watch mode...
+   ✓ Tailwind CSS watch process started (PID: 973194)
+
+Server listening on http://0.0.0.0:18218
+Development mode - hot reload enabled, no caching
+  Edit controllers/middleware/views to see changes
+  Browsers will auto-refresh on changes
+Static files served from ./public
+Using hyper async HTTP server with 2 worker threads
+
+Hot reload: Watching 19 files
+Started 2 worker threads
