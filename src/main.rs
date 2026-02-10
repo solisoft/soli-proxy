@@ -90,8 +90,7 @@ fn cleanup_pid() {
     let _ = fs::remove_file(&pid_path);
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
 
     let mut config_path = "./proxy.conf";
@@ -113,6 +112,11 @@ async fn main() -> Result<()> {
         let _ = write_pid_file()?;
     }
 
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async move { run_server(config_path, daemon_mode, dev_mode).await })
+}
+
+async fn run_server(config_path: &str, daemon_mode: bool, dev_mode: bool) -> Result<()> {
     setup_logging(daemon_mode)?;
 
     if daemon_mode {
