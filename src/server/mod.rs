@@ -877,7 +877,7 @@ async fn handle_regular_request(
     config: &crate::config::Config,
     lua_engine: &OptionalLuaEngine,
     circuit_breaker: &SharedCircuitBreaker,
-    app_manager: Option<Arc<AppManager>>,
+    _app_manager: Option<Arc<AppManager>>,
 ) -> Result<(Response<BoxBody>, String, Vec<String>), hyper::Error> {
     let route = find_matching_rule(&req, &config.rules);
 
@@ -1129,8 +1129,7 @@ async fn handle_regular_request(
 
                             let raw_bytes = if is_gzip {
                                 use std::io::Read;
-                                let mut decoder =
-                                    flate2::read::GzDecoder::new(&body_bytes[..]);
+                                let mut decoder = flate2::read::GzDecoder::new(&body_bytes[..]);
                                 let mut decoded = Vec::new();
                                 decoder.read_to_end(&mut decoded).unwrap_or_default();
                                 Bytes::from(decoded)
@@ -1292,7 +1291,8 @@ fn find_matching_rule<'a>(
             crate::config::RuleMatcher::DomainPath(domain, path_prefix) => {
                 if domain == host && !rule.targets.is_empty() {
                     let matches = path.starts_with(path_prefix)
-                        || (path_prefix.ends_with('/') && path == path_prefix.trim_end_matches('/'));
+                        || (path_prefix.ends_with('/')
+                            && path == path_prefix.trim_end_matches('/'));
                     if matches {
                         return Some(MatchedRoute {
                             targets: &rule.targets,
