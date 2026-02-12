@@ -182,6 +182,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu libssl-dev pkg-config
           sudo dpkg --add-architecture arm64
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list
           sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list.d/*.list
           echo "deb [arch=arm64] http://ports.ubuntu.com/ $(lsb_release -cs) main restricted universe multiverse" | sudo tee /etc/apt/sources.list.d/arm64.list
           echo "deb [arch=arm64] http://ports.ubuntu.com/ $(lsb_release -cs)-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/arm64.list
