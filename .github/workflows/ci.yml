@@ -14,53 +14,6 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libssl-dev pkg-config
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-
-      - name: Restore cargo cache
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/
-            ~/.cargo/git/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Build
-        run: cargo build --release
-
-      - name: Compile tests
-        run: cargo test --no-run
-
-      - name: Save cargo cache
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/
-            ~/.cargo/git/
-            target/
-          key: ${{ runner.os }}-cargo-${{ github.sha }}
-
-      - name: Upload binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: soli-proxy-binary
-          path: target/release/soli-proxy
-
   test:
     runs-on: ubuntu-latest
     steps:
@@ -141,7 +94,6 @@ jobs:
         run: gh release create ${{ github.ref_name }} --generate-notes
 
   build-binaries:
-    needs: build
     strategy:
       matrix:
         include:
