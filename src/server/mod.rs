@@ -66,10 +66,7 @@ static X_FORWARDED_FOR_VALUE: std::sync::LazyLock<HeaderValue> =
 
 /// Verify Basic Auth credentials against stored hashes
 /// Returns true if credentials are valid, false otherwise
-fn verify_basic_auth(
-    req: &Request<Incoming>,
-    auth_entries: &[crate::auth::BasicAuth],
-) -> bool {
+fn verify_basic_auth(req: &Request<Incoming>, auth_entries: &[crate::auth::BasicAuth]) -> bool {
     if auth_entries.is_empty() {
         return true;
     }
@@ -85,7 +82,8 @@ fn verify_basic_auth(
     }
 
     let encoded = &header_value[6..];
-    let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded).unwrap_or_default();
+    let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
+        .unwrap_or_default();
     let creds = String::from_utf8_lossy(&decoded);
 
     if let Some((username, password)) = creds.split_once(':') {
@@ -941,11 +939,7 @@ async fn handle_regular_request(
             if !matched_route.auth.is_empty() {
                 if !verify_basic_auth(&req, &matched_route.auth) {
                     tracing::debug!("Basic auth failed for {}", req.uri().path());
-                    return Ok((
-                        create_auth_required_response(),
-                        String::new(),
-                        vec![],
-                    ));
+                    return Ok((create_auth_required_response(), String::new(), vec![]));
                 }
             }
             let route_scripts = matched_route.route_scripts.clone();
