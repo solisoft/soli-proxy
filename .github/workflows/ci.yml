@@ -131,7 +131,7 @@ jobs:
         run: cargo fmt --check
 
   release:
-    needs: [test, clippy, fmt, build-binaries]
+    needs: [test, clippy, fmt]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
@@ -143,6 +143,7 @@ jobs:
         run: gh release create ${{ github.ref_name }} --generate-notes
 
   build-binaries:
+    needs: [test, clippy, fmt]
     strategy:
       matrix:
         include:
@@ -203,9 +204,27 @@ jobs:
           PKG_CONFIG_ALLOW_CROSS: 1
 
       - name: Package binary
-        run: |
-          cd target/${{ matrix.target }}/release
-          tar czf ../../../${{ matrix.artifact }}.tar.gz soli-proxy
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.tar.gz
+
+  upload-binaries:
+    needs: [release, build-binaries]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - artifact: soli-proxy-linux-amd64
+          - artifact: soli-proxy-linux-arm64
+          - artifact: soli-proxy-darwin-amd64
+          - artifact: soli-proxy-darwin-arm64
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: .
 
       - name: Upload release asset
         env:
@@ -214,7 +233,6 @@ jobs:
 
   docker:
     needs: release
-    runs-on: ubuntu-latest
     permissions:
       packages: write
     steps:

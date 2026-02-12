@@ -102,6 +102,7 @@ pub struct ProxyRule {
     pub targets: Vec<Target>,
     pub headers: Vec<HeaderRule>,
     pub scripts: Vec<String>,
+    #[serde(default)]
     pub auth: Vec<BasicAuth>,
 }
 

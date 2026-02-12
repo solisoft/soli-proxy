@@ -936,11 +936,10 @@ async fn handle_regular_request(
             let from_domain_rule = matched_route.from_domain_rule;
             let matched_prefix = matched_route.matched_prefix();
 
-            if !matched_route.auth.is_empty() {
-                if !verify_basic_auth(&req, &matched_route.auth) {
-                    tracing::debug!("Basic auth failed for {}", req.uri().path());
-                    return Ok((create_auth_required_response(), String::new(), vec![]));
-                }
+            if !matched_route.auth.is_empty()
+                && !verify_basic_auth(&req, &matched_route.auth) {
+                tracing::debug!("Basic auth failed for {}", req.uri().path());
+                return Ok((create_auth_required_response(), String::new(), vec![]));
             }
             let route_scripts = matched_route.route_scripts.clone();
 
@@ -1331,16 +1330,14 @@ fn find_matching_rule<'a>(
     for rule in rules {
         match &rule.matcher {
             crate::config::RuleMatcher::Domain(domain) => {
-                if domain == host {
-                    if !rule.targets.is_empty() {
-                        return Some(MatchedRoute {
-                            targets: &rule.targets,
-                            from_domain_rule: true,
-                            resolution: UrlResolution::AppendPath,
-                            route_scripts: rule.scripts.clone(),
-                            auth: rule.auth.clone(),
-                        });
-                    }
+                if domain == host && !rule.targets.is_empty() {
+                    return Some(MatchedRoute {
+                        targets: &rule.targets,
+                        from_domain_rule: true,
+                        resolution: UrlResolution::AppendPath,
+                        route_scripts: rule.scripts.clone(),
+                        auth: rule.auth.clone(),
+                    });
                 }
             }
             crate::config::RuleMatcher::DomainPath(domain, path_prefix) => {
