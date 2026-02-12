@@ -131,7 +131,7 @@ jobs:
         run: cargo fmt --check
 
   release:
-    needs: [test, clippy, fmt]
+    needs: [test, clippy, fmt, build-binaries]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
