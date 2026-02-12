@@ -62,7 +62,6 @@ jobs:
           path: target/release/soli-proxy
 
   test:
-    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -89,7 +88,6 @@ jobs:
         run: cargo test
 
   clippy:
-    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -143,7 +141,7 @@ jobs:
         run: gh release create ${{ github.ref_name }} --generate-notes
 
   build-binaries:
-    needs: [test, clippy, fmt]
+    needs: build
     strategy:
       matrix:
         include:
