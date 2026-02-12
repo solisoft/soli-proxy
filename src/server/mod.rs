@@ -936,8 +936,7 @@ async fn handle_regular_request(
             let from_domain_rule = matched_route.from_domain_rule;
             let matched_prefix = matched_route.matched_prefix();
 
-            if !matched_route.auth.is_empty()
-                && !verify_basic_auth(&req, &matched_route.auth) {
+            if !matched_route.auth.is_empty() && !verify_basic_auth(&req, &matched_route.auth) {
                 tracing::debug!("Basic auth failed for {}", req.uri().path());
                 return Ok((create_auth_required_response(), String::new(), vec![]));
             }
