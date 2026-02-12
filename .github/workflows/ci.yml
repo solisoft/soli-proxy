@@ -233,6 +233,7 @@ jobs:
 
   docker:
     needs: release
+    runs-on: ubuntu-latest
     permissions:
       packages: write
     steps:
