@@ -204,6 +204,12 @@ async fn handle_admin_request(
         (Method::GET, "/api/v1/circuit-breaker") => handlers::get_circuit_breaker(&state),
         (Method::POST, "/api/v1/circuit-breaker/reset") => handlers::reset_circuit_breaker(&state),
 
+        // Utility endpoints
+        (Method::POST, "/api/v1/hash-password") => {
+            let body = read_body(req).await;
+            handlers::post_hash_password(&state, &body)
+        }
+
         // Everything else → proxy to _admin app (UI, static assets, etc.)
         _ if state.app_manager.is_some() => {
             let is_ws = req

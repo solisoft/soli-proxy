@@ -1,6 +1,7 @@
 use super::{
     created_response, error_response, no_content_response, ok_response, AdminState, BoxBody,
 };
+use crate::auth;
 use crate::config::ProxyRule;
 use hyper::Response;
 use std::sync::Arc;
@@ -306,4 +307,26 @@ pub fn put_config(state: &Arc<AdminState>, body: &str) -> Response<BoxBody> {
         Ok(()) => ok_response(serde_json::json!({ "message": "Configuration updated" })),
         Err(e) => error_response(500, &format!("Failed to update config: {}", e)),
     }
+}
+
+#[derive(serde::Deserialize)]
+struct HashPasswordRequest {
+    password: String,
+}
+
+pub fn post_hash_password(_state: &Arc<AdminState>, body: &str) -> Response<BoxBody> {
+    let req: HashPasswordRequest = match serde_json::from_str(body) {
+        Ok(r) => r,
+        Err(e) => return error_response(400, &format!("Invalid JSON: {}", e)),
+    };
+
+    if req.password.is_empty() {
+        return error_response(400, "Password cannot be empty");
+    }
+
+    let hash = auth::generate_hash(&req.password);
+    ok_response(serde_json::json!({
+        "hash": hash,
+        "format": "bcrypt"
+    }))
 }

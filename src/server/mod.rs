@@ -3,6 +3,7 @@
 
 use crate::acme::ChallengeStore;
 use crate::app::AppManager;
+use crate::auth;
 use crate::circuit_breaker::SharedCircuitBreaker;
 use crate::config::ConfigManager;
 use crate::metrics::SharedMetrics;
@@ -62,6 +63,51 @@ fn record_app_metrics(
 /// Pre-parsed header value for X-Forwarded-For to avoid parsing on every request
 static X_FORWARDED_FOR_VALUE: std::sync::LazyLock<HeaderValue> =
     std::sync::LazyLock::new(|| HeaderValue::from_static("127.0.0.1"));
+
+/// Verify Basic Auth credentials against stored hashes
+/// Returns true if credentials are valid, false otherwise
+fn verify_basic_auth(
+    req: &Request<Incoming>,
+    auth_entries: &[crate::auth::BasicAuth],
+) -> bool {
+    if auth_entries.is_empty() {
+        return true;
+    }
+
+    let auth_header = req.headers().get("authorization");
+    if auth_header.is_none() {
+        return false;
+    }
+
+    let header_value = auth_header.unwrap().to_str().unwrap_or("");
+    if !header_value.starts_with("Basic ") {
+        return false;
+    }
+
+    let encoded = &header_value[6..];
+    let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded).unwrap_or_default();
+    let creds = String::from_utf8_lossy(&decoded);
+
+    if let Some((username, password)) = creds.split_once(':') {
+        for entry in auth_entries {
+            if entry.username == username && auth::verify_password(password, &entry.hash) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+/// Create 401 Unauthorized response with WWW-Authenticate header
+fn create_auth_required_response() -> Response<BoxBody> {
+    let body = http_body_util::Full::new(Bytes::from("Authentication required")).boxed();
+    Response::builder()
+        .status(401)
+        .header("WWW-Authenticate", "Basic realm=\"Restricted\"")
+        .body(body)
+        .unwrap()
+}
 
 fn create_listener(addr: SocketAddr) -> Result<TcpListener> {
     let domain = if addr.is_ipv4() {
@@ -891,6 +937,17 @@ async fn handle_regular_request(
             let path = req.uri().path().to_string();
             let from_domain_rule = matched_route.from_domain_rule;
             let matched_prefix = matched_route.matched_prefix();
+
+            if !matched_route.auth.is_empty() {
+                if !verify_basic_auth(&req, &matched_route.auth) {
+                    tracing::debug!("Basic auth failed for {}", req.uri().path());
+                    return Ok((
+                        create_auth_required_response(),
+                        String::new(),
+                        vec![],
+                    ));
+                }
+            }
             let route_scripts = matched_route.route_scripts.clone();
 
             // Select an available target via circuit breaker
@@ -1225,6 +1282,7 @@ struct MatchedRoute<'a> {
     from_domain_rule: bool,
     resolution: UrlResolution,
     route_scripts: Vec<String>,
+    auth: Vec<crate::auth::BasicAuth>,
 }
 
 impl<'a> MatchedRoute<'a> {
@@ -1275,19 +1333,18 @@ fn find_matching_rule<'a>(
         .map(|h| h.split(':').next().unwrap_or(h))?;
 
     let path = req.uri().path();
-    let mut matched_domain = false;
 
     for rule in rules {
         match &rule.matcher {
             crate::config::RuleMatcher::Domain(domain) => {
                 if domain == host {
-                    matched_domain = true;
                     if !rule.targets.is_empty() {
                         return Some(MatchedRoute {
                             targets: &rule.targets,
                             from_domain_rule: true,
                             resolution: UrlResolution::AppendPath,
                             route_scripts: rule.scripts.clone(),
+                            auth: rule.auth.clone(),
                         });
                     }
                 }
@@ -1303,16 +1360,13 @@ fn find_matching_rule<'a>(
                             from_domain_rule: true,
                             resolution: UrlResolution::StripPrefix(path_prefix.clone()),
                             route_scripts: rule.scripts.clone(),
+                            auth: rule.auth.clone(),
                         });
                     }
                 }
             }
             _ => {}
         }
-    }
-
-    if matched_domain {
-        return None;
     }
 
     // Check specific rules (Exact, Prefix, Regex) before Default
@@ -1325,6 +1379,7 @@ fn find_matching_rule<'a>(
                         from_domain_rule: false,
                         resolution: UrlResolution::Identity,
                         route_scripts: rule.scripts.clone(),
+                        auth: rule.auth.clone(),
                     });
                 }
             }
@@ -1339,6 +1394,7 @@ fn find_matching_rule<'a>(
                             from_domain_rule: false,
                             resolution: UrlResolution::StripPrefix(prefix.clone()),
                             route_scripts: rule.scripts.clone(),
+                            auth: rule.auth.clone(),
                         });
                     }
                 }
@@ -1350,6 +1406,7 @@ fn find_matching_rule<'a>(
                         from_domain_rule: false,
                         resolution: UrlResolution::Identity,
                         route_scripts: rule.scripts.clone(),
+                        auth: rule.auth.clone(),
                     });
                 }
             }
@@ -1366,6 +1423,7 @@ fn find_matching_rule<'a>(
                     from_domain_rule: false,
                     resolution: UrlResolution::AppendPath,
                     route_scripts: rule.scripts.clone(),
+                    auth: rule.auth.clone(),
                 });
             }
         }

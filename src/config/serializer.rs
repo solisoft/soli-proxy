@@ -28,9 +28,15 @@ pub fn serialize_proxy_conf(rules: &[ProxyRule], global_scripts: &[String]) -> S
             format!("  @script:{}", rule.scripts.join(","))
         };
 
+        let auth_suffix: String = rule
+            .auth
+            .iter()
+            .map(|a| format!(" @auth:{}:{}", a.username, a.hash))
+            .collect();
+
         output.push_str(&format!(
-            "{} -> {}{}\n",
-            matcher_str, targets_joined, scripts_suffix
+            "{} -> {}{}{}\n",
+            matcher_str, targets_joined, scripts_suffix, auth_suffix
         ));
     }
 
@@ -58,12 +64,14 @@ mod tests {
                 targets: vec![target("http://localhost:3000")],
                 headers: vec![],
                 scripts: vec![],
+                auth: vec![],
             },
             ProxyRule {
                 matcher: RuleMatcher::Prefix("/api/".to_string()),
                 targets: vec![target("http://localhost:8888")],
                 headers: vec![],
                 scripts: vec!["auth.lua".to_string()],
+                auth: vec![],
             },
         ];
 
@@ -79,6 +87,7 @@ mod tests {
             targets: vec![target("http://localhost:3000")],
             headers: vec![],
             scripts: vec![],
+            auth: vec![],
         }];
 
         let output =
@@ -94,12 +103,14 @@ mod tests {
                 targets: vec![target("http://backend:8080")],
                 headers: vec![],
                 scripts: vec![],
+                auth: vec![],
             },
             ProxyRule {
                 matcher: RuleMatcher::DomainPath("api.example.com".to_string(), "/v1/".to_string()),
                 targets: vec![target("http://api:8081")],
                 headers: vec![],
                 scripts: vec![],
+                auth: vec![],
             },
         ];
 
@@ -115,6 +126,7 @@ mod tests {
             targets: vec![target("http://admin:8082")],
             headers: vec![],
             scripts: vec![],
+            auth: vec![],
         }];
 
         let output = serialize_proxy_conf(&rules, &[]);

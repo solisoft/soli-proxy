@@ -88,6 +88,8 @@ var AdminAPI = (function() {
     function reloadConfig() { return _post('/api/v1/reload'); }
     function resetCircuitBreaker() { return _post('/api/v1/circuit-breaker/reset'); }
 
+    function hashPassword(password) { return _post('/api/v1/hash-password', {password: password}); }
+
     function appAction(name, action) {
         return _post('/api/v1/apps/' + encodeURIComponent(name) + '/' + action);
     }
@@ -314,6 +316,7 @@ var AdminAPI = (function() {
         deleteRoute: deleteRoute,
         reloadConfig: reloadConfig,
         resetCircuitBreaker: resetCircuitBreaker,
+        hashPassword: hashPassword,
         appAction: appAction,
         setBaseUrl: setBaseUrl,
         parsePrometheus: parsePrometheus,

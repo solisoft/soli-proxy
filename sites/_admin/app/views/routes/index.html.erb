@@ -19,12 +19,13 @@
                     <th class="text-left px-4 py-3 text-xs font-medium text-slate-500 uppercase tracking-wider">Matcher</th>
                     <th class="text-left px-4 py-3 text-xs font-medium text-slate-500 uppercase tracking-wider">Pattern</th>
                     <th class="text-left px-4 py-3 text-xs font-medium text-slate-500 uppercase tracking-wider">Targets</th>
-                    <th class="text-left px-4 py-3 text-xs font-medium text-slate-500 uppercase tracking-wider">Script</th>
+                    <th class="text-left px-4 py-3 text-xs font-medium text-slate-500 uppercase tracking-wider">Scripts</th>
+                    <th class="text-left px-4 py-3 text-xs font-medium text-slate-500 uppercase tracking-wider">Auth</th>
                     <th class="text-right px-4 py-3 text-xs font-medium text-slate-500 uppercase tracking-wider">Actions</th>
                 </tr>
             </thead>
             <tbody id="routes-table-body" class="divide-y divide-white/5">
-                <tr><td colspan="6" class="px-4 py-8 text-center text-slate-500">Loading routes...</td></tr>
+                <tr><td colspan="7" class="px-4 py-8 text-center text-slate-500">Loading routes...</td></tr>
             </tbody>
         </table>
     </div>
@@ -40,14 +41,14 @@ var RouteManager = {
             RouteManager.render();
         }).catch(function() {
             document.getElementById('routes-table-body').innerHTML =
-                '<tr><td colspan="6" class="px-4 py-8 text-center text-rose-400">Failed to load routes</td></tr>';
+                '<tr><td colspan="7" class="px-4 py-8 text-center text-rose-400">Failed to load routes</td></tr>';
         });
     },
 
     render: function() {
         var tbody = document.getElementById('routes-table-body');
         if (!this.routes.length) {
-            tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-8 text-center text-slate-500">No routes configured</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="7" class="px-4 py-8 text-center text-slate-500">No routes configured</td></tr>';
             return;
         }
         tbody.innerHTML = this.routes.map(function(r, i) {
@@ -58,11 +59,9 @@ var RouteManager = {
                 return '<span class="font-mono text-xs">' + AdminAPI.esc(t.url || '') + w + '</span>';
             }).join('<br>');
 
-            // matcher is {type, value}
             var matcherType = (r.matcher && r.matcher.type) ? r.matcher.type : 'default';
             var matcherValue = (r.matcher && r.matcher.value) ? r.matcher.value : '-';
 
-            // scripts is an array
             var scripts = '';
             if (r.scripts && r.scripts.length) {
                 scripts = r.scripts.map(function(s) {
@@ -73,12 +72,22 @@ var RouteManager = {
                 scripts = '<span class="text-slate-600">-</span>';
             }
 
+            var auth = '';
+            if (r.auth && r.auth.length) {
+                auth = r.auth.map(function(a) {
+                    return '<span class="text-xs text-amber-400 font-mono">' + AdminAPI.esc(a.username) + '</span>';
+                }).join('<br>');
+            } else {
+                auth = '<span class="text-slate-600">-</span>';
+            }
+
             return '<tr class="hover:bg-white/[0.02] transition-colors">' +
                 '<td class="px-4 py-3 text-slate-500 font-mono">' + i + '</td>' +
                 '<td class="px-4 py-3"><span class="px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-400 text-xs font-medium">' + AdminAPI.esc(matcherType) + '</span></td>' +
                 '<td class="px-4 py-3 font-mono text-xs text-white">' + AdminAPI.esc(matcherValue) + '</td>' +
                 '<td class="px-4 py-3">' + targets + '</td>' +
                 '<td class="px-4 py-3">' + scripts + '</td>' +
+                '<td class="px-4 py-3">' + auth + '</td>' +
                 '<td class="px-4 py-3 text-right">' +
                     '<button onclick="RouteManager.showEditModal(' + i + ')" class="p-1.5 rounded hover:bg-white/10 text-slate-400 hover:text-white transition-colors" title="Edit">' +
                         '<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125" /></svg>' +
@@ -91,7 +100,7 @@ var RouteManager = {
     },
 
     showAddModal: function() {
-        this._showModal('Add Route', -1, {matcher: {type: 'prefix', value: ''}, targets: [{url: '', weight: 100}], scripts: []});
+        this._showModal('Add Route', -1, {matcher: {type: 'prefix', value: ''}, targets: [{url: '', weight: 100}], scripts: [], auth: []});
     },
 
     showEditModal: function(index) {
@@ -143,6 +152,10 @@ var RouteManager = {
                 '<textarea id="route-targets" rows="3" class="w-full bg-slate-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-emerald-500/50" placeholder="http://localhost:3000">' + AdminAPI.esc(targets) + '</textarea></div>' +
                 '<div><label class="block text-xs font-medium text-slate-400 mb-1.5">Scripts (one per line, optional)</label>' +
                 '<textarea id="route-scripts" rows="2" class="w-full bg-slate-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-emerald-500/50">' + AdminAPI.esc(scripts) + '</textarea></div>' +
+                '<div class="border-t border-white/10 pt-4"><label class="block text-xs font-medium text-amber-400 mb-1.5">Basic Auth (optional)</label>' +
+                '<div class="text-xs text-slate-500 mb-2">Add users to protect this route with HTTP Basic Auth</div>' +
+                '<div id="auth-users-container"></div>' +
+                '<button type="button" onclick="RouteManager.addAuthUserRow()" class="px-3 py-1.5 bg-slate-800 border border-white/10 text-slate-400 rounded-lg hover:bg-slate-700 text-xs">+ Add User</button></div>' +
             '</div>' +
             '<div class="flex gap-3 mt-6">' +
                 '<button onclick="RouteManager.saveRoute(' + index + ')" class="flex-1 px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-medium rounded-lg transition-colors">Save</button>' +
@@ -150,6 +163,28 @@ var RouteManager = {
             '</div></div>';
 
         AdminAPI.showModal(html);
+
+        if (route.auth && route.auth.length) {
+            var container = document.getElementById('auth-users-container');
+            route.auth.forEach(function(a) {
+                var row = document.createElement('div');
+                row.className = 'auth-user-row flex gap-2 mb-2';
+                row.innerHTML = '<input type="text" placeholder="Username" class="auth-username flex-1 bg-slate-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-white" value="' + AdminAPI.esc(a.username) + '">' +
+                    '<input type="text" placeholder="Password" class="auth-password flex-1 bg-slate-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-white font-mono text-xs" value="' + AdminAPI.esc(a.hash) + '">' +
+                    '<button type="button" onclick="this.parentElement.remove()" class="px-3 py-2 bg-rose-500/20 text-rose-400 rounded-lg hover:bg-rose-500/30 text-sm">×</button>';
+                container.appendChild(row);
+            });
+        }
+    },
+
+    addAuthUserRow: function() {
+        var container = document.getElementById('auth-users-container');
+        var row = document.createElement('div');
+        row.className = 'auth-user-row flex gap-2 mb-2';
+        row.innerHTML = '<input type="text" placeholder="Username" class="auth-username flex-1 bg-slate-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-white">' +
+            '<input type="password" placeholder="Password" class="auth-password flex-1 bg-slate-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-white">' +
+            '<button type="button" onclick="this.parentElement.remove()" class="px-3 py-2 bg-rose-500/20 text-rose-400 rounded-lg hover:bg-rose-500/30 text-sm">×</button>';
+        container.appendChild(row);
     },
 
     saveRoute: function(index) {
@@ -160,17 +195,62 @@ var RouteManager = {
 
         var matcher = RouteManager._stringToMatcher(document.getElementById('route-value').value);
 
+        var auth = [];
+        var authRows = document.querySelectorAll('.auth-user-row');
+        var self = this;
+        var needsHashing = [];
+
+        authRows.forEach(function(row, i) {
+            var username = row.querySelector('.auth-username').value.trim();
+            var password = row.querySelector('.auth-password').value.trim();
+            if (username && password) {
+                if (password.startsWith('$2')) {
+                    auth.push({username: username, hash: password});
+                } else {
+                    needsHashing.push({row: row, username: username, password: password});
+                }
+            }
+        });
+
+        if (needsHashing.length > 0) {
+            var saveBtn = document.querySelector('#modal-container button');
+            AdminAPI.setButtonLoading(saveBtn, true, 'Hashing passwords...');
+
+            var hashed = [];
+            var processed = 0;
+
+            needsHashing.forEach(function(item) {
+                AdminAPI.hashPassword(item.password).then(function(resp) {
+                    hashed.push({username: item.username, hash: resp.data.hash});
+                    processed++;
+                    if (processed === needsHashing.length) {
+                        auth.push.apply(auth, hashed);
+                        self._doSaveRoute(index, matcher, targets, scripts, auth);
+                    }
+                }).catch(function(err) {
+                    AdminAPI.setButtonLoading(saveBtn, false);
+                    AdminAPI.toast('Failed to hash password: ' + err.message, 'error');
+                });
+            });
+        } else {
+            this._doSaveRoute(index, matcher, targets, scripts, auth);
+        }
+    },
+
+    _doSaveRoute: function(index, matcher, targets, scripts, auth) {
         var route = {
             matcher: matcher,
             targets: targets,
             headers: [],
-            scripts: scripts
+            scripts: scripts,
+            auth: auth
         };
 
         var saveBtn = document.querySelector('#modal-container button');
         AdminAPI.setButtonLoading(saveBtn, true, 'Saving...');
 
         var promise = index === -1 ? AdminAPI.addRoute(route) : AdminAPI.updateRoute(index, route);
+        var self = this;
         promise.then(function() {
             AdminAPI.closeModal();
             AdminAPI.toast(index === -1 ? 'Route added' : 'Route updated', 'success');

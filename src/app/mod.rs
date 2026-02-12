@@ -402,6 +402,7 @@ impl AppManager {
                         targets: vec![super::config::Target { url, weight: 100 }],
                         headers: vec![],
                         scripts: vec![],
+                        auth: vec![],
                     });
                     changed = true;
                     tracing::info!("Added route for domain {} -> {}", domain, target_url);

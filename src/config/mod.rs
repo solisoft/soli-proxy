@@ -1,5 +1,6 @@
 pub mod serializer;
 
+use crate::auth::BasicAuth;
 use anyhow::Result;
 use arc_swap::ArcSwap;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -101,6 +102,7 @@ pub struct ProxyRule {
     pub targets: Vec<Target>,
     pub headers: Vec<HeaderRule>,
     pub scripts: Vec<String>,
+    pub auth: Vec<BasicAuth>,
 }
 
 #[derive(Clone, Debug)]
@@ -489,6 +491,47 @@ fn extract_scripts(s: &str) -> (&str, Vec<String>) {
     }
 }
 
+/// Extract `@auth:user:hash` entries from a string, returning (remaining_str, auth_vec).
+/// Multiple @auth entries can appear: `@auth:user1:hash1 @auth:user2:hash2`
+/// Hash is everything after the second colon (bcrypt hashes start with $2a$, $2b$, $2y$)
+fn extract_auth(s: &str) -> (String, Vec<BasicAuth>) {
+    let mut auth_entries = Vec::new();
+    let mut remaining = s.to_string();
+
+    while let Some(idx) = remaining.find("@auth:") {
+        // Keep the part BEFORE @auth:
+        let before = &remaining[..idx];
+        let after = &remaining[idx + "@auth:".len()..];
+
+        // Find the end of this auth entry (whitespace or end of string)
+        let end_idx = after
+            .find(|c: char| c.is_whitespace())
+            .unwrap_or(after.len());
+
+        let auth_part = &after[..end_idx];
+
+        // Parse username:hash - hash is everything after the first colon
+        if let Some((username, hash)) = auth_part.split_once(':') {
+            if !username.is_empty() && !hash.is_empty() {
+                auth_entries.push(BasicAuth {
+                    username: username.to_string(),
+                    hash: hash.to_string(),
+                });
+            }
+        }
+
+        // Continue with the part BEFORE this @auth, plus any remaining after it
+        let rest = &after[end_idx..];
+        remaining = if rest.is_empty() {
+            before.to_string()
+        } else {
+            format!("{}{}", before, rest)
+        };
+    }
+
+    (remaining.trim().to_string(), auth_entries)
+}
+
 fn parse_proxy_config(content: &str) -> Result<(Vec<ProxyRule>, Vec<String>)> {
     let mut rules = Vec::new();
     let mut global_scripts = Vec::new();
@@ -524,6 +567,8 @@ fn parse_proxy_config(content: &str) -> Result<(Vec<ProxyRule>, Vec<String>)> {
             let source = source.trim();
             // Extract @script: from the target side
             let (target_str, route_scripts) = extract_scripts(target_str.trim());
+            // Extract @auth: entries from the target side
+            let (target_str, auth_entries) = extract_auth(target_str);
 
             let matcher = if source == "default" || source == "*" {
                 RuleMatcher::Default
@@ -567,6 +612,7 @@ fn parse_proxy_config(content: &str) -> Result<(Vec<ProxyRule>, Vec<String>)> {
                 targets,
                 headers: vec![],
                 scripts: route_scripts,
+                auth: auth_entries,
             });
         }
     }
@@ -630,5 +676,31 @@ mod tests {
         let config = "/api/* -> http://backend:8080\ndefault -> http://localhost:3000\n";
         let (rules, _) = parse_proxy_config(config).unwrap();
         assert_eq!(rules.len(), 2);
+    }
+
+    #[test]
+    fn test_auth_parsing() {
+        let config = r#"
+/db/* -> http://localhost:8080/ @auth:demo:$2b$12$YFlnIiACnSaAcxDWQlYjeedxq/3GvhvoGhRTYHMqLifJrETSqOZQa
+"#;
+        let (rules, _) = parse_proxy_config(config).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].auth.len(), 1);
+        assert_eq!(rules[0].auth[0].username, "demo");
+        assert!(rules[0].auth[0].hash.starts_with("$2b$"));
+        assert_eq!(rules[0].targets.len(), 1);
+        assert_eq!(rules[0].targets[0].url.as_str(), "http://localhost:8080/");
+    }
+
+    #[test]
+    fn test_multiple_auth_users() {
+        let config = r#"
+secure.example.com -> http://localhost:9000/ @auth:admin:$2b$12$hash1 @auth:user:$2b$12$hash2
+"#;
+        let (rules, _) = parse_proxy_config(config).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].auth.len(), 2);
+        assert_eq!(rules[0].auth[0].username, "admin");
+        assert_eq!(rules[0].auth[1].username, "user");
     }
 }
