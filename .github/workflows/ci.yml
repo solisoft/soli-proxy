@@ -154,6 +154,9 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             artifact: soli-proxy-linux-arm64
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            artifact: soli-proxy-darwin-amd64
           - target: aarch64-apple-darwin
             os: macos-latest
             artifact: soli-proxy-darwin-arm64
