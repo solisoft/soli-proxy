@@ -1,6 +1,6 @@
 [package]
 name = "soli-proxy"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 description = "A fast, configurable reverse proxy with automatic HTTPS, Lua scripting, and blue-green deployments"
 license = "MIT"
