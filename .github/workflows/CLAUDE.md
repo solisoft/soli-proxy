@@ -7,6 +7,9 @@
 
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
-| #3033 | 3:24 PM | 🔴 | Fixed ARM64 Cross-Compilation APT Repository Configuration | ~393 |
+| #3037 | 3:33 PM | 🔴 | Added Conditional File Existence Checks for APT Repository Configuration | ~370 |
+| #3036 | " | 🔵 | Verified ARM64 Cross-Compilation Configuration After Fix | ~323 |
+| #3034 | 3:24 PM | ✅ | Simplified ARM64 Cross-Compilation Repository Configuration Strategy | ~327 |
+| #3033 | " | 🔴 | Fixed ARM64 Cross-Compilation APT Repository Configuration | ~393 |
 | #3032 | " | 🔵 | GitHub Actions CI/CD Pipeline for Rust Proxy Project | ~425 |
 </claude-mem-context>

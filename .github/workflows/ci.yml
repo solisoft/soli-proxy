@@ -183,7 +183,13 @@ jobs:
           sudo apt-get install -y gcc-aarch64-linux-gnu libssl-dev pkg-config
           sudo dpkg --add-architecture arm64
           sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list
-          sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list.d/*.list
+          # Pin existing sources to amd64 (handles both .list and .sources formats)
+          if ls /etc/apt/sources.list.d/*.list 1>/dev/null 2>&1; then
+            sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list.d/*.list
+          fi
+          if ls /etc/apt/sources.list.d/*.sources 1>/dev/null 2>&1; then
+            sudo sed -i '/^Types: /a Architectures: amd64' /etc/apt/sources.list.d/*.sources
+          fi
           echo "deb [arch=arm64] http://ports.ubuntu.com/ $(lsb_release -cs) main restricted universe multiverse" | sudo tee /etc/apt/sources.list.d/arm64.list
           echo "deb [arch=arm64] http://ports.ubuntu.com/ $(lsb_release -cs)-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/arm64.list
           sudo apt-get update
