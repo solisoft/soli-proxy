@@ -94,6 +94,7 @@ jobs:
         run: gh release create ${{ github.ref_name }} --draft --generate-notes
 
   build-binaries:
+    needs: release
     strategy:
       matrix:
         include:
