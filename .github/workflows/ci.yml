@@ -159,36 +159,13 @@ jobs:
           ls -la target/${{ matrix.target }}/release/soli-proxy
           tar -czf ${{ matrix.artifact }}.tar.gz -C target/${{ matrix.target }}/release soli-proxy
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}.tar.gz
-
-  upload-binaries:
-    needs: [release, build-binaries]
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - artifact: soli-proxy-linux-amd64
-          - artifact: soli-proxy-linux-arm64
-          - artifact: soli-proxy-darwin-amd64
-          - artifact: soli-proxy-darwin-arm64
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: .
-
-      - name: Upload release asset
+      - name: Upload to release
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload ${{ github.ref_name }} ${{ matrix.artifact }}.tar.gz
 
   publish-release:
-    needs: [upload-binaries]
+    needs: [build-binaries]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
