@@ -186,8 +186,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload ${{ github.ref_name }} ${{ matrix.artifact }}.tar.gz
 
+  publish-release:
+    needs: [upload-binaries]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit ${{ github.ref_name }} --draft=false
+
   docker:
-    needs: release
+    needs: publish-release
     runs-on: ubuntu-latest
     permissions:
       packages: write
@@ -216,7 +226,7 @@ jobs:
             ghcr.io/${{ github.repository }}:latest
 
   publish:
-    needs: release
+    needs: publish-release
     runs-on: ubuntu-latest
     environment: main
     steps:
