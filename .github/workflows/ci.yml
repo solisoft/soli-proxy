@@ -155,7 +155,8 @@ jobs:
 
       - name: Package binary
         run: |
-          tar -czf ${{ matrix.artifact }}.tar.gz -C target/release soli-proxy
+          ls -la target/${{ matrix.target }}/release/soli-proxy
+          tar -czf ${{ matrix.artifact }}.tar.gz -C target/${{ matrix.target }}/release soli-proxy
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
