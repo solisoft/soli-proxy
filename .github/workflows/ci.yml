@@ -156,13 +156,15 @@ jobs:
       - name: Package binary
         run: |
           tar -czf ${{ matrix.artifact }}.tar.gz -C target/release soli-proxy
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}.tar.gz
 
   upload-binaries:
-    needs: [release]
+    needs: [release, build-binaries]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     strategy:
