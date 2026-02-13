@@ -154,6 +154,8 @@ jobs:
           PKG_CONFIG_ALLOW_CROSS: 1
 
       - name: Package binary
+        run: |
+          tar -czf ${{ matrix.artifact }}.tar.gz -C target/release soli-proxy
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
