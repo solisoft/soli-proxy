@@ -22,6 +22,7 @@ use hyper_util::rt::TokioExecutor;
 use hyper_util::rt::TokioIo;
 use socket2::{Domain, Protocol, Socket, Type};
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
@@ -38,6 +39,25 @@ type BoxBody = http_body_util::combinators::BoxBody<Bytes, std::convert::Infalli
 type OptionalLuaEngine = Option<LuaEngine>;
 #[cfg(not(feature = "scripting"))]
 type OptionalLuaEngine = ();
+
+pub struct LoadBalancerState {
+    counters: Vec<AtomicUsize>,
+}
+
+impl LoadBalancerState {
+    pub fn new(num_rules: usize) -> Self {
+        Self {
+            counters: (0..num_rules).map(|_| AtomicUsize::new(0)).collect(),
+        }
+    }
+
+    pub fn select_index(&self, rule_idx: usize, num_targets: usize) -> usize {
+        if num_targets == 0 {
+            return 0;
+        }
+        self.counters[rule_idx].fetch_add(1, Ordering::Relaxed) % num_targets
+    }
+}
 
 /// Helper to record app-specific metrics
 fn record_app_metrics(
@@ -145,6 +165,7 @@ pub struct ProxyServer {
     lua_engine: OptionalLuaEngine,
     circuit_breaker: SharedCircuitBreaker,
     app_manager: Option<Arc<AppManager>>,
+    load_balancer: Arc<LoadBalancerState>,
 }
 
 impl ProxyServer {
@@ -157,6 +178,7 @@ impl ProxyServer {
         circuit_breaker: SharedCircuitBreaker,
         app_manager: Option<Arc<AppManager>>,
     ) -> Result<Self> {
+        let num_rules = config.get_config().rules.len();
         Ok(Self {
             config,
             shutdown,
@@ -167,6 +189,7 @@ impl ProxyServer {
             lua_engine,
             circuit_breaker,
             app_manager,
+            load_balancer: Arc::new(LoadBalancerState::new(num_rules)),
         })
     }
 
@@ -182,6 +205,7 @@ impl ProxyServer {
         circuit_breaker: SharedCircuitBreaker,
         app_manager: Option<Arc<AppManager>>,
     ) -> Result<Self> {
+        let num_rules = config.get_config().rules.len();
         Ok(Self {
             config,
             shutdown,
@@ -192,6 +216,7 @@ impl ProxyServer {
             lua_engine,
             circuit_breaker,
             app_manager,
+            load_balancer: Arc::new(LoadBalancerState::new(num_rules)),
         })
     }
 
@@ -216,6 +241,7 @@ impl ProxyServer {
             let lua_clone = self.lua_engine.clone();
             let cb_clone = self.circuit_breaker.clone();
             let am_clone = app_manager.clone();
+            let lb_clone = self.load_balancer.clone();
 
             tokio::spawn(async move {
                 if let Err(e) = run_http_server(
@@ -227,6 +253,7 @@ impl ProxyServer {
                     lua_clone,
                     cb_clone,
                     am_clone,
+                    lb_clone,
                 )
                 .await
                 {
@@ -245,6 +272,7 @@ impl ProxyServer {
                 let lua_clone = self.lua_engine.clone();
                 let cb_clone = self.circuit_breaker.clone();
                 let am_clone = app_manager.clone();
+                let lb_clone = self.load_balancer.clone();
 
                 tokio::spawn(async move {
                     if let Err(e) = run_https_server(
@@ -257,6 +285,7 @@ impl ProxyServer {
                         lua_clone,
                         cb_clone,
                         am_clone,
+                        lb_clone,
                     )
                     .await
                     {
@@ -301,6 +330,7 @@ async fn run_http_server(
     lua_engine: OptionalLuaEngine,
     circuit_breaker: SharedCircuitBreaker,
     app_manager: Option<Arc<AppManager>>,
+    load_balancer: Arc<LoadBalancerState>,
 ) -> Result<()> {
     let listener = create_listener(addr)?;
     let client = create_client();
@@ -320,10 +350,12 @@ async fn run_http_server(
                 let lua = lua_engine.clone();
                 let cb = circuit_breaker.clone();
                 let am = app_manager.clone();
+                let lb = load_balancer.clone();
                 tokio::spawn(async move {
-                    if let Err(e) =
-                        handle_http11_connection(stream, client, config, metrics, cs, lua, cb, am)
-                            .await
+                    if let Err(e) = handle_http11_connection(
+                        stream, client, config, metrics, cs, lua, cb, am, lb,
+                    )
+                    .await
                     {
                         tracing::debug!("HTTP/1.1 connection error: {}", e);
                     }
@@ -349,6 +381,7 @@ async fn run_https_server(
     lua_engine: OptionalLuaEngine,
     circuit_breaker: SharedCircuitBreaker,
     app_manager: Option<Arc<AppManager>>,
+    load_balancer: Arc<LoadBalancerState>,
 ) -> Result<()> {
     let listener = create_listener(addr)?;
     let client = create_client();
@@ -369,12 +402,13 @@ async fn run_https_server(
                 let lua = lua_engine.clone();
                 let cb = circuit_breaker.clone();
                 let am = app_manager.clone();
+                let lb = load_balancer.clone();
                 tokio::spawn(async move {
                     match acceptor.accept(stream).await {
                         Ok(tls_stream) => {
                             metrics.inc_tls_connections();
                             if let Err(e) = handle_https2_connection(
-                                tls_stream, client, config, metrics, cs, lua, cb, am,
+                                tls_stream, client, config, metrics, cs, lua, cb, am, lb,
                             )
                             .await
                             {
@@ -406,6 +440,7 @@ async fn handle_http11_connection(
     lua_engine: OptionalLuaEngine,
     circuit_breaker: SharedCircuitBreaker,
     app_manager: Option<Arc<AppManager>>,
+    load_balancer: Arc<LoadBalancerState>,
 ) -> Result<()> {
     let io = TokioIo::new(stream);
     let svc = service_fn(move |req| {
@@ -418,6 +453,7 @@ async fn handle_http11_connection(
             lua_engine.clone(),
             circuit_breaker.clone(),
             app_manager.clone(),
+            load_balancer.clone(),
         )
     });
 
@@ -444,6 +480,7 @@ async fn handle_https2_connection(
     lua_engine: OptionalLuaEngine,
     circuit_breaker: SharedCircuitBreaker,
     app_manager: Option<Arc<AppManager>>,
+    load_balancer: Arc<LoadBalancerState>,
 ) -> Result<()> {
     let is_h2 = stream.get_ref().1.alpn_protocol() == Some(b"h2");
 
@@ -461,6 +498,7 @@ async fn handle_https2_connection(
                 lua_engine.clone(),
                 circuit_breaker.clone(),
                 app_manager.clone(),
+                load_balancer.clone(),
             )
         });
         let conn = hyper::server::conn::http2::Builder::new(exec)
@@ -482,6 +520,7 @@ async fn handle_https2_connection(
                 lua_engine.clone(),
                 circuit_breaker.clone(),
                 app_manager.clone(),
+                load_balancer.clone(),
             )
         });
         let conn = hyper::server::conn::http1::Builder::new()
@@ -563,6 +602,7 @@ async fn handle_request(
     lua_engine: OptionalLuaEngine,
     circuit_breaker: SharedCircuitBreaker,
     app_manager: Option<Arc<AppManager>>,
+    load_balancer: Arc<LoadBalancerState>,
 ) -> Result<Response<BoxBody>, hyper::Error> {
     let start_time = std::time::Instant::now();
     metrics.inc_in_flight();
@@ -633,6 +673,7 @@ async fn handle_request(
         &lua_engine,
         &circuit_breaker,
         app_manager.clone(),
+        load_balancer.clone(),
     )
     .await;
     let duration = start_time.elapsed();
@@ -926,6 +967,7 @@ async fn handle_regular_request(
     lua_engine: &OptionalLuaEngine,
     circuit_breaker: &SharedCircuitBreaker,
     _app_manager: Option<Arc<AppManager>>,
+    load_balancer: Arc<LoadBalancerState>,
 ) -> Result<(Response<BoxBody>, String, Vec<String>), hyper::Error> {
     let route = find_matching_rule(&req, &config.rules);
 
@@ -943,7 +985,8 @@ async fn handle_regular_request(
             let route_scripts = matched_route.route_scripts.clone();
 
             // Select an available target via circuit breaker
-            let target_selection = select_target(&matched_route, &path, circuit_breaker);
+            let target_selection =
+                select_target(&matched_route, &path, circuit_breaker, &load_balancer);
             let (mut target_url, base_url) = match target_selection {
                 Some((url, base)) => (url, base),
                 None => {
@@ -1275,6 +1318,7 @@ struct MatchedRoute<'a> {
     resolution: UrlResolution,
     route_scripts: Vec<String>,
     auth: Vec<crate::auth::BasicAuth>,
+    load_balancing: &'a crate::config::LoadBalancingStrategy,
 }
 
 impl<'a> MatchedRoute<'a> {
@@ -1336,6 +1380,7 @@ fn find_matching_rule<'a>(
                         resolution: UrlResolution::AppendPath,
                         route_scripts: rule.scripts.clone(),
                         auth: rule.auth.clone(),
+                        load_balancing: &rule.load_balancing,
                     });
                 }
             }
@@ -1351,6 +1396,7 @@ fn find_matching_rule<'a>(
                             resolution: UrlResolution::StripPrefix(path_prefix.clone()),
                             route_scripts: rule.scripts.clone(),
                             auth: rule.auth.clone(),
+                            load_balancing: &rule.load_balancing,
                         });
                     }
                 }
@@ -1370,6 +1416,7 @@ fn find_matching_rule<'a>(
                         resolution: UrlResolution::Identity,
                         route_scripts: rule.scripts.clone(),
                         auth: rule.auth.clone(),
+                        load_balancing: &rule.load_balancing,
                     });
                 }
             }
@@ -1385,6 +1432,7 @@ fn find_matching_rule<'a>(
                             resolution: UrlResolution::StripPrefix(prefix.clone()),
                             route_scripts: rule.scripts.clone(),
                             auth: rule.auth.clone(),
+                            load_balancing: &rule.load_balancing,
                         });
                     }
                 }
@@ -1397,6 +1445,7 @@ fn find_matching_rule<'a>(
                         resolution: UrlResolution::Identity,
                         route_scripts: rule.scripts.clone(),
                         auth: rule.auth.clone(),
+                        load_balancing: &rule.load_balancing,
                     });
                 }
             }
@@ -1411,9 +1460,10 @@ fn find_matching_rule<'a>(
                 return Some(MatchedRoute {
                     targets: &rule.targets,
                     from_domain_rule: false,
-                    resolution: UrlResolution::AppendPath,
+                    resolution: UrlResolution::Identity,
                     route_scripts: rule.scripts.clone(),
                     auth: rule.auth.clone(),
+                    load_balancing: &rule.load_balancing,
                 });
             }
         }
@@ -1422,21 +1472,80 @@ fn find_matching_rule<'a>(
     None
 }
 
-/// Select the first available target (circuit breaker aware).
+/// Select a target based on the load balancing strategy.
 /// Returns (resolved_url, base_url) for logging and circuit breaker tracking.
 fn select_target(
     route: &MatchedRoute<'_>,
     path: &str,
     circuit_breaker: &crate::circuit_breaker::CircuitBreaker,
+    load_balancer: &LoadBalancerState,
 ) -> Option<(String, String)> {
-    for target in route.targets {
-        let base_url = target.url.as_str().to_owned();
-        if circuit_breaker.is_available(&base_url) {
-            let resolved = resolve_target_url(target, path, &route.resolution);
-            return Some((resolved, base_url));
+    let targets = route.targets;
+    if targets.is_empty() {
+        return None;
+    }
+
+    match route.load_balancing {
+        crate::config::LoadBalancingStrategy::Failover => {
+            // Failover: use first available target (circuit breaker aware)
+            for target in targets {
+                let base_url = target.url.as_str().to_owned();
+                if circuit_breaker.is_available(&base_url) {
+                    let resolved = resolve_target_url(target, path, &route.resolution);
+                    return Some((resolved, base_url));
+                }
+            }
+            None
+        }
+        crate::config::LoadBalancingStrategy::RoundRobin => {
+            // Round-robin: cycle through all targets, skip unhealthy ones
+            let num_targets = targets.len();
+            let start_idx = load_balancer.counters[0].load(Ordering::Relaxed) % num_targets;
+
+            for i in 0..num_targets {
+                let idx = (start_idx + i) % num_targets;
+                let target = &targets[idx];
+                let base_url = target.url.as_str().to_owned();
+                if circuit_breaker.is_available(&base_url) {
+                    load_balancer.counters[0].fetch_add(1, Ordering::Relaxed);
+                    let resolved = resolve_target_url(target, path, &route.resolution);
+                    return Some((resolved, base_url));
+                }
+            }
+            None
+        }
+        crate::config::LoadBalancingStrategy::Weighted => {
+            // Weighted: use weights to determine distribution, skip unhealthy
+            let total_weight: u32 = targets.iter().map(|t| t.weight as u32).sum();
+            if total_weight == 0 {
+                return select_target(route, path, circuit_breaker, &LoadBalancerState::new(1));
+            }
+
+            let start_idx =
+                (load_balancer.counters[0].load(Ordering::Relaxed) % total_weight as usize) as u32;
+            let mut cumulative = 0u32;
+
+            for target in targets.iter() {
+                cumulative += target.weight as u32;
+                let base_url = target.url.as_str().to_owned();
+                if cumulative > start_idx && circuit_breaker.is_available(&base_url) {
+                    load_balancer.counters[0].fetch_add(1, Ordering::Relaxed);
+                    let resolved = resolve_target_url(target, path, &route.resolution);
+                    return Some((resolved, base_url));
+                }
+            }
+
+            // Fallback: try any available target
+            for target in targets {
+                let base_url = target.url.as_str().to_owned();
+                if circuit_breaker.is_available(&base_url) {
+                    let resolved = resolve_target_url(target, path, &route.resolution);
+                    return Some((resolved, base_url));
+                }
+            }
+            None
         }
     }
-    None
 }
 
 /// Backward-compatible wrapper: returns (target_url, from_domain_rule, matched_prefix, route_scripts)
@@ -1455,4 +1564,29 @@ fn find_target(
         matched_prefix,
         route.route_scripts,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_load_balancer_state_select_index() {
+        let lb = LoadBalancerState::new(1);
+
+        // First call should return 0
+        assert_eq!(lb.select_index(0, 3), 0);
+        // Second call should return 1
+        assert_eq!(lb.select_index(0, 3), 1);
+        // Third call should return 2
+        assert_eq!(lb.select_index(0, 3), 2);
+        // Fourth call wraps around to 0
+        assert_eq!(lb.select_index(0, 3), 0);
+    }
+
+    #[test]
+    fn test_load_balancer_state_zero_targets() {
+        let lb = LoadBalancerState::new(1);
+        assert_eq!(lb.select_index(0, 0), 0);
+    }
 }

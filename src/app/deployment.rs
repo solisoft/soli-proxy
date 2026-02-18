@@ -91,22 +91,46 @@ impl DeploymentManager {
 
         let output = std::fs::File::create(&output_file)?;
 
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.arg("-c")
+            .arg(&script)
+            .current_dir(&app.path)
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("PORT", port.to_string())
+            .env("WORKERS", app.config.workers.to_string())
+            .stdout(std::process::Stdio::from(output.try_clone()?))
+            .stderr(std::process::Stdio::from(output));
+
+        if let (Some(ref user), Some(ref group)) = (&app.config.user, &app.config.group) {
+            let uid = resolve_user(user)?;
+            let gid = resolve_group(group)?;
+            cmd.uid(uid).gid(gid);
+            tracing::info!(
+                "Running {} as user {} (uid: {}, gid: {})",
+                app.config.name,
+                user,
+                uid,
+                gid
+            );
+        } else if let Some(ref user) = &app.config.user {
+            let uid = resolve_user(user)?;
+            let gid = resolve_group(user)?;
+            cmd.uid(uid).gid(gid);
+            tracing::info!(
+                "Running {} as user {} (uid: {}, gid: {})",
+                app.config.name,
+                user,
+                uid,
+                gid
+            );
+        }
+
         let cmd = unsafe {
-            tokio::process::Command::new("sh")
-                .arg("-c")
-                .arg(&script)
-                .current_dir(&app.path)
-                .env("PATH", std::env::var("PATH").unwrap_or_default())
-                .env("PORT", port.to_string())
-                .env("WORKERS", app.config.workers.to_string())
-                .stdout(std::process::Stdio::from(output.try_clone()?))
-                .stderr(std::process::Stdio::from(output))
-                .pre_exec(|| {
-                    // Create a new process group so we can kill the entire group later
-                    libc::setsid();
-                    Ok(())
-                })
-                .spawn()?
+            cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            })
+            .spawn()?
         };
 
         let pid = cmd.id().unwrap_or(0);
@@ -243,4 +267,24 @@ impl DeploymentManager {
             Ok(String::new())
         }
     }
+}
+
+fn resolve_user(user: &str) -> Result<u32> {
+    use std::ffi::CString;
+    let c_user = CString::new(user)?;
+    let passwd = unsafe { libc::getpwnam(c_user.as_ptr()) };
+    if passwd.is_null() {
+        anyhow::bail!("User '{}' not found", user);
+    }
+    Ok(unsafe { (*passwd).pw_uid })
+}
+
+fn resolve_group(group: &str) -> Result<u32> {
+    use std::ffi::CString;
+    let c_group = CString::new(group)?;
+    let grp = unsafe { libc::getgrnam(c_group.as_ptr()) };
+    if grp.is_null() {
+        anyhow::bail!("Group '{}' not found", group);
+    }
+    Ok(unsafe { (*grp).gr_gid })
 }

@@ -96,6 +96,17 @@ pub struct Config {
     pub global_scripts: Vec<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub enum LoadBalancingStrategy {
+    #[default]
+    #[serde(rename = "round-robin")]
+    RoundRobin,
+    #[serde(rename = "weighted")]
+    Weighted,
+    #[serde(rename = "failover")]
+    Failover,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProxyRule {
     pub matcher: RuleMatcher,
@@ -104,6 +115,8 @@ pub struct ProxyRule {
     pub scripts: Vec<String>,
     #[serde(default)]
     pub auth: Vec<BasicAuth>,
+    #[serde(default)]
+    pub load_balancing: LoadBalancingStrategy,
 }
 
 #[derive(Clone, Debug)]
@@ -533,6 +546,38 @@ fn extract_auth(s: &str) -> (String, Vec<BasicAuth>) {
     (remaining.trim().to_string(), auth_entries)
 }
 
+/// Extract `@lb:strategy` from a string, returning (remaining_str, strategy).
+/// Example: `@lb:round-robin` or `@lb:weighted` or `@lb:failover`
+fn extract_load_balancing(s: &str) -> (String, LoadBalancingStrategy) {
+    if let Some(idx) = s.find("@lb:") {
+        let before = &s[..idx];
+        let after = &s[idx + "@lb:".len()..];
+
+        let end_idx = after
+            .find(|c: char| c.is_whitespace())
+            .unwrap_or(after.len());
+
+        let strategy_str = &after[..end_idx];
+        let strategy = match strategy_str {
+            "round-robin" => LoadBalancingStrategy::RoundRobin,
+            "weighted" => LoadBalancingStrategy::Weighted,
+            "failover" => LoadBalancingStrategy::Failover,
+            _ => LoadBalancingStrategy::default(),
+        };
+
+        let rest = &after[end_idx..];
+        let remaining = if rest.is_empty() {
+            before.to_string()
+        } else {
+            format!("{}{}", before, rest)
+        };
+
+        (remaining.trim().to_string(), strategy)
+    } else {
+        (s.to_string(), LoadBalancingStrategy::default())
+    }
+}
+
 fn parse_proxy_config(content: &str) -> Result<(Vec<ProxyRule>, Vec<String>)> {
     let mut rules = Vec::new();
     let mut global_scripts = Vec::new();
@@ -570,6 +615,8 @@ fn parse_proxy_config(content: &str) -> Result<(Vec<ProxyRule>, Vec<String>)> {
             let (target_str, route_scripts) = extract_scripts(target_str.trim());
             // Extract @auth: entries from the target side
             let (target_str, auth_entries) = extract_auth(target_str);
+            // Extract @lb: load balancing strategy
+            let (target_str, load_balancing) = extract_load_balancing(&target_str);
 
             let matcher = if source == "default" || source == "*" {
                 RuleMatcher::Default
@@ -614,6 +661,7 @@ fn parse_proxy_config(content: &str) -> Result<(Vec<ProxyRule>, Vec<String>)> {
                 headers: vec![],
                 scripts: route_scripts,
                 auth: auth_entries,
+                load_balancing,
             });
         }
     }
@@ -703,5 +751,55 @@ secure.example.com -> http://localhost:9000/ @auth:admin:$2b$12$hash1 @auth:user
         assert_eq!(rules[0].auth.len(), 2);
         assert_eq!(rules[0].auth[0].username, "admin");
         assert_eq!(rules[0].auth[1].username, "user");
+    }
+
+    #[test]
+    fn test_load_balancing_round_robin() {
+        let config = "/api/* -> http://b1:8080, http://b2:8080 @lb:round-robin";
+        let (rules, _) = parse_proxy_config(config).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].load_balancing, LoadBalancingStrategy::RoundRobin);
+        assert_eq!(rules[0].targets.len(), 2);
+    }
+
+    #[test]
+    fn test_load_balancing_weighted() {
+        let config = "/api/* -> http://b1:8080, http://b2:8080 @lb:weighted";
+        let (rules, _) = parse_proxy_config(config).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].load_balancing, LoadBalancingStrategy::Weighted);
+    }
+
+    #[test]
+    fn test_load_balancing_failover() {
+        let config = "/api/* -> http://b1:8080, http://b2:8080 @lb:failover";
+        let (rules, _) = parse_proxy_config(config).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].load_balancing, LoadBalancingStrategy::Failover);
+    }
+
+    #[test]
+    fn test_load_balancing_default_is_round_robin() {
+        let config = "/api/* -> http://b1:8080, http://b2:8080";
+        let (rules, _) = parse_proxy_config(config).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].load_balancing, LoadBalancingStrategy::RoundRobin);
+    }
+
+    #[test]
+    fn test_load_balancing_with_scripts() {
+        let config = "/api/* -> http://b1:8080, http://b2:8080 @lb:failover @script:auth.lua";
+        let (rules, _) = parse_proxy_config(config).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].load_balancing, LoadBalancingStrategy::Failover);
+        assert_eq!(rules[0].scripts, vec!["auth.lua"]);
+    }
+
+    #[test]
+    fn test_load_balancing_unknown_strategy_defaults_to_round_robin() {
+        let config = "/api/* -> http://b1:8080, http://b2:8080 @lb:unknown";
+        let (rules, _) = parse_proxy_config(config).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].load_balancing, LoadBalancingStrategy::RoundRobin);
     }
 }

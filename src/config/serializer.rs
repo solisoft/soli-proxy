@@ -1,4 +1,4 @@
-use super::{ProxyRule, RuleMatcher};
+use super::{LoadBalancingStrategy, ProxyRule, RuleMatcher};
 
 /// Serialize proxy rules and global scripts back to the proxy.conf text format.
 pub fn serialize_proxy_conf(rules: &[ProxyRule], global_scripts: &[String]) -> String {
@@ -34,9 +34,22 @@ pub fn serialize_proxy_conf(rules: &[ProxyRule], global_scripts: &[String]) -> S
             .map(|a| format!(" @auth:{}:{}", a.username, a.hash))
             .collect();
 
+        let lb_suffix = match rule.load_balancing {
+            LoadBalancingStrategy::RoundRobin if rule.targets.len() > 1 => {
+                "  @lb:round-robin".to_string()
+            }
+            LoadBalancingStrategy::Weighted if rule.targets.len() > 1 => {
+                "  @lb:weighted".to_string()
+            }
+            LoadBalancingStrategy::Failover if rule.targets.len() > 1 => {
+                "  @lb:failover".to_string()
+            }
+            _ => String::new(),
+        };
+
         output.push_str(&format!(
-            "{} -> {}{}{}\n",
-            matcher_str, targets_joined, scripts_suffix, auth_suffix
+            "{} -> {}{}{}{}\n",
+            matcher_str, targets_joined, scripts_suffix, auth_suffix, lb_suffix
         ));
     }
 
@@ -65,6 +78,7 @@ mod tests {
                 headers: vec![],
                 scripts: vec![],
                 auth: vec![],
+                load_balancing: LoadBalancingStrategy::default(),
             },
             ProxyRule {
                 matcher: RuleMatcher::Prefix("/api/".to_string()),
@@ -72,6 +86,7 @@ mod tests {
                 headers: vec![],
                 scripts: vec!["auth.lua".to_string()],
                 auth: vec![],
+                load_balancing: LoadBalancingStrategy::default(),
             },
         ];
 
@@ -88,6 +103,7 @@ mod tests {
             headers: vec![],
             scripts: vec![],
             auth: vec![],
+            load_balancing: LoadBalancingStrategy::default(),
         }];
 
         let output =
@@ -104,6 +120,7 @@ mod tests {
                 headers: vec![],
                 scripts: vec![],
                 auth: vec![],
+                load_balancing: LoadBalancingStrategy::default(),
             },
             ProxyRule {
                 matcher: RuleMatcher::DomainPath("api.example.com".to_string(), "/v1/".to_string()),
@@ -111,6 +128,7 @@ mod tests {
                 headers: vec![],
                 scripts: vec![],
                 auth: vec![],
+                load_balancing: LoadBalancingStrategy::default(),
             },
         ];
 
@@ -127,6 +145,7 @@ mod tests {
             headers: vec![],
             scripts: vec![],
             auth: vec![],
+            load_balancing: LoadBalancingStrategy::default(),
         }];
 
         let output = serialize_proxy_conf(&rules, &[]);

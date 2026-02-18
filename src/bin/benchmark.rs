@@ -114,6 +114,7 @@ fn parse_proxy_config(content: &str) -> Result<Vec<soli_proxy::config::ProxyRule
                 headers: vec![],
                 scripts: vec![],
                 auth: vec![],
+                load_balancing: soli_proxy::config::LoadBalancingStrategy::default(),
             });
         }
     }

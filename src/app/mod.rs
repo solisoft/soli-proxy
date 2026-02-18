@@ -25,6 +25,10 @@ pub struct AppConfig {
     pub port_range_end: u16,
     #[serde(default = "default_workers")]
     pub workers: u16,
+    #[serde(default)]
+    pub user: Option<String>,
+    #[serde(default)]
+    pub group: Option<String>,
 }
 
 fn default_workers() -> u16 {
@@ -43,6 +47,8 @@ impl Default for AppConfig {
             port_range_start: 9000,
             port_range_end: 9999,
             workers: 1,
+            user: None,
+            group: None,
         }
     }
 }
@@ -403,6 +409,7 @@ impl AppManager {
                         headers: vec![],
                         scripts: vec![],
                         auth: vec![],
+                        load_balancing: super::config::LoadBalancingStrategy::default(),
                     });
                     changed = true;
                     tracing::info!("Added route for domain {} -> {}", domain, target_url);
