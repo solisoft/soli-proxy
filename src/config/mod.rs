@@ -65,10 +65,19 @@ pub struct ScriptingTomlConfig {
     pub hook_timeout_ms: Option<u64>,
 }
 
-#[derive(Deserialize, Serialize, Default, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct ServerConfig {
     pub bind: String,
     pub https_port: u16,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            bind: "0.0.0.0:8080".to_string(),
+            https_port: 443,
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Default, Clone, Debug)]

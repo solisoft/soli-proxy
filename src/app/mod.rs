@@ -267,8 +267,16 @@ impl AppManager {
             for entry in std::fs::read_dir(&self.sites_dir)? {
                 let entry = entry?;
                 let path = entry.path();
-                if path.is_dir() {
-                    match AppInfo::from_path(&path) {
+                let resolved_path = if path.is_symlink() {
+                    match path.canonicalize() {
+                        Ok(p) => p,
+                        Err(_) => path.clone(),
+                    }
+                } else {
+                    path.clone()
+                };
+                if resolved_path.is_dir() {
+                    match AppInfo::from_path(&resolved_path) {
                         Ok(mut app_info) => {
                             let name = app_info.config.name.clone();
                             seen_names.insert(name.clone());
@@ -468,6 +476,12 @@ impl AppManager {
         let sites_dir = self.sites_dir.clone();
         let manager = self.clone();
 
+        let watch_path = if sites_dir.is_symlink() {
+            sites_dir.canonicalize()?
+        } else {
+            sites_dir.clone()
+        };
+
         let mut watcher = RecommendedWatcher::new(
             move |res| {
                 let _ = tx.blocking_send(res);
@@ -475,7 +489,7 @@ impl AppManager {
             notify::Config::default(),
         )?;
 
-        watcher.watch(&sites_dir, RecursiveMode::Recursive)?;
+        watcher.watch(&watch_path, RecursiveMode::Recursive)?;
 
         *self.watcher.lock().await = Some(watcher);
 

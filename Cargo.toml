@@ -1,6 +1,6 @@
 [package]
 name = "soli-proxy"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2021"
 description = "A fast, configurable reverse proxy with automatic HTTPS, Lua scripting, and blue-green deployments"
 license = "MIT"
@@ -44,14 +44,14 @@ base64 = "0.22"
 sha2 = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
 portpicker = "0.1"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 async-trait = "0.1"
 futures = "0.3"
 scopeguard = "1.2"
 hmac = { version = "0.12", optional = true }
 url = { version = "2.5", features = ["serde"] }
 arc-swap = "1.7"
-tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
+tokio-tungstenite = "0.28"
 futures-util = "0.3"
 tower = { version = "0.5", features = ["full"] }
 pem = "3"
@@ -71,7 +71,7 @@ scripting = ["mlua", "hmac"]
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3"
-reqwest = "0.12"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 portpicker = "0.1"
 
 [profile.release]
