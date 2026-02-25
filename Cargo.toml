@@ -7,10 +7,6 @@ license = "MIT"
 repository = "https://github.com/solisoft/soli-proxy"
 
 [[bin]]
-name = "benchmark"
-path = "src/bin/benchmark.rs"
-
-[[bin]]
 name = "httptest"
 path = "src/bin/httptest.rs"
 
@@ -73,6 +69,19 @@ tokio-test = "0.4"
 tempfile = "3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 portpicker = "0.1"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "routing"
+harness = false
+
+[[bench]]
+name = "components"
+harness = false
+
+[[bench]]
+name = "config_parsing"
+harness = false
 
 [profile.release]
 lto = true

@@ -7,6 +7,7 @@ use crate::auth;
 use crate::circuit_breaker::SharedCircuitBreaker;
 use crate::config::ConfigManager;
 use crate::metrics::SharedMetrics;
+use crate::pool::{ConnectionPool, ProxyClient};
 use crate::shutdown::ShutdownCoordinator;
 use anyhow::Result;
 use bytes::Bytes;
@@ -16,8 +17,6 @@ use hyper::header::HeaderValue;
 use hyper::service::service_fn;
 use hyper::Request;
 use hyper::Response;
-use hyper_util::client::legacy::connect::HttpConnector;
-use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use hyper_util::rt::TokioIo;
 use socket2::{Domain, Protocol, Socket, Type};
@@ -32,7 +31,6 @@ use tokio_rustls::TlsAcceptor;
 #[cfg(feature = "scripting")]
 use crate::scripting::{LuaEngine, LuaRequest, RequestHookResult, RouteHookResult};
 
-type ClientType = Client<HttpConnector, Incoming>;
 type BoxBody = http_body_util::combinators::BoxBody<Bytes, std::convert::Infallible>;
 
 #[cfg(feature = "scripting")]
@@ -60,7 +58,7 @@ impl LoadBalancerState {
 }
 
 /// Helper to record app-specific metrics
-fn record_app_metrics(
+async fn record_app_metrics(
     metrics: &SharedMetrics,
     app_manager: &Option<Arc<AppManager>>,
     target_url: &str,
@@ -72,7 +70,7 @@ fn record_app_metrics(
     if let Some(ref manager) = app_manager {
         if let Ok(url) = url::Url::parse(target_url) {
             if let Some(port) = url.port() {
-                if let Some(app_name) = futures::executor::block_on(manager.get_app_name(port)) {
+                if let Some(app_name) = manager.get_app_name(port).await {
                     metrics.record_app_request(&app_name, bytes_in, bytes_out, status, duration);
                 }
             }
@@ -141,18 +139,6 @@ fn create_listener(addr: SocketAddr) -> Result<TcpListener> {
     socket.listen(8192)?;
     let std_listener: std::net::TcpListener = socket.into();
     Ok(TcpListener::from_std(std_listener)?)
-}
-
-fn create_client() -> ClientType {
-    let exec = TokioExecutor::new();
-    let mut connector = HttpConnector::new();
-    connector.set_nodelay(true);
-    connector.set_keepalive(Some(Duration::from_secs(30)));
-    connector.set_connect_timeout(Some(Duration::from_secs(5)));
-    Client::builder(exec)
-        .pool_max_idle_per_host(256)
-        .pool_idle_timeout(Duration::from_secs(60))
-        .build(connector)
 }
 
 pub struct ProxyServer {
@@ -333,7 +319,7 @@ async fn run_http_server(
     load_balancer: Arc<LoadBalancerState>,
 ) -> Result<()> {
     let listener = create_listener(addr)?;
-    let client = create_client();
+    let client = ConnectionPool::new().client();
 
     loop {
         if shutdown.is_shutting_down() {
@@ -384,7 +370,7 @@ async fn run_https_server(
     load_balancer: Arc<LoadBalancerState>,
 ) -> Result<()> {
     let listener = create_listener(addr)?;
-    let client = create_client();
+    let client = ConnectionPool::new().client();
 
     loop {
         if shutdown.is_shutting_down() {
@@ -433,7 +419,7 @@ async fn run_https_server(
 #[allow(clippy::too_many_arguments)]
 async fn handle_http11_connection(
     stream: tokio::net::TcpStream,
-    client: ClientType,
+    client: ProxyClient,
     config: Arc<ConfigManager>,
     metrics: SharedMetrics,
     challenge_store: ChallengeStore,
@@ -473,7 +459,7 @@ async fn handle_http11_connection(
 #[allow(clippy::too_many_arguments)]
 async fn handle_https2_connection(
     stream: tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
-    client: ClientType,
+    client: ProxyClient,
     config: Arc<ConfigManager>,
     metrics: SharedMetrics,
     challenge_store: ChallengeStore,
@@ -595,7 +581,7 @@ fn extract_response_headers(
 #[allow(clippy::too_many_arguments)]
 async fn handle_request(
     req: Request<Incoming>,
-    client: ClientType,
+    client: ProxyClient,
     config_manager: Arc<ConfigManager>,
     metrics: SharedMetrics,
     challenge_store: ChallengeStore,
@@ -715,7 +701,7 @@ async fn handle_request(
             }
 
             metrics.record_request(0, 0, status, duration);
-            record_app_metrics(&metrics, &app_manager, &_target_url, 0, 0, status, duration);
+            record_app_metrics(&metrics, &app_manager, &_target_url, 0, 0, status, duration).await;
             let (parts, body) = response.into_parts();
             let boxed = body.map_err(|_| unreachable!()).boxed();
             Ok(Response::from_parts(parts, boxed))
@@ -772,7 +758,7 @@ fn handle_acme_challenge(
 
 async fn handle_websocket_request(
     req: Request<Incoming>,
-    _client: ClientType,
+    _client: ProxyClient,
     config: &crate::config::Config,
     metrics: &SharedMetrics,
     _start_time: std::time::Instant,
@@ -962,7 +948,7 @@ async fn handle_websocket_request(
 /// Returns (Response, target_url_for_logging, route_scripts)
 async fn handle_regular_request(
     req: Request<Incoming>,
-    client: ClientType,
+    client: ProxyClient,
     config: &crate::config::Config,
     lua_engine: &OptionalLuaEngine,
     circuit_breaker: &SharedCircuitBreaker,

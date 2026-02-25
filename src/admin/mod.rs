@@ -113,7 +113,7 @@ async fn handle_admin_request(
 
     let response = match (method.clone(), path.as_str()) {
         // Phase 1: Read-only endpoints
-        (Method::GET, "/api/v1/status") => handlers::get_status(&state),
+        (Method::GET, "/api/v1/status") => handlers::get_status(&state).await,
         (Method::GET, "/api/v1/config") => handlers::get_config(&state),
         (Method::GET, "/api/v1/routes") => handlers::get_routes(&state),
         (Method::GET, "/api/v1/metrics") => handlers::get_metrics(&state),

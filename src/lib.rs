@@ -17,7 +17,7 @@ pub use admin::{run_admin_server, AdminState};
 pub use auth::BasicAuth;
 pub use config::{Config, ConfigManager, ConfigManagerTrait, ProxyRule, RuleMatcher, Target};
 pub use metrics::{new_metrics, Metrics, SharedMetrics};
-pub use pool::{create_optimized_client, BackendPool, ConnectionPool};
+pub use pool::{ConnectionPool, ProxyClient};
 #[cfg(feature = "scripting")]
 pub use scripting::LuaEngine;
 pub use server::ProxyServer;

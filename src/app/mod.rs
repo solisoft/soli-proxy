@@ -14,6 +14,7 @@ pub use deployment::{DeploymentManager, DeploymentStatus};
 pub use port_manager::{PortAllocator, PortManager};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AppConfig {
     pub name: String,
     pub domain: String,
@@ -23,16 +24,9 @@ pub struct AppConfig {
     pub graceful_timeout: u32,
     pub port_range_start: u16,
     pub port_range_end: u16,
-    #[serde(default = "default_workers")]
     pub workers: u16,
-    #[serde(default)]
     pub user: Option<String>,
-    #[serde(default)]
     pub group: Option<String>,
-}
-
-fn default_workers() -> u16 {
-    1
 }
 
 impl Default for AppConfig {
@@ -118,6 +112,18 @@ impl AppInfo {
         // LuaOnBeans auto-detection: if no start_script and luaonbeans.org binary exists
         if config.start_script.is_none() && path.join("luaonbeans.org").exists() {
             config.start_script = Some("./luaonbeans.org -D . -p $PORT -s".to_string());
+            config.health_check = Some("/".to_string());
+            if config.domain.is_empty() {
+                config.domain = app_name.clone();
+            }
+        }
+
+        // Soli auto-detection: if no start_script and app/models directory exists
+        if config.start_script.is_none()
+            && path.join("app").exists()
+            && path.join("app/models").exists()
+        {
+            config.start_script = Some("soli serve .".to_string());
             config.health_check = Some("/".to_string());
             if config.domain.is_empty() {
                 config.domain = app_name.clone();
@@ -276,7 +282,7 @@ impl AppManager {
                     path.clone()
                 };
                 if resolved_path.is_dir() {
-                    match AppInfo::from_path(&resolved_path) {
+                    match AppInfo::from_path(&path) {
                         Ok(mut app_info) => {
                             let name = app_info.config.name.clone();
                             seen_names.insert(name.clone());

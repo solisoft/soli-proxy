@@ -6,15 +6,14 @@ use crate::config::ProxyRule;
 use hyper::Response;
 use std::sync::Arc;
 
-pub fn get_status(state: &Arc<AdminState>) -> Response<BoxBody> {
+pub async fn get_status(state: &Arc<AdminState>) -> Response<BoxBody> {
     let cfg = state.config_manager.get_config();
     let uptime = state.start_time.elapsed();
 
-    let app_count = state
-        .app_manager
-        .as_ref()
-        .map(|m| futures::executor::block_on(m.list_apps()).len())
-        .unwrap_or(0);
+    let app_count = match state.app_manager.as_ref() {
+        Some(m) => m.list_apps().await.len(),
+        None => 0,
+    };
 
     ok_response(serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),

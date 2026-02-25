@@ -7,3 +7,5 @@ run
 **/CLAUDE.md
 !CLAUDE.md
 node_modules
+*.pid
+*.log

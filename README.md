@@ -107,13 +107,13 @@ headers {
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│              Soli Proxy Server                       │
+│              Soli Proxy Server                      │
 ├─────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌──────────────┐  │
-│  │ Config      │  │ TLS/HTTPS   │  │ HTTP/2+     │  │
-│  │ Manager     │  │ Handler     │  │ Listener     │  │
-│  │ (hot reload)│  │ (rcgen/LE)  │  │ (tokio/hyper)│  │
-│  └─────────────┘  └─────────────┘  └──────────────┘  │
+│  ┌─────────────┐  ┌─────────────┐  ┌──────────────┐ │
+│  │ Config      │  │ TLS/HTTPS   │  │ HTTP/2+      │ │
+│  │ Manager     │  │ Handler     │  │ Listener     │ │
+│  │ (hot reload)│  │ (rcgen/LE)  │  │ (tokio/hyper)│ │
+│  └─────────────┘  └─────────────┘  └──────────────┘ │
 │         │                │               │          │
 │         └────────────────┼───────────────┘          │
 │                          │                          │
@@ -122,12 +122,12 @@ headers {
 │                   │ (matching)  │                   │
 │                   └─────────────┘                   │
 │                          │                          │
-│         ┌────────────────┼────────────────┐        │
-│         │                │                │        │
-│    ┌────▼────┐     ┌─────▼─────┐     ┌────▼────┐   │
-│    │ Auth    │     │ Rate      │     │ Logging │   │
-│    │ Middle  │     │ Limit     │     │ JSON    │   │
-│    └─────────┘     └───────────┘     └─────────┘   │
+│         ┌────────────────┼────────────────┐         │
+│         │                │                │         │
+│    ┌────▼────┐     ┌─────▼─────┐     ┌────▼────┐    │
+│    │ Auth    │     │ Rate      │     │ Logging │    │
+│    │ Middle  │     │ Limit     │     │ JSON    │    │
+│    └─────────┘     └───────────┘     └─────────┘    │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -154,24 +154,61 @@ soli-proxy/
 ├── src/
 │   ├── main.rs           # Entry point
 │   ├── lib.rs            # Library root
+│   ├── bin/
+│   │   ├── httptest.rs   # End-to-end proxy throughput test
+│   │   └── hash-password.rs
 │   ├── config/           # Config parsing & hot reload
 │   ├── server/           # HTTP/HTTPS server
-│   ├── tls/              # TLS & certificate management
-│   ├── router/           # Request routing & matching
-│   ├── middleware/       # Auth, rate limiting, logging
-│   ├── health/           # Health check endpoints
+│   ├── admin/            # Admin API server
+│   ├── acme/             # ACME / Let's Encrypt
+│   ├── tls.rs            # TLS & certificate management
+│   ├── circuit_breaker.rs
+│   ├── metrics.rs        # Prometheus-format metrics
+│   ├── pool.rs           # Connection pool
+│   ├── auth.rs           # Authentication
+│   ├── app/              # App management & blue-green deploy
 │   └── shutdown.rs       # Graceful shutdown
-├── tests/                # Integration tests
+├── benches/
+│   ├── routing.rs        # Rule matching & scaling benchmarks
+│   ├── components.rs     # Circuit breaker, load balancer, metrics
+│   └── config_parsing.rs # Config file parsing benchmarks
 └── scripts/              # Helper scripts
 ```
 
 ## Performance
 
-- **HTTP/2 Multiplexing**: Single connection for multiple requests
-- **Connection Pooling**: Reuse backend connections
-- **Async I/O**: Tokio for non-blocking operations
-- **Efficient Memory**: Minimal allocations, LRU caching
-- **Zero-Copy**: Where possible, avoid body copies
+Built on Tokio and Hyper with SO_REUSEPORT multi-listener architecture.
+
+### End-to-End Throughput (50k requests, 200 concurrent)
+
+| Endpoint | Throughput | p50 | p95 | p99 |
+|---|---:|---:|---:|---:|
+| Proxy (default route → backend) | 228,196 req/s | 0.64 ms | 0.92 ms | 1.20 ms |
+| Admin API (GET /api/v1/status) | 508,049 req/s | 0.37 ms | 0.58 ms | 0.71 ms |
+
+### Micro-benchmarks (criterion)
+
+| Component | Operation | Time |
+|---|---|---:|
+| **Routing** | Domain match | 54 ns |
+| **Routing** | Regex match | 57 ns |
+| **Routing** | 500 rules worst-case | 587 ns |
+| **Circuit breaker** | is_available (1k targets) | 18 ns |
+| **Load balancer** | select_index (round-robin) | 1.6 ns |
+| **Metrics** | record_request | 29 ns |
+| **Metrics** | format_metrics (1k requests) | 601 ns |
+| **Config parsing** | 5 rules | 6.9 µs |
+| **Config parsing** | 100 rules | 45 µs |
+
+### Running benchmarks
+
+```bash
+# Criterion micro-benchmarks (routing, components, config parsing)
+cargo bench
+
+# End-to-end proxy throughput test
+cargo run --release --bin httptest -- --requests 50000 --concurrency 200
+```
 
 ## Hot Reload
 
@@ -188,9 +225,9 @@ This project uses [Conventional Commits](https://www.conventionalcommits.org/) f
 
 Optional setup:
 
-- **Commit template** (reminder in the message box):  
+- **Commit template** (reminder in the message box):
   `git config commit.template .gitmessage`
-- **Auto-fix non-conventional messages** (prepend `chore: ` if the first line doesn’t match):  
+- **Auto-fix non-conventional messages** (prepend `chore: ` if the first line doesn’t match):
   `cp scripts/git-hooks/prepare-commit-msg .git/hooks/prepare-commit-msg && chmod +x .git/hooks/prepare-commit-msg`
 
 ## License

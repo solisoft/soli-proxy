@@ -7,6 +7,51 @@ use tokio::time::sleep;
 
 use super::AppInfo;
 
+/// Validate that a name is safe for use in filesystem paths.
+/// Rejects empty strings, path separators, "..", and control characters.
+fn validate_path_component(name: &str, label: &str) -> Result<()> {
+    if name.is_empty() {
+        anyhow::bail!("{} cannot be empty", label);
+    }
+    if name.contains('/') || name.contains('\\') || name.contains('\0') {
+        anyhow::bail!("{} contains invalid path characters: {:?}", label, name);
+    }
+    if name == "." || name == ".." || name.contains("..") {
+        anyhow::bail!("{} contains path traversal: {:?}", label, name);
+    }
+    if name.chars().any(|c| c.is_control()) {
+        anyhow::bail!("{} contains control characters: {:?}", label, name);
+    }
+    Ok(())
+}
+
+/// Parse a start script into a program and arguments without using a shell.
+/// Performs variable substitution for $PORT and $WORKERS.
+/// This avoids shell injection by never passing the script through `sh -c`.
+fn parse_start_command(script: &str, port: u16, workers: u16) -> Result<(String, Vec<String>)> {
+    let tokens: Vec<&str> = script.split_whitespace().collect();
+    if tokens.is_empty() {
+        anyhow::bail!("Start script is empty");
+    }
+
+    let port_str = port.to_string();
+    let workers_str = workers.to_string();
+
+    let program = tokens[0]
+        .replace("$PORT", &port_str)
+        .replace("$WORKERS", &workers_str);
+
+    let args: Vec<String> = tokens[1..]
+        .iter()
+        .map(|t| {
+            t.replace("$PORT", &port_str)
+                .replace("$WORKERS", &workers_str)
+        })
+        .collect();
+
+    Ok((program, args))
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum DeploymentStatus {
     Idle,
@@ -18,6 +63,7 @@ pub enum DeploymentStatus {
 pub struct DeploymentManager {
     status: Arc<AtomicBool>,
     dev_mode: bool,
+    http_client: reqwest::Client,
 }
 
 impl Default for DeploymentManager {
@@ -28,9 +74,15 @@ impl Default for DeploymentManager {
 
 impl DeploymentManager {
     pub fn new(dev_mode: bool) -> Self {
+        let http_client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
         Self {
             status: Arc::new(AtomicBool::new(false)),
             dev_mode,
+            http_client,
         }
     }
 
@@ -69,16 +121,25 @@ impl DeploymentManager {
     }
 
     async fn start_instance(&self, app: &AppInfo, slot: &str) -> Result<u32> {
+        // Validate slot and app name to prevent path traversal in log paths
+        if slot != "blue" && slot != "green" {
+            anyhow::bail!("Invalid slot name: {:?}", slot);
+        }
+        validate_path_component(&app.config.name, "App name")?;
+
         let port = if slot == "blue" {
             app.blue.port
         } else {
             app.green.port
         };
 
-        let base_script =
-            app.config.start_script.as_ref().ok_or_else(|| {
-                anyhow::anyhow!("No start script configured for {}", app.config.name)
-            })?;
+        let base_script = if let Some(ref script) = app.config.start_script {
+            script.clone()
+        } else if app.path.join("app").exists() && app.path.join("app/models").exists() {
+            "soli serve .".to_string()
+        } else {
+            anyhow::bail!("No start script configured for {}", app.config.name)
+        };
 
         let script = if self.dev_mode {
             format!("{} --dev", base_script)
@@ -91,9 +152,12 @@ impl DeploymentManager {
 
         let output = std::fs::File::create(&output_file)?;
 
-        let mut cmd = tokio::process::Command::new("sh");
-        cmd.arg("-c")
-            .arg(&script)
+        // Parse the script into program + args instead of using `sh -c`
+        // to prevent shell injection from malicious app.infos files.
+        let (program, args) = parse_start_command(&script, port, app.config.workers)?;
+
+        let mut cmd = tokio::process::Command::new(&program);
+        cmd.args(&args)
             .current_dir(&app.path)
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("PORT", port.to_string())
@@ -203,7 +267,7 @@ impl DeploymentManager {
         for i in 0..timeout_secs {
             sleep(Duration::from_secs(1)).await;
 
-            match reqwest::Client::new().get(&url).send().await {
+            match self.http_client.get(&url).send().await {
                 Ok(resp) if resp.status().is_success() => {
                     tracing::info!(
                         "Health check passed for {} slot {} after {}s",
@@ -260,6 +324,10 @@ impl DeploymentManager {
     }
 
     pub async fn get_deployment_log(&self, app_name: &str, slot: &str) -> Result<String> {
+        validate_path_component(app_name, "App name")?;
+        if slot != "blue" && slot != "green" {
+            anyhow::bail!("Invalid slot name: {:?}", slot);
+        }
         let log_path = PathBuf::from(format!("run/logs/{}/{}.log", app_name, slot));
         if log_path.exists() {
             Ok(std::fs::read_to_string(&log_path)?)
