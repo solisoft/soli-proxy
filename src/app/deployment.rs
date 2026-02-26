@@ -1,7 +1,7 @@
 use anyhow::Result;
+use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -61,7 +61,8 @@ pub enum DeploymentStatus {
 }
 
 pub struct DeploymentManager {
-    status: Arc<AtomicBool>,
+    /// Per-app deployment locks: contains app names currently being deployed
+    deploying_apps: Arc<Mutex<HashSet<String>>>,
     dev_mode: bool,
     http_client: reqwest::Client,
 }
@@ -80,25 +81,33 @@ impl DeploymentManager {
             .unwrap_or_else(|_| reqwest::Client::new());
 
         Self {
-            status: Arc::new(AtomicBool::new(false)),
+            deploying_apps: Arc::new(Mutex::new(HashSet::new())),
             dev_mode,
             http_client,
         }
     }
 
-    pub async fn is_deploying(&self) -> bool {
-        self.status.load(Ordering::SeqCst)
+    pub fn is_deploying(&self, app_name: &str) -> bool {
+        self.deploying_apps.lock().unwrap().contains(app_name)
     }
 
     /// Deploy an app to a slot. Returns the PID of the started process.
     pub async fn deploy(&self, app: &AppInfo, slot: &str) -> Result<u32> {
-        if self.status.load(Ordering::SeqCst) {
-            anyhow::bail!("Another deployment is in progress");
+        {
+            let mut deploying = self.deploying_apps.lock().unwrap();
+            if deploying.contains(&app.config.name) {
+                anyhow::bail!(
+                    "Deployment already in progress for {}",
+                    app.config.name
+                );
+            }
+            deploying.insert(app.config.name.clone());
         }
 
-        self.status.store(true, Ordering::SeqCst);
-        let _guard = scopeguard::guard((), |_| {
-            self.status.store(false, Ordering::SeqCst);
+        let deploying_apps = self.deploying_apps.clone();
+        let app_name = app.config.name.clone();
+        let _guard = scopeguard::guard((), move |_| {
+            deploying_apps.lock().unwrap().remove(&app_name);
         });
 
         tracing::info!(
@@ -141,7 +150,7 @@ impl DeploymentManager {
             anyhow::bail!("No start script configured for {}", app.config.name)
         };
 
-        let script = if self.dev_mode {
+        let script = if self.dev_mode && base_script.starts_with("soli ") {
             format!("{} --dev", base_script)
         } else {
             base_script.clone()
@@ -226,7 +235,8 @@ impl DeploymentManager {
                     .await?;
 
                 let timeout = app.config.graceful_timeout as u64;
-                for _ in 0..timeout {
+                let mut waited_ms = 0u64;
+                while waited_ms < timeout * 1000 {
                     let output = tokio::process::Command::new("kill")
                         .arg("-0")
                         .arg(pid.to_string())
@@ -237,7 +247,9 @@ impl DeploymentManager {
                         tracing::info!("Process {} terminated gracefully", pid);
                         return Ok(());
                     }
-                    sleep(Duration::from_secs(1)).await;
+                    let delay = if waited_ms < 500 { 50 } else { 200 };
+                    sleep(Duration::from_millis(delay)).await;
+                    waited_ms += delay;
                 }
 
                 tracing::warn!("Force killing process group {}", pid);

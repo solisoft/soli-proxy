@@ -89,6 +89,18 @@ pub struct AppInfo {
 
 impl AppInfo {
     pub fn from_path(path: &std::path::Path) -> Result<Self, anyhow::Error> {
+        // Validate that folder name is a valid domain (contains at least one dot)
+        let folder_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        if !is_valid_domain(folder_name) {
+            return Err(anyhow::anyhow!(
+                "folder '{}' is not a valid domain (must contain at least one dot)",
+                folder_name
+            ));
+        }
+
         let app_infos_path = path.join("app.infos");
 
         let mut config = if app_infos_path.exists() {
@@ -185,6 +197,21 @@ fn is_acme_eligible(domain: &str) -> bool {
         && domain.parse::<std::net::IpAddr>().is_err()
 }
 
+/// Check if a folder name is a valid domain (must contain at least one dot, or start with underscore).
+fn is_valid_domain(name: &str) -> bool {
+    !name.is_empty() && (!name.starts_with('.') && (name.contains('.') || name.starts_with('_')))
+}
+
+/// Get the non-www version of a domain if it starts with www.
+/// e.g. "www.solisoft.net" → Some("solisoft.net")
+fn strip_www(domain: &str) -> Option<String> {
+    if domain.starts_with("www.") && domain.len() > 4 {
+        Some(domain[4..].to_string())
+    } else {
+        None
+    }
+}
+
 /// Extract app names from changed file paths, filtering out irrelevant directories.
 /// Each path is expected to be under `sites_dir/<app_name>/...`.
 fn affected_app_names(sites_dir: &Path, paths: &HashSet<PathBuf>) -> HashSet<String> {
@@ -273,6 +300,14 @@ impl AppManager {
             for entry in std::fs::read_dir(&self.sites_dir)? {
                 let entry = entry?;
                 let path = entry.path();
+
+                // Skip directories starting with '.' (like .claude)
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if name.starts_with('.') {
+                        continue;
+                    }
+                }
+
                 let resolved_path = if path.is_symlink() {
                     match path.canonicalize() {
                         Ok(p) => p,
@@ -327,7 +362,7 @@ impl AppManager {
                                     ),
                                 }
                                 if app_info.config.start_script.is_some()
-                                    && !self.deployment_manager.is_deploying().await
+                                    && !self.deployment_manager.is_deploying(&name)
                                 {
                                     apps_to_start.push(name.clone());
                                 }
@@ -345,15 +380,22 @@ impl AppManager {
             apps.retain(|name, _| seen_names.contains(name));
         }
 
-        // Auto-start discovered apps sequentially (deployment lock is global)
+        // Auto-start discovered apps in parallel (locks are per-app)
         if !apps_to_start.is_empty() {
             let manager = self.clone();
             tokio::spawn(async move {
+                let mut handles = Vec::new();
                 for app_name in apps_to_start {
-                    tracing::info!("Auto-starting app: {}", app_name);
-                    if let Err(e) = manager.deploy(&app_name, "blue").await {
-                        tracing::error!("Failed to auto-start {}: {}", app_name, e);
-                    }
+                    let mgr = manager.clone();
+                    handles.push(tokio::spawn(async move {
+                        tracing::info!("Auto-starting app: {}", app_name);
+                        if let Err(e) = mgr.deploy(&app_name, "blue").await {
+                            tracing::error!("Failed to auto-start {}: {}", app_name, e);
+                        }
+                    }));
+                }
+                for handle in handles {
+                    let _ = handle.await;
                 }
             });
         }
@@ -381,6 +423,10 @@ impl AppManager {
                     app.green.port
                 };
                 app_domains.insert(app.config.domain.clone(), port);
+                // If domain starts with www., also register the non-www version
+                if let Some(non_www) = strip_www(&app.config.domain) {
+                    app_domains.insert(non_www, port);
+                }
                 // In dev mode, also register .dev alias
                 if self.dev_mode {
                     if let Some(dev) = dev_domain(&app.config.domain) {
@@ -910,6 +956,27 @@ port_range_end = 9999
     }
 
     #[test]
+    fn test_is_valid_domain() {
+        assert!(is_valid_domain("www.solisoft.net"));
+        assert!(is_valid_domain("solisoft.net"));
+        assert!(is_valid_domain("sub.example.com"));
+        assert!(is_valid_domain("_admin"));
+        assert!(!is_valid_domain(""));
+        assert!(!is_valid_domain("myapp"));
+        assert!(!is_valid_domain(".claude"));
+        assert!(!is_valid_domain(".hidden"));
+    }
+
+    #[test]
+    fn test_strip_www() {
+        assert_eq!(strip_www("www.solisoft.net"), Some("solisoft.net".to_string()));
+        assert_eq!(strip_www("www.example.com"), Some("example.com".to_string()));
+        assert_eq!(strip_www("solisoft.net"), None);
+        assert_eq!(strip_www("www."), None);
+        assert_eq!(strip_www("wwww.solisoft.net"), None);
+    }
+
+    #[test]
     fn test_is_acme_eligible_excludes_dev() {
         assert!(!is_acme_eligible("app.example.test"));
         assert!(!is_acme_eligible("localhost"));
@@ -937,12 +1004,12 @@ port_range_end = 9999
     #[test]
     fn test_luaonbeans_auto_detected_with_partial_app_infos() {
         let temp_dir = TempDir::new().unwrap();
-        let app_path = temp_dir.path().join("myapp");
+        let app_path = temp_dir.path().join("myapp.example.com");
         std::fs::create_dir_all(&app_path).unwrap();
         std::fs::write(app_path.join("luaonbeans.org"), b"").unwrap();
 
         let app_infos = r#"
-name = "myapp"
+name = "myapp.example.com"
 domain = "custom.example.com"
 graceful_timeout = 30
 port_range_start = 9000
@@ -951,7 +1018,7 @@ port_range_end = 9999
         std::fs::write(app_path.join("app.infos"), app_infos).unwrap();
 
         let app_info = AppInfo::from_path(&app_path).unwrap();
-        assert_eq!(app_info.config.name, "myapp");
+        assert_eq!(app_info.config.name, "myapp.example.com");
         assert_eq!(app_info.config.domain, "custom.example.com");
         assert_eq!(
             app_info.config.start_script,
@@ -963,12 +1030,12 @@ port_range_end = 9999
     #[test]
     fn test_no_override_when_start_script_set() {
         let temp_dir = TempDir::new().unwrap();
-        let app_path = temp_dir.path().join("myapp");
+        let app_path = temp_dir.path().join("myapp.example.com");
         std::fs::create_dir_all(&app_path).unwrap();
         std::fs::write(app_path.join("luaonbeans.org"), b"").unwrap();
 
         let app_infos = r#"
-name = "myapp"
+name = "myapp.example.com"
 domain = "myapp.example.com"
 start_script = "./custom-start.sh"
 health_check = "/health"
@@ -989,11 +1056,11 @@ port_range_end = 9999
     #[test]
     fn test_no_detection_without_luaonbeans_or_app_infos() {
         let temp_dir = TempDir::new().unwrap();
-        let app_path = temp_dir.path().join("emptyapp");
+        let app_path = temp_dir.path().join("emptyapp.example.com");
         std::fs::create_dir_all(&app_path).unwrap();
 
         let app_info = AppInfo::from_path(&app_path).unwrap();
-        assert_eq!(app_info.config.name, "emptyapp");
+        assert_eq!(app_info.config.name, "emptyapp.example.com");
         assert!(app_info.config.start_script.is_none());
         assert_eq!(app_info.config.health_check, Some("/health".to_string()));
     }

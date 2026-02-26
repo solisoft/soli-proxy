@@ -40,6 +40,32 @@ pub async fn get_apps(state: &Arc<AdminState>) -> Response<BoxBody> {
     }
 }
 
+pub async fn get_apps_by_domain(state: &Arc<AdminState>) -> Response<BoxBody> {
+    match &state.app_manager {
+        Some(manager) => {
+            let apps = manager.list_apps().await;
+            use std::collections::BTreeMap;
+            let mut grouped: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
+            for app in apps {
+                let domain = app.config.domain.clone();
+                let root_domain = if domain.is_empty() {
+                    "ungrouped".to_string()
+                } else if let Some(dot_pos) = domain.find('.') {
+                    domain[dot_pos + 1..].to_string()
+                } else {
+                    domain
+                };
+                match serde_json::to_value(&app) {
+                    Ok(val) => grouped.entry(root_domain).or_default().push(val),
+                    Err(e) => return error_response(500, &format!("Failed to serialize app: {}", e)),
+                }
+            }
+            ok_response(serde_json::to_value(grouped).unwrap())
+        }
+        None => error_response(501, "App management not configured"),
+    }
+}
+
 pub async fn get_app(state: &Arc<AdminState>, name: &str) -> Response<BoxBody> {
     match &state.app_manager {
         Some(manager) => match manager.get_app(name).await {

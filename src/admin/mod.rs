@@ -122,6 +122,7 @@ async fn handle_admin_request(
 
         // App management endpoints
         (Method::GET, "/api/v1/apps") => handlers::get_apps(&state).await,
+        (Method::GET, "/api/v1/apps/by-domain") => handlers::get_apps_by_domain(&state).await,
         (_, p) if p.starts_with("/api/v1/apps/") => {
             let app_name = p.strip_prefix("/api/v1/apps/").unwrap_or("");
             if method == Method::GET && !app_name.is_empty() && !app_name.contains('/') {

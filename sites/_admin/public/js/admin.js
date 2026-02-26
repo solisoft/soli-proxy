@@ -78,6 +78,7 @@ var AdminAPI = (function() {
     function getMetrics() { return _fetch('/api/v1/metrics'); }
     function getCircuitBreaker() { return _fetch('/api/v1/circuit-breaker'); }
     function getApps() { return _fetch('/api/v1/apps'); }
+    function getAppsByDomain() { return _fetch('/api/v1/apps/by-domain'); }
     function getApp(name) { return _fetch('/api/v1/apps/' + encodeURIComponent(name)); }
     function getAppLogs(name) { return _fetch('/api/v1/apps/' + encodeURIComponent(name) + '/logs'); }
 
@@ -308,6 +309,7 @@ var AdminAPI = (function() {
         getMetrics: getMetrics,
         getCircuitBreaker: getCircuitBreaker,
         getApps: getApps,
+        getAppsByDomain: getAppsByDomain,
         getApp: getApp,
         getAppLogs: getAppLogs,
         getAllAppMetrics: getAllAppMetrics,
