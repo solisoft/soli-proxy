@@ -72,16 +72,42 @@ fn cleanup_pid() {
     let _ = fs::remove_file(&pid_path);
 }
 
+fn is_process_running(pid: i32) -> bool {
+    unsafe {
+        let result = libc::kill(pid, 0);
+        result == 0
+    }
+}
+
 fn kill_existing_daemon() -> Result<()> {
     let pid_path = get_pid_path();
     if let Ok(content) = fs::read_to_string(&pid_path) {
         if let Ok(pid) = content.trim().parse::<i32>() {
-            if pid > 0 {
+            if pid > 0 && is_process_running(pid) {
                 println!("Stopping existing daemon (PID: {})...", pid);
                 unsafe {
                     libc::kill(pid, libc::SIGTERM);
                 }
-                std::thread::sleep(std::time::Duration::from_millis(500));
+
+                let max_wait = std::time::Duration::from_secs(10);
+                let start = std::time::Instant::now();
+                let check_interval = std::time::Duration::from_millis(100);
+
+                while start.elapsed() < max_wait {
+                    if !is_process_running(pid) {
+                        println!("Daemon stopped successfully");
+                        break;
+                    }
+                    std::thread::sleep(check_interval);
+                }
+
+                if is_process_running(pid) {
+                    println!("Daemon did not stop gracefully, forcing kill...");
+                    unsafe {
+                        libc::kill(pid, libc::SIGKILL);
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
             }
         }
         let _ = fs::remove_file(&pid_path);

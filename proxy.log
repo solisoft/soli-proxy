@@ -2125,3 +2125,1067 @@
 {"timestamp":"2026-02-26T15:48:12.713358Z","level":"INFO","fields":{"message":"Deploy completed for db.solisoft.net to slot blue"},"target":"soli_proxy::app"}
 {"timestamp":"2026-02-26T15:48:12.867466Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:9000/__livereload_ws"},"target":"soli_proxy::server"}
 {"timestamp":"2026-02-26T15:48:14.196846Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:9000/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T16:56:25.024639Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T16:56:44.694850Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T16:56:44.694906Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T16:57:26.385215Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T16:57:26.385277Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T16:57:36.236997Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T16:57:36.237066Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T16:57:38.151169Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T16:57:38.977987Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T16:57:44.512592Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T16:57:44.512638Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T16:57:54.664903Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T16:57:54.664948Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T16:57:55.224285Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T16:57:55.224342Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T16:58:51.436973Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T16:58:51.437031Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:01:30.045922Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:01:30.045976Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:01:30.616510Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:01:30.616547Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:02:39.871472Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:02:39.871521Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:06:55.962024Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:06:55.962075Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:07:33.403499Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:07:33.403548Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:07:33.871720Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:07:33.970399Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:07:33.970450Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:07:38.334112Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:07:43.125369Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:07:43.125418Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:07:43.295552Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:07:44.423859Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:11:10.178552Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:11:33.641687Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:11:33.641746Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:11:33.871597Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:14:38.828715Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:14:38.828770Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:14:39.198058Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:14:58.236648Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:14:58.236689Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:15:07.297508Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:15:07.297592Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:15:10.975524Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:15:11.501224Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:15:11.694268Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:15:11.894534Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:15:27.075889Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:15:27.075927Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:15:28.590079Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:15:47.342088Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:15:47.342144Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:15:55.325725Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:15:55.325774Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:15:57.997905Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:16:18.814355Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:16:18.814407Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:16:20.856150Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:16:34.289065Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:16:34.289119Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:16:34.852992Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:16:34.853039Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:16:52.088440Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:16:52.088485Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:16:53.710598Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:16:55.623704Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:17:37.225384Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:17:37.225442Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:17:45.888130Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:17:45.888172Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:17:49.353399Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:17:49.353450Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:17:49.925407Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:17:49.925469Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:18:33.955755Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:18:42.738037Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:18:42.738091Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:18:43.298506Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:18:43.298572Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:19:58.930908Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:19:58.930959Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:19:59.458915Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:19:59.458954Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:20:00.986572Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:20:16.027694Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:20:16.027746Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:20:16.594242Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:20:16.594301Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:20:22.565760Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:20:22.565821Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:20:23.797331Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:20:34.346416Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:20:34.346454Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:21:17.004820Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:21:17.004884Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:21:27.379897Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:21:27.379947Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:21:27.947385Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:21:27.947445Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:21:33.346354Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:22:07.236207Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:22:07.236258Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:22:07.806482Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:22:07.806565Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:24:20.342976Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:24:20.343024Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:24:20.902332Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:24:20.902407Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:24:32.654205Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:24:32.654296Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:24:38.798624Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:24:38.798674Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:24:42.723321Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:24:42.723373Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:25:08.194696Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:25:08.194733Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:25:08.613343Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:25:17.438916Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:25:17.438968Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:25:17.706605Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:25:29.617555Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:25:29.617602Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:25:29.783623Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:25:39.096695Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:25:39.096747Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:25:39.305560Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:26:45.534595Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:26:45.534637Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:26:51.007406Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:33:07.610451Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:33:07.610507Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:33:09.347734Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:33:18.110369Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:33:18.110465Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:33:19.519344Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:33:42.557193Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:33:42.557242Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:33:43.126107Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:33:43.126168Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:33:44.433471Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:35:44.784442Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:35:44.784501Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:35:45.987549Z","level":"ERROR","fields":{"message":"Backend request failed: client error (Connect) (target: http://localhost:22178/)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:35:52.259262Z","level":"ERROR","fields":{"message":"Backend request failed: client error (Connect) (target: http://localhost:22178/)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:35:52.591657Z","level":"ERROR","fields":{"message":"Backend request failed: client error (Connect) (target: http://localhost:22178/)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:35:52.796741Z","level":"ERROR","fields":{"message":"Backend request failed: client error (Connect) (target: http://localhost:22178/)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:35:52.990179Z","level":"WARN","fields":{"message":"Circuit breaker OPEN for http://localhost:22178/ (5 consecutive failures)"},"target":"soli_proxy::circuit_breaker"}
+{"timestamp":"2026-02-26T17:35:52.990230Z","level":"ERROR","fields":{"message":"Backend request failed: client error (Connect) (target: http://localhost:22178/)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:35:54.726440Z","level":"ERROR","fields":{"message":"Failed to proxy to _admin app: client error (Connect)"},"target":"soli_proxy::admin"}
+{"timestamp":"2026-02-26T17:36:41.505880Z","level":"INFO","fields":{"message":"Received shutdown signal, stopping all apps..."},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T17:36:41.505929Z","level":"INFO","fields":{"message":"Stopping soli.solisoft.net slot blue (PID: 2676158)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:41.508071Z","level":"INFO","fields":{"message":"Process 2676158 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:41.508097Z","level":"INFO","fields":{"message":"Stopping _admin slot blue (PID: 2676137)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:41.509184Z","level":"INFO","fields":{"message":"Process 2676137 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:41.509194Z","level":"INFO","fields":{"message":"Stopping www.solisoft.net slot blue (PID: 2676167)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:41.511384Z","level":"INFO","fields":{"message":"Process 2676167 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:41.511404Z","level":"INFO","fields":{"message":"Stopping agenda.letelegraphe.org slot blue (PID: 2676139)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:41.513380Z","level":"INFO","fields":{"message":"Process 2676139 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:41.513389Z","level":"INFO","fields":{"message":"Stopping db.solisoft.net slot blue (PID: 2676136)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:41.567205Z","level":"INFO","fields":{"message":"Process 2676136 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:41.567238Z","level":"INFO","fields":{"message":"Stopping host.solisoft.net slot blue (PID: 2676141)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:41.569437Z","level":"INFO","fields":{"message":"Process 2676141 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:41.569464Z","level":"INFO","fields":{"message":"Stopping kv.solisoft.net slot blue (PID: 2676166)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:41.571011Z","level":"INFO","fields":{"message":"Process 2676166 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:41.571024Z","level":"INFO","fields":{"message":"Stopping proxy.solisoft.net slot blue (PID: 2676140)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:41.574146Z","level":"INFO","fields":{"message":"Process 2676140 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:42.008588Z","level":"INFO","fields":{"message":"Dev mode enabled: apps will be started with --dev flag"},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T17:36:42.008974Z","level":"INFO","fields":{"message":"Watching config file: ./proxy.conf"},"target":"soli_proxy::config"}
+{"timestamp":"2026-02-26T17:36:42.009039Z","level":"INFO","fields":{"message":"Lua scripting disabled"},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T17:36:42.009225Z","level":"INFO","fields":{"message":"Loaded existing self-signed fallback certificate"},"target":"soli_proxy::tls"}
+{"timestamp":"2026-02-26T17:36:42.011388Z","level":"INFO","fields":{"message":"App manager initialized for ./sites"},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T17:36:42.011416Z","level":"INFO","fields":{"message":"HTTPS enabled on port 443"},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T17:36:42.011447Z","level":"INFO","fields":{"message":"Proxy server starting on port 8008"},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T17:36:42.011488Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.011526Z","level":"INFO","fields":{"message":"Admin API listening on 0.0.0.0:9090"},"target":"soli_proxy::admin"}
+{"timestamp":"2026-02-26T17:36:42.011679Z","level":"INFO","fields":{"message":"HTTP/1.1 server listening on 0.0.0.0:80 (16 accept loops)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:36:42.011689Z","level":"INFO","fields":{"message":"Discovered new app: db.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.011702Z","level":"INFO","fields":{"message":"HTTPS/2 server listening on 0.0.0.0:443 (16 accept loops)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:36:42.011830Z","level":"INFO","fields":{"message":"Discovered new app: host.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.011917Z","level":"INFO","fields":{"message":"Discovered new app: www.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.012000Z","level":"INFO","fields":{"message":"Discovered new app: agenda.letelegraphe.org"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.012069Z","level":"INFO","fields":{"message":"Discovered new app: kv.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.012099Z","level":"INFO","fields":{"message":"Discovered new app: proxy.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.012142Z","level":"INFO","fields":{"message":"Discovered new app: soli.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.012170Z","level":"INFO","fields":{"message":"Discovered new app: _admin"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.118357Z","level":"INFO","fields":{"message":"Auto-starting app: db.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.118367Z","level":"INFO","fields":{"message":"Auto-starting app: _admin"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.118368Z","level":"INFO","fields":{"message":"Auto-starting app: www.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.118389Z","level":"INFO","fields":{"message":"Starting deploy for db.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.118384Z","level":"INFO","fields":{"message":"Auto-starting app: host.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.118402Z","level":"INFO","fields":{"message":"Starting deploy for _admin to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.118400Z","level":"INFO","fields":{"message":"Auto-starting app: kv.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.118418Z","level":"INFO","fields":{"message":"Deploying db.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.118415Z","level":"INFO","fields":{"message":"Starting deploy for www.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.118414Z","level":"INFO","fields":{"message":"Auto-starting app: proxy.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.118430Z","level":"INFO","fields":{"message":"Starting deploy for host.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.118437Z","level":"INFO","fields":{"message":"Deploying _admin to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.118442Z","level":"INFO","fields":{"message":"Starting deploy for kv.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.118445Z","level":"INFO","fields":{"message":"Starting deployment of db.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:42.118444Z","level":"INFO","fields":{"message":"Auto-starting app: soli.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.118452Z","level":"INFO","fields":{"message":"Deploying www.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.118449Z","level":"INFO","fields":{"message":"Auto-starting app: agenda.letelegraphe.org"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.118460Z","level":"INFO","fields":{"message":"Starting deploy for proxy.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.118467Z","level":"INFO","fields":{"message":"Deploying host.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.118469Z","level":"INFO","fields":{"message":"Starting deployment of _admin to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:42.118474Z","level":"INFO","fields":{"message":"Deploying kv.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.118516Z","level":"INFO","fields":{"message":"Starting deploy for soli.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.118522Z","level":"INFO","fields":{"message":"Starting deployment of www.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:42.118531Z","level":"INFO","fields":{"message":"Starting deploy for agenda.letelegraphe.org to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.118538Z","level":"INFO","fields":{"message":"Deploying proxy.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.118557Z","level":"INFO","fields":{"message":"Starting deployment of host.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:42.118564Z","level":"INFO","fields":{"message":"Starting deployment of kv.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:42.118982Z","level":"INFO","fields":{"message":"Starting deployment of proxy.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:42.119022Z","level":"INFO","fields":{"message":"Deploying soli.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.119039Z","level":"INFO","fields":{"message":"Starting deployment of soli.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:42.120111Z","level":"INFO","fields":{"message":"Started db.solisoft.net slot blue with PID 2782211"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:42.120223Z","level":"INFO","fields":{"message":"Started _admin slot blue with PID 2782212"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:42.120451Z","level":"INFO","fields":{"message":"Started kv.solisoft.net slot blue with PID 2782213"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:42.132453Z","level":"INFO","fields":{"message":"Started www.solisoft.net slot blue with PID 2782242"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:42.132780Z","level":"INFO","fields":{"message":"Started proxy.solisoft.net slot blue with PID 2782243"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:42.133296Z","level":"INFO","fields":{"message":"Started host.solisoft.net slot blue with PID 2782244"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:42.133400Z","level":"INFO","fields":{"message":"Started soli.solisoft.net slot blue with PID 2782245"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:42.133420Z","level":"INFO","fields":{"message":"Deploying agenda.letelegraphe.org to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.133429Z","level":"INFO","fields":{"message":"Starting deployment of agenda.letelegraphe.org to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:42.134667Z","level":"INFO","fields":{"message":"Started agenda.letelegraphe.org slot blue with PID 2782246"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:42.958391Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:42.958448Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.123266Z","level":"INFO","fields":{"message":"Health check passed for kv.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:43.123280Z","level":"INFO","fields":{"message":"Health check passed for _admin slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:43.123326Z","level":"INFO","fields":{"message":"Health check passed for kv.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:43.123359Z","level":"INFO","fields":{"message":"Health check passed for _admin slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:43.123362Z","level":"INFO","fields":{"message":"Deploy started, PID: 2782213"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.123373Z","level":"INFO","fields":{"message":"Deploy started, PID: 2782212"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.123379Z","level":"INFO","fields":{"message":"Current slot: kv.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.123399Z","level":"INFO","fields":{"message":"Current slot: _admin, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.123410Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.123419Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.123428Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.123442Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.123471Z","level":"INFO","fields":{"message":"Deploy completed for kv.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.123495Z","level":"INFO","fields":{"message":"Deploy completed for _admin to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.134187Z","level":"INFO","fields":{"message":"Health check passed for proxy.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:43.134209Z","level":"INFO","fields":{"message":"Health check passed for proxy.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:43.134213Z","level":"INFO","fields":{"message":"Deploy started, PID: 2782243"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.134217Z","level":"INFO","fields":{"message":"Current slot: proxy.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.134220Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.134223Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.134242Z","level":"INFO","fields":{"message":"Deploy completed for proxy.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.134669Z","level":"INFO","fields":{"message":"Health check passed for db.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:43.134701Z","level":"INFO","fields":{"message":"Health check passed for db.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:43.134715Z","level":"INFO","fields":{"message":"Deploy started, PID: 2782211"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.134727Z","level":"INFO","fields":{"message":"Current slot: db.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.134737Z","level":"INFO","fields":{"message":"Health check passed for soli.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:43.134740Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.134752Z","level":"INFO","fields":{"message":"Health check passed for soli.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:43.134768Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.134774Z","level":"INFO","fields":{"message":"Deploy started, PID: 2782245"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.134826Z","level":"INFO","fields":{"message":"Deploy completed for db.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.134858Z","level":"INFO","fields":{"message":"Current slot: soli.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.134870Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.134880Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.134897Z","level":"INFO","fields":{"message":"Health check passed for host.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:43.134922Z","level":"INFO","fields":{"message":"Health check passed for host.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:43.134921Z","level":"INFO","fields":{"message":"Deploy completed for soli.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.134932Z","level":"INFO","fields":{"message":"Deploy started, PID: 2782244"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.134940Z","level":"INFO","fields":{"message":"Current slot: host.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.134948Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.134955Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.134988Z","level":"INFO","fields":{"message":"Deploy completed for host.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.136393Z","level":"INFO","fields":{"message":"Health check passed for agenda.letelegraphe.org slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:43.136413Z","level":"INFO","fields":{"message":"Health check passed for agenda.letelegraphe.org slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:43.136417Z","level":"INFO","fields":{"message":"Deploy started, PID: 2782246"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.136420Z","level":"INFO","fields":{"message":"Current slot: agenda.letelegraphe.org, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.136423Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.136426Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.136441Z","level":"INFO","fields":{"message":"Deploy completed for agenda.letelegraphe.org to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.142991Z","level":"INFO","fields":{"message":"Health check passed for www.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:43.143035Z","level":"INFO","fields":{"message":"Health check passed for www.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T17:36:43.143043Z","level":"INFO","fields":{"message":"Deploy started, PID: 2782242"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.143064Z","level":"INFO","fields":{"message":"Current slot: www.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.143073Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.143079Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:43.143115Z","level":"INFO","fields":{"message":"Deploy completed for www.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:36:47.081498Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:9000/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:36:49.591727Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:37:03.835752Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:37:03.835804Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:37:04.401598Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:37:04.401667Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:37:05.404474Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:37:16.504236Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:37:16.504291Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:37:23.504431Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:37:23.504464Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:38:27.054018Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:38:27.054057Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:38:34.075210Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:38:51.480411Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:38:51.480465Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:38:52.052567Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:38:52.052618Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:39:11.654456Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:39:11.654547Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:39:13.263800Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:39:37.951326Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:39:37.951382Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:39:54.421139Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:39:54.421210Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:39:56.502146Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:39:56.502215Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:41:20.659964Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:41:20.660018Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:41:49.382183Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:41:49.382231Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:41:49.948793Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:41:49.948872Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:42:08.704504Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:42:50.538113Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:42:50.538171Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:42:56.363171Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:42:56.363218Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:42:58.068691Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:42:58.711223Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:43:15.123407Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:43:15.123462Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:43:18.319725Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:43:28.031053Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:43:28.031103Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:43:50.528064Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:43:59.134258Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:43:59.134330Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:44:03.392067Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:44:03.392121Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:44:03.955776Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:44:03.955863Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:44:12.263777Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:44:12.263837Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:44:26.216690Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:44:26.216728Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:44:38.319902Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:44:38.319945Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:44:38.888922Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:44:38.888976Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:44:43.433123Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:44:43.433174Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:44:46.830182Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:44:46.830218Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:44:51.461310Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:44:51.461359Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:44:52.027145Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:44:52.027192Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:44:55.056904Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:44:55.056956Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:44:55.626891Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:44:55.626953Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:45:13.489944Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:45:13.489983Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:45:51.083419Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:45:51.083469Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:45:51.653557Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:45:51.653601Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:45:55.779175Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:45:55.779236Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:45:56.346939Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:45:56.347054Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:50:40.674098Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:50:40.674150Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:50:50.307626Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:50:50.307718Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:51:08.899697Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:51:08.899748Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:51:09.470127Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:51:09.470184Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:52:05.288071Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:52:05.288123Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:52:12.855839Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:52:12.855879Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:52:13.376454Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:52:26.622841Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:52:26.622894Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:52:28.281792Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:52:41.057135Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:52:41.057185Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:52:47.562749Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:52:47.562829Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:52:47.751357Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:52:49.082351Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:54:18.130914Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:54:18.130966Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:54:18.685217Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:54:18.978984Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T17:54:22.817580Z","level":"INFO","fields":{"message":"Apps directory changed, rediscovering..."},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:54:22.817630Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T17:54:23.140015Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T18:00:57.870715Z","level":"INFO","fields":{"message":"Received shutdown signal, stopping all apps..."},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T18:00:57.870762Z","level":"INFO","fields":{"message":"Stopping host.solisoft.net slot blue (PID: 2782244)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:57.925311Z","level":"INFO","fields":{"message":"Process 2782244 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:57.925363Z","level":"INFO","fields":{"message":"Stopping proxy.solisoft.net slot blue (PID: 2782243)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:57.981079Z","level":"INFO","fields":{"message":"Process 2782243 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:57.981129Z","level":"INFO","fields":{"message":"Stopping www.solisoft.net slot blue (PID: 2782242)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:58.035053Z","level":"INFO","fields":{"message":"Process 2782242 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:58.035097Z","level":"INFO","fields":{"message":"Stopping kv.solisoft.net slot blue (PID: 2782213)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:58.088580Z","level":"INFO","fields":{"message":"Process 2782213 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:58.088624Z","level":"INFO","fields":{"message":"Stopping db.solisoft.net slot blue (PID: 2782211)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:58.143091Z","level":"INFO","fields":{"message":"Process 2782211 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:58.143147Z","level":"INFO","fields":{"message":"Stopping _admin slot blue (PID: 2782212)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:58.198161Z","level":"INFO","fields":{"message":"Process 2782212 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:58.198211Z","level":"INFO","fields":{"message":"Stopping agenda.letelegraphe.org slot blue (PID: 2782246)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:58.253339Z","level":"INFO","fields":{"message":"Process 2782246 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:58.253387Z","level":"INFO","fields":{"message":"Stopping soli.solisoft.net slot blue (PID: 2782245)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:58.307471Z","level":"INFO","fields":{"message":"Process 2782245 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:58.372123Z","level":"INFO","fields":{"message":"Dev mode enabled: apps will be started with --dev flag"},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T18:00:58.372389Z","level":"INFO","fields":{"message":"Watching config file: ./proxy.conf"},"target":"soli_proxy::config"}
+{"timestamp":"2026-02-26T18:00:58.372422Z","level":"INFO","fields":{"message":"Lua scripting disabled"},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T18:00:58.372576Z","level":"INFO","fields":{"message":"Loaded existing self-signed fallback certificate"},"target":"soli_proxy::tls"}
+{"timestamp":"2026-02-26T18:00:58.372982Z","level":"INFO","fields":{"message":"App manager initialized for ./sites"},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T18:00:58.372991Z","level":"INFO","fields":{"message":"HTTPS enabled on port 443"},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T18:00:58.373001Z","level":"INFO","fields":{"message":"Proxy server starting on port 8008"},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T18:00:58.373017Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.373035Z","level":"INFO","fields":{"message":"Admin API listening on 0.0.0.0:9090"},"target":"soli_proxy::admin"}
+{"timestamp":"2026-02-26T18:00:58.373078Z","level":"INFO","fields":{"message":"HTTP/1.1 server listening on 0.0.0.0:80 (16 accept loops)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T18:00:58.373085Z","level":"INFO","fields":{"message":"HTTPS/2 server listening on 0.0.0.0:443 (16 accept loops)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T18:00:58.373089Z","level":"INFO","fields":{"message":"Discovered new app: db.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.373126Z","level":"INFO","fields":{"message":"Discovered new app: host.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.373147Z","level":"INFO","fields":{"message":"Discovered new app: www.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.373180Z","level":"INFO","fields":{"message":"Discovered new app: agenda.letelegraphe.org"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.373248Z","level":"INFO","fields":{"message":"Discovered new app: kv.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.373269Z","level":"INFO","fields":{"message":"Discovered new app: proxy.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.373298Z","level":"INFO","fields":{"message":"Discovered new app: soli.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.373318Z","level":"INFO","fields":{"message":"Discovered new app: _admin"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.478381Z","level":"INFO","fields":{"message":"Auto-starting app: db.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.478381Z","level":"INFO","fields":{"message":"Auto-starting app: _admin"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.478384Z","level":"INFO","fields":{"message":"Auto-starting app: host.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.478401Z","level":"INFO","fields":{"message":"Auto-starting app: kv.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.478421Z","level":"INFO","fields":{"message":"Starting deploy for db.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.478418Z","level":"INFO","fields":{"message":"Auto-starting app: www.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.478434Z","level":"INFO","fields":{"message":"Auto-starting app: agenda.letelegraphe.org"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.478453Z","level":"INFO","fields":{"message":"Starting deploy for _admin to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.478449Z","level":"INFO","fields":{"message":"Auto-starting app: proxy.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.478463Z","level":"INFO","fields":{"message":"Starting deploy for host.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.478468Z","level":"INFO","fields":{"message":"Auto-starting app: soli.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.478473Z","level":"INFO","fields":{"message":"Starting deploy for kv.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.478480Z","level":"INFO","fields":{"message":"Deploying db.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.478488Z","level":"INFO","fields":{"message":"Starting deploy for www.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.478496Z","level":"INFO","fields":{"message":"Starting deploy for agenda.letelegraphe.org to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.478502Z","level":"INFO","fields":{"message":"Deploying _admin to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.478513Z","level":"INFO","fields":{"message":"Starting deploy for proxy.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.478527Z","level":"INFO","fields":{"message":"Starting deploy for soli.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.478526Z","level":"INFO","fields":{"message":"Deploying host.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.478533Z","level":"INFO","fields":{"message":"Deploying kv.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.478551Z","level":"INFO","fields":{"message":"Starting deployment of db.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:58.478557Z","level":"INFO","fields":{"message":"Deploying www.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.478560Z","level":"INFO","fields":{"message":"Deploying agenda.letelegraphe.org to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.478563Z","level":"INFO","fields":{"message":"Starting deployment of _admin to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:58.478569Z","level":"INFO","fields":{"message":"Deploying proxy.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.478573Z","level":"INFO","fields":{"message":"Deploying soli.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:58.478600Z","level":"INFO","fields":{"message":"Starting deployment of www.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:58.478581Z","level":"INFO","fields":{"message":"Starting deployment of kv.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:58.478594Z","level":"INFO","fields":{"message":"Starting deployment of agenda.letelegraphe.org to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:58.478583Z","level":"INFO","fields":{"message":"Starting deployment of host.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:58.478602Z","level":"INFO","fields":{"message":"Starting deployment of proxy.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:58.478607Z","level":"INFO","fields":{"message":"Starting deployment of soli.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:58.480178Z","level":"INFO","fields":{"message":"Started db.solisoft.net slot blue with PID 2813275"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:58.490365Z","level":"INFO","fields":{"message":"Started host.solisoft.net slot blue with PID 2813277"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:58.490968Z","level":"INFO","fields":{"message":"Started _admin slot blue with PID 2813278"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:58.491738Z","level":"INFO","fields":{"message":"Started kv.solisoft.net slot blue with PID 2813279"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:58.492148Z","level":"INFO","fields":{"message":"Started www.solisoft.net slot blue with PID 2813281"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:58.492626Z","level":"INFO","fields":{"message":"Started agenda.letelegraphe.org slot blue with PID 2813280"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:58.492839Z","level":"INFO","fields":{"message":"Started proxy.solisoft.net slot blue with PID 2813282"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:58.493230Z","level":"INFO","fields":{"message":"Started soli.solisoft.net slot blue with PID 2813283"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:58.555566Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T18:00:58.556050Z","level":"ERROR","fields":{"message":"Failed to connect to backend for WebSocket: Connection refused (os error 111)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T18:00:58.576571Z","level":"ERROR","fields":{"message":"Backend request failed: client error (Connect) (target: http://localhost:22178/__livereload)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T18:00:58.993093Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T18:00:59.492281Z","level":"INFO","fields":{"message":"Health check passed for _admin slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:59.492346Z","level":"INFO","fields":{"message":"Health check passed for _admin slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:59.492343Z","level":"INFO","fields":{"message":"Health check passed for host.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:59.492363Z","level":"INFO","fields":{"message":"Deploy started, PID: 2813278"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.492386Z","level":"INFO","fields":{"message":"Health check passed for host.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:59.492386Z","level":"INFO","fields":{"message":"Current slot: _admin, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.492400Z","level":"INFO","fields":{"message":"Deploy started, PID: 2813277"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.492418Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.492433Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.492445Z","level":"INFO","fields":{"message":"Current slot: host.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.492507Z","level":"INFO","fields":{"message":"Deploy completed for _admin to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.492552Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.492587Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.492679Z","level":"INFO","fields":{"message":"Deploy completed for host.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.492890Z","level":"INFO","fields":{"message":"Health check passed for kv.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:59.492911Z","level":"INFO","fields":{"message":"Health check passed for kv.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:59.492920Z","level":"INFO","fields":{"message":"Deploy started, PID: 2813279"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.492929Z","level":"INFO","fields":{"message":"Current slot: kv.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.492959Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.492971Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.493012Z","level":"INFO","fields":{"message":"Deploy completed for kv.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.494507Z","level":"INFO","fields":{"message":"Health check passed for proxy.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:59.494537Z","level":"INFO","fields":{"message":"Health check passed for proxy.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:59.494546Z","level":"INFO","fields":{"message":"Deploy started, PID: 2813282"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.494553Z","level":"INFO","fields":{"message":"Current slot: proxy.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.494560Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.494567Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.494607Z","level":"INFO","fields":{"message":"Deploy completed for proxy.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.494639Z","level":"INFO","fields":{"message":"Health check passed for soli.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:59.494649Z","level":"INFO","fields":{"message":"Health check passed for soli.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:59.494655Z","level":"INFO","fields":{"message":"Deploy started, PID: 2813283"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.494662Z","level":"INFO","fields":{"message":"Current slot: soli.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.494669Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.494675Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.494706Z","level":"INFO","fields":{"message":"Deploy completed for soli.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.496062Z","level":"INFO","fields":{"message":"Health check passed for www.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:59.496069Z","level":"INFO","fields":{"message":"Health check passed for www.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:59.496072Z","level":"INFO","fields":{"message":"Deploy started, PID: 2813281"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.496075Z","level":"INFO","fields":{"message":"Current slot: www.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.496078Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.496081Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.496091Z","level":"INFO","fields":{"message":"Deploy completed for www.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.496924Z","level":"INFO","fields":{"message":"Health check passed for db.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:59.496964Z","level":"INFO","fields":{"message":"Health check passed for db.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:00:59.496975Z","level":"INFO","fields":{"message":"Deploy started, PID: 2813275"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.496984Z","level":"INFO","fields":{"message":"Current slot: db.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.496995Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.497003Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.497047Z","level":"INFO","fields":{"message":"Deploy completed for db.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:00:59.498249Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:9000/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T18:00:59.985458Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T18:01:01.599727Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T18:01:28.598295Z","level":"ERROR","fields":{"message":"Failed to auto-start agenda.letelegraphe.org: Health check failed for blue slot"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.220692Z","level":"INFO","fields":{"message":"Received shutdown signal, stopping all apps..."},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T18:08:51.220760Z","level":"INFO","fields":{"message":"Stopping www.solisoft.net slot blue (PID: 2813281)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:51.275206Z","level":"INFO","fields":{"message":"Process 2813281 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:51.275258Z","level":"INFO","fields":{"message":"Stopping host.solisoft.net slot blue (PID: 2813277)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:51.332325Z","level":"INFO","fields":{"message":"Process 2813277 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:51.332427Z","level":"INFO","fields":{"message":"Stopping _admin slot blue (PID: 2813278)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:51.386567Z","level":"INFO","fields":{"message":"Process 2813278 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:51.386607Z","level":"INFO","fields":{"message":"Stopping db.solisoft.net slot blue (PID: 2813275)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:51.441111Z","level":"INFO","fields":{"message":"Process 2813275 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:51.441156Z","level":"INFO","fields":{"message":"Stopping soli.solisoft.net slot blue (PID: 2813283)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:51.495620Z","level":"INFO","fields":{"message":"Process 2813283 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:51.495671Z","level":"INFO","fields":{"message":"Stopping proxy.solisoft.net slot blue (PID: 2813282)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:51.549317Z","level":"INFO","fields":{"message":"Process 2813282 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:51.549366Z","level":"INFO","fields":{"message":"Stopping kv.solisoft.net slot blue (PID: 2813279)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:51.602903Z","level":"INFO","fields":{"message":"Process 2813279 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:51.723358Z","level":"INFO","fields":{"message":"Dev mode enabled: apps will be started with --dev flag"},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T18:08:51.723727Z","level":"INFO","fields":{"message":"Watching config file: ./proxy.conf"},"target":"soli_proxy::config"}
+{"timestamp":"2026-02-26T18:08:51.723781Z","level":"INFO","fields":{"message":"Lua scripting disabled"},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T18:08:51.723980Z","level":"INFO","fields":{"message":"Loaded existing self-signed fallback certificate"},"target":"soli_proxy::tls"}
+{"timestamp":"2026-02-26T18:08:51.724143Z","level":"INFO","fields":{"message":"App manager initialized for ./sites"},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T18:08:51.724153Z","level":"INFO","fields":{"message":"HTTPS enabled on port 443"},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T18:08:51.724170Z","level":"INFO","fields":{"message":"Proxy server starting on port 8008"},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T18:08:51.724187Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.724212Z","level":"INFO","fields":{"message":"Admin API listening on 0.0.0.0:9090"},"target":"soli_proxy::admin"}
+{"timestamp":"2026-02-26T18:08:51.724281Z","level":"INFO","fields":{"message":"Discovered new app: db.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.724303Z","level":"INFO","fields":{"message":"HTTP/1.1 server listening on 0.0.0.0:80 (16 accept loops)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T18:08:51.724312Z","level":"INFO","fields":{"message":"HTTPS/2 server listening on 0.0.0.0:443 (16 accept loops)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T18:08:51.724337Z","level":"INFO","fields":{"message":"Discovered new app: host.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.724364Z","level":"INFO","fields":{"message":"Discovered new app: www.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.724417Z","level":"INFO","fields":{"message":"Discovered new app: agenda.letelegraphe.org"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.724481Z","level":"INFO","fields":{"message":"Discovered new app: kv.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.724520Z","level":"INFO","fields":{"message":"Discovered new app: proxy.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.724572Z","level":"INFO","fields":{"message":"Discovered new app: soli.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.724608Z","level":"INFO","fields":{"message":"Discovered new app: _admin"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.831598Z","level":"INFO","fields":{"message":"Auto-starting app: host.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.831605Z","level":"INFO","fields":{"message":"Auto-starting app: agenda.letelegraphe.org"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.831605Z","level":"INFO","fields":{"message":"Auto-starting app: _admin"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.831622Z","level":"INFO","fields":{"message":"Auto-starting app: proxy.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.831629Z","level":"INFO","fields":{"message":"Auto-starting app: www.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.831644Z","level":"INFO","fields":{"message":"Starting deploy for host.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.831649Z","level":"INFO","fields":{"message":"Auto-starting app: soli.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.831658Z","level":"INFO","fields":{"message":"Starting deploy for agenda.letelegraphe.org to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.831681Z","level":"INFO","fields":{"message":"Auto-starting app: db.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.831678Z","level":"INFO","fields":{"message":"Auto-starting app: kv.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.831692Z","level":"INFO","fields":{"message":"Starting deploy for _admin to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.831705Z","level":"INFO","fields":{"message":"Starting deploy for proxy.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.831710Z","level":"INFO","fields":{"message":"Starting deploy for www.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.831719Z","level":"INFO","fields":{"message":"Deploying host.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.831728Z","level":"INFO","fields":{"message":"Starting deploy for soli.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.831753Z","level":"INFO","fields":{"message":"Deploying agenda.letelegraphe.org to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.831764Z","level":"INFO","fields":{"message":"Starting deploy for db.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.831772Z","level":"INFO","fields":{"message":"Starting deploy for kv.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.831779Z","level":"INFO","fields":{"message":"Deploying _admin to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.831791Z","level":"INFO","fields":{"message":"Deploying proxy.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.831798Z","level":"INFO","fields":{"message":"Starting deployment of agenda.letelegraphe.org to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:51.831790Z","level":"INFO","fields":{"message":"Starting deployment of host.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:51.831836Z","level":"INFO","fields":{"message":"Starting deployment of proxy.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:51.831830Z","level":"INFO","fields":{"message":"Starting deployment of _admin to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:51.832999Z","level":"INFO","fields":{"message":"Started _admin slot blue with PID 2822846"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:51.833553Z","level":"INFO","fields":{"message":"Started host.solisoft.net slot blue with PID 2822848"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:51.833574Z","level":"INFO","fields":{"message":"Started proxy.solisoft.net slot blue with PID 2822847"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:51.833618Z","level":"INFO","fields":{"message":"Deploying www.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.833627Z","level":"INFO","fields":{"message":"Starting deployment of www.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:51.834029Z","level":"INFO","fields":{"message":"Started agenda.letelegraphe.org slot blue with PID 2822849"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:51.834962Z","level":"INFO","fields":{"message":"Started www.solisoft.net slot blue with PID 2822850"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:51.835005Z","level":"INFO","fields":{"message":"Deploying soli.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.835013Z","level":"INFO","fields":{"message":"Starting deployment of soli.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:51.836100Z","level":"INFO","fields":{"message":"Started soli.solisoft.net slot blue with PID 2822853"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:51.836157Z","level":"INFO","fields":{"message":"Deploying db.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.836166Z","level":"INFO","fields":{"message":"Starting deployment of db.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:51.836184Z","level":"INFO","fields":{"message":"Deploying kv.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:51.836206Z","level":"INFO","fields":{"message":"Starting deployment of kv.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:51.838908Z","level":"INFO","fields":{"message":"Started db.solisoft.net slot blue with PID 2822871"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:51.839032Z","level":"INFO","fields":{"message":"Started kv.solisoft.net slot blue with PID 2822878"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:51.879908Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T18:08:52.483727Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:9000/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T18:08:52.836148Z","level":"INFO","fields":{"message":"Health check passed for _admin slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:52.836237Z","level":"INFO","fields":{"message":"Health check passed for _admin slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:52.836252Z","level":"INFO","fields":{"message":"Deploy started, PID: 2822846"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.836267Z","level":"INFO","fields":{"message":"Current slot: _admin, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.836280Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.836290Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.836309Z","level":"INFO","fields":{"message":"Health check passed for host.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:52.836341Z","level":"INFO","fields":{"message":"Health check passed for host.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:52.836352Z","level":"INFO","fields":{"message":"Deploy completed for _admin to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.836353Z","level":"INFO","fields":{"message":"Deploy started, PID: 2822848"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.836368Z","level":"INFO","fields":{"message":"Current slot: host.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.836383Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.836393Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.836408Z","level":"INFO","fields":{"message":"Health check passed for proxy.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:52.836423Z","level":"INFO","fields":{"message":"Health check passed for proxy.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:52.836436Z","level":"INFO","fields":{"message":"Deploy started, PID: 2822847"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.836458Z","level":"INFO","fields":{"message":"Deploy completed for host.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.836500Z","level":"INFO","fields":{"message":"Current slot: proxy.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.836512Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.836520Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.836556Z","level":"INFO","fields":{"message":"Deploy completed for proxy.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.837974Z","level":"INFO","fields":{"message":"Health check passed for soli.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:52.837990Z","level":"INFO","fields":{"message":"Health check passed for soli.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:52.837995Z","level":"INFO","fields":{"message":"Deploy started, PID: 2822853"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.838000Z","level":"INFO","fields":{"message":"Current slot: soli.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.838004Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.838008Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.838028Z","level":"INFO","fields":{"message":"Deploy completed for soli.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.838732Z","level":"INFO","fields":{"message":"Health check passed for www.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:52.838748Z","level":"INFO","fields":{"message":"Health check passed for www.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:52.838756Z","level":"INFO","fields":{"message":"Deploy started, PID: 2822850"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.838764Z","level":"INFO","fields":{"message":"Current slot: www.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.838774Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.838782Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.838839Z","level":"INFO","fields":{"message":"Deploy completed for www.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.840444Z","level":"INFO","fields":{"message":"Health check passed for kv.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:52.840483Z","level":"INFO","fields":{"message":"Health check passed for kv.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:52.840494Z","level":"INFO","fields":{"message":"Deploy started, PID: 2822878"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.840504Z","level":"INFO","fields":{"message":"Current slot: kv.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.840514Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.840522Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.840568Z","level":"INFO","fields":{"message":"Deploy completed for kv.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.851317Z","level":"INFO","fields":{"message":"Health check passed for db.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:52.851346Z","level":"INFO","fields":{"message":"Health check passed for db.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:08:52.851354Z","level":"INFO","fields":{"message":"Deploy started, PID: 2822871"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.851360Z","level":"INFO","fields":{"message":"Current slot: db.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.851368Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.851374Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:52.851408Z","level":"INFO","fields":{"message":"Deploy completed for db.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T18:08:53.734965Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T18:09:06.067840Z","level":"INFO","fields":{"message":"Received shutdown signal, stopping all apps..."},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T18:09:06.067897Z","level":"INFO","fields":{"message":"Stopping kv.solisoft.net slot blue (PID: 2822878)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:09:06.122586Z","level":"INFO","fields":{"message":"Process 2822878 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:09:06.122633Z","level":"INFO","fields":{"message":"Stopping www.solisoft.net slot blue (PID: 2822850)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:09:06.176159Z","level":"INFO","fields":{"message":"Process 2822850 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:09:06.176188Z","level":"INFO","fields":{"message":"Stopping soli.solisoft.net slot blue (PID: 2822853)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:09:06.231731Z","level":"INFO","fields":{"message":"Process 2822853 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:09:06.231789Z","level":"INFO","fields":{"message":"Stopping proxy.solisoft.net slot blue (PID: 2822847)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:09:06.286955Z","level":"INFO","fields":{"message":"Process 2822847 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:09:06.287009Z","level":"INFO","fields":{"message":"Stopping db.solisoft.net slot blue (PID: 2822871)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:09:06.343133Z","level":"INFO","fields":{"message":"Process 2822871 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:09:06.343170Z","level":"INFO","fields":{"message":"Stopping host.solisoft.net slot blue (PID: 2822848)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:09:06.397972Z","level":"INFO","fields":{"message":"Process 2822848 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:09:06.398012Z","level":"INFO","fields":{"message":"Stopping _admin slot blue (PID: 2822846)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T18:09:06.452665Z","level":"INFO","fields":{"message":"Process 2822846 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:32.226743Z","level":"INFO","fields":{"message":"Dev mode enabled: apps will be started with --dev flag"},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T20:11:32.229453Z","level":"INFO","fields":{"message":"Watching config file: ./proxy.conf"},"target":"soli_proxy::config"}
+{"timestamp":"2026-02-26T20:11:32.229567Z","level":"INFO","fields":{"message":"Lua scripting disabled"},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T20:11:32.229966Z","level":"INFO","fields":{"message":"Loaded existing self-signed fallback certificate"},"target":"soli_proxy::tls"}
+{"timestamp":"2026-02-26T20:11:32.230257Z","level":"INFO","fields":{"message":"App manager initialized for ./sites"},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T20:11:32.230274Z","level":"INFO","fields":{"message":"HTTPS enabled on port 443"},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T20:11:32.230294Z","level":"INFO","fields":{"message":"Proxy server starting on port 8008"},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T20:11:32.230316Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.230386Z","level":"INFO","fields":{"message":"Admin API listening on 0.0.0.0:9090"},"target":"soli_proxy::admin"}
+{"timestamp":"2026-02-26T20:11:32.230408Z","level":"INFO","fields":{"message":"Discovered new app: db.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.230496Z","level":"INFO","fields":{"message":"Discovered new app: host.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.230518Z","level":"INFO","fields":{"message":"Discovered new app: www.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.230525Z","level":"INFO","fields":{"message":"HTTP/1.1 server listening on 0.0.0.0:80 (16 accept loops)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T20:11:32.230539Z","level":"INFO","fields":{"message":"HTTPS/2 server listening on 0.0.0.0:443 (16 accept loops)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T20:11:32.230547Z","level":"INFO","fields":{"message":"Discovered new app: agenda.letelegraphe.org"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.230586Z","level":"INFO","fields":{"message":"Discovered new app: kv.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.230614Z","level":"INFO","fields":{"message":"Discovered new app: proxy.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.230668Z","level":"INFO","fields":{"message":"Discovered new app: soli.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.230705Z","level":"INFO","fields":{"message":"Discovered new app: _admin"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.335989Z","level":"INFO","fields":{"message":"Auto-starting app: db.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.335988Z","level":"INFO","fields":{"message":"Auto-starting app: host.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.335984Z","level":"INFO","fields":{"message":"Auto-starting app: _admin"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.336004Z","level":"INFO","fields":{"message":"Auto-starting app: kv.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.336012Z","level":"INFO","fields":{"message":"Starting deploy for db.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.336023Z","level":"INFO","fields":{"message":"Starting deploy for host.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.336020Z","level":"INFO","fields":{"message":"Auto-starting app: www.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.336032Z","level":"INFO","fields":{"message":"Starting deploy for _admin to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.336059Z","level":"INFO","fields":{"message":"Auto-starting app: proxy.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.336043Z","level":"INFO","fields":{"message":"Starting deploy for kv.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.336046Z","level":"INFO","fields":{"message":"Deploying db.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.336051Z","level":"INFO","fields":{"message":"Deploying host.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.336035Z","level":"INFO","fields":{"message":"Auto-starting app: agenda.letelegraphe.org"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.336062Z","level":"INFO","fields":{"message":"Starting deploy for www.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.336062Z","level":"INFO","fields":{"message":"Auto-starting app: soli.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.336068Z","level":"INFO","fields":{"message":"Deploying _admin to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.336073Z","level":"INFO","fields":{"message":"Starting deploy for proxy.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.336124Z","level":"INFO","fields":{"message":"Starting deployment of _admin to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:32.336085Z","level":"INFO","fields":{"message":"Deploying kv.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.336094Z","level":"INFO","fields":{"message":"Starting deployment of db.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:32.336098Z","level":"INFO","fields":{"message":"Starting deployment of host.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:32.336109Z","level":"INFO","fields":{"message":"Starting deploy for agenda.letelegraphe.org to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.336115Z","level":"INFO","fields":{"message":"Deploying www.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.336119Z","level":"INFO","fields":{"message":"Starting deploy for soli.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.336129Z","level":"INFO","fields":{"message":"Deploying proxy.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.336138Z","level":"INFO","fields":{"message":"Starting deployment of kv.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:32.336148Z","level":"INFO","fields":{"message":"Deploying agenda.letelegraphe.org to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.336151Z","level":"INFO","fields":{"message":"Starting deployment of www.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:32.336156Z","level":"INFO","fields":{"message":"Deploying soli.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:32.336158Z","level":"INFO","fields":{"message":"Starting deployment of proxy.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:32.336168Z","level":"INFO","fields":{"message":"Starting deployment of agenda.letelegraphe.org to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:32.336177Z","level":"INFO","fields":{"message":"Starting deployment of soli.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:32.337240Z","level":"INFO","fields":{"message":"Started db.solisoft.net slot blue with PID 2943702"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:32.348467Z","level":"INFO","fields":{"message":"Started www.solisoft.net slot blue with PID 2943705"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:32.348498Z","level":"INFO","fields":{"message":"Started host.solisoft.net slot blue with PID 2943704"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:32.348920Z","level":"INFO","fields":{"message":"Started soli.solisoft.net slot blue with PID 2943706"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:32.349326Z","level":"INFO","fields":{"message":"Started _admin slot blue with PID 2943707"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:32.349884Z","level":"INFO","fields":{"message":"Started agenda.letelegraphe.org slot blue with PID 2943708"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:32.349957Z","level":"INFO","fields":{"message":"Started kv.solisoft.net slot blue with PID 2943709"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:32.350675Z","level":"INFO","fields":{"message":"Started proxy.solisoft.net slot blue with PID 2943710"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:33.350683Z","level":"INFO","fields":{"message":"Health check passed for soli.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:33.350682Z","level":"INFO","fields":{"message":"Health check passed for host.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:33.350736Z","level":"INFO","fields":{"message":"Health check passed for soli.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:33.350741Z","level":"INFO","fields":{"message":"Health check passed for host.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:33.350743Z","level":"INFO","fields":{"message":"Deploy started, PID: 2943706"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.350748Z","level":"INFO","fields":{"message":"Deploy started, PID: 2943704"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.350750Z","level":"INFO","fields":{"message":"Current slot: soli.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.350761Z","level":"INFO","fields":{"message":"Current slot: host.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.350769Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.350777Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.350784Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.350790Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.350831Z","level":"INFO","fields":{"message":"Deploy completed for soli.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.350880Z","level":"INFO","fields":{"message":"Deploy completed for host.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.351087Z","level":"INFO","fields":{"message":"Health check passed for _admin slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:33.351104Z","level":"INFO","fields":{"message":"Health check passed for _admin slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:33.351109Z","level":"INFO","fields":{"message":"Deploy started, PID: 2943707"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.351114Z","level":"INFO","fields":{"message":"Current slot: _admin, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.351119Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.351123Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.351151Z","level":"INFO","fields":{"message":"Deploy completed for _admin to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.351270Z","level":"INFO","fields":{"message":"Health check passed for agenda.letelegraphe.org slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:33.351287Z","level":"INFO","fields":{"message":"Health check passed for agenda.letelegraphe.org slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:33.351293Z","level":"INFO","fields":{"message":"Deploy started, PID: 2943708"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.351298Z","level":"INFO","fields":{"message":"Current slot: agenda.letelegraphe.org, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.351310Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.351313Z","level":"INFO","fields":{"message":"Health check passed for kv.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:33.351314Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.351321Z","level":"INFO","fields":{"message":"Health check passed for kv.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:33.351325Z","level":"INFO","fields":{"message":"Deploy started, PID: 2943709"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.351340Z","level":"INFO","fields":{"message":"Deploy completed for agenda.letelegraphe.org to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.351351Z","level":"INFO","fields":{"message":"Current slot: kv.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.351372Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.351376Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.351394Z","level":"INFO","fields":{"message":"Deploy completed for kv.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.352404Z","level":"INFO","fields":{"message":"Health check passed for www.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:33.352423Z","level":"INFO","fields":{"message":"Health check passed for www.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:33.352428Z","level":"INFO","fields":{"message":"Deploy started, PID: 2943705"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.352432Z","level":"INFO","fields":{"message":"Current slot: www.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.352436Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.352440Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.352459Z","level":"INFO","fields":{"message":"Deploy completed for www.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.352762Z","level":"INFO","fields":{"message":"Health check passed for proxy.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:33.352774Z","level":"INFO","fields":{"message":"Health check passed for proxy.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:33.352778Z","level":"INFO","fields":{"message":"Deploy started, PID: 2943710"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.352782Z","level":"INFO","fields":{"message":"Current slot: proxy.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.352792Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.352796Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.352822Z","level":"INFO","fields":{"message":"Deploy completed for proxy.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.352895Z","level":"INFO","fields":{"message":"Health check passed for db.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:33.352902Z","level":"INFO","fields":{"message":"Health check passed for db.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:33.352905Z","level":"INFO","fields":{"message":"Deploy started, PID: 2943702"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.352909Z","level":"INFO","fields":{"message":"Current slot: db.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.352913Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.352916Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.352931Z","level":"INFO","fields":{"message":"Deploy completed for db.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:33.590332Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T20:11:33.735887Z","level":"INFO","fields":{"message":"Received shutdown signal, stopping all apps..."},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T20:11:33.735940Z","level":"INFO","fields":{"message":"Stopping www.solisoft.net slot blue (PID: 2943705)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:33.789614Z","level":"INFO","fields":{"message":"Process 2943705 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:33.789658Z","level":"INFO","fields":{"message":"Stopping soli.solisoft.net slot blue (PID: 2943706)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:33.843056Z","level":"INFO","fields":{"message":"Process 2943706 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:33.843103Z","level":"INFO","fields":{"message":"Stopping host.solisoft.net slot blue (PID: 2943704)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:33.898324Z","level":"INFO","fields":{"message":"Process 2943704 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:33.898378Z","level":"INFO","fields":{"message":"Stopping proxy.solisoft.net slot blue (PID: 2943710)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:33.952770Z","level":"INFO","fields":{"message":"Process 2943710 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:33.952832Z","level":"INFO","fields":{"message":"Stopping kv.solisoft.net slot blue (PID: 2943709)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:34.008337Z","level":"INFO","fields":{"message":"Process 2943709 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:34.008402Z","level":"INFO","fields":{"message":"Stopping agenda.letelegraphe.org slot blue (PID: 2943708)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:34.063983Z","level":"INFO","fields":{"message":"Process 2943708 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:34.064007Z","level":"INFO","fields":{"message":"Stopping _admin slot blue (PID: 2943707)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:34.118136Z","level":"INFO","fields":{"message":"Process 2943707 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:34.118162Z","level":"INFO","fields":{"message":"Stopping db.solisoft.net slot blue (PID: 2943702)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:34.173249Z","level":"INFO","fields":{"message":"Process 2943702 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:34.238602Z","level":"INFO","fields":{"message":"Dev mode enabled: apps will be started with --dev flag"},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T20:11:34.239113Z","level":"INFO","fields":{"message":"Watching config file: ./proxy.conf"},"target":"soli_proxy::config"}
+{"timestamp":"2026-02-26T20:11:34.239172Z","level":"INFO","fields":{"message":"Lua scripting disabled"},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T20:11:34.239374Z","level":"INFO","fields":{"message":"Loaded existing self-signed fallback certificate"},"target":"soli_proxy::tls"}
+{"timestamp":"2026-02-26T20:11:34.239517Z","level":"INFO","fields":{"message":"App manager initialized for ./sites"},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T20:11:34.239524Z","level":"INFO","fields":{"message":"HTTPS enabled on port 443"},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T20:11:34.239536Z","level":"INFO","fields":{"message":"Proxy server starting on port 8008"},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T20:11:34.239559Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.239578Z","level":"INFO","fields":{"message":"Admin API listening on 0.0.0.0:9090"},"target":"soli_proxy::admin"}
+{"timestamp":"2026-02-26T20:11:34.239658Z","level":"INFO","fields":{"message":"HTTP/1.1 server listening on 0.0.0.0:80 (16 accept loops)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T20:11:34.239666Z","level":"INFO","fields":{"message":"Discovered new app: db.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.239671Z","level":"INFO","fields":{"message":"HTTPS/2 server listening on 0.0.0.0:443 (16 accept loops)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T20:11:34.239734Z","level":"INFO","fields":{"message":"Discovered new app: host.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.239761Z","level":"INFO","fields":{"message":"Discovered new app: www.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.239800Z","level":"INFO","fields":{"message":"Discovered new app: agenda.letelegraphe.org"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.239853Z","level":"INFO","fields":{"message":"Discovered new app: kv.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.239891Z","level":"INFO","fields":{"message":"Discovered new app: proxy.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.239941Z","level":"INFO","fields":{"message":"Discovered new app: soli.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.239977Z","level":"INFO","fields":{"message":"Discovered new app: _admin"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.347553Z","level":"INFO","fields":{"message":"Auto-starting app: www.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.347549Z","level":"INFO","fields":{"message":"Auto-starting app: db.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.347559Z","level":"INFO","fields":{"message":"Auto-starting app: _admin"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.347570Z","level":"INFO","fields":{"message":"Auto-starting app: host.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.347579Z","level":"INFO","fields":{"message":"Auto-starting app: kv.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.347589Z","level":"INFO","fields":{"message":"Starting deploy for www.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.347600Z","level":"INFO","fields":{"message":"Auto-starting app: agenda.letelegraphe.org"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.347606Z","level":"INFO","fields":{"message":"Auto-starting app: proxy.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.347630Z","level":"INFO","fields":{"message":"Starting deploy for db.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.347633Z","level":"INFO","fields":{"message":"Auto-starting app: soli.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.347642Z","level":"INFO","fields":{"message":"Starting deploy for _admin to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.347654Z","level":"INFO","fields":{"message":"Starting deploy for host.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.347666Z","level":"INFO","fields":{"message":"Starting deploy for kv.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.347676Z","level":"INFO","fields":{"message":"Deploying www.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.347683Z","level":"INFO","fields":{"message":"Starting deploy for agenda.letelegraphe.org to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.347690Z","level":"INFO","fields":{"message":"Starting deploy for proxy.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.347697Z","level":"INFO","fields":{"message":"Deploying db.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.347701Z","level":"INFO","fields":{"message":"Starting deploy for soli.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.347710Z","level":"INFO","fields":{"message":"Deploying _admin to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.347722Z","level":"INFO","fields":{"message":"Starting deployment of www.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:34.347725Z","level":"INFO","fields":{"message":"Deploying host.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.347732Z","level":"INFO","fields":{"message":"Starting deployment of db.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:34.347741Z","level":"INFO","fields":{"message":"Starting deployment of _admin to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:34.347751Z","level":"INFO","fields":{"message":"Starting deployment of host.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:34.349346Z","level":"INFO","fields":{"message":"Started host.solisoft.net slot blue with PID 2944008"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:34.349618Z","level":"INFO","fields":{"message":"Started db.solisoft.net slot blue with PID 2944009"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:34.349626Z","level":"INFO","fields":{"message":"Deploying kv.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.349643Z","level":"INFO","fields":{"message":"Starting deployment of kv.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:34.349692Z","level":"INFO","fields":{"message":"Started www.solisoft.net slot blue with PID 2944010"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:34.350311Z","level":"INFO","fields":{"message":"Started kv.solisoft.net slot blue with PID 2944013"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:34.350339Z","level":"INFO","fields":{"message":"Deploying agenda.letelegraphe.org to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.350348Z","level":"INFO","fields":{"message":"Starting deployment of agenda.letelegraphe.org to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:34.350771Z","level":"INFO","fields":{"message":"Started _admin slot blue with PID 2944011"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:34.351184Z","level":"INFO","fields":{"message":"Started agenda.letelegraphe.org slot blue with PID 2944014"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:34.351212Z","level":"INFO","fields":{"message":"Deploying proxy.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.351218Z","level":"INFO","fields":{"message":"Starting deployment of proxy.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:34.351224Z","level":"INFO","fields":{"message":"Deploying soli.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:34.351232Z","level":"INFO","fields":{"message":"Starting deployment of soli.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:34.352215Z","level":"INFO","fields":{"message":"Started proxy.solisoft.net slot blue with PID 2944016"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:34.352730Z","level":"INFO","fields":{"message":"Started soli.solisoft.net slot blue with PID 2944017"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:34.391782Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T20:11:34.392149Z","level":"ERROR","fields":{"message":"Failed to connect to backend for WebSocket: Connection refused (os error 111)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T20:11:34.404407Z","level":"ERROR","fields":{"message":"Backend request failed: client error (Connect) (target: http://localhost:22178/__livereload)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T20:11:34.818888Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T20:11:35.352322Z","level":"INFO","fields":{"message":"Health check passed for _admin slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:35.352381Z","level":"INFO","fields":{"message":"Health check passed for _admin slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:35.352395Z","level":"INFO","fields":{"message":"Deploy started, PID: 2944011"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.352407Z","level":"INFO","fields":{"message":"Current slot: _admin, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.352420Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.352429Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.352501Z","level":"INFO","fields":{"message":"Deploy completed for _admin to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.352585Z","level":"INFO","fields":{"message":"Health check passed for kv.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:35.352595Z","level":"INFO","fields":{"message":"Health check passed for kv.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:35.352600Z","level":"INFO","fields":{"message":"Deploy started, PID: 2944013"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.352604Z","level":"INFO","fields":{"message":"Current slot: kv.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.352621Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.352625Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.352642Z","level":"INFO","fields":{"message":"Deploy completed for kv.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.352789Z","level":"INFO","fields":{"message":"Health check passed for host.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:35.352797Z","level":"INFO","fields":{"message":"Health check passed for host.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:35.352802Z","level":"INFO","fields":{"message":"Deploy started, PID: 2944008"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.352806Z","level":"INFO","fields":{"message":"Current slot: host.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.352824Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.352828Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.352844Z","level":"INFO","fields":{"message":"Deploy completed for host.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.353050Z","level":"INFO","fields":{"message":"Health check passed for agenda.letelegraphe.org slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:35.353067Z","level":"INFO","fields":{"message":"Health check passed for agenda.letelegraphe.org slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:35.353073Z","level":"INFO","fields":{"message":"Deploy started, PID: 2944014"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.353079Z","level":"INFO","fields":{"message":"Current slot: agenda.letelegraphe.org, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.353085Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.353090Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.353117Z","level":"INFO","fields":{"message":"Deploy completed for agenda.letelegraphe.org to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.354616Z","level":"INFO","fields":{"message":"Health check passed for www.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:35.354640Z","level":"INFO","fields":{"message":"Health check passed for www.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:35.354646Z","level":"INFO","fields":{"message":"Deploy started, PID: 2944010"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.354650Z","level":"INFO","fields":{"message":"Current slot: www.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.354656Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.354660Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.354688Z","level":"INFO","fields":{"message":"Deploy completed for www.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.354735Z","level":"INFO","fields":{"message":"Health check passed for soli.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:35.354765Z","level":"INFO","fields":{"message":"Health check passed for soli.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:35.354770Z","level":"INFO","fields":{"message":"Deploy started, PID: 2944017"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.354775Z","level":"INFO","fields":{"message":"Current slot: soli.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.354780Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.354784Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.354812Z","level":"INFO","fields":{"message":"Deploy completed for soli.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.354822Z","level":"INFO","fields":{"message":"Health check passed for proxy.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:35.354835Z","level":"INFO","fields":{"message":"Health check passed for proxy.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:35.354840Z","level":"INFO","fields":{"message":"Deploy started, PID: 2944016"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.354844Z","level":"INFO","fields":{"message":"Current slot: proxy.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.354848Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.354852Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.354871Z","level":"INFO","fields":{"message":"Deploy completed for proxy.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.363662Z","level":"INFO","fields":{"message":"Health check passed for db.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:35.363686Z","level":"INFO","fields":{"message":"Health check passed for db.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:35.363693Z","level":"INFO","fields":{"message":"Deploy started, PID: 2944009"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.363701Z","level":"INFO","fields":{"message":"Current slot: db.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.363711Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.363719Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:35.363751Z","level":"INFO","fields":{"message":"Deploy completed for db.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.356737Z","level":"INFO","fields":{"message":"Received shutdown signal, stopping all apps..."},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T20:11:36.356772Z","level":"INFO","fields":{"message":"Stopping kv.solisoft.net slot blue (PID: 2944013)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:36.413102Z","level":"INFO","fields":{"message":"Process 2944013 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:36.413151Z","level":"INFO","fields":{"message":"Stopping agenda.letelegraphe.org slot blue (PID: 2944014)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:36.468248Z","level":"INFO","fields":{"message":"Process 2944014 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:36.468336Z","level":"INFO","fields":{"message":"Stopping host.solisoft.net slot blue (PID: 2944008)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:36.524853Z","level":"INFO","fields":{"message":"Process 2944008 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:36.524894Z","level":"INFO","fields":{"message":"Stopping db.solisoft.net slot blue (PID: 2944009)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:36.579163Z","level":"INFO","fields":{"message":"Process 2944009 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:36.579190Z","level":"INFO","fields":{"message":"Stopping www.solisoft.net slot blue (PID: 2944010)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:36.633669Z","level":"INFO","fields":{"message":"Process 2944010 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:36.633715Z","level":"INFO","fields":{"message":"Stopping _admin slot blue (PID: 2944011)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:36.689241Z","level":"INFO","fields":{"message":"Process 2944011 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:36.689294Z","level":"INFO","fields":{"message":"Stopping proxy.solisoft.net slot blue (PID: 2944016)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:36.744378Z","level":"INFO","fields":{"message":"Process 2944016 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:36.744411Z","level":"INFO","fields":{"message":"Stopping soli.solisoft.net slot blue (PID: 2944017)"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:36.799079Z","level":"INFO","fields":{"message":"Process 2944017 terminated gracefully"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:36.859413Z","level":"INFO","fields":{"message":"Dev mode enabled: apps will be started with --dev flag"},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T20:11:36.859805Z","level":"INFO","fields":{"message":"Watching config file: ./proxy.conf"},"target":"soli_proxy::config"}
+{"timestamp":"2026-02-26T20:11:36.859867Z","level":"INFO","fields":{"message":"Lua scripting disabled"},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T20:11:36.860042Z","level":"INFO","fields":{"message":"Loaded existing self-signed fallback certificate"},"target":"soli_proxy::tls"}
+{"timestamp":"2026-02-26T20:11:36.860192Z","level":"INFO","fields":{"message":"App manager initialized for ./sites"},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T20:11:36.860199Z","level":"INFO","fields":{"message":"HTTPS enabled on port 443"},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T20:11:36.860212Z","level":"INFO","fields":{"message":"Proxy server starting on port 8008"},"target":"soli_proxy"}
+{"timestamp":"2026-02-26T20:11:36.860235Z","level":"INFO","fields":{"message":"Discovering apps in ./sites"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.860260Z","level":"INFO","fields":{"message":"Admin API listening on 0.0.0.0:9090"},"target":"soli_proxy::admin"}
+{"timestamp":"2026-02-26T20:11:36.860316Z","level":"INFO","fields":{"message":"HTTP/1.1 server listening on 0.0.0.0:80 (16 accept loops)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T20:11:36.860325Z","level":"INFO","fields":{"message":"HTTPS/2 server listening on 0.0.0.0:443 (16 accept loops)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T20:11:36.860342Z","level":"INFO","fields":{"message":"Discovered new app: db.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.860406Z","level":"INFO","fields":{"message":"Discovered new app: host.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.860432Z","level":"INFO","fields":{"message":"Discovered new app: www.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.860468Z","level":"INFO","fields":{"message":"Discovered new app: agenda.letelegraphe.org"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.860525Z","level":"INFO","fields":{"message":"Discovered new app: kv.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.860561Z","level":"INFO","fields":{"message":"Discovered new app: proxy.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.860610Z","level":"INFO","fields":{"message":"Discovered new app: soli.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.860646Z","level":"INFO","fields":{"message":"Discovered new app: _admin"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.966965Z","level":"INFO","fields":{"message":"Auto-starting app: www.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.966965Z","level":"INFO","fields":{"message":"Auto-starting app: _admin"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.966960Z","level":"INFO","fields":{"message":"Auto-starting app: db.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.966981Z","level":"INFO","fields":{"message":"Auto-starting app: kv.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.966991Z","level":"INFO","fields":{"message":"Starting deploy for www.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.966997Z","level":"INFO","fields":{"message":"Auto-starting app: proxy.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.967005Z","level":"INFO","fields":{"message":"Starting deploy for _admin to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.967016Z","level":"INFO","fields":{"message":"Starting deploy for db.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.967013Z","level":"INFO","fields":{"message":"Auto-starting app: agenda.letelegraphe.org"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.967027Z","level":"INFO","fields":{"message":"Starting deploy for kv.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.967031Z","level":"INFO","fields":{"message":"Deploying www.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.967040Z","level":"INFO","fields":{"message":"Starting deploy for proxy.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.967047Z","level":"INFO","fields":{"message":"Deploying _admin to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.967042Z","level":"INFO","fields":{"message":"Auto-starting app: host.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.967052Z","level":"INFO","fields":{"message":"Deploying db.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.967047Z","level":"INFO","fields":{"message":"Auto-starting app: soli.solisoft.net"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.967060Z","level":"INFO","fields":{"message":"Starting deploy for agenda.letelegraphe.org to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.967068Z","level":"INFO","fields":{"message":"Starting deployment of www.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:36.967067Z","level":"INFO","fields":{"message":"Deploying kv.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.967181Z","level":"INFO","fields":{"message":"Deploying agenda.letelegraphe.org to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.967073Z","level":"INFO","fields":{"message":"Deploying proxy.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.967077Z","level":"INFO","fields":{"message":"Starting deployment of _admin to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:36.967090Z","level":"INFO","fields":{"message":"Starting deploy for host.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.967095Z","level":"INFO","fields":{"message":"Starting deployment of db.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:36.967174Z","level":"INFO","fields":{"message":"Starting deploy for soli.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.967224Z","level":"INFO","fields":{"message":"Deploying host.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.967186Z","level":"INFO","fields":{"message":"Starting deployment of kv.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:36.967189Z","level":"INFO","fields":{"message":"Starting deployment of agenda.letelegraphe.org to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:36.967193Z","level":"INFO","fields":{"message":"Starting deployment of proxy.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:36.967231Z","level":"INFO","fields":{"message":"Deploying soli.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:36.967235Z","level":"INFO","fields":{"message":"Starting deployment of host.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:36.967252Z","level":"INFO","fields":{"message":"Starting deployment of soli.solisoft.net to slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:36.968251Z","level":"INFO","fields":{"message":"Started www.solisoft.net slot blue with PID 2944321"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:36.968468Z","level":"INFO","fields":{"message":"Started kv.solisoft.net slot blue with PID 2944322"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:36.977876Z","level":"INFO","fields":{"message":"Started soli.solisoft.net slot blue with PID 2944335"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:36.978885Z","level":"INFO","fields":{"message":"Started db.solisoft.net slot blue with PID 2944336"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:36.979620Z","level":"INFO","fields":{"message":"Started host.solisoft.net slot blue with PID 2944338"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:36.979622Z","level":"INFO","fields":{"message":"Started proxy.solisoft.net slot blue with PID 2944337"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:36.980066Z","level":"INFO","fields":{"message":"Started agenda.letelegraphe.org slot blue with PID 2944340"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:36.980419Z","level":"INFO","fields":{"message":"Started _admin slot blue with PID 2944341"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:37.022440Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T20:11:37.022733Z","level":"ERROR","fields":{"message":"Failed to connect to backend for WebSocket: Connection refused (os error 111)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T20:11:37.038280Z","level":"ERROR","fields":{"message":"Backend request failed: client error (Connect) (target: http://localhost:22178/__livereload)"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T20:11:37.451970Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T20:11:37.971594Z","level":"INFO","fields":{"message":"Health check passed for kv.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:37.971641Z","level":"INFO","fields":{"message":"Health check passed for kv.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:37.971653Z","level":"INFO","fields":{"message":"Deploy started, PID: 2944322"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.971673Z","level":"INFO","fields":{"message":"Current slot: kv.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.971683Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.971689Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.971733Z","level":"INFO","fields":{"message":"Deploy completed for kv.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.976376Z","level":"INFO","fields":{"message":"Health check passed for www.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:37.976424Z","level":"INFO","fields":{"message":"Health check passed for www.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:37.976440Z","level":"INFO","fields":{"message":"Deploy started, PID: 2944321"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.976452Z","level":"INFO","fields":{"message":"Current slot: www.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.976463Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.976472Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.976523Z","level":"INFO","fields":{"message":"Deploy completed for www.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.979428Z","level":"INFO","fields":{"message":"Health check passed for soli.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:37.979476Z","level":"INFO","fields":{"message":"Health check passed for soli.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:37.979491Z","level":"INFO","fields":{"message":"Deploy started, PID: 2944335"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.979510Z","level":"INFO","fields":{"message":"Current slot: soli.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.979529Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.979544Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.979606Z","level":"INFO","fields":{"message":"Deploy completed for soli.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.981452Z","level":"INFO","fields":{"message":"Health check passed for host.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:37.981471Z","level":"INFO","fields":{"message":"Health check passed for host.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:37.981478Z","level":"INFO","fields":{"message":"Deploy started, PID: 2944338"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.981484Z","level":"INFO","fields":{"message":"Current slot: host.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.981490Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.981495Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.981526Z","level":"INFO","fields":{"message":"Deploy completed for host.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.981569Z","level":"INFO","fields":{"message":"Health check passed for proxy.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:37.981603Z","level":"INFO","fields":{"message":"Health check passed for proxy.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:37.981618Z","level":"INFO","fields":{"message":"Deploy started, PID: 2944337"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.981632Z","level":"INFO","fields":{"message":"Current slot: proxy.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.981648Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.981660Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.981678Z","level":"INFO","fields":{"message":"Health check passed for agenda.letelegraphe.org slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:37.981689Z","level":"INFO","fields":{"message":"Health check passed for agenda.letelegraphe.org slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:37.981695Z","level":"INFO","fields":{"message":"Deploy started, PID: 2944340"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.981740Z","level":"INFO","fields":{"message":"Deploy completed for proxy.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.981759Z","level":"INFO","fields":{"message":"Current slot: agenda.letelegraphe.org, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.981774Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.981786Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.981850Z","level":"INFO","fields":{"message":"Deploy completed for agenda.letelegraphe.org to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.981998Z","level":"INFO","fields":{"message":"Health check passed for _admin slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:37.982012Z","level":"INFO","fields":{"message":"Health check passed for _admin slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:37.982017Z","level":"INFO","fields":{"message":"Deploy started, PID: 2944341"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.982021Z","level":"INFO","fields":{"message":"Current slot: _admin, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.982026Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.982030Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.982050Z","level":"INFO","fields":{"message":"Deploy completed for _admin to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.990780Z","level":"INFO","fields":{"message":"Health check passed for db.solisoft.net slot blue after 1s"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:37.990803Z","level":"INFO","fields":{"message":"Health check passed for db.solisoft.net slot blue"},"target":"soli_proxy::app::deployment"}
+{"timestamp":"2026-02-26T20:11:37.990823Z","level":"INFO","fields":{"message":"Deploy started, PID: 2944336"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.990829Z","level":"INFO","fields":{"message":"Current slot: db.solisoft.net, old_slot_name: blue, old_pid: None"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.990847Z","level":"INFO","fields":{"message":"Switched traffic from blue to blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.990853Z","level":"INFO","fields":{"message":"Checking if should stop old slot: old_slot_name=blue, slot=blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:37.990886Z","level":"INFO","fields":{"message":"Deploy completed for db.solisoft.net to slot blue"},"target":"soli_proxy::app"}
+{"timestamp":"2026-02-26T20:11:38.978370Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T20:11:39.359614Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T20:11:39.771863Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T20:11:39.946670Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
+{"timestamp":"2026-02-26T20:11:40.113797Z","level":"INFO","fields":{"message":"WebSocket upgrade request to localhost:22178/__livereload_ws"},"target":"soli_proxy::server"}
