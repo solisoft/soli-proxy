@@ -118,6 +118,10 @@ async fn handle_admin_request(
         (Method::GET, "/api/v1/routes") => handlers::get_routes(&state),
         (Method::GET, "/api/v1/metrics") => handlers::get_metrics(&state),
         (Method::GET, "/api/v1/app-metrics") => handlers::get_all_app_metrics(&state),
+        (Method::GET, "/api/v1/app-metrics/system") => {
+            handlers::get_app_system_metrics(&state).await
+        }
+        (Method::GET, "/api/v1/events/apps") => handlers::sse_app_events(state.clone()).await,
         (Method::POST, "/api/v1/reload") => handlers::post_reload(&state).await,
 
         // App management endpoints

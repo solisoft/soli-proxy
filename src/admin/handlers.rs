@@ -3,8 +3,13 @@ use super::{
 };
 use crate::auth;
 use crate::config::ProxyRule;
+use http_body::Body;
+use http_body::Frame;
 use hyper::Response;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
+use tokio::sync::broadcast;
 
 pub async fn get_status(state: &Arc<AdminState>) -> Response<BoxBody> {
     let cfg = state.config_manager.get_config();
@@ -30,7 +35,8 @@ pub async fn get_status(state: &Arc<AdminState>) -> Response<BoxBody> {
 pub async fn get_apps(state: &Arc<AdminState>) -> Response<BoxBody> {
     match &state.app_manager {
         Some(manager) => {
-            let apps = manager.list_apps().await;
+            let mut apps = manager.list_apps().await;
+            apps.sort_by(|a, b| a.config.domain.cmp(&b.config.domain));
             match serde_json::to_value(&apps) {
                 Ok(val) => ok_response(val),
                 Err(e) => error_response(500, &format!("Failed to serialize apps: {}", e)),
@@ -57,7 +63,9 @@ pub async fn get_apps_by_domain(state: &Arc<AdminState>) -> Response<BoxBody> {
                 };
                 match serde_json::to_value(&app) {
                     Ok(val) => grouped.entry(root_domain).or_default().push(val),
-                    Err(e) => return error_response(500, &format!("Failed to serialize app: {}", e)),
+                    Err(e) => {
+                        return error_response(500, &format!("Failed to serialize app: {}", e))
+                    }
                 }
             }
             ok_response(serde_json::to_value(grouped).unwrap())
@@ -172,6 +180,17 @@ pub fn get_all_app_metrics(state: &Arc<AdminState>) -> Response<BoxBody> {
     match serde_json::to_value(metrics) {
         Ok(val) => ok_response(val),
         Err(e) => error_response(500, &format!("Failed to serialize metrics: {}", e)),
+    }
+}
+
+pub async fn get_app_system_metrics(state: &Arc<AdminState>) -> Response<BoxBody> {
+    match &state.app_manager {
+        Some(manager) => {
+            let metrics = state.metrics.as_ref();
+            let result = manager.get_system_metrics(metrics).await;
+            ok_response(result)
+        }
+        None => error_response(501, "App management not configured"),
     }
 }
 
@@ -354,4 +373,73 @@ pub fn post_hash_password(_state: &Arc<AdminState>, body: &str) -> Response<BoxB
         "hash": hash,
         "format": "bcrypt"
     }))
+}
+
+pub async fn sse_app_events(state: Arc<AdminState>) -> Response<BoxBody> {
+    let manager = match &state.app_manager {
+        Some(m) => m.clone(),
+        None => return error_response(501, "App management not configured"),
+    };
+
+    let mut rx = manager.subscribe();
+
+    let (tx, rx_body) = tokio::sync::mpsc::channel::<bytes::Bytes>(32);
+
+    tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    let data = serde_json::to_string(&event).unwrap_or_default();
+                    let msg = bytes::Bytes::from(format!("data: {}\n\n", data));
+                    if tx.send(msg).await.is_err() {
+                        break;
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!("SSE lagged {} events", n);
+                }
+                Err(broadcast::error::RecvError::Closed) => {
+                    break;
+                }
+            }
+        }
+    });
+
+    struct MpscBody {
+        rx: tokio::sync::mpsc::Receiver<bytes::Bytes>,
+        buffer: Option<bytes::Bytes>,
+    }
+
+    impl Body for MpscBody {
+        type Data = bytes::Bytes;
+        type Error = std::convert::Infallible;
+
+        fn poll_frame(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+            if let Some(data) = self.buffer.take() {
+                return Poll::Ready(Some(Ok(Frame::data(data))));
+            }
+            match Pin::new(&mut self.rx).poll_recv(cx) {
+                Poll::Ready(Some(data)) => Poll::Ready(Some(Ok(Frame::data(data)))),
+                Poll::Ready(None) => Poll::Ready(None),
+                Poll::Pending => Poll::Pending,
+            }
+        }
+    }
+
+    let body = MpscBody {
+        rx: rx_body,
+        buffer: None,
+    };
+
+    Response::builder()
+        .status(200)
+        .header("Content-Type", "text/event-stream")
+        .header("Cache-Control", "no-cache")
+        .header("Connection", "keep-alive")
+        .header("Access-Control-Allow-Origin", "*")
+        .body(body.boxed())
+        .unwrap()
 }

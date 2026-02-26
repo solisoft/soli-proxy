@@ -3,6 +3,12 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+#[derive(Clone)]
+struct CpuSnapshot {
+    total_time: u64,
+    timestamp: Instant,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AppMetricsJson {
     pub requests: u64,
@@ -10,6 +16,20 @@ pub struct AppMetricsJson {
     pub bytes_sent: u64,
     pub avg_response_time_ms: f64,
     pub errors: u64,
+    pub memory_rss_bytes: Option<u64>,
+    pub cpu_percent: Option<f64>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SlotMetrics {
+    pub memory_rss_bytes: Option<u64>,
+    pub cpu_percent: Option<f64>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AppSystemMetrics {
+    pub blue: SlotMetrics,
+    pub green: SlotMetrics,
 }
 
 #[derive(Clone)]
@@ -58,6 +78,7 @@ pub struct Metrics {
     last_request_nanos: Arc<AtomicU64>,
     epoch_start: Instant,
     app_metrics: Arc<parking_lot::RwLock<HashMap<String, AppMetrics>>>,
+    cpu_snapshots: Arc<parking_lot::RwLock<HashMap<u32, CpuSnapshot>>>,
 }
 
 impl Default for Metrics {
@@ -81,6 +102,7 @@ impl Metrics {
             last_request_nanos: Arc::new(AtomicU64::new(0)),
             epoch_start: Instant::now(),
             app_metrics: Arc::new(parking_lot::RwLock::new(HashMap::new())),
+            cpu_snapshots: Arc::new(parking_lot::RwLock::new(HashMap::new())),
         }
     }
 
@@ -100,6 +122,8 @@ impl Metrics {
                 }
             },
             errors: m.errors_total.load(Ordering::Relaxed),
+            memory_rss_bytes: None,
+            cpu_percent: None,
         })
     }
 
@@ -123,10 +147,82 @@ impl Metrics {
                             }
                         },
                         errors: m.errors_total.load(Ordering::Relaxed),
+                        memory_rss_bytes: None,
+                        cpu_percent: None,
                     },
                 )
             })
             .collect()
+    }
+
+    #[cfg(unix)]
+    pub fn get_process_stats(&self, pid: u32) -> Option<SlotMetrics> {
+        let stat_path = format!("/proc/{}/stat", pid);
+        let status_path = format!("/proc/{}/status", pid);
+
+        let mut memory_bytes: Option<u64> = None;
+        if let Ok(content) = std::fs::read_to_string(&status_path) {
+            for line in content.lines() {
+                if line.starts_with("VmRSS:") {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() >= 2 {
+                        if let Ok(kb) = parts[1].parse::<u64>() {
+                            memory_bytes = Some(kb * 1024);
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        let mut cpu_percent: Option<f64> = None;
+        if let Ok(content) = std::fs::read_to_string(&stat_path) {
+            if let Some(idx) = content.find('(') {
+                if let Some(idx2) = content[idx..].find(')') {
+                    let parts: Vec<&str> = content[idx + idx2 + 2..].split_whitespace().collect();
+                    if parts.len() >= 14 {
+                        let utime: u64 = parts[12].parse().unwrap_or(0);
+                        let stime: u64 = parts[13].parse().unwrap_or(0);
+                        let total_time = utime + stime;
+
+                        let now = Instant::now();
+                        let prev = self.cpu_snapshots.read().get(&pid).cloned();
+
+                        if let Some(prev_snapshot) = prev {
+                            let delta_time = now.duration_since(prev_snapshot.timestamp);
+                            if delta_time.as_secs_f64() > 0.0 {
+                                let delta_cpu = total_time as f64 - prev_snapshot.total_time as f64;
+                                let hz = 100.0;
+                                cpu_percent =
+                                    Some((delta_cpu / hz) / delta_time.as_secs_f64() * 100.0);
+                            }
+                        }
+
+                        self.cpu_snapshots.write().insert(
+                            pid,
+                            CpuSnapshot {
+                                total_time,
+                                timestamp: now,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+
+        if memory_bytes.is_none() && cpu_percent.is_none() {
+            return None;
+        }
+
+        Some(SlotMetrics {
+            memory_rss_bytes: memory_bytes,
+            cpu_percent,
+        })
+    }
+
+    #[cfg(not(unix))]
+    pub fn get_process_stats(&self, _pid: u32) -> Option<SlotMetrics> {
+        None
     }
 
     pub fn record_request(

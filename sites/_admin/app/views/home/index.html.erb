@@ -163,7 +163,7 @@
             var bytesIn = AdminAPI.metricVal(m, 'proxy_bytes_received');
             var bytesOut = AdminAPI.metricVal(m, 'proxy_bytes_sent');
             document.getElementById('dash-bytes').textContent = AdminAPI.formatBytes(bytesIn) + ' / ' + AdminAPI.formatBytes(bytesOut);
-        }).catch(function(){});
+        }).catch(function(err) { AdminAPI.toast('Failed to load metrics: ' + err.message, 'error'); });
 
         AdminAPI.getRoutes().then(function(d) {
             var routes = d.data;
@@ -176,7 +176,7 @@
                 return '<span class="px-2 py-0.5 rounded bg-white/5 text-slate-300">' + t + ': ' + types[t] + '</span>';
             }).join('');
             document.getElementById('dash-route-types').innerHTML = html || '<span class="text-slate-500">No routes</span>';
-        }).catch(function(){});
+        }).catch(function(err) { AdminAPI.toast('Failed to load routes: ' + err.message, 'error'); });
 
         AdminAPI.getApps().then(function(d) {
             var apps = d.data;
@@ -207,7 +207,7 @@
             document.getElementById('dash-cb-closed').textContent = closed;
             document.getElementById('dash-cb-half').textContent = halfOpen;
             document.getElementById('dash-cb-open').textContent = open;
-        }).catch(function(){});
+        }).catch(function(err) { AdminAPI.toast('Failed to load circuit breakers: ' + err.message, 'error'); });
     }
 
     load();

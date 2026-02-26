@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 use url::Url;
@@ -10,6 +11,7 @@ use url::Url;
 pub mod deployment;
 pub mod port_manager;
 
+use crate::metrics::Metrics as AppMetrics;
 pub use deployment::{DeploymentManager, DeploymentStatus};
 pub use port_manager::{PortAllocator, PortManager};
 
@@ -88,7 +90,7 @@ pub struct AppInfo {
 }
 
 impl AppInfo {
-    pub fn from_path(path: &std::path::Path) -> Result<Self, anyhow::Error> {
+    pub fn from_path(path: &std::path::Path, dev_mode: bool) -> Result<Self, anyhow::Error> {
         // Validate that folder name is a valid domain (contains at least one dot)
         let folder_name = path
             .file_name()
@@ -135,7 +137,12 @@ impl AppInfo {
             && path.join("app").exists()
             && path.join("app/models").exists()
         {
-            config.start_script = Some("soli serve .".to_string());
+            let start_script = if dev_mode {
+                "soli serve . --dev --port $PORT --workers $WORKERS".to_string()
+            } else {
+                "soli serve . --port $PORT --workers $WORKERS".to_string()
+            };
+            config.start_script = Some(start_script);
             config.health_check = Some("/".to_string());
             if config.domain.is_empty() {
                 config.domain = app_name.clone();
@@ -176,6 +183,7 @@ pub struct AppManager {
     watcher: Arc<Mutex<Option<RecommendedWatcher>>>,
     acme_service: Arc<Mutex<Option<Arc<crate::acme::AcmeService>>>>,
     dev_mode: bool,
+    event_tx: broadcast::Sender<AppEvent>,
 }
 
 /// Convert a domain to its `.test` alias by replacing the TLD.
@@ -257,6 +265,27 @@ fn affected_app_names(sites_dir: &Path, paths: &HashSet<PathBuf>) -> HashSet<Str
     names
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "type")]
+pub enum AppEvent {
+    StatusChanged {
+        app_name: String,
+        slot: String,
+        status: String,
+    },
+    Deployed {
+        app_name: String,
+        slot: String,
+    },
+    Stopped {
+        app_name: String,
+        slot: String,
+    },
+    Restarted {
+        app_name: String,
+    },
+}
+
 impl AppManager {
     pub fn new(
         sites_dir: &str,
@@ -270,6 +299,7 @@ impl AppManager {
         }
 
         let deployment_manager = Arc::new(DeploymentManager::new(dev_mode));
+        let (event_tx, _) = broadcast::channel(32);
 
         Ok(Self {
             sites_dir: sites_path,
@@ -280,7 +310,16 @@ impl AppManager {
             watcher: Arc::new(Mutex::new(None)),
             acme_service: Arc::new(Mutex::new(None)),
             dev_mode,
+            event_tx,
         })
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<AppEvent> {
+        self.event_tx.subscribe()
+    }
+
+    fn emit_event(&self, event: AppEvent) {
+        let _ = self.event_tx.send(event);
     }
 
     pub async fn set_acme_service(&self, service: Arc<crate::acme::AcmeService>) {
@@ -317,7 +356,7 @@ impl AppManager {
                     path.clone()
                 };
                 if resolved_path.is_dir() {
-                    match AppInfo::from_path(&path) {
+                    match AppInfo::from_path(&path, self.dev_mode) {
                         Ok(mut app_info) => {
                             let name = app_info.config.name.clone();
                             seen_names.insert(name.clone());
@@ -337,9 +376,16 @@ impl AppManager {
                             } else {
                                 tracing::info!("Discovered new app: {}", name);
                                 // Allocate ports for new apps only
+                                let port_range_start = app_info.config.port_range_start;
+                                let port_range_end = app_info.config.port_range_end;
                                 match self
                                     .port_allocator
-                                    .allocate(&app_info.config.name, "blue")
+                                    .allocate_with_range(
+                                        &app_info.config.name,
+                                        "blue",
+                                        port_range_start,
+                                        port_range_end,
+                                    )
                                     .await
                                 {
                                     Ok(port) => app_info.blue.port = port,
@@ -351,7 +397,12 @@ impl AppManager {
                                 }
                                 match self
                                     .port_allocator
-                                    .allocate(&app_info.config.name, "green")
+                                    .allocate_with_range(
+                                        &app_info.config.name,
+                                        "green",
+                                        port_range_start,
+                                        port_range_end,
+                                    )
                                     .await
                                 {
                                     Ok(port) => app_info.green.port = port,
@@ -634,6 +685,37 @@ impl AppManager {
         self.port_allocator.get_app_name(port).await
     }
 
+    pub async fn get_system_metrics(&self, metrics: &AppMetrics) -> serde_json::Value {
+        let apps = self.apps.lock().await;
+        let mut result = serde_json::Map::new();
+
+        for (name, app) in apps.iter() {
+            let mut app_metrics = serde_json::Map::new();
+
+            if let Some(pid) = app.blue.pid {
+                if let Some(stats) = metrics.get_process_stats(pid) {
+                    app_metrics.insert(
+                        "blue".to_string(),
+                        serde_json::to_value(stats).unwrap_or_default(),
+                    );
+                }
+            }
+
+            if let Some(pid) = app.green.pid {
+                if let Some(stats) = metrics.get_process_stats(pid) {
+                    app_metrics.insert(
+                        "green".to_string(),
+                        serde_json::to_value(stats).unwrap_or_default(),
+                    );
+                }
+            }
+
+            result.insert(name.clone(), serde_json::Value::Object(app_metrics));
+        }
+
+        serde_json::Value::Object(result)
+    }
+
     pub async fn allocate_ports(&self, app_name: &str) -> Result<(u16, u16), anyhow::Error> {
         let blue_port = self.port_allocator.allocate(app_name, "blue").await?;
         let green_port = self.port_allocator.allocate(app_name, "green").await?;
@@ -752,6 +834,15 @@ impl AppManager {
 
         self.sync_routes().await;
         tracing::info!("Deploy completed for {} to slot {}", app_name, slot);
+        self.emit_event(AppEvent::Deployed {
+            app_name: app_name.to_string(),
+            slot: slot.to_string(),
+        });
+        self.emit_event(AppEvent::StatusChanged {
+            app_name: app_name.to_string(),
+            slot: slot.to_string(),
+            status: "running".to_string(),
+        });
         Ok(())
     }
 
@@ -837,6 +928,10 @@ impl AppManager {
         }
 
         self.sync_routes().await;
+        self.emit_event(AppEvent::Deployed {
+            app_name: app_name.to_string(),
+            slot: target_slot,
+        });
         Ok(())
     }
 
@@ -865,6 +960,16 @@ impl AppManager {
                 instance.pid = None;
             }
         }
+
+        self.emit_event(AppEvent::Stopped {
+            app_name: app_name.to_string(),
+            slot: slot.clone(),
+        });
+        self.emit_event(AppEvent::StatusChanged {
+            app_name: app_name.to_string(),
+            slot,
+            status: "stopped".to_string(),
+        });
 
         Ok(())
     }
@@ -930,7 +1035,7 @@ port_range_end = 9999
 "#;
         std::fs::write(app_path.join("app.infos"), app_infos).unwrap();
 
-        let app_info = AppInfo::from_path(&app_path).unwrap();
+        let app_info = AppInfo::from_path(&app_path, false).unwrap();
         assert_eq!(app_info.config.name, "test.solisoft.net");
         assert_eq!(app_info.config.domain, "test.solisoft.net");
         assert_eq!(app_info.config.start_script, Some("./start.sh".to_string()));
@@ -969,8 +1074,14 @@ port_range_end = 9999
 
     #[test]
     fn test_strip_www() {
-        assert_eq!(strip_www("www.solisoft.net"), Some("solisoft.net".to_string()));
-        assert_eq!(strip_www("www.example.com"), Some("example.com".to_string()));
+        assert_eq!(
+            strip_www("www.solisoft.net"),
+            Some("solisoft.net".to_string())
+        );
+        assert_eq!(
+            strip_www("www.example.com"),
+            Some("example.com".to_string())
+        );
         assert_eq!(strip_www("solisoft.net"), None);
         assert_eq!(strip_www("www."), None);
         assert_eq!(strip_www("wwww.solisoft.net"), None);
@@ -991,7 +1102,7 @@ port_range_end = 9999
         std::fs::create_dir_all(&app_path).unwrap();
         std::fs::write(app_path.join("luaonbeans.org"), b"").unwrap();
 
-        let app_info = AppInfo::from_path(&app_path).unwrap();
+        let app_info = AppInfo::from_path(&app_path, false).unwrap();
         assert_eq!(app_info.config.name, "myapp.example.com");
         assert_eq!(app_info.config.domain, "myapp.example.com");
         assert_eq!(
@@ -1017,7 +1128,7 @@ port_range_end = 9999
 "#;
         std::fs::write(app_path.join("app.infos"), app_infos).unwrap();
 
-        let app_info = AppInfo::from_path(&app_path).unwrap();
+        let app_info = AppInfo::from_path(&app_path, false).unwrap();
         assert_eq!(app_info.config.name, "myapp.example.com");
         assert_eq!(app_info.config.domain, "custom.example.com");
         assert_eq!(
@@ -1045,7 +1156,7 @@ port_range_end = 9999
 "#;
         std::fs::write(app_path.join("app.infos"), app_infos).unwrap();
 
-        let app_info = AppInfo::from_path(&app_path).unwrap();
+        let app_info = AppInfo::from_path(&app_path, false).unwrap();
         assert_eq!(
             app_info.config.start_script,
             Some("./custom-start.sh".to_string())
@@ -1059,7 +1170,7 @@ port_range_end = 9999
         let app_path = temp_dir.path().join("emptyapp.example.com");
         std::fs::create_dir_all(&app_path).unwrap();
 
-        let app_info = AppInfo::from_path(&app_path).unwrap();
+        let app_info = AppInfo::from_path(&app_path, false).unwrap();
         assert_eq!(app_info.config.name, "emptyapp.example.com");
         assert!(app_info.config.start_script.is_none());
         assert_eq!(app_info.config.health_check, Some("/health".to_string()));

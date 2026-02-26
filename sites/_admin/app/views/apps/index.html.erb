@@ -3,6 +3,9 @@
     <p class="text-sm text-slate-400">Manage application deployments</p>
 </div>
 
+<!-- Error History -->
+<div id="error-history-container" class="mb-4"></div>
+
 <!-- Search -->
 <div class="mb-6">
     <input type="text" id="app-search" placeholder="Search apps..." 
@@ -19,18 +22,138 @@
 
 <script>
 var AppMetrics = {};
+var AppSystemMetrics = {};
 var AppsByDomainData = {};
+var CpuHistory = {};
+var CPU_REFRESH_INTERVAL = 2000;
+var CPU_HISTORY_SECONDS = 30;
+var CPU_HISTORY_MAX_POINTS = (CPU_HISTORY_SECONDS * 1000) / CPU_REFRESH_INTERVAL;
+var ErrorHistory = [];
+var MAX_ERROR_HISTORY = 20;
+
+function addError(source, message) {
+    ErrorHistory.unshift({
+        time: new Date().toLocaleTimeString(),
+        source: source,
+        message: message
+    });
+    if (ErrorHistory.length > MAX_ERROR_HISTORY) {
+        ErrorHistory.pop();
+    }
+    renderErrorHistory();
+}
+
+function renderErrorHistory() {
+    var container = document.getElementById('error-history-container');
+    if (!container) return;
+    if (ErrorHistory.length === 0) {
+        container.innerHTML = '';
+        return;
+    }
+    container.innerHTML = ErrorHistory.map(function(e) {
+        return '<div class="text-xs text-rose-400 py-1"><span class="text-slate-500">[' + e.time + ']</span> <span class="text-slate-400">' + e.source + ':</span> ' + e.message + '</div>';
+    }).join('');
+}
+
+var AppSseConnection = null;
+
+function connectAppEvents() {
+    if (AppSseConnection) {
+        AppSseConnection.close();
+    }
+    
+    AppSseConnection = new EventSource('/api/v1/events/apps');
+    
+    AppSseConnection.onmessage = function(e) {
+        try {
+            var event = JSON.parse(e.data);
+            handleAppEvent(event);
+        } catch (err) {
+            console.error('Failed to parse SSE event:', err);
+        }
+    };
+    
+    AppSseConnection.onerror = function(err) {
+        console.error('SSE error:', err);
+        addError('SSE', 'Connection lost, reconnecting...');
+        setTimeout(connectAppEvents, 5000);
+    };
+    
+    AppSseConnection.onopen = function() {
+        console.log('SSE connected');
+    };
+}
+
+function handleAppEvent(event) {
+    if (event.type === 'StatusChanged' || event.type === 'Deployed' || event.type === 'Stopped') {
+        refreshAppStatus(event.app_name);
+    }
+}
+
+function refreshAppStatus(appName) {
+    Promise.all([
+        AdminAPI.getAppsByDomain(),
+        AdminAPI.getAllAppSystemMetrics()
+    ]).then(function(results) {
+        AppsByDomainData = results[0].data;
+        AppSystemMetrics = results[1].data || {};
+        
+        Object.keys(AppSystemMetrics).forEach(function(name) {
+            var sysMetrics = AppSystemMetrics[name];
+            updateCpuHistory(name, {
+                blue: (sysMetrics.blue && sysMetrics.blue.cpu_percent) || 0,
+                green: (sysMetrics.green && sysMetrics.green.cpu_percent) || 0
+            });
+        });
+        
+        AppManager.render(AppsByDomainData, false);
+    }).catch(function(err) {
+        addError('refreshAppStatus', err.message);
+    });
+}
 
 var AppManager = {
+    STORAGE_KEY: 'admin-apps-expanded-domains',
+
+    getExpandedDomains: function() {
+        try {
+            var stored = localStorage.getItem(this.STORAGE_KEY);
+            return stored ? JSON.parse(stored) : {};
+        } catch (e) {
+            return {};
+        }
+    },
+
+    saveExpandedDomain: function(domainId, expanded) {
+        var expandedMap = this.getExpandedDomains();
+        expandedMap[domainId] = expanded;
+        try {
+            localStorage.setItem(this.STORAGE_KEY, JSON.stringify(expandedMap));
+        } catch (e) {}
+    },
+
     load: function() {
-        Promise.all([
+        return Promise.all([
             AdminAPI.getAppsByDomain(),
-            AdminAPI.getAllAppMetrics()
+            AdminAPI.getAllAppMetrics(),
+            AdminAPI.getAllAppSystemMetrics()
         ]).then(function(results) {
             AppsByDomainData = results[0].data;
             AppMetrics = results[1].data || {};
+            AppSystemMetrics = results[2].data || {};
+            
+            Object.keys(AppSystemMetrics).forEach(function(name) {
+                var sysMetrics = AppSystemMetrics[name];
+                updateCpuHistory(name, {
+                    blue: (sysMetrics.blue && sysMetrics.blue.cpu_percent) || 0,
+                    green: (sysMetrics.green && sysMetrics.green.cpu_percent) || 0
+                });
+            });
+            
             AppManager.render(AppsByDomainData, false);
-        }).catch(function() {
+        }).catch(function(err) {
+            addError('AppManager.load', err.message);
+            AdminAPI.toast('Failed to load applications: ' + err.message, 'error');
             document.getElementById('apps-grid').innerHTML =
                 '<div class="bg-slate-900/60 border border-white/5 rounded-xl p-8 text-center col-span-full">' +
                 '<span class="text-rose-400">Failed to load applications</span></div>';
@@ -40,6 +163,7 @@ var AppManager = {
     render: function(appsByDomain, isSearch) {
         isSearch = isSearch || false;
         var grid = document.getElementById('apps-grid');
+        var expandedDomains = AppManager.getExpandedDomains();
         
         if (!appsByDomain || Object.keys(appsByDomain).length === 0) {
             grid.innerHTML = '<div class="bg-slate-900/60 border border-white/5 rounded-xl p-8 text-center col-span-full">' +
@@ -53,8 +177,8 @@ var AppManager = {
         grid.innerHTML = domains.map(function(domain) {
             var apps = appsByDomain[domain];
             var domainId = 'domain-' + domain.replace(/[^a-zA-Z0-9]/g, '-');
-            var isExpanded = isSearch ? '' : 'hidden';
-            var chevronHtml = isSearch 
+            var isExpanded = isSearch || expandedDomains[domainId] ? '' : 'hidden';
+            var chevronHtml = isSearch || expandedDomains[domainId]
                 ? '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>'
                 : '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>';
             
@@ -75,8 +199,6 @@ var AppManager = {
                 '</div>' +
             '</div>';
         }).join('');
-
-        AppManager.scheduleRefresh();
     },
 
     search: function(query) {
@@ -105,9 +227,11 @@ var AppManager = {
         if (content.classList.contains('hidden')) {
             content.classList.remove('hidden');
             chevron.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>';
+            AppManager.saveExpandedDomain(domainId, true);
         } else {
             content.classList.add('hidden');
             chevron.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>';
+            AppManager.saveExpandedDomain(domainId, false);
         }
     },
 
@@ -125,6 +249,20 @@ var AppManager = {
         var reqs = metrics.requests || 0;
         var errors = metrics.errors || 0;
         var avgTime = metrics.avg_response_time_ms || 0;
+
+        var sysMetrics = AppSystemMetrics[name] || { blue: {}, green: {} };
+        var blueMem = sysMetrics.blue && sysMetrics.blue.memory_rss_bytes;
+        var greenMem = sysMetrics.green && sysMetrics.green.memory_rss_bytes;
+        var blueCpu = sysMetrics.blue && sysMetrics.blue.cpu_percent;
+        var greenCpu = sysMetrics.green && sysMetrics.green.cpu_percent;
+
+        function formatBytes(b) {
+            if (!b) return '-';
+            if (b >= 1073741824) return (b / 1073741824).toFixed(1) + 'G';
+            if (b >= 1048576) return (b / 1048576).toFixed(1) + 'M';
+            if (b >= 1024) return (b / 1024).toFixed(0) + 'K';
+            return b + 'B';
+        }
 
         var testDomain = '';
         if (domain && !domain.endsWith('.test') && !domain.endsWith('.localhost')) {
@@ -187,6 +325,11 @@ var AppManager = {
                         healthLabel +
                     '</span>' +
                 '</div>' +
+                '<div class="flex items-center gap-3 bg-slate-800/30 rounded-lg px-3 py-2">' +
+                    '<div class="text-xs font-medium ' + (currentSlot === 'blue' ? 'text-blue-400' : 'text-emerald-400') + '" data-cpu-current-value data-app-name="' + AdminAPI.esc(name) + '" data-slot="' + currentSlot + '">-</div>' +
+                    '<div data-cpu-graph-current data-app-name="' + AdminAPI.esc(name) + '" data-current-slot="' + currentSlot + '" class="flex-1 h-8">' + renderCpuGraph(name, currentSlot) + '</div>' +
+                    '<div class="text-xs text-slate-400">' + (currentSlot === 'blue' ? (blueMem ? formatBytes(blueMem) : '-') : (greenMem ? formatBytes(greenMem) : '-')) + '</div>' +
+                '</div>' +
             '</div>' +
             '<div class="px-5 pb-4">' +
                 '<div class="flex gap-3">' +
@@ -208,14 +351,14 @@ var AppManager = {
                 '<div class="grid grid-cols-2 gap-3">' +
                     '<div class="flex items-center gap-2 px-3 py-3 rounded-lg ' + (currentSlot === 'blue' ? 'bg-blue-500/5 border border-blue-500/20' : 'bg-slate-800/30') + '">' +
                         '<span class="w-2 h-2 rounded-full ' + statusDot(blueStatus) + '"></span>' +
-                        '<div class="min-w-0">' +
+                        '<div class="min-w-0 flex-1">' +
                             '<div class="text-xs font-medium ' + (currentSlot === 'blue' ? 'text-blue-400' : 'text-slate-400') + '">Blue' + (currentSlot === 'blue' ? ' <span class="text-blue-500/60">active</span>' : '') + '</div>' +
                             '<div class="text-xs ' + statusText(blueStatus) + '">' + blueStatus + (bluePort ? ' :' + bluePort : '') + '</div>' +
                         '</div>' +
                     '</div>' +
                     '<div class="flex items-center gap-2 px-3 py-3 rounded-lg ' + (currentSlot === 'green' ? 'bg-emerald-500/5 border border-emerald-500/20' : 'bg-slate-800/30') + '">' +
                         '<span class="w-2 h-2 rounded-full ' + statusDot(greenStatus) + '"></span>' +
-                        '<div class="min-w-0">' +
+                        '<div class="min-w-0 flex-1">' +
                             '<div class="text-xs font-medium ' + (currentSlot === 'green' ? 'text-emerald-400' : 'text-slate-400') + '">Green' + (currentSlot === 'green' ? ' <span class="text-emerald-500/60">active</span>' : '') + '</div>' +
                             '<div class="text-xs ' + statusText(greenStatus) + '">' + greenStatus + (greenPort ? ' :' + greenPort : '') + '</div>' +
                         '</div>' +
@@ -231,21 +374,13 @@ var AppManager = {
         '</div>';
     },
 
-    scheduleRefresh: function() {
-        if (AppManager.refreshTimeout) {
-            clearTimeout(AppManager.refreshTimeout);
-        }
-        AppManager.refreshTimeout = setTimeout(function() {
-            AppManager.load();
-        }, 10000);
-    },
-
     action: function(name, action, btn) {
         if (btn) AdminAPI.setButtonLoading(btn, true);
         AdminAPI.appAction(name, action).then(function(d) {
             AdminAPI.toast(d.data.message || (action + ' started'), 'success');
             setTimeout(function() { AppManager.load(); }, 1500);
         }).catch(function(err) {
+            addError('AppManager.action(' + action + ')', err.message);
             AdminAPI.toast('Failed: ' + err.message, 'error');
             if (btn) AdminAPI.setButtonLoading(btn, false);
         });
@@ -266,10 +401,106 @@ var AppManager = {
             '</div>';
             AdminAPI.showModal(html);
         }).catch(function(err) {
+            addError('AppManager.showLogs', err.message);
             AdminAPI.toast('Failed to load logs: ' + err.message, 'error');
         });
     }
 };
 
-AppManager.load();
+function initCpuHistory(name) {
+    if (!CpuHistory[name]) {
+        CpuHistory[name] = { blue: [], green: [] };
+    }
+}
+
+function formatCpu(c) {
+    if (c == null) return '-';
+    return c.toFixed(1) + '%';
+}
+
+function updateCpuHistory(name, cpuData) {
+    initCpuHistory(name);
+    var now = Date.now();
+    CpuHistory[name].blue.push({ time: now, value: cpuData.blue });
+    CpuHistory[name].green.push({ time: now, value: cpuData.green });
+    
+    var cutoff = now - (CPU_HISTORY_SECONDS * 1000);
+    CpuHistory[name].blue = CpuHistory[name].blue.filter(function(p) { return p.time > cutoff; });
+    CpuHistory[name].green = CpuHistory[name].green.filter(function(p) { return p.time > cutoff; });
+}
+
+function renderCpuGraph(name, slot) {
+    initCpuHistory(name);
+    var history = CpuHistory[name][slot];
+    if (!history || history.length < 2) {
+        return '<div class="text-[8px] text-slate-600 text-center leading-tight h-full flex items-center justify-center">Collecting...</div>';
+    }
+    
+    var width = 200;
+    var height = 32;
+    var padding = 2;
+    
+    var maxVal = Math.max(100, Math.max(...history.map(function(d) { return d.value; }), 0));
+    var minTime = history[0].time;
+    var maxTime = history[history.length - 1].time;
+    var timeRange = maxTime - minTime || 1;
+    
+    var points = history.map(function(d) {
+        var x = padding + ((d.time - minTime) / timeRange) * (width - 2 * padding);
+        var y = height - padding - (d.value / maxVal) * (height - 2 * padding);
+        return x + ',' + y;
+    }).join(' ');
+    
+    var currentVal = history[history.length - 1].value;
+    var color = slot === 'blue' ? '#60a5fa' : '#34d399';
+    
+    return '<div class="relative w-full h-full">' +
+        '<svg width="' + width + '" height="' + height + '" class="w-full">' +
+            '<defs>' +
+                '<linearGradient id="grad-' + name.replace(/\W/g, '') + '-' + slot + '" x1="0%" y1="0%" x2="0%" y2="100%">' +
+                    '<stop offset="0%" style="stop-color:' + color + ';stop-opacity:0.3" />' +
+                    '<stop offset="100%" style="stop-color:' + color + ';stop-opacity:0" />' +
+                '</linearGradient>' +
+            '</defs>' +
+            '<polygon points="' + padding + ',' + (height - padding) + ' ' + points + ' ' + (width - padding) + ',' + (height - padding) + '" fill="url(#grad-' + name.replace(/\W/g, '') + '-' + slot + ')" />' +
+            '<polyline points="' + points + '" fill="none" stroke="' + color + '" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />' +
+        '</svg>' +
+    '</div>';
+}
+
+function refreshCpuData() {
+    AdminAPI.getAllAppSystemMetrics().then(function(d) {
+        var data = d.data || {};
+        Object.keys(data).forEach(function(name) {
+            var sysMetrics = data[name];
+            var blueCpu = sysMetrics.blue && sysMetrics.blue.cpu_percent;
+            var greenCpu = sysMetrics.green && sysMetrics.green.cpu_percent;
+            updateCpuHistory(name, { blue: blueCpu || 0, green: greenCpu || 0 });
+        });
+        
+        document.querySelectorAll('[data-cpu-graph-current]').forEach(function(el) {
+            var name = el.dataset.appName;
+            var currentSlot = el.dataset.currentSlot;
+            el.innerHTML = renderCpuGraph(name, currentSlot);
+        });
+
+        document.querySelectorAll('[data-cpu-current-value]').forEach(function(el) {
+            var name = el.dataset.appName;
+            var slot = el.dataset.slot;
+            var history = CpuHistory[name] && CpuHistory[name][slot];
+            if (history && history.length > 0) {
+                var val = history[history.length - 1].value;
+                el.textContent = formatCpu(val);
+            }
+        });
+    }).catch(function(err) { addError('refreshCpuData', err.message); AdminAPI.toast('Failed to refresh CPU data: ' + err.message, 'error'); });
+}
+
+AppManager.load().then(function() {
+    refreshCpuData();
+    connectAppEvents();
+});
+
+renderErrorHistory();
+setInterval(refreshCpuData, CPU_REFRESH_INTERVAL);
 </script>

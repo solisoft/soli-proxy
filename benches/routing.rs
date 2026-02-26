@@ -58,11 +58,7 @@ fn parse_proxy_config(content: &str) -> Vec<ProxyRule> {
     rules
 }
 
-fn find_target(
-    host: Option<&str>,
-    path: &str,
-    rules: &[ProxyRule],
-) -> Option<(String, bool)> {
+fn find_target(host: Option<&str>, path: &str, rules: &[ProxyRule]) -> Option<(String, bool)> {
     let host = host?;
     let mut matched_domain = false;
 
@@ -139,10 +135,7 @@ fn find_target(
 fn generate_rules(count: usize) -> Vec<ProxyRule> {
     let mut lines = Vec::new();
     for i in 0..count {
-        lines.push(format!(
-            "app{}.example.com -> http://backend{}:8080",
-            i, i
-        ));
+        lines.push(format!("app{}.example.com -> http://backend{}:8080", i, i));
     }
     lines.push("default -> http://fallback:8080".to_string());
     parse_proxy_config(&lines.join("\n"))
@@ -185,13 +178,7 @@ api.example.com/users -> http://backend2:8081
     });
 
     group.bench_function("prefix", |b| {
-        b.iter(|| {
-            find_target(
-                black_box(Some("other.com")),
-                black_box("/api/test"),
-                &rules,
-            )
-        })
+        b.iter(|| find_target(black_box(Some("other.com")), black_box("/api/test"), &rules))
     });
 
     group.bench_function("regex", |b| {
@@ -226,13 +213,7 @@ fn bench_rule_scaling(c: &mut Criterion) {
 
     // Worst case: match the default rule (last), forcing a full scan
     group.bench_function("5_rules_default", |b| {
-        b.iter(|| {
-            find_target(
-                black_box(Some("nomatch.com")),
-                black_box("/path"),
-                &rules_5,
-            )
-        })
+        b.iter(|| find_target(black_box(Some("nomatch.com")), black_box("/path"), &rules_5))
     });
 
     group.bench_function("50_rules_default", |b| {

@@ -240,8 +240,14 @@ async fn main() {
         }
     });
 
-    println!("Proxy on port {},  Admin on port {}", proxy_port, admin_port);
-    println!("Requests: {}   Concurrency: {}", total_requests, concurrency);
+    println!(
+        "Proxy on port {},  Admin on port {}",
+        proxy_port, admin_port
+    );
+    println!(
+        "Requests: {}   Concurrency: {}",
+        total_requests, concurrency
+    );
     println!("------------------------------------------");
 
     // 5. Wait for both servers

@@ -96,6 +96,7 @@ var AdminAPI = (function() {
     }
 
     function getAllAppMetrics() { return _fetch('/api/v1/app-metrics'); }
+    function getAllAppSystemMetrics() { return _fetch('/api/v1/app-metrics/system'); }
 
     function setBaseUrl(url) {
         _baseUrl = url;
@@ -273,14 +274,12 @@ var AdminAPI = (function() {
 
     function _initCheck() {
         getStatus().then(function(d) {
-            var s = d.data;
             _hideConnectionBanner();
+            _updateUptime(d.data);
             var versionEl = document.getElementById('sidebar-version');
-            if (versionEl) versionEl.textContent = 'v' + s.version;
-            var uptimeEl = document.getElementById('sidebar-uptime');
-            if (uptimeEl) uptimeEl.textContent = 'Up ' + formatUptime(s.uptime_secs);
+            if (versionEl) versionEl.textContent = 'v' + d.data.version;
             var topVersionEl = document.getElementById('topbar-version');
-            if (topVersionEl) topVersionEl.textContent = 'v' + s.version;
+            if (topVersionEl) topVersionEl.textContent = 'v' + d.data.version;
         }).catch(function() {
             _showConnectionBanner();
             var statusEl = document.getElementById('topbar-status');
@@ -293,10 +292,24 @@ var AdminAPI = (function() {
         });
     }
 
+    function _updateUptime(data) {
+        var uptimeEl = document.getElementById('sidebar-uptime');
+        if (uptimeEl) uptimeEl.textContent = 'Up ' + formatUptime(data.uptime_secs);
+    }
+
+    function _startPolling() {
+        setInterval(function() {
+            getStatus().then(function(d) {
+                _updateUptime(d.data);
+            }).catch(function() {});
+        }, 5000);
+    }
+
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', _initCheck);
+        document.addEventListener('DOMContentLoaded', function() { _initCheck(); _startPolling(); });
     } else {
         _initCheck();
+        _startPolling();
     }
 
     // ---- Public API ----
@@ -313,6 +326,7 @@ var AdminAPI = (function() {
         getApp: getApp,
         getAppLogs: getAppLogs,
         getAllAppMetrics: getAllAppMetrics,
+        getAllAppSystemMetrics: getAllAppSystemMetrics,
         addRoute: addRoute,
         updateRoute: updateRoute,
         deleteRoute: deleteRoute,

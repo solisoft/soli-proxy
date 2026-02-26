@@ -96,10 +96,7 @@ impl DeploymentManager {
         {
             let mut deploying = self.deploying_apps.lock().unwrap();
             if deploying.contains(&app.config.name) {
-                anyhow::bail!(
-                    "Deployment already in progress for {}",
-                    app.config.name
-                );
+                anyhow::bail!("Deployment already in progress for {}", app.config.name);
             }
             deploying.insert(app.config.name.clone());
         }

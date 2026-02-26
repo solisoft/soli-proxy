@@ -1,6 +1,6 @@
 [package]
 name = "soli-proxy"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 description = "A fast, configurable reverse proxy with automatic HTTPS, Lua scripting, and blue-green deployments"
 license = "MIT"
@@ -59,6 +59,7 @@ socket2 = { version = "0.5", features = ["all"] }
 mlua = { version = "0.10", features = ["lua54", "vendored", "send"], optional = true }
 flate2 = "1.1.9"
 bcrypt = "0.15"
+async-stream = "0.3"
 
 [features]
 default = ["scripting"]

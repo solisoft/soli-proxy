@@ -104,5 +104,10 @@ fn bench_metrics(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_circuit_breaker, bench_load_balancer, bench_metrics);
+criterion_group!(
+    benches,
+    bench_circuit_breaker,
+    bench_load_balancer,
+    bench_metrics
+);
 criterion_main!(benches);

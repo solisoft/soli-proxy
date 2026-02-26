@@ -29,13 +29,23 @@ impl PortAllocator {
     }
 
     pub fn allocate(&mut self, app_name: &str, slot: &str) -> Result<u16> {
+        self.allocate_with_range(app_name, slot, 1, 65535)
+    }
+
+    pub fn allocate_with_range(
+        &mut self,
+        app_name: &str,
+        slot: &str,
+        port_range_start: u16,
+        port_range_end: u16,
+    ) -> Result<u16> {
         let key = (app_name.to_string(), slot.to_string());
 
         if let Some(&port) = self.app_slots.get(&key) {
             return Ok(port);
         }
 
-        let port = self.find_available_port()?;
+        let port = self.find_available_port_in_range(port_range_start, port_range_end)?;
         self.used_ports.insert(
             port,
             PortAssignment {
@@ -50,11 +60,21 @@ impl PortAllocator {
         Ok(port)
     }
 
-    fn find_available_port(&self) -> Result<u16> {
-        if let Some(port) = portpicker::pick_unused_port() {
-            return Ok(port);
+    fn find_available_port_in_range(
+        &self,
+        port_range_start: u16,
+        port_range_end: u16,
+    ) -> Result<u16> {
+        for port in port_range_start..=port_range_end {
+            if !self.used_ports.contains_key(&port) {
+                return Ok(port);
+            }
         }
-        anyhow::bail!("No available ports found")
+        anyhow::bail!(
+            "No available ports found in range {}-{}",
+            port_range_start,
+            port_range_end
+        )
     }
 
     pub fn release(&mut self, app_name: &str, slot: &str) {
@@ -92,12 +112,22 @@ impl PortManager {
     }
 
     pub async fn allocate(&self, app_name: &str, slot: &str) -> Result<u16> {
+        self.allocate_with_range(app_name, slot, 1, 65535).await
+    }
+
+    pub async fn allocate_with_range(
+        &self,
+        app_name: &str,
+        slot: &str,
+        port_range_start: u16,
+        port_range_end: u16,
+    ) -> Result<u16> {
         let port = {
             let mut allocator = self.allocator.lock().await;
             if let Some(port) = allocator.get_port(app_name, slot) {
                 return Ok(port);
             }
-            allocator.allocate(app_name, slot)?
+            allocator.allocate_with_range(app_name, slot, port_range_start, port_range_end)?
         };
         self.persist().await?;
         Ok(port)
@@ -177,6 +207,6 @@ mod tests {
         pm.release("app1", "blue").await;
 
         let new_port = pm.allocate("app1", "blue").await.unwrap();
-        assert_ne!(port, new_port);
+        assert_eq!(port, new_port);
     }
 }
