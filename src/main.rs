@@ -290,29 +290,25 @@ async fn run_server(
     // Build the TLS ServerConfig with the cert resolver
     tls_manager.build()?;
 
-    // Initialize app manager (needed by both ProxyServer and ACME)
-    let app_manager = if cfg.admin.enabled {
-        let port_manager = Arc::new(PortManager::new("./run").unwrap());
-        let _ = port_manager.load().await;
+    // Initialize app manager for automatic app discovery and routing
+    let port_manager = Arc::new(PortManager::new("./run").unwrap());
+    let _ = port_manager.load().await;
 
-        match AppManager::new(
-            sites_dir,
-            port_manager.clone(),
-            config_ref.clone(),
-            dev_mode,
-        ) {
-            Ok(m) => {
-                tracing::info!("App manager initialized for {}", sites_dir);
-                m.spawn_health_check();
-                Some(Arc::new(m))
-            }
-            Err(e) => {
-                tracing::error!("Failed to initialize app manager: {}", e);
-                None
-            }
+    let app_manager: Option<Arc<AppManager>> = match AppManager::new(
+        sites_dir,
+        port_manager.clone(),
+        config_ref.clone(),
+        dev_mode,
+    ) {
+        Ok(m) => {
+            tracing::info!("App manager initialized for {}", sites_dir);
+            m.spawn_health_check();
+            Some(Arc::new(m))
         }
-    } else {
-        None
+        Err(e) => {
+            tracing::error!("Failed to initialize app manager: {}", e);
+            None
+        }
     };
 
     let admin_metrics = metrics.clone();
@@ -453,20 +449,21 @@ async fn run_server(
         }
     }
 
+    // Start app discovery and file watcher (independent of admin)
+    if let Some(ref manager) = app_manager {
+        let manager_clone = manager.clone();
+        tokio::spawn(async move {
+            if let Err(e) = manager_clone.discover_apps().await {
+                tracing::error!("Failed to discover apps: {}", e);
+            }
+            if let Err(e) = manager_clone.start_watcher().await {
+                tracing::error!("Failed to start app watcher: {}", e);
+            }
+        });
+    }
+
     // Spawn admin API server if enabled
     if cfg.admin.enabled {
-        if let Some(ref manager) = app_manager {
-            let manager_clone = manager.clone();
-            tokio::spawn(async move {
-                if let Err(e) = manager_clone.discover_apps().await {
-                    tracing::error!("Failed to discover apps: {}", e);
-                }
-                if let Err(e) = manager_clone.start_watcher().await {
-                    tracing::error!("Failed to start app watcher: {}", e);
-                }
-            });
-        }
-
         let admin_state = Arc::new(AdminState {
             config_manager: config_ref.clone(),
             metrics: admin_metrics,
