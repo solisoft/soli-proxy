@@ -184,6 +184,8 @@ pub struct AppManager {
     acme_service: Arc<Mutex<Option<Arc<crate::acme::AcmeService>>>>,
     dev_mode: bool,
     event_tx: broadcast::Sender<AppEvent>,
+    health_check_path: String,
+    health_check_interval_secs: u64,
 }
 
 /// Convert a domain to its `.test` alias by replacing the TLD.
@@ -293,6 +295,24 @@ impl AppManager {
         config_manager: Arc<dyn super::config::ConfigManagerTrait + Send + Sync>,
         dev_mode: bool,
     ) -> Result<Self, anyhow::Error> {
+        Self::with_health_check(
+            sites_dir,
+            port_allocator,
+            config_manager,
+            dev_mode,
+            "/up",
+            30,
+        )
+    }
+
+    pub fn with_health_check(
+        sites_dir: &str,
+        port_allocator: Arc<PortManager>,
+        config_manager: Arc<dyn super::config::ConfigManagerTrait + Send + Sync>,
+        dev_mode: bool,
+        health_check_path: &str,
+        health_check_interval_secs: u64,
+    ) -> Result<Self, anyhow::Error> {
         let sites_path = PathBuf::from(sites_dir);
         if !sites_path.exists() {
             std::fs::create_dir_all(&sites_path)?;
@@ -311,6 +331,8 @@ impl AppManager {
             acme_service: Arc::new(Mutex::new(None)),
             dev_mode,
             event_tx,
+            health_check_path: health_check_path.to_string(),
+            health_check_interval_secs,
         })
     }
 
@@ -1009,6 +1031,67 @@ impl AppManager {
                 }
             }
         }
+    }
+
+    pub async fn check_health(&self) {
+        let http_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
+        let apps: Vec<(String, u16)> = {
+            let apps_guard = self.apps.lock().await;
+            apps_guard
+                .iter()
+                .filter_map(|(name, app)| {
+                    let port = if app.current_slot == "blue" {
+                        app.blue.port
+                    } else {
+                        app.green.port
+                    };
+                    if port > 0 {
+                        Some((name.clone(), port))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+
+        for (app_name, port) in apps {
+            let url = format!("http://localhost:{}{}", port, self.health_check_path);
+            match http_client.get(&url).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    tracing::debug!("Health check OK for {} on port {}", app_name, port);
+                }
+                Ok(_) => {
+                    tracing::debug!(
+                        "Health check returned non-2xx for {} on port {} (app may be starting up)",
+                        app_name,
+                        port
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!("Health check failed for {} on port {}: {}", app_name, port, e);
+                    if let Err(e) = self.restart(&app_name).await {
+                        tracing::error!("Failed to restart {}: {}", app_name, e);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn spawn_health_check(&self) {
+        let manager = self.clone();
+        let interval_secs = self.health_check_interval_secs;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            loop {
+                interval.tick().await;
+                tracing::debug!("Running scheduled health check...");
+                manager.check_health().await;
+            }
+        });
     }
 }
 

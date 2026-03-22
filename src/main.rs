@@ -294,6 +294,7 @@ async fn run_server(config_path: &str, daemon_mode: bool, dev_mode: bool) -> Res
         ) {
             Ok(m) => {
                 tracing::info!("App manager initialized for ./sites");
+                m.spawn_health_check();
                 Some(Arc::new(m))
             }
             Err(e) => {

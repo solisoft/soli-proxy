@@ -12,6 +12,7 @@ A high-performance, production-ready forward proxy server built in Rust with HTT
 - **WebSocket Support**: Full WebSocket proxy capabilities
 - **Middleware**: Authentication (Basic, API Key, JWT), Rate Limiting, JSON Logging
 - **Health Checks**: Kubernetes-compatible liveness and readiness probes
+- **App Health Monitoring**: Automatic health checks with auto-restart for managed apps
 - **High Performance**: Built on Tokio and Hyper for maximum throughput
 
 ## Quick Start
@@ -218,6 +219,51 @@ Configuration changes are detected automatically:
 3. New connections use new config
 4. Existing connections continue with old config
 5. Graceful draining of old connections
+
+## App Health Monitoring
+
+When apps are managed by the proxy (via `./sites` directory), the proxy automatically:
+- Checks app health every 30 seconds via `/up` endpoint
+- Auto-restarts any app that fails the health check (connection refused, timeout, etc.)
+- Only restarts on actual failures, not on non-2xx responses
+
+### Health Check Configuration
+
+```rust
+// In AppManager::new() - defaults shown
+AppManager::with_health_check(
+    "./sites",           // sites directory
+    port_allocator,
+    config_manager,
+    dev_mode,
+    "/up",              // health check path
+    30,                 // check interval in seconds
+)
+```
+
+## Systemd Service
+
+Install soli-proxy as a systemd service for automatic restart on failure:
+
+```bash
+# Copy the service file
+sudo cp scripts/soli-proxy.service /etc/systemd/system/
+
+# Reload systemd
+sudo systemctl daemon-reload
+
+# Enable and start
+sudo systemctl enable soli-proxy
+sudo systemctl start soli-proxy
+
+# Check status
+sudo systemctl status soli-proxy
+
+# View logs
+journalctl -u soli-proxy -f
+```
+
+The service file is located at `scripts/soli-proxy.service`.
 
 ## Commit messages
 

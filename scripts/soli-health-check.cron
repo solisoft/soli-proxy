@@ -1,0 +1,2 @@
+# Run health check every minute
+* * * * * root cd /home/olivier.bonnaure@delupay.com/workspace/soli/proxy && ./scripts/health-check.sh >> /var/log/soli-health-check.log 2>&1

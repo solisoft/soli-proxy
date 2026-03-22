@@ -1,0 +1,21 @@
+[Unit]
+Description=Soli Proxy Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/olivier.bonnaure@delupay.com/workspace/soli/proxy
+ExecStart=/home/olivier.bonnaure@delupay.com/workspace/soli/proxy/target/release/soli-proxy daemon
+Restart=always
+RestartSec=5
+
+Environment="RUST_LOG=info"
+Environment="SOLI_PID_DIR=/home/olivier.bonnaure@delupay.com/workspace/soli/proxy"
+Environment="SOLI_LOG_DIR=/home/olivier.bonnaure@delupay.com/workspace/soli/proxy"
+
+StandardOutput=append:/home/olivier.bonnaure@delupay.com/workspace/soli/proxy/proxy.log
+StandardError=append:/home/olivier.bonnaure@delupay.com/workspace/soli/proxy/proxy.log
+
+[Install]
+WantedBy=multi-user.target
