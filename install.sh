@@ -66,7 +66,7 @@ fi
 echo "Installing SoliPROXY ${TAG} ..."
 
 # --- Download and extract ---
-TARBALL="soli-${OS}-${ARCH}.tar.gz"
+TARBALL="soli-proxy-${OS}-${ARCH}.tar.gz"
 DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${TAG}/${TARBALL}"
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT
