@@ -1072,7 +1072,12 @@ impl AppManager {
                     );
                 }
                 Err(e) => {
-                    tracing::warn!("Health check failed for {} on port {}: {}", app_name, port, e);
+                    tracing::warn!(
+                        "Health check failed for {} on port {}: {}",
+                        app_name,
+                        port,
+                        e
+                    );
                     if let Err(e) = self.restart(&app_name).await {
                         tracing::error!("Failed to restart {}: {}", app_name, e);
                     }
