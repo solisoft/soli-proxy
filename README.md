@@ -21,10 +21,10 @@ A high-performance, production-ready forward proxy server built in Rust with HTT
 
 ```bash
 # Build and run in dev mode
-cargo run -- dev
+cargo run --bin soli-proxy -- --dev
 
-# Or with custom config
-SOLI_CONFIG_PATH=./proxy.conf cargo run -- dev
+# With custom config and sites directory
+cargo run --bin soli-proxy -- --conf ./my-proxy.conf --sites-dir ./my-sites
 ```
 
 ### Production Mode
@@ -34,7 +34,27 @@ SOLI_CONFIG_PATH=./proxy.conf cargo run -- dev
 cargo build --release
 
 # Run in production mode (requires Let's Encrypt config)
-cargo run -- prod
+./target/release/soli-proxy
+
+# Run as daemon
+./target/release/soli-proxy -d
+
+# With custom paths
+./target/release/soli-proxy -c /etc/proxy.conf --sites-dir /var/sites
+```
+
+### CLI Options
+
+```
+soli-proxy [OPTIONS]
+
+Options:
+  -c, --conf <CONF>            Config file [default: ./proxy.conf]
+  -d, --daemon                 Run as daemon
+      --dev                    Development mode
+      --sites-dir <SITES_DIR>  Sites directory [default: ./sites]
+  -h, --help                   Print help
+  -V, --version                Print version
 ```
 
 ## Configuration

@@ -121,6 +121,20 @@
     </div>
 </div>
 
+<!-- CLI Usage -->
+<div class="bg-slate-900/60 border border-white/5 rounded-xl p-5 mt-4">
+    <h3 class="text-sm font-semibold text-white mb-4">CLI Usage</h3>
+    <pre class="text-xs text-slate-300 font-mono bg-slate-950/50 p-4 rounded-lg overflow-x-auto">soli-proxy [OPTIONS]
+
+Options:
+  -c, --conf <CONF>            Config file [default: ./proxy.conf]
+  -d, --daemon                 Run as daemon
+      --dev                    Development mode
+      --sites-dir <SITES_DIR>  Sites directory [default: ./sites]
+  -h, --help                   Print help
+  -V, --version                Print version</pre>
+</div>
+
 <script>
 (function() {
     var refreshInterval = 5000;

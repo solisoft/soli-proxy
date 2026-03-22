@@ -1,4 +1,5 @@
 use anyhow::Result;
+use clap::Parser;
 use soli_proxy::acme;
 use soli_proxy::app::{AppManager, PortManager};
 use soli_proxy::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
@@ -141,34 +142,42 @@ fn setup_logging(daemon: bool) -> Result<()> {
     Ok(())
 }
 
+#[derive(Parser, Debug)]
+#[command(name = "soli-proxy")]
+#[command(version = "0.13.0")]
+struct Cli {
+    #[arg(short, long, default_value = "./proxy.conf")]
+    conf: String,
+
+    #[arg(short, long, action = clap::ArgAction::SetFalse)]
+    daemon: bool,
+
+    #[arg(long, action = clap::ArgAction::SetFalse)]
+    dev: bool,
+
+    #[arg(long, default_value = "./sites")]
+    sites_dir: String,
+}
+
 fn main() -> Result<()> {
-    let args: Vec<String> = std::env::args().collect();
+    let cli = Cli::parse();
 
-    let mut config_path = "./proxy.conf";
-    let mut daemon_mode = false;
-    let mut dev_mode = false;
-
-    for arg in &args {
-        if arg == "-d" || arg == "--daemon" {
-            daemon_mode = true;
-        } else if arg == "--dev" {
-            dev_mode = true;
-        } else if !arg.starts_with('-') && arg != &args[0] {
-            config_path = arg.as_str();
-        }
-    }
-
-    if daemon_mode {
+    if cli.daemon {
         kill_existing_daemon()?;
         daemonize()?;
         let _ = write_pid_file()?;
     }
 
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async move { run_server(config_path, daemon_mode, dev_mode).await })
+    rt.block_on(async move { run_server(&cli.conf, cli.daemon, cli.dev, &cli.sites_dir).await })
 }
 
-async fn run_server(config_path: &str, daemon_mode: bool, dev_mode: bool) -> Result<()> {
+async fn run_server(
+    config_path: &str,
+    daemon_mode: bool,
+    dev_mode: bool,
+    sites_dir: &str,
+) -> Result<()> {
     setup_logging(daemon_mode)?;
 
     if daemon_mode {
@@ -287,13 +296,13 @@ async fn run_server(config_path: &str, daemon_mode: bool, dev_mode: bool) -> Res
         let _ = port_manager.load().await;
 
         match AppManager::new(
-            "./sites",
+            sites_dir,
             port_manager.clone(),
             config_ref.clone(),
             dev_mode,
         ) {
             Ok(m) => {
-                tracing::info!("App manager initialized for ./sites");
+                tracing::info!("App manager initialized for {}", sites_dir);
                 m.spawn_health_check();
                 Some(Arc::new(m))
             }
