@@ -144,7 +144,7 @@ fn setup_logging(daemon: bool) -> Result<()> {
 
 #[derive(Parser, Debug)]
 #[command(name = "soli-proxy")]
-#[command(version = "0.13.1")]
+#[command(version = env!("CARGO_PKG_VERSION"))]
 struct Cli {
     #[arg(short, long, default_value = "./proxy.conf")]
     conf: String,
