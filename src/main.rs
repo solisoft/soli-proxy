@@ -149,10 +149,10 @@ struct Cli {
     #[arg(short, long, default_value = "./proxy.conf")]
     conf: String,
 
-    #[arg(short, long, action = clap::ArgAction::SetFalse)]
+    #[arg(short, long)]
     daemon: bool,
 
-    #[arg(long, action = clap::ArgAction::SetFalse)]
+    #[arg(long)]
     dev: bool,
 
     #[arg(long, default_value = "./sites")]
