@@ -46,14 +46,23 @@ pub struct AdminConfig {
     pub enabled: bool,
     pub bind: String,
     pub api_key: Option<String>,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub password_hash: Option<String>,
 }
 
 impl Default for AdminConfig {
     fn default() -> Self {
+        let _ = dotenv::dotenv();
+        let username = std::env::var("ADMIN_USER").ok();
+        let password_hash = std::env::var("ADMIN_PASSWORD").ok();
         Self {
             enabled: false,
             bind: "127.0.0.1:9090".to_string(),
             api_key: None,
+            username,
+            password_hash,
         }
     }
 }

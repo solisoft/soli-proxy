@@ -76,16 +76,59 @@ fn error_response(status: u16, message: &str) -> Response<BoxBody> {
     json_response(status, serde_json::json!({ "ok": false, "error": message }))
 }
 
-fn check_auth(req: &Request<Incoming>, api_key: &Option<String>) -> bool {
-    match api_key {
-        None => true, // No auth configured = dev mode
-        Some(key) if key.is_empty() => true,
-        Some(key) => req
-            .headers()
-            .get("X-Api-Key")
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| v == key),
+fn unauthorized_response(use_basic_auth: bool) -> Response<BoxBody> {
+    let body = http_body_util::Full::new(Bytes::from("Unauthorized")).boxed();
+    let mut builder = Response::builder()
+        .status(401)
+        .header("Content-Type", "application/json");
+    if use_basic_auth {
+        builder = builder.header("WWW-Authenticate", "Basic realm=\"Admin\"");
     }
+    builder.body(body).unwrap()
+}
+
+fn check_auth(
+    req: &Request<Incoming>,
+    api_key: &Option<String>,
+    username: &Option<String>,
+    password_hash: &Option<String>,
+) -> bool {
+    if username.is_none() && password_hash.is_none() && api_key.is_none() {
+        return true;
+    }
+
+    if let Some(key) = api_key {
+        if !key.is_empty()
+            && req
+                .headers()
+                .get("X-Api-Key")
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v == key)
+        {
+            return true;
+        }
+    }
+
+    if let (Some(user), Some(hash)) = (username, password_hash) {
+        if let Some(auth_header) = req.headers().get("authorization") {
+            if let Ok(header_value) = auth_header.to_str() {
+                if let Some(encoded) = header_value.strip_prefix("Basic ") {
+                    if let Ok(decoded) =
+                        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
+                    {
+                        let creds = String::from_utf8_lossy(&decoded);
+                        if let Some((u, p)) = creds.split_once(':') {
+                            if u == user && crate::auth::verify_password(p, hash) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    false
 }
 
 /// Extract route index from path like /api/v1/routes/3
@@ -98,9 +141,13 @@ async fn handle_admin_request(
     req: Request<Incoming>,
     state: Arc<AdminState>,
 ) -> Result<Response<BoxBody>, std::convert::Infallible> {
-    let api_key = state.config_manager.get_config().admin.api_key.clone();
-    if !check_auth(&req, &api_key) {
-        return Ok(error_response(401, "Unauthorized"));
+    let admin_config = &state.config_manager.get_config().admin;
+    let api_key = admin_config.api_key.clone();
+    let username = admin_config.username.clone();
+    let password_hash = admin_config.password_hash.clone();
+    let use_basic_auth = username.is_some() && password_hash.is_some();
+    if !check_auth(&req, &api_key, &username, &password_hash) {
+        return Ok(unauthorized_response(use_basic_auth));
     }
 
     let method = req.method().clone();
