@@ -348,13 +348,84 @@ impl ConfigManager {
     fn load_config(proxy_conf_path: &Path, config_path: &Path) -> Result<Config> {
         let content = std::fs::read_to_string(proxy_conf_path).unwrap_or_default();
         let (rules, global_scripts) = parse_proxy_config(&content)?;
-        let toml_content = std::fs::read_to_string(
-            config_path
-                .parent()
-                .unwrap_or(Path::new("."))
-                .join("config.toml"),
-        )
-        .ok();
+        let config_dir = config_path.parent().unwrap_or(Path::new("."));
+        let config_toml_path = config_dir.join("config.toml");
+        let toml_content = if config_toml_path.exists() {
+            std::fs::read_to_string(&config_toml_path).ok()
+        } else {
+            let default_config = r#"# Soli Proxy Configuration
+# Server settings
+[server]
+bind = "0.0.0.0:80"
+https_port = 443
+worker_threads = "auto"
+
+# TLS Configuration
+[tls]
+mode = "auto"
+cache_dir = "./certs"
+
+# Logging Configuration
+[logging]
+level = "info"
+format = "json"
+output = "stdout"
+include_request_body = true
+include_response_body = true
+
+# Metrics Configuration
+[metrics]
+enabled = true
+endpoint = "/metrics"
+
+# Health Check Configuration
+[health]
+enabled = true
+liveness_path = "/health/live"
+readiness_path = "/health/ready"
+
+# Limits Configuration
+[limits]
+max_connections = 10000
+max_request_size = "10MB"
+keep_alive_timeout = 30
+request_timeout = 60
+
+# Rate Limiting Configuration
+[rate_limiting]
+enabled = true
+strategy = "token_bucket"
+requests_per_second = 1000
+burst_size = 2000
+redis_url = "redis://localhost:6379"
+
+# Circuit Breaker Configuration
+[circuit_breaker]
+failure_threshold = 5
+recovery_timeout_secs = 30
+success_threshold = 2
+failure_status_codes = [502, 503, 504]
+
+# Admin REST API Configuration
+[admin]
+enabled = true
+bind = "0.0.0.0:9090"
+
+# Lua Scripting Configuration
+[scripting]
+enabled = false
+scripts_dir = "./scripts/lua"
+hook_timeout_ms = 10
+
+# Authentication Configuration
+[auth]
+enabled = false
+auth_type = "basic"
+realm = "Restricted"
+"#;
+            std::fs::write(&config_toml_path, default_config).ok();
+            Some(default_config.to_string())
+        };
         let toml_config: TomlConfig = toml_content
             .as_ref()
             .and_then(|c| toml::from_str(c).ok())
