@@ -62,6 +62,9 @@ bcrypt = "0.15"
 async-stream = "0.3"
 dotenv = "0.15.0"
 clap = { version = "4", features = ["derive"] }
+ratatui = { version = "0.28", features = ["serde"] }
+crossterm = { version = "0.28", features = ["serde"] }
+rpassword = "7"
 
 [features]
 default = ["scripting"]

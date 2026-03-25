@@ -699,6 +699,78 @@ impl AppManager {
             .collect()
     }
 
+    /// Synchronous version for use from non-async contexts (e.g. TUI).
+    pub fn list_apps_sync(&self) -> Vec<AppInfo> {
+        self.apps
+            .blocking_lock()
+            .values()
+            .filter(|a| a.config.name != "_admin")
+            .cloned()
+            .collect()
+    }
+
+    /// Probe ports to detect which apps are actually running.
+    /// Call after `discover_apps` in non-server contexts (e.g. TUI).
+    pub fn probe_running_apps(&self) {
+        let mut apps = self.apps.blocking_lock();
+        for app in apps.values_mut() {
+            for (inst, _slot) in [(&mut app.blue, "blue"), (&mut app.green, "green")] {
+                if inst.port > 0 {
+                    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], inst.port));
+                    let is_up = std::net::TcpStream::connect_timeout(
+                        &addr,
+                        std::time::Duration::from_millis(200),
+                    )
+                    .is_ok();
+                    if is_up {
+                        inst.status = InstanceStatus::Running;
+                        inst.pid = find_pid_by_port(inst.port);
+                    } else {
+                        inst.status = InstanceStatus::Stopped;
+                        inst.pid = None;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Lightweight refresh: validate existing PIDs, re-detect missing ones.
+    /// Called on each TUI tick — avoids full probe overhead.
+    pub fn refresh_pids(&self) {
+        let mut apps = self.apps.blocking_lock();
+        for app in apps.values_mut() {
+            for (inst, _slot) in [(&mut app.blue, "blue"), (&mut app.green, "green")] {
+                if inst.port == 0 {
+                    continue;
+                }
+
+                // Check if existing PID is still alive
+                if let Some(pid) = inst.pid {
+                    let proc_path = format!("/proc/{}", pid);
+                    if !std::path::Path::new(&proc_path).exists() {
+                        inst.pid = None;
+                    }
+                }
+
+                // Re-detect PID if missing
+                if inst.pid.is_none() {
+                    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], inst.port));
+                    let is_up = std::net::TcpStream::connect_timeout(
+                        &addr,
+                        std::time::Duration::from_millis(100),
+                    )
+                    .is_ok();
+                    if is_up {
+                        inst.status = InstanceStatus::Running;
+                        inst.pid = find_pid_by_port(inst.port);
+                    } else if matches!(inst.status, InstanceStatus::Running) {
+                        inst.status = InstanceStatus::Stopped;
+                    }
+                }
+            }
+        }
+    }
+
     pub async fn get_app(&self, name: &str) -> Option<AppInfo> {
         self.apps.lock().await.get(name).cloned()
     }
@@ -1098,6 +1170,83 @@ impl AppManager {
             }
         });
     }
+}
+
+/// Try to find the PID of a process listening on a given port.
+/// Uses `ss` first, falls back to scanning /proc/net/tcp + /proc/*/fd.
+fn find_pid_by_port(port: u16) -> Option<u32> {
+    // Try ss first (fast, but may not show PIDs without root)
+    if let Some(pid) = find_pid_by_ss(port) {
+        return Some(pid);
+    }
+    // Fallback: /proc/net/tcp inode scan
+    find_pid_by_proc_net(port)
+}
+
+fn find_pid_by_ss(port: u16) -> Option<u32> {
+    let output = std::process::Command::new("ss")
+        .args(["-tlnp", &format!("sport = :{}", port)])
+        .output()
+        .ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if let Some(pid_start) = line.find("pid=") {
+            let rest = &line[pid_start + 4..];
+            let pid_str: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            return pid_str.parse().ok();
+        }
+    }
+    None
+}
+
+fn find_pid_by_proc_net(port: u16) -> Option<u32> {
+    // 1. Find the socket inode for the port in /proc/net/tcp
+    let hex_port = format!("{:04X}", port);
+    let tcp_content = std::fs::read_to_string("/proc/net/tcp").ok()?;
+    let mut target_inode: Option<u64> = None;
+
+    for line in tcp_content.lines().skip(1) {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 10 {
+            continue;
+        }
+        // fields[1] = local_address (hex_ip:hex_port)
+        // fields[3] = state (0A = LISTEN)
+        // fields[9] = inode
+        if fields[3] != "0A" {
+            continue; // Not LISTEN
+        }
+        if let Some(colon) = fields[1].rfind(':') {
+            if &fields[1][colon + 1..] == hex_port {
+                target_inode = fields[9].parse().ok();
+                break;
+            }
+        }
+    }
+
+    let inode = target_inode?;
+
+    // 2. Scan /proc/*/fd/ for a socket with that inode
+    let expected = format!("socket:[{}]", inode);
+    let proc_dir = std::fs::read_dir("/proc").ok()?;
+    for entry in proc_dir.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if !name_str.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let fd_dir = entry.path().join("fd");
+        if let Ok(fds) = std::fs::read_dir(&fd_dir) {
+            for fd in fds.flatten() {
+                if let Ok(link) = std::fs::read_link(fd.path()) {
+                    if link.to_string_lossy() == expected {
+                        return name_str.parse().ok();
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

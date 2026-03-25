@@ -9,7 +9,21 @@ struct CpuSnapshot {
     timestamp: Instant,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+pub struct MetricsSnapshot {
+    pub requests_total: u64,
+    pub requests_in_flight: usize,
+    pub bytes_received: u64,
+    pub bytes_sent: u64,
+    pub errors_total: u64,
+    pub tls_connections: u64,
+    pub avg_response_time_ms: f64,
+    pub status_2xx: u64,
+    pub status_3xx: u64,
+    pub status_4xx: u64,
+    pub status_5xx: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AppMetricsJson {
     pub requests: u64,
     pub bytes_received: u64,
@@ -66,15 +80,15 @@ const STATUS_ARRAY_SIZE: usize = 512;
 
 #[derive(Clone)]
 pub struct Metrics {
-    requests_total: Arc<AtomicU64>,
-    requests_in_flight: Arc<AtomicUsize>,
-    bytes_received: Arc<AtomicU64>,
-    bytes_sent: Arc<AtomicU64>,
+    pub requests_total: Arc<AtomicU64>,
+    pub requests_in_flight: Arc<AtomicUsize>,
+    pub bytes_received: Arc<AtomicU64>,
+    pub bytes_sent: Arc<AtomicU64>,
     response_time_nanos_sum: Arc<AtomicU64>,
     response_time_count: Arc<AtomicU64>,
     status_codes: Arc<[AtomicU64; STATUS_ARRAY_SIZE]>,
     tls_connections: Arc<AtomicU64>,
-    errors_total: Arc<AtomicU64>,
+    pub errors_total: Arc<AtomicU64>,
     last_request_nanos: Arc<AtomicU64>,
     epoch_start: Instant,
     app_metrics: Arc<parking_lot::RwLock<HashMap<String, AppMetrics>>>,
@@ -259,7 +273,7 @@ impl Metrics {
         status: u16,
         duration: std::time::Duration,
     ) {
-        let success = (200..400).contains(&status);
+        let success = (200..500).contains(&status);
         self.record_app_request_with_success(app_name, bytes_in, bytes_out, duration, success);
     }
 
@@ -312,6 +326,58 @@ impl Metrics {
 
     pub fn inc_errors(&self) {
         self.errors_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Returns a snapshot of metrics for the TUI dashboard.
+    pub fn snapshot(&self) -> MetricsSnapshot {
+        let requests = self.requests_total.load(Ordering::Relaxed);
+        let in_flight = self.requests_in_flight.load(Ordering::Relaxed);
+        let bytes_in = self.bytes_received.load(Ordering::Relaxed);
+        let bytes_out = self.bytes_sent.load(Ordering::Relaxed);
+        let tls = self.tls_connections.load(Ordering::Relaxed);
+        let errors = self.errors_total.load(Ordering::Relaxed);
+
+        let avg_response_time_ms = {
+            let count = self.response_time_count.load(Ordering::Relaxed);
+            if count == 0 {
+                0.0
+            } else {
+                let sum = self.response_time_nanos_sum.load(Ordering::Relaxed);
+                (sum as f64) / (count as f64) / 1_000_000.0
+            }
+        };
+
+        let mut status_2xx = 0u64;
+        let mut status_3xx = 0u64;
+        let mut status_4xx = 0u64;
+        let mut status_5xx = 0u64;
+        for i in 0..STATUS_ARRAY_SIZE {
+            let count = self.status_codes[i].load(Ordering::Relaxed);
+            if count > 0 {
+                let code = (i + 100) as u16;
+                match code {
+                    200..=299 => status_2xx += count,
+                    300..=399 => status_3xx += count,
+                    400..=499 => status_4xx += count,
+                    500..=599 => status_5xx += count,
+                    _ => {}
+                }
+            }
+        }
+
+        MetricsSnapshot {
+            requests_total: requests,
+            requests_in_flight: in_flight,
+            bytes_received: bytes_in,
+            bytes_sent: bytes_out,
+            errors_total: errors,
+            tls_connections: tls,
+            avg_response_time_ms,
+            status_2xx,
+            status_3xx,
+            status_4xx,
+            status_5xx,
+        }
     }
 
     pub fn format_metrics(&self) -> String {

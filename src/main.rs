@@ -157,10 +157,31 @@ struct Cli {
 
     #[arg(long, default_value = "./sites")]
     sites_dir: String,
+
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Parser, Debug)]
+enum Commands {
+    Tui {
+        #[arg(short, long, default_value = "./proxy.conf")]
+        conf: String,
+
+        #[arg(long, default_value = "./sites")]
+        sites_dir: String,
+
+        #[arg(long)]
+        dev: bool,
+    },
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    if let Some(Commands::Tui { conf, sites_dir, dev }) = cli.command {
+        return soli_proxy::tui::run_tui_with_config(&conf, &sites_dir, dev);
+    }
 
     if cli.daemon {
         kill_existing_daemon()?;
@@ -191,7 +212,7 @@ async fn run_server(
     // Install default crypto provider for rustls 0.23
     let _ = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default();
 
-    let config_manager = ConfigManager::new(config_path)?;
+    let mut config_manager = ConfigManager::new(config_path)?;
     config_manager.start_watcher()?;
 
     let shutdown = ShutdownCoordinator::new();

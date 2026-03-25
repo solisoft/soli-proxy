@@ -308,7 +308,7 @@ impl Config {
 }
 
 pub struct ConfigManager {
-    config: ArcSwap<Config>,
+    config: Arc<ArcSwap<Config>>,
     config_path: PathBuf,
     _watcher: Option<RecommendedWatcher>,
     suppress_watch: Arc<AtomicBool>,
@@ -317,7 +317,7 @@ pub struct ConfigManager {
 impl Clone for ConfigManager {
     fn clone(&self) -> Self {
         Self {
-            config: ArcSwap::new(self.config.load().clone()),
+            config: self.config.clone(),
             config_path: self.config_path.clone(),
             _watcher: None,
             suppress_watch: self.suppress_watch.clone(),
@@ -330,7 +330,7 @@ impl ConfigManager {
         let path = PathBuf::from(config_path);
         let config = Self::load_config(&path, &path)?;
         Ok(Self {
-            config: ArcSwap::new(Arc::new(config)),
+            config: Arc::new(ArcSwap::new(Arc::new(config))),
             config_path: path,
             _watcher: None,
             suppress_watch: Arc::new(AtomicBool::new(false)),
@@ -447,7 +447,7 @@ realm = "Restricted"
         self.config.load().clone()
     }
 
-    pub fn start_watcher(&self) -> Result<()> {
+    pub fn start_watcher(&mut self) -> Result<()> {
         // Ensure the file exists so the watcher has something to watch
         if !self.config_path.exists() {
             if let Some(parent) = self.config_path.parent() {
@@ -471,6 +471,9 @@ realm = "Restricted"
 
         tracing::info!("Watching config file: {}", config_path.display());
 
+        let reload_path = self.config_path.clone();
+        let config_store = self.config.clone();
+
         std::thread::spawn(move || {
             while let Some(res) = rx.blocking_recv() {
                 match res {
@@ -483,12 +486,24 @@ realm = "Restricted"
                                 continue;
                             }
                             tracing::info!("Config file changed, reloading...");
+                            match Self::load_config(&reload_path, &reload_path) {
+                                Ok(new_config) => {
+                                    config_store.store(Arc::new(new_config));
+                                    tracing::info!("Configuration reloaded successfully");
+                                }
+                                Err(e) => {
+                                    tracing::error!("Failed to reload config: {}", e);
+                                }
+                            }
                         }
                     }
                     Err(e) => tracing::error!("Watch error: {}", e),
                 }
             }
         });
+
+        // Store the watcher to keep it alive
+        self._watcher = Some(watcher);
 
         Ok(())
     }
