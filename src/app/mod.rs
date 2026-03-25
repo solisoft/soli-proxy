@@ -222,6 +222,16 @@ fn strip_www(domain: &str) -> Option<String> {
     }
 }
 
+/// Check if a port is currently in use by attempting to connect to it.
+async fn is_port_in_use(port: u16) -> bool {
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    tokio::task::spawn_blocking(move || {
+        std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(100)).is_ok()
+    })
+    .await
+    .unwrap_or(false)
+}
+
 /// Extract app names from changed file paths, filtering out irrelevant directories.
 /// Each path is expected to be under `sites_dir/<app_name>/...`.
 fn affected_app_names(sites_dir: &Path, paths: &HashSet<PathBuf>) -> HashSet<String> {
@@ -466,6 +476,22 @@ impl AppManager {
                 for app_name in apps_to_start {
                     let mgr = manager.clone();
                     handles.push(tokio::spawn(async move {
+                        // Check if app is already running before starting
+                        if let Some(app) = mgr.get_app(&app_name).await {
+                            let port = if app.current_slot == "blue" {
+                                app.blue.port
+                            } else {
+                                app.green.port
+                            };
+                            if is_port_in_use(port).await {
+                                tracing::info!(
+                                    "Skipping auto-start for {}: port {} already in use",
+                                    app_name,
+                                    port
+                                );
+                                return;
+                            }
+                        }
                         tracing::info!("Auto-starting app: {}", app_name);
                         if let Err(e) = mgr.deploy(&app_name, "blue").await {
                             tracing::error!("Failed to auto-start {}: {}", app_name, e);
