@@ -212,6 +212,30 @@ fn main() -> Result<()> {
     })
 }
 
+fn is_writable(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match fs::metadata(path) {
+        Ok(meta) => {
+            let mode = meta.mode();
+            let uid = meta.uid();
+            let gid = meta.gid();
+            let euid = unsafe { libc::geteuid() };
+            let egid = unsafe { libc::getegid() };
+            if euid == 0 {
+                return true;
+            }
+            if uid == euid {
+                return mode & 0o200 != 0;
+            }
+            if gid == egid {
+                return mode & 0o020 != 0;
+            }
+            mode & 0o002 != 0
+        }
+        Err(_) => false,
+    }
+}
+
 fn run_update(reinstall: bool) -> Result<()> {
     let repo = "solisoft/soli-proxy";
     let current_version = env!("CARGO_PKG_VERSION");
@@ -266,11 +290,9 @@ fn run_update(reinstall: bool) -> Result<()> {
         repo, version, tarball
     );
 
-    let install_dir = std::path::PathBuf::from("/usr/local/bin");
-
-    let binary_name = "soli-proxy";
-    let install_path = install_dir.join(binary_name);
-    let use_sudo = install_dir.starts_with("/usr") && !install_path.exists();
+    // Install to the location of the currently running binary
+    let current_exe = std::env::current_exe()?;
+    let install_path = current_exe.canonicalize().unwrap_or(current_exe.clone());
 
     let temp_dir = std::env::temp_dir();
     let tarball_path = temp_dir.join(&tarball);
@@ -315,22 +337,32 @@ fn run_update(reinstall: bool) -> Result<()> {
         fs::set_permissions(&new_binary, perms)?;
     }
 
-    let current_exe = std::env::current_exe()?;
-    let is_dev_binary = current_exe.to_string_lossy().contains("target/");
+    let is_dev_binary = install_path.to_string_lossy().contains("target/");
 
     if is_dev_binary {
         println!("\nDevelopment binary detected.");
         println!("New binary downloaded to: {}", new_binary.to_string_lossy());
         println!("\nTo install, run:");
         println!(
-            "  sudo cp {} {}",
+            "  sudo cp {} /usr/local/bin/soli-proxy",
             new_binary.display(),
-            install_path.display()
         );
-        println!("  sudo chmod +x {}", install_path.display());
+        println!("  sudo chmod +x /usr/local/bin/soli-proxy");
     } else {
-        if use_sudo {
-            println!("Installing to {} (requires sudo)...", install_dir.display());
+        println!("Installing to {}...", install_path.display());
+
+        // Determine if we need sudo by trying to write to the target directory
+        let install_dir = install_path.parent().unwrap_or(std::path::Path::new("/"));
+        let need_sudo = !is_writable(install_dir);
+
+        if need_sudo {
+            // Remove the old binary first to avoid ETXTBSY (can't write to running executable)
+            let rm_result = Command::new("sudo")
+                .args(["rm", "-f", install_path.to_str().unwrap()])
+                .output()?;
+            if !rm_result.status.success() {
+                anyhow::bail!("Failed to remove old binary at {}", install_path.display());
+            }
             let cp_result = Command::new("sudo")
                 .args([
                     "cp",
@@ -348,7 +380,8 @@ fn run_update(reinstall: bool) -> Result<()> {
                 anyhow::bail!("Failed to set permissions on {}", install_path.display());
             }
         } else {
-            println!("Replacing current binary...");
+            // Remove first to avoid ETXTBSY, then copy
+            let _ = fs::remove_file(&install_path);
             fs::copy(&new_binary, &install_path)?;
         }
 

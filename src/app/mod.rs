@@ -871,37 +871,44 @@ impl AppManager {
             }
         };
 
+        // Stop existing process on target slot if it's still running
+        {
+            let target_inst = if slot == "blue" {
+                &app.blue
+            } else {
+                &app.green
+            };
+            if target_inst.pid.is_some() {
+                tracing::info!(
+                    "Stopping existing {} slot (PID: {:?}) before deploy",
+                    slot,
+                    target_inst.pid
+                );
+                self.deployment_manager.stop_instance(&app, slot).await?;
+                let mut apps = self.apps.lock().await;
+                if let Some(app_info) = apps.get_mut(app_name) {
+                    let inst = if slot == "blue" {
+                        &mut app_info.blue
+                    } else {
+                        &mut app_info.green
+                    };
+                    inst.status = InstanceStatus::Stopped;
+                    inst.pid = None;
+                }
+            }
+        }
+
         tracing::info!("Deploying {} to slot {}", app.config.name, slot);
         let pid = self.deployment_manager.deploy(&app, slot).await?;
         tracing::info!("Deploy started, PID: {}", pid);
 
-        // Get the old slot name and PID before updating
-        let old_slot_name;
-        let old_pid;
-        {
+        // Get the old slot name before updating
+        let old_slot_name = {
             let apps = self.apps.lock().await;
-            match apps.get(app_name) {
-                Some(a) => {
-                    old_slot_name = a.current_slot.clone();
-                    old_pid = if old_slot_name == "blue" {
-                        a.blue.pid
-                    } else {
-                        a.green.pid
-                    };
-                    tracing::info!(
-                        "Current slot: {}, old_slot_name: {}, old_pid: {:?}",
-                        app_name,
-                        old_slot_name,
-                        old_pid
-                    );
-                }
-                None => {
-                    old_slot_name = "unknown".to_string();
-                    old_pid = None;
-                    tracing::error!("App {} not found in apps map!", app_name);
-                }
-            }
-        }
+            apps.get(app_name)
+                .map(|a| a.current_slot.clone())
+                .unwrap_or_else(|| "unknown".to_string())
+        };
 
         // Update app info: mark new slot as running, store PID, and switch traffic
         {
@@ -924,36 +931,43 @@ impl AppManager {
             }
         }
 
-        // Stop the old slot if it was running
-        tracing::info!(
-            "Checking if should stop old slot: old_slot_name={}, slot={}",
-            old_slot_name,
-            slot
-        );
+        // Stop the old slot if it was running on a different slot
         if old_slot_name != "unknown" && old_slot_name != slot {
-            if let Some(pid) = old_pid {
-                tracing::info!("Stopping old slot {} (PID: {})", old_slot_name, pid);
-                self.deployment_manager
-                    .stop_instance(&app, &old_slot_name)
-                    .await?;
-                tracing::info!("Old slot {} stopped", old_slot_name);
+            // Re-read from map for fresh PID (avoid stale clone)
+            let old_app = {
+                let apps = self.apps.lock().await;
+                apps.get(app_name).cloned()
+            };
+            if let Some(old_app) = old_app {
+                let old_pid = if old_slot_name == "blue" {
+                    old_app.blue.pid
+                } else {
+                    old_app.green.pid
+                };
+                if let Some(pid) = old_pid {
+                    tracing::info!("Stopping old slot {} (PID: {})", old_slot_name, pid);
+                    self.deployment_manager
+                        .stop_instance(&old_app, &old_slot_name)
+                        .await?;
+                    tracing::info!("Old slot {} stopped", old_slot_name);
 
-                // Update old slot status to Stopped
-                let mut apps = self.apps.lock().await;
-                if let Some(app_info) = apps.get_mut(app_name) {
-                    let old_instance = if old_slot_name == "blue" {
-                        &mut app_info.blue
-                    } else {
-                        &mut app_info.green
-                    };
-                    old_instance.status = InstanceStatus::Stopped;
-                    old_instance.pid = None;
+                    // Update old slot status to Stopped
+                    let mut apps = self.apps.lock().await;
+                    if let Some(app_info) = apps.get_mut(app_name) {
+                        let old_instance = if old_slot_name == "blue" {
+                            &mut app_info.blue
+                        } else {
+                            &mut app_info.green
+                        };
+                        old_instance.status = InstanceStatus::Stopped;
+                        old_instance.pid = None;
+                    }
+                } else {
+                    tracing::warn!(
+                        "No PID found for old slot {} (status may already be stopped)",
+                        old_slot_name
+                    );
                 }
-            } else {
-                tracing::warn!(
-                    "No PID found for old slot {} (status may already be stopped)",
-                    old_slot_name
-                );
             }
         }
 
