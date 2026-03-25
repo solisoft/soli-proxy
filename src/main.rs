@@ -12,6 +12,7 @@ use soli_proxy::ShutdownCoordinator;
 use soli_proxy::TlsManager;
 use std::fs;
 use std::net::SocketAddr;
+use std::process::Command;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::signal;
@@ -155,6 +156,9 @@ struct Cli {
     #[arg(long)]
     dev: bool,
 
+    #[arg(long)]
+    watch: bool,
+
     #[arg(long, default_value = "./sites")]
     sites_dir: String,
 
@@ -174,6 +178,10 @@ enum Commands {
         #[arg(long)]
         dev: bool,
     },
+    Update {
+        #[arg(long)]
+        reinstall: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -188,6 +196,10 @@ fn main() -> Result<()> {
         return soli_proxy::tui::run_tui_with_config(&conf, &sites_dir, dev);
     }
 
+    if let Some(Commands::Update { reinstall }) = cli.command {
+        return run_update(reinstall);
+    }
+
     if cli.daemon {
         kill_existing_daemon()?;
         daemonize()?;
@@ -195,13 +207,170 @@ fn main() -> Result<()> {
     }
 
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async move { run_server(&cli.conf, cli.daemon, cli.dev, &cli.sites_dir).await })
+    rt.block_on(async move {
+        run_server(&cli.conf, cli.daemon, cli.dev, cli.watch, &cli.sites_dir).await
+    })
+}
+
+fn run_update(reinstall: bool) -> Result<()> {
+    let repo = "solisoft/soli-proxy";
+    let current_version = env!("CARGO_PKG_VERSION");
+
+    println!("Current version: {}", current_version);
+
+    let os = if cfg!(target_os = "linux") {
+        "linux"
+    } else if cfg!(target_os = "macos") {
+        "darwin"
+    } else {
+        anyhow::bail!("Unsupported operating system");
+    };
+
+    let arch = if cfg!(target_arch = "x86_64") {
+        "amd64"
+    } else if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        anyhow::bail!("Unsupported architecture");
+    };
+
+    println!("Detected platform: {}-{}", os, arch);
+
+    println!("Fetching latest release info...");
+    let api_url = format!("https://api.github.com/repos/{}/releases/latest", repo);
+    let output = Command::new("curl").args(["-fsSL", &api_url]).output()?;
+
+    if !output.status.success() {
+        anyhow::bail!("Failed to fetch release info from GitHub API");
+    }
+
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|_| anyhow::anyhow!("Failed to parse GitHub API response"))?;
+
+    let tag_name = response["tag_name"]
+        .as_str()
+        .unwrap_or("v0.20.0")
+        .trim_start_matches('v');
+    let version = format!("v{}", tag_name);
+
+    if !reinstall && current_version == tag_name {
+        println!("Already on latest version: {}", version);
+        return Ok(());
+    }
+
+    println!("Latest version: {}", version);
+
+    let tarball = format!("soli-proxy-{}-{}.tar.gz", os, arch);
+    let download_url = format!(
+        "https://github.com/{}/releases/download/{}/{}",
+        repo, version, tarball
+    );
+
+    let install_dir = std::path::PathBuf::from("/usr/local/bin");
+
+    let binary_name = "soli-proxy";
+    let install_path = install_dir.join(binary_name);
+    let use_sudo = install_dir.starts_with("/usr") && !install_path.exists();
+
+    let temp_dir = std::env::temp_dir();
+    let tarball_path = temp_dir.join(&tarball);
+
+    println!("Downloading {}...", download_url);
+    let curl_output = Command::new("curl")
+        .args(["-fsSL", "-o", tarball_path.to_str().unwrap(), &download_url])
+        .output()?;
+
+    if !curl_output.status.success() {
+        anyhow::bail!("Failed to download {}", download_url);
+    }
+
+    println!("Extracting...");
+    let extract_dir = temp_dir.join(format!("soli-proxy-{}", version));
+    let _ = fs::remove_dir_all(&extract_dir);
+    fs::create_dir_all(&extract_dir)?;
+
+    let tar_output = Command::new("tar")
+        .args([
+            "xzf",
+            tarball_path.to_str().unwrap(),
+            "-C",
+            extract_dir.to_str().unwrap(),
+        ])
+        .output()?;
+
+    if !tar_output.status.success() {
+        anyhow::bail!("Failed to extract tarball");
+    }
+
+    let new_binary = extract_dir.join("soli-proxy");
+    if !new_binary.exists() {
+        anyhow::bail!("soli-proxy binary not found in tarball");
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&new_binary)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&new_binary, perms)?;
+    }
+
+    let current_exe = std::env::current_exe()?;
+    let is_dev_binary = current_exe.to_string_lossy().contains("target/");
+
+    if is_dev_binary {
+        println!("\nDevelopment binary detected.");
+        println!("New binary downloaded to: {}", new_binary.to_string_lossy());
+        println!("\nTo install, run:");
+        println!(
+            "  sudo cp {} {}",
+            new_binary.display(),
+            install_path.display()
+        );
+        println!("  sudo chmod +x {}", install_path.display());
+    } else {
+        if use_sudo {
+            println!("Installing to {} (requires sudo)...", install_dir.display());
+            let cp_result = Command::new("sudo")
+                .args([
+                    "cp",
+                    new_binary.to_str().unwrap(),
+                    install_path.to_str().unwrap(),
+                ])
+                .output()?;
+            if !cp_result.status.success() {
+                anyhow::bail!("Failed to copy binary to {}", install_path.display());
+            }
+            let chmod_result = Command::new("sudo")
+                .args(["chmod", "+x", install_path.to_str().unwrap()])
+                .output()?;
+            if !chmod_result.status.success() {
+                anyhow::bail!("Failed to set permissions on {}", install_path.display());
+            }
+        } else {
+            println!("Replacing current binary...");
+            fs::copy(&new_binary, &install_path)?;
+        }
+
+        let _ = fs::remove_file(&tarball_path);
+        let _ = fs::remove_dir_all(&extract_dir);
+
+        println!("Soli-proxy {} installed successfully!", version);
+
+        if reinstall {
+            println!("Restarting soli-proxy...");
+            std::process::exit(0);
+        }
+    }
+
+    Ok(())
 }
 
 async fn run_server(
     config_path: &str,
     daemon_mode: bool,
     dev_mode: bool,
+    watch: bool,
     sites_dir: &str,
 ) -> Result<()> {
     setup_logging(daemon_mode)?;
@@ -218,7 +387,9 @@ async fn run_server(
     let _ = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     let mut config_manager = ConfigManager::new(config_path)?;
-    config_manager.start_watcher()?;
+    if watch || dev_mode {
+        config_manager.start_watcher()?;
+    }
 
     let shutdown = ShutdownCoordinator::new();
     let config_ref = Arc::new(config_manager);
@@ -478,12 +649,15 @@ async fn run_server(
     // Start app discovery and file watcher (independent of admin)
     if let Some(ref manager) = app_manager {
         let manager_clone = manager.clone();
+        let watch_enabled = watch || dev_mode;
         tokio::spawn(async move {
             if let Err(e) = manager_clone.discover_apps().await {
                 tracing::error!("Failed to discover apps: {}", e);
             }
-            if let Err(e) = manager_clone.start_watcher().await {
-                tracing::error!("Failed to start app watcher: {}", e);
+            if watch_enabled {
+                if let Err(e) = manager_clone.start_watcher().await {
+                    tracing::error!("Failed to start app watcher: {}", e);
+                }
             }
         });
     }
