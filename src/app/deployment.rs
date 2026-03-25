@@ -91,6 +91,11 @@ impl DeploymentManager {
         self.deploying_apps.lock().unwrap().contains(app_name)
     }
 
+    async fn check_port_in_use(&self, port: u16) -> bool {
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+        std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(100)).is_ok()
+    }
+
     /// Deploy an app to a slot. Returns the PID of the started process.
     pub async fn deploy(&self, app: &AppInfo, slot: &str) -> Result<u32> {
         {
@@ -138,6 +143,15 @@ impl DeploymentManager {
         } else {
             app.green.port
         };
+
+        if self.check_port_in_use(port).await {
+            anyhow::bail!(
+                "Port {} is already in use by another process. Cannot start {} slot {}",
+                port,
+                app.config.name,
+                slot
+            );
+        }
 
         let base_script = if let Some(ref script) = app.config.start_script {
             script.clone()
