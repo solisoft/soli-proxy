@@ -60,7 +60,7 @@ impl TuiContext {
     where
         F: std::future::Future<Output = Result<T, anyhow::Error>>,
     {
-        self.runtime.block_on(f).map_err(Into::into)
+        self.runtime.block_on(f)
     }
 }
 
@@ -79,9 +79,9 @@ pub fn authenticate(ctx: &TuiContext) -> Result<bool> {
 
     while attempts < max_attempts {
         print!("\x1b[2J\x1b[H");
-        print!("Soli Proxy TUI - Authentication Required\n");
-        print!("========================================\n");
-        print!("Username: {}\n", username);
+        println!("Soli Proxy TUI - Authentication Required");
+        println!("========================================");
+        println!("Username: {}", username);
         print!("Password: ");
         io::stdout().flush()?;
 
@@ -113,7 +113,7 @@ pub fn run_tui(ctx: TuiContext) -> Result<()> {
     // Install panic hook to restore terminal on panic
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
-        let _ = ratatui::restore();
+        ratatui::restore();
         original_hook(panic_info);
     }));
 

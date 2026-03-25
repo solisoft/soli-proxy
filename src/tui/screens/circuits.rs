@@ -59,7 +59,7 @@ pub fn render(f: &mut Frame, area: Rect, ctx: &TuiContext, selected_index: usize
         .collect();
 
     let table = Table::new(
-        std::iter::once(header).chain(rows.into_iter()),
+        std::iter::once(header).chain(rows),
         [
             Constraint::Min(30),
             Constraint::Length(12),

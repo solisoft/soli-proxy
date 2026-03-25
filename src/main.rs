@@ -179,7 +179,12 @@ enum Commands {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    if let Some(Commands::Tui { conf, sites_dir, dev }) = cli.command {
+    if let Some(Commands::Tui {
+        conf,
+        sites_dir,
+        dev,
+    }) = cli.command
+    {
         return soli_proxy::tui::run_tui_with_config(&conf, &sites_dir, dev);
     }
 

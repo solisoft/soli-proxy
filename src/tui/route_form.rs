@@ -1,4 +1,4 @@
-use crate::auth::{BasicAuth, generate_hash};
+use crate::auth::{generate_hash, BasicAuth};
 use crate::config::{LoadBalancingStrategy, ProxyRule, RegexMatcher, RuleMatcher, Target};
 use anyhow::Result;
 use url::Url;
@@ -439,7 +439,11 @@ impl RouteForm {
 
     /// How many extra lines the auth field needs for rendering.
     pub fn auth_render_height(&self) -> u16 {
-        let list_lines = if self.auth_list.is_empty() { 0 } else { self.auth_list.len() as u16 };
+        let list_lines = if self.auth_list.is_empty() {
+            0
+        } else {
+            self.auth_list.len() as u16
+        };
         let add_lines = match self.auth_mode {
             AuthMode::List => 0,
             AuthMode::AddUsername => 1,

@@ -1217,7 +1217,7 @@ fn find_pid_by_proc_net(port: u16) -> Option<u32> {
             continue; // Not LISTEN
         }
         if let Some(colon) = fields[1].rfind(':') {
-            if &fields[1][colon + 1..] == hex_port {
+            if fields[1][colon + 1..] == hex_port {
                 target_inode = fields[9].parse().ok();
                 break;
             }

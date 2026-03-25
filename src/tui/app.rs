@@ -32,20 +32,15 @@ pub struct AppHistory {
 
 const HISTORY_LEN: usize = 60; // 60 samples × 2s = 2 minutes
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Screen {
+    #[default]
     Dashboard,
     Routes,
     Apps,
     Circuits,
     Config,
     Help,
-}
-
-impl Default for Screen {
-    fn default() -> Self {
-        Screen::Dashboard
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -712,17 +707,14 @@ impl TuiApp {
     }
 
     fn handle_enter(&mut self) {
-        match self.current_screen {
-            Screen::Apps => {
-                if let Some(ref mgr) = self.ctx.app_manager {
-                    let apps = mgr.list_apps_sync();
-                    if self.selected_index < apps.len() {
-                        let app_name = apps[self.selected_index].config.name.clone();
-                        self.modal = Modal::AppActionMenu(app_name, 0);
-                    }
+        if let Screen::Apps = self.current_screen {
+            if let Some(ref mgr) = self.ctx.app_manager {
+                let apps = mgr.list_apps_sync();
+                if self.selected_index < apps.len() {
+                    let app_name = apps[self.selected_index].config.name.clone();
+                    self.modal = Modal::AppActionMenu(app_name, 0);
                 }
             }
-            _ => {}
         }
     }
 
@@ -802,16 +794,14 @@ impl TuiApp {
             Screen::Routes => {
                 screens::routes::render(f, area, &self.ctx, self.selected_index, &self.search_query)
             }
-            Screen::Apps => {
-                screens::apps::render(
-                    f,
-                    area,
-                    &self.ctx,
-                    self.selected_index,
-                    &self.app_stats,
-                    &self.app_history,
-                )
-            }
+            Screen::Apps => screens::apps::render(
+                f,
+                area,
+                &self.ctx,
+                self.selected_index,
+                &self.app_stats,
+                &self.app_history,
+            ),
             Screen::Circuits => screens::circuits::render(f, area, &self.ctx, self.selected_index),
             Screen::Config => screens::config_viewer::render(f, area, &self.ctx),
             Screen::Help => {}
@@ -898,7 +888,7 @@ impl TuiApp {
         // Dynamic height: base 20 + extra lines for auth entries
         let extra_auth = form.auth_render_height();
         let modal_height = (22 + extra_auth).min(area.height.saturating_sub(2));
-        let modal_width = (area.width).min(76).max(40);
+        let modal_width = (area.width).clamp(40, 76);
         let x = (area.width.saturating_sub(modal_width)) / 2;
         let y = (area.height.saturating_sub(modal_height)) / 2;
         let modal_area = Rect::new(x, y, modal_width, modal_height);
@@ -947,10 +937,7 @@ impl TuiApp {
 
             let label_area = Rect::new(inner.x, inner.y + y_offset, inner.width, 1);
             let label_text = format!("{}: {}", label, hint);
-            f.render_widget(
-                Paragraph::new(label_text).style(label_style),
-                label_area,
-            );
+            f.render_widget(Paragraph::new(label_text).style(label_style), label_area);
             y_offset += 1;
 
             // Auth field: special rendering
@@ -981,10 +968,7 @@ impl TuiApp {
                     Style::default().fg(Color::White)
                 };
 
-                f.render_widget(
-                    Paragraph::new(display_value).style(value_style),
-                    value_area,
-                );
+                f.render_widget(Paragraph::new(display_value).style(value_style), value_area);
                 y_offset += 1;
             }
 
@@ -996,7 +980,7 @@ impl TuiApp {
 
         // Error message
         if let Some(ref err) = form.error {
-            if y_offset + 1 <= inner.height {
+            if y_offset < inner.height {
                 let err_area = Rect::new(inner.x, inner.y + y_offset, inner.width, 1);
                 f.render_widget(
                     Paragraph::new(err.as_str()).style(Style::default().fg(Color::Red).bold()),
@@ -1053,7 +1037,8 @@ impl TuiApp {
                     break;
                 }
                 let area = Rect::new(indent, inner.y + y_offset, w, 1);
-                let is_selected = is_active && form.auth_mode == AuthMode::List && idx == form.auth_selected;
+                let is_selected =
+                    is_active && form.auth_mode == AuthMode::List && idx == form.auth_selected;
 
                 let prefix = if is_selected { "> " } else { "  " };
                 let text = format!("{}{}", prefix, entry.username);
@@ -1103,8 +1088,7 @@ impl TuiApp {
                 if inner.y + y_offset < inner.y + inner.height {
                     let area = Rect::new(indent, inner.y + y_offset, w, 1);
                     let masked: String = "\u{2022}".repeat(form.auth_new_password.len());
-                    let display =
-                        format!("  Password: {}", with_cursor(&masked, form.cursor_pos));
+                    let display = format!("  Password: {}", with_cursor(&masked, form.cursor_pos));
                     f.render_widget(
                         Paragraph::new(display)
                             .style(Style::default().fg(Color::White).bg(Color::DarkGray)),

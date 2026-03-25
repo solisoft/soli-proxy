@@ -236,13 +236,7 @@ fn render_detail_info(
             fmt_bytes(s.bytes_sent),
         )
     } else {
-        (
-            "-".into(),
-            "-".into(),
-            "-".into(),
-            "-".into(),
-            "-".into(),
-        )
+        ("-".into(), "-".into(), "-".into(), "-".into(), "-".into())
     };
 
     // Two-column info table
@@ -255,15 +249,11 @@ fn render_detail_info(
         ]),
         Row::new(vec![
             Cell::from("Errors").style(Style::default().fg(Color::DarkGray)),
-            Cell::from(errs).style(
-                Style::default().fg(
-                    if stats.is_some_and(|s| s.errors > 0) {
-                        Color::Red
-                    } else {
-                        Color::White
-                    },
-                ),
-            ),
+            Cell::from(errs).style(Style::default().fg(if stats.is_some_and(|s| s.errors > 0) {
+                Color::Red
+            } else {
+                Color::White
+            })),
             Cell::from("PID").style(Style::default().fg(Color::DarkGray)),
             Cell::from(pid_str).style(Style::default().fg(Color::White)),
         ]),

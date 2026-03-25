@@ -23,8 +23,7 @@ pub fn render(
     let inner = Rect::new(area.x + 1, area.y + 1, area.width - 2, area.height - 2);
 
     if rules.is_empty() {
-        let text =
-            Paragraph::new("No routes configured. Press 'a' to add a route.");
+        let text = Paragraph::new("No routes configured. Press 'a' to add a route.");
         f.render_widget(text, inner);
         return;
     }
@@ -129,7 +128,7 @@ pub fn render(
         .collect();
 
     let table = Table::new(
-        std::iter::once(header).chain(rows.into_iter()),
+        std::iter::once(header).chain(rows),
         [
             Constraint::Length(4),
             Constraint::Percentage(25),

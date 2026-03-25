@@ -14,7 +14,7 @@ pub fn render(f: &mut Frame, area: Rect, ctx: &TuiContext) {
         .constraints([
             Constraint::Length(10), // Server + Traffic
             Constraint::Length(8),  // Resources + Status codes
-            Constraint::Min(4),    // Apps / Circuits
+            Constraint::Min(4),     // Apps / Circuits
         ])
         .split(area);
 
@@ -183,10 +183,7 @@ fn render_resources(f: &mut Frame, area: Rect, ctx: &TuiContext) {
 
     let circuits = ctx.circuit_breaker.get_states();
     let open = circuits.values().filter(|s| s.state == "open").count();
-    let half = circuits
-        .values()
-        .filter(|s| s.state == "half_open")
-        .count();
+    let half = circuits.values().filter(|s| s.state == "half_open").count();
 
     let circuits_str = if circuits.is_empty() {
         "none".to_string()
@@ -245,8 +242,7 @@ fn render_status_codes(f: &mut Frame, area: Rect, ctx: &TuiContext) {
     let total = snap.status_2xx + snap.status_3xx + snap.status_4xx + snap.status_5xx;
 
     if total == 0 {
-        let text =
-            Paragraph::new("No requests yet.").style(Style::default().fg(Color::DarkGray));
+        let text = Paragraph::new("No requests yet.").style(Style::default().fg(Color::DarkGray));
         f.render_widget(text, inner);
         return;
     }
@@ -325,8 +321,7 @@ fn render_apps_overview(f: &mut Frame, area: Rect, ctx: &TuiContext) {
             Row::new(vec![
                 Cell::from(app.config.name.clone()).style(Style::default().fg(Color::White)),
                 Cell::from(app.config.domain.clone()).style(Style::default().fg(Color::White)),
-                Cell::from(app.current_slot.clone())
-                    .style(Style::default().fg(Color::DarkGray)),
+                Cell::from(app.current_slot.clone()).style(Style::default().fg(Color::DarkGray)),
                 Cell::from(status_str).style(Style::default().fg(status_color)),
                 Cell::from(port_str).style(Style::default().fg(Color::DarkGray)),
             ])
@@ -353,12 +348,7 @@ fn render_apps_overview(f: &mut Frame, area: Rect, ctx: &TuiContext) {
         let hint = format!(" +{} more (see Apps tab) ", overflow);
         let hint_len = hint.len() as u16;
         if area.width > hint_len + 2 {
-            let hint_area = Rect::new(
-                area.x + area.width - hint_len - 1,
-                area.y,
-                hint_len,
-                1,
-            );
+            let hint_area = Rect::new(area.x + area.width - hint_len - 1, area.y, hint_len, 1);
             f.render_widget(
                 Paragraph::new(hint).style(Style::default().fg(Color::DarkGray)),
                 hint_area,
@@ -385,13 +375,7 @@ fn kv_row(label: &str, value: String, value_color: Color) -> Row<'static> {
     ])
 }
 
-fn status_row(
-    label: &str,
-    count: u64,
-    total: u64,
-    bar_width: usize,
-    color: Color,
-) -> Row<'static> {
+fn status_row(label: &str, count: u64, total: u64, bar_width: usize, color: Color) -> Row<'static> {
     let pct = if total > 0 {
         (count as f64 / total as f64) * 100.0
     } else {
