@@ -65,16 +65,22 @@ pub struct DeploymentManager {
     deploying_apps: Arc<Mutex<HashSet<String>>>,
     dev_mode: bool,
     http_client: reqwest::Client,
+    default_user: Option<String>,
+    default_group: Option<String>,
 }
 
 impl Default for DeploymentManager {
     fn default() -> Self {
-        Self::new(false)
+        Self::new(false, None, None)
     }
 }
 
 impl DeploymentManager {
-    pub fn new(dev_mode: bool) -> Self {
+    pub fn new(
+        dev_mode: bool,
+        default_user: Option<String>,
+        default_group: Option<String>,
+    ) -> Self {
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
             .build()
@@ -84,6 +90,8 @@ impl DeploymentManager {
             deploying_apps: Arc::new(Mutex::new(HashSet::new())),
             dev_mode,
             http_client,
+            default_user,
+            default_group,
         }
     }
 
@@ -185,7 +193,10 @@ impl DeploymentManager {
             .stdout(std::process::Stdio::from(output.try_clone()?))
             .stderr(std::process::Stdio::from(output));
 
-        if let (Some(ref user), Some(ref group)) = (&app.config.user, &app.config.group) {
+        let user = app.config.user.as_ref().or(self.default_user.as_ref());
+        let group = app.config.group.as_ref().or(self.default_group.as_ref());
+
+        if let (Some(user), Some(group)) = (user, group) {
             let uid = resolve_user(user)?;
             let gid = resolve_group(group)?;
             cmd.uid(uid).gid(gid);
@@ -196,7 +207,7 @@ impl DeploymentManager {
                 uid,
                 gid
             );
-        } else if let Some(ref user) = &app.config.user {
+        } else if let Some(user) = user {
             let uid = resolve_user(user)?;
             let gid = resolve_group(user)?;
             cmd.uid(uid).gid(gid);

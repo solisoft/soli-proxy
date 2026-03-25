@@ -31,6 +31,8 @@ pub struct TomlConfig {
     pub scripting: Option<ScriptingTomlConfig>,
     pub admin: Option<AdminConfig>,
     pub circuit_breaker: Option<CircuitBreakerTomlConfig>,
+    #[serde(default)]
+    pub apps: Option<AppsTomlConfig>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -39,6 +41,12 @@ pub struct CircuitBreakerTomlConfig {
     pub recovery_timeout_secs: Option<u64>,
     pub success_threshold: Option<u32>,
     pub failure_status_codes: Option<Vec<u16>>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
+pub struct AppsTomlConfig {
+    pub default_user: Option<String>,
+    pub default_group: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -110,6 +118,7 @@ pub struct Config {
     pub scripting: ScriptingTomlConfig,
     pub admin: AdminConfig,
     pub circuit_breaker: Option<CircuitBreakerTomlConfig>,
+    pub apps: AppsTomlConfig,
     pub rules: Vec<ProxyRule>,
     pub global_scripts: Vec<String>,
 }
@@ -399,6 +408,11 @@ requests_per_second = 1000
 burst_size = 2000
 redis_url = "redis://localhost:6379"
 
+# Apps Configuration (defaults for deployed apps)
+# [apps]
+# default_user = "rocky"
+# default_group = "rocky"
+
 # Circuit Breaker Configuration
 [circuit_breaker]
 failure_threshold = 5
@@ -438,6 +452,7 @@ realm = "Restricted"
             scripting: toml_config.scripting.unwrap_or_default(),
             admin: toml_config.admin.unwrap_or_default(),
             circuit_breaker: toml_config.circuit_breaker,
+            apps: toml_config.apps.unwrap_or_default(),
             rules,
             global_scripts,
         })

@@ -318,7 +318,12 @@ impl AppManager {
             std::fs::create_dir_all(&sites_path)?;
         }
 
-        let deployment_manager = Arc::new(DeploymentManager::new(dev_mode));
+        let cfg = config_manager.get_config();
+        let deployment_manager = Arc::new(DeploymentManager::new(
+            dev_mode,
+            cfg.apps.default_user.clone(),
+            cfg.apps.default_group.clone(),
+        ));
         let (event_tx, _) = broadcast::channel(32);
 
         Ok(Self {

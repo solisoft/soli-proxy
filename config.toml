@@ -50,6 +50,12 @@ requests_per_second = 1000
 burst_size = 2000
 redis_url = "redis://localhost:6379"
 
+# Apps Configuration (defaults for deployed apps)
+# Can be overridden per-app in app.infos
+[apps]
+# default_user = "rocky"
+# default_group = "rocky"
+
 # Circuit Breaker Configuration
 # Tracks backend health and stops sending traffic to failing backends.
 # When all targets for a route are open, returns 503 Service Unavailable.
