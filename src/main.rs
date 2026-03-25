@@ -212,30 +212,6 @@ fn main() -> Result<()> {
     })
 }
 
-fn is_writable(path: &std::path::Path) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    match fs::metadata(path) {
-        Ok(meta) => {
-            let mode = meta.mode();
-            let uid = meta.uid();
-            let gid = meta.gid();
-            let euid = unsafe { libc::geteuid() };
-            let egid = unsafe { libc::getegid() };
-            if euid == 0 {
-                return true;
-            }
-            if uid == euid {
-                return mode & 0o200 != 0;
-            }
-            if gid == egid {
-                return mode & 0o020 != 0;
-            }
-            mode & 0o002 != 0
-        }
-        Err(_) => false,
-    }
-}
-
 fn run_update(reinstall: bool) -> Result<()> {
     let repo = "solisoft/soli-proxy";
     let current_version = env!("CARGO_PKG_VERSION");
@@ -260,6 +236,7 @@ fn run_update(reinstall: bool) -> Result<()> {
 
     println!("Detected platform: {}-{}", os, arch);
 
+    // Fetch latest release tag
     println!("Fetching latest release info...");
     let api_url = format!("https://api.github.com/repos/{}/releases/latest", repo);
     let output = Command::new("curl").args(["-fsSL", &api_url]).output()?;
@@ -271,124 +248,97 @@ fn run_update(reinstall: bool) -> Result<()> {
     let response: serde_json::Value = serde_json::from_slice(&output.stdout)
         .map_err(|_| anyhow::anyhow!("Failed to parse GitHub API response"))?;
 
-    let tag_name = response["tag_name"]
+    let tag = response["tag_name"]
         .as_str()
-        .unwrap_or("v0.20.0")
-        .trim_start_matches('v');
-    let version = format!("v{}", tag_name);
+        .ok_or_else(|| anyhow::anyhow!("No tag_name in GitHub API response"))?;
+    let tag_version = tag.trim_start_matches('v');
 
-    if !reinstall && current_version == tag_name {
-        println!("Already on latest version: {}", version);
+    if !reinstall && current_version == tag_version {
+        println!("Already on latest version: {}", tag);
         return Ok(());
     }
 
-    println!("Latest version: {}", version);
+    println!("Latest version: {}", tag);
 
+    // Download and extract
     let tarball = format!("soli-proxy-{}-{}.tar.gz", os, arch);
     let download_url = format!(
         "https://github.com/{}/releases/download/{}/{}",
-        repo, version, tarball
+        repo, tag, tarball
     );
 
-    // Install to the location of the currently running binary
-    let current_exe = std::env::current_exe()?;
-    let install_path = current_exe.canonicalize().unwrap_or(current_exe.clone());
-
-    let temp_dir = std::env::temp_dir();
-    let tarball_path = temp_dir.join(&tarball);
+    let tmp_dir = Command::new("mktemp").arg("-d").output()?;
+    let tmp_dir = String::from_utf8_lossy(&tmp_dir.stdout).trim().to_string();
 
     println!("Downloading {}...", download_url);
-    let curl_output = Command::new("curl")
-        .args(["-fsSL", "-o", tarball_path.to_str().unwrap(), &download_url])
+    let dl = Command::new("curl")
+        .args([
+            "-fsSL",
+            "-o",
+            &format!("{}/{}", tmp_dir, tarball),
+            &download_url,
+        ])
         .output()?;
-
-    if !curl_output.status.success() {
-        anyhow::bail!("Failed to download {}", download_url);
+    if !dl.status.success() {
+        let _ = fs::remove_dir_all(&tmp_dir);
+        anyhow::bail!(
+            "Failed to download {}. Does this release have prebuilt binaries?",
+            download_url
+        );
     }
 
     println!("Extracting...");
-    let extract_dir = temp_dir.join(format!("soli-proxy-{}", version));
-    let _ = fs::remove_dir_all(&extract_dir);
-    fs::create_dir_all(&extract_dir)?;
-
-    let tar_output = Command::new("tar")
-        .args([
-            "xzf",
-            tarball_path.to_str().unwrap(),
-            "-C",
-            extract_dir.to_str().unwrap(),
-        ])
+    let tar = Command::new("tar")
+        .args(["xzf", &format!("{}/{}", tmp_dir, tarball), "-C", &tmp_dir])
         .output()?;
-
-    if !tar_output.status.success() {
+    if !tar.status.success() {
+        let _ = fs::remove_dir_all(&tmp_dir);
         anyhow::bail!("Failed to extract tarball");
     }
 
-    let new_binary = extract_dir.join("soli-proxy");
-    if !new_binary.exists() {
+    let new_binary = format!("{}/soli-proxy", tmp_dir);
+    if !std::path::Path::new(&new_binary).exists() {
+        let _ = fs::remove_dir_all(&tmp_dir);
         anyhow::bail!("soli-proxy binary not found in tarball");
     }
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&new_binary)?.permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&new_binary, perms)?;
-    }
-
+    // Install to the same location as the currently running binary
+    let current_exe = std::env::current_exe()?;
+    let install_path = current_exe.canonicalize().unwrap_or(current_exe);
     let is_dev_binary = install_path.to_string_lossy().contains("target/");
 
     if is_dev_binary {
         println!("\nDevelopment binary detected.");
-        println!("New binary downloaded to: {}", new_binary.to_string_lossy());
+        println!("New binary downloaded to: {}", new_binary);
         println!("\nTo install, run:");
         println!(
-            "  sudo cp {} /usr/local/bin/soli-proxy",
-            new_binary.display(),
+            "  sudo install -m 755 {} /usr/local/bin/soli-proxy",
+            new_binary
         );
-        println!("  sudo chmod +x /usr/local/bin/soli-proxy");
     } else {
         println!("Installing to {}...", install_path.display());
 
-        // Determine if we need sudo by trying to write to the target directory
-        let install_dir = install_path.parent().unwrap_or(std::path::Path::new("/"));
-        let need_sudo = !is_writable(install_dir);
+        // Use `install -m 755` like install.sh — atomic replacement, handles running binaries
+        let install_path_str = install_path.to_string_lossy();
+        let result = Command::new("install")
+            .args(["-m", "755", &new_binary, &*install_path_str])
+            .output()?;
 
-        if need_sudo {
-            // Remove the old binary first to avoid ETXTBSY (can't write to running executable)
-            let rm_result = Command::new("sudo")
-                .args(["rm", "-f", install_path.to_str().unwrap()])
+        if !result.status.success() {
+            // Retry with sudo if permission denied
+            println!("Retrying with sudo...");
+            let result = Command::new("sudo")
+                .args(["install", "-m", "755", &new_binary, &*install_path_str])
                 .output()?;
-            if !rm_result.status.success() {
-                anyhow::bail!("Failed to remove old binary at {}", install_path.display());
+            if !result.status.success() {
+                let _ = fs::remove_dir_all(&tmp_dir);
+                anyhow::bail!("Failed to install binary to {}", install_path.display());
             }
-            let cp_result = Command::new("sudo")
-                .args([
-                    "cp",
-                    new_binary.to_str().unwrap(),
-                    install_path.to_str().unwrap(),
-                ])
-                .output()?;
-            if !cp_result.status.success() {
-                anyhow::bail!("Failed to copy binary to {}", install_path.display());
-            }
-            let chmod_result = Command::new("sudo")
-                .args(["chmod", "+x", install_path.to_str().unwrap()])
-                .output()?;
-            if !chmod_result.status.success() {
-                anyhow::bail!("Failed to set permissions on {}", install_path.display());
-            }
-        } else {
-            // Remove first to avoid ETXTBSY, then copy
-            let _ = fs::remove_file(&install_path);
-            fs::copy(&new_binary, &install_path)?;
         }
 
-        let _ = fs::remove_file(&tarball_path);
-        let _ = fs::remove_dir_all(&extract_dir);
+        let _ = fs::remove_dir_all(&tmp_dir);
 
-        println!("Soli-proxy {} installed successfully!", version);
+        println!("Soli-proxy {} installed successfully!", tag);
 
         if reinstall {
             println!("Restarting soli-proxy...");
