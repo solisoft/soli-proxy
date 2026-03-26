@@ -276,7 +276,7 @@ impl DeploymentManager {
             );
         }
 
-        let cmd = unsafe {
+        let mut child = unsafe {
             cmd.pre_exec(|| {
                 libc::setsid();
                 Ok(())
@@ -284,8 +284,56 @@ impl DeploymentManager {
             .spawn()?
         };
 
-        let pid = cmd.id().unwrap_or(0);
+        let pid = child.id().unwrap_or(0);
         tracing::info!("Started {} slot {} with PID {}", app.config.name, slot, pid);
+
+        // Monitor the child process in the background so we can log how it exits
+        let app_name = app.config.name.clone();
+        let slot_name = slot.to_string();
+        tokio::spawn(async move {
+            match child.wait().await {
+                Ok(status) => {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::process::ExitStatusExt;
+                        if let Some(signal) = status.signal() {
+                            tracing::warn!(
+                                "Process {} ({} slot {}) killed by signal {}",
+                                pid,
+                                app_name,
+                                slot_name,
+                                signal
+                            );
+                        } else {
+                            tracing::warn!(
+                                "Process {} ({} slot {}) exited with status {}",
+                                pid,
+                                app_name,
+                                slot_name,
+                                status
+                            );
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    tracing::warn!(
+                        "Process {} ({} slot {}) exited with status {}",
+                        pid,
+                        app_name,
+                        slot_name,
+                        status
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to wait for process {} ({} slot {}): {}",
+                        pid,
+                        app_name,
+                        slot_name,
+                        e
+                    );
+                }
+            }
+        });
 
         Ok(pid)
     }
