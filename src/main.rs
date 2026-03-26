@@ -480,8 +480,9 @@ async fn run_server(
         config_ref.clone(),
         dev_mode,
     ) {
-        Ok(m) => {
+        Ok(mut m) => {
             tracing::info!("App manager initialized for {}", sites_dir);
+            m.set_circuit_breaker(circuit_breaker.clone());
             m.spawn_health_check();
             Some(Arc::new(m))
         }

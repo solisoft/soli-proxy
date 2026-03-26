@@ -294,6 +294,29 @@ impl CircuitBreaker {
             tracing::info!("Circuit breaker reset for {}", url);
         }
     }
+
+    /// Reset circuit breaker state for a specific target URL.
+    pub fn reset_target(&self, target_url: &str) {
+        let targets = self.targets.read().unwrap();
+        if let Some(state) = targets.get(target_url) {
+            let prev = state.state.load(Ordering::Acquire);
+            if prev != STATE_CLOSED {
+                state.state.store(STATE_CLOSED, Ordering::Release);
+                state.consecutive_failures.store(0, Ordering::Release);
+                state.consecutive_successes.store(0, Ordering::Release);
+                state.probe_permit.store(false, Ordering::Release);
+                tracing::info!(
+                    "Circuit breaker reset for {} (was {:?})",
+                    target_url,
+                    match prev {
+                        STATE_OPEN => "open",
+                        STATE_HALF_OPEN => "half_open",
+                        _ => "unknown",
+                    }
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]

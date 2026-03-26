@@ -11,6 +11,7 @@ use url::Url;
 pub mod deployment;
 pub mod port_manager;
 
+use crate::circuit_breaker::SharedCircuitBreaker;
 use crate::metrics::Metrics as AppMetrics;
 pub use deployment::{DeploymentManager, DeploymentStatus};
 pub use port_manager::{PortAllocator, PortManager};
@@ -186,6 +187,7 @@ pub struct AppManager {
     event_tx: broadcast::Sender<AppEvent>,
     health_check_path: String,
     health_check_interval_secs: u64,
+    circuit_breaker: Option<SharedCircuitBreaker>,
 }
 
 /// Convert a domain to its `.test` alias by replacing the TLD.
@@ -348,6 +350,7 @@ impl AppManager {
             event_tx,
             health_check_path: health_check_path.to_string(),
             health_check_interval_secs,
+            circuit_breaker: None,
         })
     }
 
@@ -357,6 +360,10 @@ impl AppManager {
 
     fn emit_event(&self, event: AppEvent) {
         let _ = self.event_tx.send(event);
+    }
+
+    pub fn set_circuit_breaker(&mut self, cb: SharedCircuitBreaker) {
+        self.circuit_breaker = Some(cb);
     }
 
     pub async fn set_acme_service(&self, service: Arc<crate::acme::AcmeService>) {
@@ -934,6 +941,17 @@ impl AppManager {
         // Update proxy rules BEFORE stopping old slot to avoid downtime
         self.sync_routes().await;
 
+        // Reset circuit breaker for the new target so stale open-circuit state
+        // from a previous deploy cycle doesn't block traffic.
+        if let Some(ref cb) = self.circuit_breaker {
+            let new_port = if slot == "blue" {
+                app.blue.port
+            } else {
+                app.green.port
+            };
+            cb.reset_target(&format!("http://localhost:{}/", new_port));
+        }
+
         // Stop the old slot if it was running on a different slot
         if old_slot_name != "unknown" && old_slot_name != slot {
             // Re-read from map for fresh PID (avoid stale clone)
@@ -1034,6 +1052,17 @@ impl AppManager {
             }
         }
 
+        // Update proxy rules and reset circuit breaker BEFORE stopping old slot
+        self.sync_routes().await;
+        if let Some(ref cb) = self.circuit_breaker {
+            let new_port = if target_slot == "blue" {
+                app.blue.port
+            } else {
+                app.green.port
+            };
+            cb.reset_target(&format!("http://localhost:{}/", new_port));
+        }
+
         // Stop the old slot
         let old_pid = {
             let apps = self.apps.lock().await;
@@ -1066,8 +1095,6 @@ impl AppManager {
                 old_instance.pid = None;
             }
         }
-
-        self.sync_routes().await;
         self.emit_event(AppEvent::Deployed {
             app_name: app_name.to_string(),
             slot: target_slot,
