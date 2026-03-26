@@ -185,6 +185,7 @@ pub struct AppManager {
     acme_service: Arc<Mutex<Option<Arc<crate::acme::AcmeService>>>>,
     dev_mode: bool,
     event_tx: broadcast::Sender<AppEvent>,
+    #[allow(dead_code)]
     health_check_path: String,
     health_check_interval_secs: u64,
     circuit_breaker: Option<SharedCircuitBreaker>,
@@ -340,14 +341,7 @@ impl AppManager {
         config_manager: Arc<dyn super::config::ConfigManagerTrait + Send + Sync>,
         dev_mode: bool,
     ) -> Result<Self, anyhow::Error> {
-        Self::with_health_check(
-            sites_dir,
-            port_allocator,
-            config_manager,
-            dev_mode,
-            "/up",
-            30,
-        )
+        Self::with_health_check(sites_dir, port_allocator, config_manager, dev_mode, "/", 30)
     }
 
     pub fn with_health_check(
@@ -1097,6 +1091,26 @@ impl AppManager {
         self.deploy(app_name, &slot).await
     }
 
+    pub async fn failover(&self, app_name: &str) -> Result<(), anyhow::Error> {
+        let target_slot = {
+            let apps = self.apps.lock().await;
+            let app = apps
+                .get(app_name)
+                .ok_or_else(|| anyhow::anyhow!("App not found: {}", app_name))?;
+            if app.current_slot == "blue" {
+                "green".to_string()
+            } else {
+                "blue".to_string()
+            }
+        };
+        tracing::warn!(
+            "Health check failed on current slot, failing over {} to slot {}",
+            app_name,
+            target_slot
+        );
+        self.deploy(app_name, &target_slot).await
+    }
+
     pub async fn rollback(&self, app_name: &str) -> Result<(), anyhow::Error> {
         let (app, target_slot, old_slot) = {
             let apps = self.apps.lock().await;
@@ -1264,7 +1278,7 @@ impl AppManager {
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
 
-        let apps: Vec<(String, u16)> = {
+        let apps: Vec<(String, u16, String)> = {
             let apps_guard = self.apps.lock().await;
             apps_guard
                 .iter()
@@ -1274,9 +1288,10 @@ impl AppManager {
                     } else {
                         (app.green.port, app.green.pid)
                     };
+                    let health_path = app.config.health_check.as_deref().unwrap_or("/");
                     // Only check apps that have a running process
                     if port > 0 && pid.is_some() {
-                        Some((name.clone(), port))
+                        Some((name.clone(), port, health_path.to_string()))
                     } else {
                         None
                     }
@@ -1284,7 +1299,7 @@ impl AppManager {
                 .collect()
         };
 
-        for (app_name, port) in apps {
+        for (app_name, port, health_path) in apps {
             // Skip apps that are currently deploying
             if self.deployment_manager.is_deploying(&app_name) {
                 tracing::debug!(
@@ -1293,7 +1308,7 @@ impl AppManager {
                 );
                 continue;
             }
-            let url = format!("http://localhost:{}{}", port, self.health_check_path);
+            let url = format!("http://localhost:{}{}", port, health_path);
             match http_client.get(&url).send().await {
                 Ok(resp) if resp.status().is_success() => {
                     tracing::debug!("Health check OK for {} on port {}", app_name, port);
@@ -1307,13 +1322,13 @@ impl AppManager {
                 }
                 Err(e) => {
                     tracing::warn!(
-                        "Health check failed for {} on port {}: {}",
+                        "Health check failed for {} on port {}: {}, failing over",
                         app_name,
                         port,
                         e
                     );
-                    if let Err(e) = self.restart(&app_name).await {
-                        tracing::error!("Failed to restart {}: {}", app_name, e);
+                    if let Err(e) = self.failover(&app_name).await {
+                        tracing::error!("Failed to failover {}: {}", app_name, e);
                     }
                 }
             }

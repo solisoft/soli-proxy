@@ -402,7 +402,7 @@ async fn run_https_server(
                             }
                         }
                         Err(e) => {
-                            tracing::error!("TLS accept error: {}", e);
+                            tracing::debug!("TLS accept error (client incompatible): {}", e);
                         }
                     }
                 });

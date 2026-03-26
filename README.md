@@ -243,23 +243,21 @@ Configuration changes are detected automatically:
 ## App Health Monitoring
 
 When apps are managed by the proxy (via `./sites` directory), the proxy automatically:
-- Checks app health every 30 seconds via `/up` endpoint
+- Checks app health every 30 seconds via each app's configured health endpoint (default: `/`)
 - Auto-restarts any app that fails the health check (connection refused, timeout, etc.)
 - Only restarts on actual failures, not on non-2xx responses
 
 ### Health Check Configuration
 
-```rust
-// In AppManager::new() - defaults shown
-AppManager::with_health_check(
-    "./sites",           // sites directory
-    port_allocator,
-    config_manager,
-    dev_mode,
-    "/up",              // health check path
-    30,                 // check interval in seconds
-)
+Each app can configure its own health check path in `app.infos`:
+
+```toml
+[apps]
+[apps.myapp.example.org]
+health_check = "/health"
 ```
+
+The global default health check path is `/`.
 
 ## Systemd Service
 
