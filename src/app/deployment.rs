@@ -169,12 +169,52 @@ impl DeploymentManager {
         };
 
         if self.check_port_in_use(port).await {
-            anyhow::bail!(
-                "Port {} is already in use by another process. Cannot start {} slot {}",
-                port,
-                app.config.name,
-                slot
-            );
+            // Port is occupied — likely an orphaned process from a previous daemon.
+            // Kill it so we can bind the port.
+            if let Some(orphan_pid) = super::find_pid_by_port(port) {
+                tracing::warn!(
+                    "Killing orphaned process {} on port {} before starting {} slot {}",
+                    orphan_pid,
+                    port,
+                    app.config.name,
+                    slot
+                );
+                let pgid = format!("-{}", orphan_pid);
+                let _ = tokio::process::Command::new("kill")
+                    .arg("-TERM")
+                    .arg("--")
+                    .arg(&pgid)
+                    .output()
+                    .await;
+
+                // Wait briefly for the process to die
+                for _ in 0..20 {
+                    sleep(Duration::from_millis(100)).await;
+                    if !self.check_port_in_use(port).await {
+                        break;
+                    }
+                }
+
+                if self.check_port_in_use(port).await {
+                    // Force kill
+                    let _ = tokio::process::Command::new("kill")
+                        .arg("-9")
+                        .arg("--")
+                        .arg(&pgid)
+                        .output()
+                        .await;
+                    sleep(Duration::from_millis(100)).await;
+                }
+            }
+
+            if self.check_port_in_use(port).await {
+                anyhow::bail!(
+                    "Port {} is already in use by another process. Cannot start {} slot {}",
+                    port,
+                    app.config.name,
+                    slot
+                );
+            }
         }
 
         let base_script = if let Some(ref script) = app.config.start_script {

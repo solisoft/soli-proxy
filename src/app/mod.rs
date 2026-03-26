@@ -234,6 +234,39 @@ async fn is_port_in_use(port: u16) -> bool {
     .unwrap_or(false)
 }
 
+/// Kill a process group (SIGTERM, wait, then SIGKILL if needed).
+async fn kill_process_group(pid: u32) {
+    let pgid = format!("-{}", pid);
+    let _ = tokio::process::Command::new("kill")
+        .arg("-TERM")
+        .arg("--")
+        .arg(&pgid)
+        .output()
+        .await;
+
+    for _ in 0..20 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let output = tokio::process::Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .output()
+            .await;
+        if let Ok(o) = output {
+            if !o.status.success() {
+                return; // Process is dead
+            }
+        }
+    }
+
+    // Force kill
+    let _ = tokio::process::Command::new("kill")
+        .arg("-9")
+        .arg("--")
+        .arg(&pgid)
+        .output()
+        .await;
+}
+
 /// Extract app names from changed file paths, filtering out irrelevant directories.
 /// Each path is expected to be under `sites_dir/<app_name>/...`.
 fn affected_app_names(sites_dir: &Path, paths: &HashSet<PathBuf>) -> HashSet<String> {
@@ -483,20 +516,23 @@ impl AppManager {
                 for app_name in apps_to_start {
                     let mgr = manager.clone();
                     handles.push(tokio::spawn(async move {
-                        // Check if app is already running before starting
+                        // Kill orphaned processes on both slots from previous daemon
                         if let Some(app) = mgr.get_app(&app_name).await {
-                            let port = if app.current_slot == "blue" {
-                                app.blue.port
-                            } else {
-                                app.green.port
-                            };
-                            if is_port_in_use(port).await {
-                                tracing::info!(
-                                    "Skipping auto-start for {}: port {} already in use",
-                                    app_name,
-                                    port
-                                );
-                                return;
+                            for (slot_name, port) in
+                                [("blue", app.blue.port), ("green", app.green.port)]
+                            {
+                                if is_port_in_use(port).await {
+                                    if let Some(orphan_pid) = find_pid_by_port(port) {
+                                        tracing::warn!(
+                                            "Killing orphaned process {} on {} port {} for {}",
+                                            orphan_pid,
+                                            slot_name,
+                                            port,
+                                            app_name
+                                        );
+                                        kill_process_group(orphan_pid).await;
+                                    }
+                                }
                             }
                         }
                         tracing::info!("Auto-starting app: {}", app_name);
@@ -1300,7 +1336,7 @@ impl AppManager {
 
 /// Try to find the PID of a process listening on a given port.
 /// Uses `ss` first, falls back to scanning /proc/net/tcp + /proc/*/fd.
-fn find_pid_by_port(port: u16) -> Option<u32> {
+pub(crate) fn find_pid_by_port(port: u16) -> Option<u32> {
     // Try ss first (fast, but may not show PIDs without root)
     if let Some(pid) = find_pid_by_ss(port) {
         return Some(pid);
