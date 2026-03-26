@@ -1233,12 +1233,13 @@ impl AppManager {
             apps_guard
                 .iter()
                 .filter_map(|(name, app)| {
-                    let port = if app.current_slot == "blue" {
-                        app.blue.port
+                    let (port, pid) = if app.current_slot == "blue" {
+                        (app.blue.port, app.blue.pid)
                     } else {
-                        app.green.port
+                        (app.green.port, app.green.pid)
                     };
-                    if port > 0 {
+                    // Only check apps that have a running process
+                    if port > 0 && pid.is_some() {
                         Some((name.clone(), port))
                     } else {
                         None
@@ -1248,6 +1249,11 @@ impl AppManager {
         };
 
         for (app_name, port) in apps {
+            // Skip apps that are currently deploying
+            if self.deployment_manager.is_deploying(&app_name) {
+                tracing::debug!("Skipping health check for {} (deploy in progress)", app_name);
+                continue;
+            }
             let url = format!("http://localhost:{}{}", port, self.health_check_path);
             match http_client.get(&url).send().await {
                 Ok(resp) if resp.status().is_success() => {
