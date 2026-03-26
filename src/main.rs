@@ -630,20 +630,22 @@ async fn run_server(
         }
     }
 
-    // Start app discovery and file watcher (independent of admin)
+    // Discover apps and clean stale routes BEFORE accepting connections.
+    // App deploys are spawned in the background by discover_apps(), so this
+    // only blocks until discovery + route cleanup finishes (fast).
     if let Some(ref manager) = app_manager {
+        if let Err(e) = manager.discover_apps().await {
+            tracing::error!("Failed to discover apps: {}", e);
+        }
         let manager_clone = manager.clone();
         let watch_enabled = watch || dev_mode;
-        tokio::spawn(async move {
-            if let Err(e) = manager_clone.discover_apps().await {
-                tracing::error!("Failed to discover apps: {}", e);
-            }
-            if watch_enabled {
+        if watch_enabled {
+            tokio::spawn(async move {
                 if let Err(e) = manager_clone.start_watcher().await {
                     tracing::error!("Failed to start app watcher: {}", e);
                 }
-            }
-        });
+            });
+        }
     }
 
     // Spawn admin API server if enabled
