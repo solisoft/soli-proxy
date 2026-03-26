@@ -931,6 +931,9 @@ impl AppManager {
             }
         }
 
+        // Update proxy rules BEFORE stopping old slot to avoid downtime
+        self.sync_routes().await;
+
         // Stop the old slot if it was running on a different slot
         if old_slot_name != "unknown" && old_slot_name != slot {
             // Re-read from map for fresh PID (avoid stale clone)
@@ -970,8 +973,6 @@ impl AppManager {
                 }
             }
         }
-
-        self.sync_routes().await;
         tracing::info!("Deploy completed for {} to slot {}", app_name, slot);
         self.emit_event(AppEvent::Deployed {
             app_name: app_name.to_string(),
