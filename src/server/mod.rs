@@ -1486,6 +1486,9 @@ fn select_target(
         crate::config::LoadBalancingStrategy::RoundRobin => {
             // Round-robin: cycle through all targets, skip unhealthy ones
             let num_targets = targets.len();
+            if num_targets == 0 || load_balancer.counters.is_empty() {
+                return None;
+            }
             let start_idx = load_balancer.counters[0].load(Ordering::Relaxed) % num_targets;
 
             for i in 0..num_targets {
