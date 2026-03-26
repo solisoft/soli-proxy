@@ -315,7 +315,10 @@ impl DeploymentManager {
         let timeout_secs = 30;
 
         for i in 0..timeout_secs {
-            sleep(Duration::from_secs(1)).await;
+            // Sleep between retries, but try immediately on the first attempt
+            if i > 0 {
+                sleep(Duration::from_secs(1)).await;
+            }
 
             match self.http_client.get(&url).send().await {
                 Ok(resp) if resp.status().is_success() => {
@@ -323,13 +326,13 @@ impl DeploymentManager {
                         "Health check passed for {} slot {} after {}s",
                         app.config.name,
                         slot,
-                        i + 1
+                        i
                     );
                     return Ok(true);
                 }
                 Ok(_) => {
                     tracing::debug!(
-                        "Health check response for {} slot {}: {}",
+                        "Health check response for {} slot {}: attempt {}",
                         app.config.name,
                         slot,
                         i + 1
@@ -337,7 +340,7 @@ impl DeploymentManager {
                 }
                 Err(e) => {
                     tracing::debug!(
-                        "Health check failed for {} slot {}: {} ({})",
+                        "Health check failed for {} slot {}: {} (attempt {})",
                         app.config.name,
                         slot,
                         e,
