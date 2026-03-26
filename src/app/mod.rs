@@ -857,6 +857,16 @@ impl AppManager {
     pub async fn deploy(&self, app_name: &str, slot: &str) -> Result<(), anyhow::Error> {
         tracing::info!("Starting deploy for {} to slot {}", app_name, slot);
 
+        if !self.deployment_manager.mark_deploying(app_name) {
+            anyhow::bail!("Deployment already in progress for {}", app_name);
+        }
+        // Ensure we unmark on any exit path
+        let dm = self.deployment_manager.clone();
+        let deploy_name = app_name.to_string();
+        let _guard = scopeguard::guard((), move |_| {
+            dm.unmark_deploying(&deploy_name);
+        });
+
         let app = {
             let apps = self.apps.lock().await;
             match apps.get(app_name) {
@@ -905,11 +915,12 @@ impl AppManager {
             }
         }
 
+        // 1. Start the new instance (without health check)
         tracing::info!("Deploying {} to slot {}", app.config.name, slot);
-        let pid = self.deployment_manager.deploy(&app, slot).await?;
-        tracing::info!("Deploy started, PID: {}", pid);
+        let pid = self.deployment_manager.start_instance(&app, slot).await?;
+        tracing::info!("Instance started, PID: {}", pid);
 
-        // Get the old slot name before updating
+        // 2. Get the old slot name before updating
         let old_slot_name = {
             let apps = self.apps.lock().await;
             apps.get(app_name)
@@ -917,7 +928,10 @@ impl AppManager {
                 .unwrap_or_else(|| "unknown".to_string())
         };
 
-        // Update app info: mark new slot as running, store PID, and switch traffic
+        // 3. Switch traffic to the new slot IMMEDIATELY so the proxy
+        //    routes to the new port as soon as the app is ready, instead
+        //    of continuing to route to the old (potentially dead) slot
+        //    during the entire health check window.
         {
             let mut apps = self.apps.lock().await;
             if let Some(app_info) = apps.get_mut(app_name) {
@@ -930,7 +944,6 @@ impl AppManager {
                 instance.pid = Some(pid);
                 instance.last_started = Some(chrono::Utc::now().to_rfc3339());
 
-                // Switch traffic
                 app_info.current_slot = slot.to_string();
                 tracing::info!("Switched traffic from {} to {}", old_slot_name, slot);
             } else {
@@ -938,11 +951,9 @@ impl AppManager {
             }
         }
 
-        // Update proxy rules BEFORE stopping old slot to avoid downtime
         self.sync_routes().await;
 
-        // Reset circuit breaker for the new target so stale open-circuit state
-        // from a previous deploy cycle doesn't block traffic.
+        // Reset circuit breaker for the new target
         if let Some(ref cb) = self.circuit_breaker {
             let new_port = if slot == "blue" {
                 app.blue.port
@@ -952,9 +963,38 @@ impl AppManager {
             cb.reset_target(&format!("http://localhost:{}/", new_port));
         }
 
-        // Stop the old slot if it was running on a different slot
+        // 4. Now wait for the health check
+        let healthy = self.deployment_manager.wait_for_health(&app, slot).await?;
+        if !healthy {
+            tracing::error!(
+                "Health check failed for {} slot {}, rolling back to {}",
+                app_name,
+                slot,
+                old_slot_name
+            );
+            // Roll back: switch traffic back to old slot
+            self.deployment_manager.stop_instance(&app, slot).await?;
+            {
+                let mut apps = self.apps.lock().await;
+                if let Some(app_info) = apps.get_mut(app_name) {
+                    let instance = if slot == "blue" {
+                        &mut app_info.blue
+                    } else {
+                        &mut app_info.green
+                    };
+                    instance.status = InstanceStatus::Stopped;
+                    instance.pid = None;
+
+                    app_info.current_slot = old_slot_name.clone();
+                }
+            }
+            self.sync_routes().await;
+            anyhow::bail!("Health check failed for {} slot {}", app_name, slot);
+        }
+        tracing::info!("Health check passed for {} slot {}", app.config.name, slot);
+
+        // 5. Stop the old slot if it was running on a different slot
         if old_slot_name != "unknown" && old_slot_name != slot {
-            // Re-read from map for fresh PID (avoid stale clone)
             let old_app = {
                 let apps = self.apps.lock().await;
                 apps.get(app_name).cloned()
@@ -972,7 +1012,6 @@ impl AppManager {
                         .await?;
                     tracing::info!("Old slot {} stopped", old_slot_name);
 
-                    // Update old slot status to Stopped
                     let mut apps = self.apps.lock().await;
                     if let Some(app_info) = apps.get_mut(app_name) {
                         let old_instance = if old_slot_name == "blue" {

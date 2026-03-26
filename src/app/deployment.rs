@@ -104,6 +104,22 @@ impl DeploymentManager {
         std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(100)).is_ok()
     }
 
+    /// Mark an app as deploying (prevents concurrent deploys).
+    /// Returns false if a deploy is already in progress.
+    pub fn mark_deploying(&self, app_name: &str) -> bool {
+        let mut deploying = self.deploying_apps.lock().unwrap();
+        if deploying.contains(app_name) {
+            return false;
+        }
+        deploying.insert(app_name.to_string());
+        true
+    }
+
+    /// Unmark an app as deploying.
+    pub fn unmark_deploying(&self, app_name: &str) {
+        self.deploying_apps.lock().unwrap().remove(app_name);
+    }
+
     /// Deploy an app to a slot. Returns the PID of the started process.
     pub async fn deploy(&self, app: &AppInfo, slot: &str) -> Result<u32> {
         {
@@ -139,7 +155,7 @@ impl DeploymentManager {
         Ok(pid)
     }
 
-    async fn start_instance(&self, app: &AppInfo, slot: &str) -> Result<u32> {
+    pub async fn start_instance(&self, app: &AppInfo, slot: &str) -> Result<u32> {
         // Validate slot and app name to prevent path traversal in log paths
         if slot != "blue" && slot != "green" {
             anyhow::bail!("Invalid slot name: {:?}", slot);
@@ -287,7 +303,7 @@ impl DeploymentManager {
         Ok(())
     }
 
-    async fn wait_for_health(&self, app: &AppInfo, slot: &str) -> Result<bool> {
+    pub async fn wait_for_health(&self, app: &AppInfo, slot: &str) -> Result<bool> {
         let port = if slot == "blue" {
             app.blue.port
         } else {
