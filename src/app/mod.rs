@@ -1251,7 +1251,10 @@ impl AppManager {
         for (app_name, port) in apps {
             // Skip apps that are currently deploying
             if self.deployment_manager.is_deploying(&app_name) {
-                tracing::debug!("Skipping health check for {} (deploy in progress)", app_name);
+                tracing::debug!(
+                    "Skipping health check for {} (deploy in progress)",
+                    app_name
+                );
                 continue;
             }
             let url = format!("http://localhost:{}{}", port, self.health_check_path);
