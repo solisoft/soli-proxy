@@ -1097,6 +1097,26 @@ impl AppManager {
         self.deploy(app_name, &slot).await
     }
 
+    pub async fn failover(&self, app_name: &str) -> Result<(), anyhow::Error> {
+        let target_slot = {
+            let apps = self.apps.lock().await;
+            let app = apps
+                .get(app_name)
+                .ok_or_else(|| anyhow::anyhow!("App not found: {}", app_name))?;
+            if app.current_slot == "blue" {
+                "green".to_string()
+            } else {
+                "blue".to_string()
+            }
+        };
+        tracing::warn!(
+            "Health check failed on current slot, failing over {} to slot {}",
+            app_name,
+            target_slot
+        );
+        self.deploy(app_name, &target_slot).await
+    }
+
     pub async fn rollback(&self, app_name: &str) -> Result<(), anyhow::Error> {
         let (app, target_slot, old_slot) = {
             let apps = self.apps.lock().await;
@@ -1307,13 +1327,13 @@ impl AppManager {
                 }
                 Err(e) => {
                     tracing::warn!(
-                        "Health check failed for {} on port {}: {}",
+                        "Health check failed for {} on port {}: {}, failing over",
                         app_name,
                         port,
                         e
                     );
-                    if let Err(e) = self.restart(&app_name).await {
-                        tracing::error!("Failed to restart {}: {}", app_name, e);
+                    if let Err(e) = self.failover(&app_name).await {
+                        tracing::error!("Failed to failover {}: {}", app_name, e);
                     }
                 }
             }
