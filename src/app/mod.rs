@@ -1017,6 +1017,9 @@ impl AppManager {
             }
         }
         self.sync_routes().await;
+        if let Err(e) = self.config_manager.reload().await {
+            tracing::error!("Failed to reload config after deploy: {}", e);
+        }
 
         // Reset circuit breaker for the new target
         if let Some(ref cb) = self.circuit_breaker {
@@ -1148,6 +1151,9 @@ impl AppManager {
 
         // Update proxy rules and reset circuit breaker BEFORE stopping old slot
         self.sync_routes().await;
+        if let Err(e) = self.config_manager.reload().await {
+            tracing::error!("Failed to reload config after rollback: {}", e);
+        }
         if let Some(ref cb) = self.circuit_breaker {
             let new_port = if target_slot == "blue" {
                 app.blue.port
