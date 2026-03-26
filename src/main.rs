@@ -156,7 +156,7 @@ struct Cli {
     #[arg(long)]
     dev: bool,
 
-    #[arg(long)]
+    #[arg(long, default_value = "true")]
     watch: bool,
 
     #[arg(long, default_value = "./sites")]
