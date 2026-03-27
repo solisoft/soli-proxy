@@ -179,7 +179,7 @@ pub fn run_tui_with_config(conf_path: &str, sites_dir: &str, dev_mode: bool) -> 
         }
         if let Ok(m) = AppManager::new(sites_dir, port_manager, config_manager.clone(), dev_mode) {
             let mgr = Arc::new(m);
-            if let Err(e) = rt.block_on(mgr.discover_apps()) {
+            if let Err(e) = rt.block_on(mgr.discover_apps_readonly()) {
                 tracing::warn!("Failed to discover apps: {}", e);
             }
             // Probe ports to detect actually running instances

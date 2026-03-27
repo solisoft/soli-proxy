@@ -398,6 +398,16 @@ impl AppManager {
     }
 
     pub async fn discover_apps(&self) -> Result<(), anyhow::Error> {
+        self.discover_apps_inner(true).await
+    }
+
+    /// Discover apps without auto-starting them. Used by the TUI to populate
+    /// the app list without interfering with an already-running daemon.
+    pub async fn discover_apps_readonly(&self) -> Result<(), anyhow::Error> {
+        self.discover_apps_inner(false).await
+    }
+
+    async fn discover_apps_inner(&self, auto_start: bool) -> Result<(), anyhow::Error> {
         tracing::info!("Discovering apps in {}", self.sites_dir.display());
         let mut apps_to_start: Vec<String> = Vec::new();
 
@@ -503,7 +513,7 @@ impl AppManager {
         }
 
         // Auto-start discovered apps in parallel (locks are per-app)
-        if !apps_to_start.is_empty() {
+        if auto_start && !apps_to_start.is_empty() {
             let manager = self.clone();
             tokio::spawn(async move {
                 let mut handles = Vec::new();
@@ -541,7 +551,9 @@ impl AppManager {
             });
         }
 
-        self.sync_routes().await;
+        if auto_start {
+            self.sync_routes().await;
+        }
         Ok(())
     }
 
