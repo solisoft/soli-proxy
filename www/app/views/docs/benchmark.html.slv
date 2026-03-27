@@ -1,0 +1,404 @@
+<!-- ============================================================ -->
+<!-- BENCHMARK -->
+<!-- ============================================================ -->
+<section class="relative py-16 sm:py-24">
+    <div class="container mx-auto max-w-7xl px-6 lg:px-8">
+        <div class="flex gap-12">
+
+            <!-- Sidebar -->
+            <aside class="hidden lg:block w-56 shrink-0">
+                <nav class="doc-sidebar sticky top-24 space-y-1 text-sm">
+                    <div class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3 px-3">Documentation</div>
+                    <a href="/docs/getting-started" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Getting Started</a>
+                    <a href="/docs/apps" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Apps</a>
+                    <a href="/docs/configuration" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Configuration</a>
+                    <a href="/docs/admin-api" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Admin API</a>
+                    <a href="/docs/scripting" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Scripting</a>
+                    <a href="/docs/security" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Security</a>
+                    <a href="/docs/deployment" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Deployment</a>
+                    <a href="/docs/benchmark" class="active block px-3 py-2 rounded-lg text-white bg-white/10 transition-all">Benchmark</a>
+                </nav>
+            </aside>
+
+            <!-- Content -->
+            <div class="flex-1 min-w-0">
+
+                <!-- Page Header -->
+                <div class="mb-12 reveal-on-scroll">
+                    <div class="flex items-center gap-3 text-sm text-gray-400 mb-4">
+                        <a href="/" class="hover:text-white transition-colors">Home</a>
+                        <svg class="w-4 h-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                        <a href="/docs" class="hover:text-white transition-colors">Docs</a>
+                        <svg class="w-4 h-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                        <span class="text-white">Benchmark</span>
+                    </div>
+                    <div class="flex items-center gap-3 mb-4">
+                        <div class="w-10 h-10 rounded-xl bg-purple-500/10 flex items-center justify-center text-purple-400">
+                            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+                        </div>
+                        <div>
+                            <h1 class="text-3xl font-bold text-white sm:text-4xl">Performance Benchmarks</h1>
+                            <p class="mt-1 text-gray-400">Detailed performance metrics for Soli Proxy components</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Benchmark Environment -->
+                <div class="reveal-on-scroll">
+                    <div class="flex items-center gap-3 mb-6">
+                        <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-purple-500/10 text-purple-400 text-lg font-bold">1</div>
+                        <h2 class="text-2xl font-bold text-white" id="environment">Benchmark Environment</h2>
+                    </div>
+
+                    <p class="text-gray-400 leading-relaxed mb-6">
+                        All benchmarks are run using Criterion.rs, a statistics-driven benchmarking library for Rust. The tests measure core proxy components including routing, load balancing, circuit breakers, and metrics collection.
+                    </p>
+
+                    <div class="rounded-xl bg-gray-900 border border-white/10 p-5 mb-8">
+                        <table class="w-full text-sm">
+                            <tbody class="divide-y divide-white/5">
+                                <tr>
+                                    <td class="py-3 text-gray-400">Benchmark Framework</td>
+                                    <td class="py-3 text-white font-mono">Criterion.rs 0.5</td>
+                                </tr>
+                                <tr>
+                                    <td class="py-3 text-gray-400">Build Profile</td>
+                                    <td class="py-3 text-white font-mono">release (LTO, opt-level=3)</td>
+                                </tr>
+                                <tr>
+                                    <td class="py-3 text-gray-400">Sample Size</td>
+                                    <td class="py-3 text-white font-mono">100 samples per benchmark</td>
+                                </tr>
+                                <tr>
+                                    <td class="py-3 text-gray-400">Warmup Time</td>
+                                    <td class="py-3 text-white font-mono">3 seconds</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Rule Matching -->
+                <div class="reveal-on-scroll mt-16">
+                    <div class="flex items-center gap-3 mb-6">
+                        <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-purple-500/10 text-purple-400 text-lg font-bold">2</div>
+                        <h2 class="text-2xl font-bold text-white" id="routing">Rule Matching Performance</h2>
+                    </div>
+
+                    <p class="text-gray-400 leading-relaxed mb-6">
+                        Routing performance is critical for proxy latency. These benchmarks measure the time to match incoming requests against configured rules.
+                    </p>
+
+                    <div class="rounded-xl bg-gray-900 border border-white/10 overflow-hidden mb-8">
+                        <table class="w-full text-sm">
+                            <thead class="bg-white/5">
+                                <tr>
+                                    <th class="text-left py-3 px-4 text-gray-400 font-medium">Benchmark</th>
+                                    <th class="text-right py-3 px-4 text-gray-400 font-medium">Mean Time</th>
+                                    <th class="text-right py-3 px-4 text-gray-400 font-medium">Operations/sec</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-white/5">
+                                <tr>
+                                    <td class="py-3 px-4 text-white">domain_root</td>
+                                    <td class="py-3 px-4 text-right text-emerald-400 font-mono">53.85 ns</td>
+                                    <td class="py-3 px-4 text-right text-gray-400 font-mono">18.5M</td>
+                                </tr>
+                                <tr>
+                                    <td class="py-3 px-4 text-white">domain_nested</td>
+                                    <td class="py-3 px-4 text-right text-emerald-400 font-mono">55.88 ns</td>
+                                    <td class="py-3 px-4 text-right text-gray-400 font-mono">17.9M</td>
+                                </tr>
+                                <tr>
+                                    <td class="py-3 px-4 text-white">domain_path</td>
+                                    <td class="py-3 px-4 text-right text-emerald-400 font-mono">58.79 ns</td>
+                                    <td class="py-3 px-4 text-right text-gray-400 font-mono">17.0M</td>
+                                </tr>
+                                <tr>
+                                    <td class="py-3 px-4 text-white">prefix</td>
+                                    <td class="py-3 px-4 text-right text-emerald-400 font-mono">58.02 ns</td>
+                                    <td class="py-3 px-4 text-right text-gray-400 font-mono">17.2M</td>
+                                </tr>
+                                <tr>
+                                    <td class="py-3 px-4 text-white">regex</td>
+                                    <td class="py-3 px-4 text-right text-yellow-400 font-mono">57.42 ns</td>
+                                    <td class="py-3 px-4 text-right text-gray-400 font-mono">17.4M</td>
+                                </tr>
+                                <tr>
+                                    <td class="py-3 px-4 text-white">default_fallback</td>
+                                    <td class="py-3 px-4 text-right text-emerald-400 font-mono">58.50 ns</td>
+                                    <td class="py-3 px-4 text-right text-gray-400 font-mono">17.1M</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Rule Scaling -->
+                <div class="reveal-on-scroll mt-16">
+                    <div class="flex items-center gap-3 mb-6">
+                        <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-purple-500/10 text-purple-400 text-lg font-bold">3</div>
+                        <h2 class="text-2xl font-bold text-white" id="scaling">Rule Scaling Performance</h2>
+                    </div>
+
+                    <p class="text-gray-400 leading-relaxed mb-6">
+                        How routing performance scales with the number of configured rules. The "default" tests use random rule selection while "first" tests always match the first rule.
+                    </p>
+
+                    <div class="rounded-xl bg-gray-900 border border-white/10 overflow-hidden mb-8">
+                        <table class="w-full text-sm">
+                            <thead class="bg-white/5">
+                                <tr>
+                                    <th class="text-left py-3 px-4 text-gray-400 font-medium">Rules Count</th>
+                                    <th class="text-right py-3 px-4 text-gray-400 font-medium">Mean (Default)</th>
+                                    <th class="text-right py-3 px-4 text-gray-400 font-medium">Mean (First Match)</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-white/5">
+                                <tr>
+                                    <td class="py-3 px-4 text-white">5 rules</td>
+                                    <td class="py-3 px-4 text-right text-emerald-400 font-mono">59.76 ns</td>
+                                    <td class="py-3 px-4 text-right text-emerald-400 font-mono">63.14 ns</td>
+                                </tr>
+                                <tr>
+                                    <td class="py-3 px-4 text-white">50 rules</td>
+                                    <td class="py-3 px-4 text-right text-yellow-400 font-mono">103.71 ns</td>
+                                    <td class="py-3 px-4 text-right text-emerald-400 font-mono">55.29 ns</td>
+                                </tr>
+                                <tr>
+                                    <td class="py-3 px-4 text-white">500 rules</td>
+                                    <td class="py-3 px-4 text-right text-yellow-400 font-mono">585.52 ns</td>
+                                    <td class="py-3 px-4 text-right text-emerald-400 font-mono">55.26 ns</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="rounded-xl bg-purple-500/5 border border-purple-500/20 p-5 mb-8">
+                        <div class="flex items-start gap-3">
+                            <svg class="w-5 h-5 text-purple-400 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                            <div>
+                                <h4 class="text-white font-medium mb-1">Optimization Tip</h4>
+                                <p class="text-gray-400 text-sm">For large rule sets (100+ rules), order rules by frequency of match. The first-match strategy shows O(1) constant time for the first rule regardless of total rules.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Circuit Breaker -->
+                <div class="reveal-on-scroll mt-16">
+                    <div class="flex items-center gap-3 mb-6">
+                        <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-purple-500/10 text-purple-400 text-lg font-bold">4</div>
+                        <h2 class="text-2xl font-bold text-white" id="circuit-breaker">Circuit Breaker Performance</h2>
+                    </div>
+
+                    <p class="text-gray-400 leading-relaxed mb-6">
+                        Circuit breaker operations are highly optimized to minimize overhead on every request.
+                    </p>
+
+                    <div class="rounded-xl bg-gray-900 border border-white/10 overflow-hidden mb-8">
+                        <table class="w-full text-sm">
+                            <thead class="bg-white/5">
+                                <tr>
+                                    <th class="text-left py-3 px-4 text-gray-400 font-medium">Operation</th>
+                                    <th class="text-right py-3 px-4 text-gray-400 font-medium">Mean Time</th>
+                                    <th class="text-right py-3 px-4 text-gray-400 font-medium">Notes</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-white/5">
+                                <tr>
+                                    <td class="py-3 px-4 text-white">is_available (closed)</td>
+                                    <td class="py-3 px-4 text-right text-emerald-400 font-mono">18.81 ns</td>
+                                    <td class="py-3 px-4 text-right text-gray-400">Single atomic check</td>
+                                </tr>
+                                <tr>
+                                   <td class="py-3 px-4 text-white">is_available (1000 targets)</td>
+                                    <td class="py-3 px-4 text-right text-emerald-400 font-mono">18.54 ns</td>
+                                    <td class="py-3 px-4 text-right text-gray-400">Scales with O(1)</td>
+                                </tr>
+                                <tr>
+                                    <td class="py-3 px-4 text-white">record_success</td>
+                                    <td class="py-3 px-4 text-right text-emerald-400 font-mono">18.54 ns</td>
+                                    <td class="py-3 px-4 text-right text-gray-400">State update</td>
+                                </tr>
+                                <tr>
+                                    <td class="py-3 px-4 text-white">is_failure_status (match)</td>
+                                    <td class="py-3 px-4 text-right text-emerald-400 font-mono">1.43 ns</td>
+                                    <td class="py-3 px-4 text-right text-gray-400">Fast path</td>
+                                </tr>
+                                <tr>
+                                    <td class="py-3 px-4 text-white">is_failure_status (no match)</td>
+                                    <td class="py-3 px-4 text-right text-emerald-400 font-mono">2.15 ns</td>
+                                    <td class="py-3 px-4 text-right text-gray-400">Fast path</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Load Balancer -->
+                <div class="reveal-on-scroll mt-16">
+                    <div class="flex items-center gap-3 mb-6">
+                        <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-purple-500/10 text-purple-400 text-lg font-bold">5</div>
+                        <h2 class="text-2xl font-bold text-white" id="load-balancer">Load Balancer Performance</h2>
+                    </div>
+
+                    <p class="text-gray-400 leading-relaxed mb-6">
+                        Round-robin load balancer selection is constant time regardless of target count.
+                    </p>
+
+                    <div class="rounded-xl bg-gray-900 border border-white/10 overflow-hidden mb-8">
+                        <table class="w-full text-sm">
+                            <thead class="bg-white/5">
+                                <tr>
+                                    <th class="text-left py-3 px-4 text-gray-400 font-medium">Targets</th>
+                                    <th class="text-right py-3 px-4 text-gray-400 font-medium">Mean Time</th>
+                                    <th class="text-right py-3 px-4 text-gray-400 font-medium">Operations/sec</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-white/5">
+                                <tr>
+                                    <td class="py-3 px-4 text-white">1 target</td>
+                                    <td class="py-3 px-4 text-right text-emerald-400 font-mono">1.56 ns</td>
+                                    <td class="py-3 px-4 text-right text-gray-400 font-mono">640M</td>
+                                </tr>
+                                <tr>
+                                    <td class="py-3 px-4 text-white">3 targets</td>
+                                    <td class="py-3 px-4 text-right text-emerald-400 font-mono">1.57 ns</td>
+                                    <td class="py-3 px-4 text-right text-gray-400 font-mono">636M</td>
+                                </tr>
+                                <tr>
+                                    <td class="py-3 px-4 text-white">10 targets</td>
+                                    <td class="py-3 px-4 text-right text-emerald-400 font-mono">1.57 ns</td>
+                                    <td class="py-3 px-4 text-right text-gray-400 font-mono">636M</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Metrics -->
+                <div class="reveal-on-scroll mt-16">
+                    <div class="flex items-center gap-3 mb-6">
+                        <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-purple-500/10 text-purple-400 text-lg font-bold">6</div>
+                        <h2 class="text-2xl font-bold text-white" id="metrics">Metrics Collection</h2>
+                    </div>
+
+                    <p class="text-gray-400 leading-relaxed mb-6">
+                        Metrics collection overhead is kept minimal to avoid impacting request latency.
+                    </p>
+
+                    <div class="rounded-xl bg-gray-900 border border-white/10 overflow-hidden mb-8">
+                        <table class="w-full text-sm">
+                            <thead class="bg-white/5">
+                                <tr>
+                                    <th class="text-left py-3 px-4 text-gray-400 font-medium">Operation</th>
+                                    <th class="text-right py-3 px-4 text-gray-400 font-medium">Mean Time</th>
+                                    <th class="text-right py-3 px-4 text-gray-400 font-medium">Operations/sec</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-white/5">
+                                <tr>
+                                    <td class="py-3 px-4 text-white">record_request</td>
+                                    <td class="py-3 px-4 text-right text-emerald-400 font-mono">29.66 ns</td>
+                                    <td class="py-3 px-4 text-right text-gray-400 font-mono">33.7M</td>
+                                </tr>
+                                <tr>
+                                    <td class="py-3 px-4 text-white">inc_dec_in_flight</td>
+                                    <td class="py-3 px-4 text-right text-emerald-400 font-mono">2.99 ns</td>
+                                    <td class="py-3 px-4 text-right text-gray-400 font-mono">334M</td>
+                                </tr>
+                                <tr>
+                                    <td class="py-3 px-4 text-white">format_metrics</td>
+                                    <td class="py-3 px-4 text-right text-yellow-400 font-mono">594.73 ns</td>
+                                    <td class="py-3 px-4 text-right text-gray-400 font-mono">1.68M</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Config Parsing -->
+                <div class="reveal-on-scroll mt-16">
+                    <div class="flex items-center gap-3 mb-6">
+                        <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-purple-500/10 text-purple-400 text-lg font-bold">7</div>
+                        <h2 class="text-2xl font-bold text-white" id="config">Config Parsing</h2>
+                    </div>
+
+                    <p class="text-gray-400 leading-relaxed mb-6">
+                        Initial configuration parsing time scales linearly with the number of rules.
+                    </p>
+
+                    <div class="rounded-xl bg-gray-900 border border-white/10 overflow-hidden mb-8">
+                        <table class="w-full text-sm">
+                            <thead class="bg-white/5">
+                                <tr>
+                                    <th class="text-left py-3 px-4 text-gray-400 font-medium">Rules Count</th>
+                                    <th class="text-right py-3 px-4 text-gray-400 font-medium">Parse Time</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-white/5">
+                                <tr>
+                                    <td class="py-3 px-4 text-white">5 rules</td>
+                                    <td class="py-3 px-4 text-right text-emerald-400 font-mono">6.74 µs</td>
+                                </tr>
+                                <tr>
+                                    <td class="py-3 px-4 text-white">100 rules</td>
+                                    <td class="py-3 px-4 text-right text-yellow-400 font-mono">45.96 µs</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="rounded-xl bg-emerald-500/5 border border-emerald-500/20 p-5 mb-8">
+                        <div class="flex items-start gap-3">
+                            <svg class="w-5 h-5 text-emerald-400 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                            <div>
+                                <h4 class="text-white font-medium mb-1">Key Findings</h4>
+                                <ul class="text-gray-400 text-sm space-y-1">
+                                    <li>• Rule matching: ~55ns constant time for common patterns</li>
+                                    <li>• Load balancing: O(1) regardless of target count</li>
+                                    <li>• Circuit breaker: &lt;20ns overhead per request</li>
+                                    <li>• Metrics collection: &lt;30ns overhead per request</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Run Benchmarks -->
+                <div class="reveal-on-scroll mt-16">
+                    <div class="flex items-center gap-3 mb-6">
+                        <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-purple-500/10 text-purple-400 text-lg font-bold">8</div>
+                        <h2 class="text-2xl font-bold text-white" id="run">Running Benchmarks</h2>
+                    </div>
+
+                    <p class="text-gray-400 leading-relaxed mb-6">
+                        To run these benchmarks locally, use Cargo bench:
+                    </p>
+
+                    <div class="rounded-2xl bg-gray-950 ring-1 ring-white/10 overflow-hidden mb-6">
+                        <div class="flex items-center justify-between px-4 py-3 border-b border-white/5">
+                            <div class="flex items-center gap-2">
+                                <div class="w-3 h-3 rounded-full bg-red-500/80"></div>
+                                <div class="w-3 h-3 rounded-full bg-yellow-500/80"></div>
+                                <div class="w-3 h-3 rounded-full bg-green-500/80"></div>
+                                <span class="ml-2 text-xs text-gray-500 font-mono">terminal</span>
+                            </div>
+                            <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors px-2 py-1 rounded hover:bg-white/5">Copy</button>
+                        </div>
+                        <pre class="p-4 text-sm leading-relaxed overflow-x-auto"><code><span class="tc"># Run all benchmarks</span>
+cargo bench
+
+<span class="tc"># Run specific benchmark</span>
+cargo bench -- routing
+
+<span class="tc"># View HTML report</span>
+open target/criterion/report/index.html</code></pre>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+</section>

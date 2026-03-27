@@ -1,0 +1,16 @@
+{
+  "name": "soli-proxy-website",
+  "version": "1.0.0",
+  "description": "Soli Proxy documentation website",
+  "scripts": {
+    "build:css": "tailwindcss -i ./app/assets/css/application.css -o ./public/css/application.css",
+    "watch:css": "tailwindcss -i ./app/assets/css/application.css -o ./public/css/application.css --watch",
+    "dev": "concurrently \"npm run watch:css\" \"soli serve . --dev\"",
+    "start": "soli serve ."
+  },
+  "devDependencies": {
+    "@tailwindcss/typography": "^0.5.19",
+    "concurrently": "^8.2.2",
+    "tailwindcss": "^3.4.1"
+  }
+}

@@ -1,0 +1,367 @@
+<!-- ============================================================ -->
+<!-- DEPLOYMENT DOCS -->
+<!-- ============================================================ -->
+<section class="relative py-16 sm:py-24">
+    <div class="container mx-auto max-w-7xl px-6 lg:px-8">
+        <div class="flex gap-12">
+
+            <!-- Sidebar -->
+            <aside class="hidden lg:block w-56 shrink-0">
+                <nav class="doc-sidebar sticky top-24 space-y-1 text-sm">
+                    <div class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3 px-3">Documentation</div>
+                    <a href="/docs/getting-started" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Getting Started</a>
+                    <a href="/docs/apps" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Apps</a>
+                    <a href="/docs/configuration" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Configuration</a>
+                    <a href="/docs/admin-api" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Admin API</a>
+                    <a href="/docs/scripting" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Scripting</a>
+                    <a href="/docs/security" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Security</a>
+                    <a href="/docs/deployment" class="active block px-3 py-2 rounded-lg text-white bg-white/10 transition-all">Deployment</a>
+                    <a href="/docs/benchmark" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Benchmark</a>
+                </nav>
+            </aside>
+
+            <!-- Content -->
+            <div class="flex-1 min-w-0">
+
+                <!-- Page Header -->
+                <div class="mb-12 reveal-on-scroll">
+                    <div class="flex items-center gap-3 text-sm text-gray-400 mb-4">
+                        <a href="/" class="hover:text-white transition-colors">Home</a>
+                        <svg class="w-4 h-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                        <a href="/docs" class="hover:text-white transition-colors">Docs</a>
+                        <svg class="w-4 h-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                        <span class="text-white">Deployment</span>
+                    </div>
+                    <div class="flex items-center gap-3 mb-4">
+                        <div class="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center text-emerald-400">
+                            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15.59 14.37a6 6 0 01-5.84 7.38v-4.8m5.84-2.58a14.98 14.98 0 006.16-12.12A14.98 14.98 0 009.631 8.41m5.96 5.96a14.926 14.926 0 01-5.841 2.58m-.119-8.54a6 6 0 00-7.381 5.84h4.8m2.581-5.84a14.927 14.927 0 00-2.58 5.841m2.699 2.7c-.103.021-.207.041-.311.06a15.09 15.09 0 01-2.448-2.448 14.9 14.9 0 01.06-.312m-2.24 2.39a4.493 4.493 0 00-1.757 4.306 4.493 4.493 0 004.306-1.758M16.5 9a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0z"/></svg>
+                        </div>
+                        <div>
+                            <h1 class="text-3xl font-bold text-white">Deployment</h1>
+                            <p class="text-gray-400 mt-1">Docker, daemon mode, systemd, and production configuration</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ============================================================ -->
+                <!-- DEPLOYMENT EXAMPLES -->
+                <!-- ============================================================ -->
+                <div class="mb-16 reveal-on-scroll">
+                    <h2 class="text-xl font-bold text-white mb-2 flex items-center gap-2">
+                        <span class="text-emerald-400">#</span> Deployment Examples
+                    </h2>
+                    <p class="text-gray-400 mb-6">Choose the deployment strategy that best fits your infrastructure. All examples assume you have already built or downloaded the <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">soli-proxy</code> binary.</p>
+
+                    <!-- Tabbed Code Block -->
+                    <div class="code-window rounded-xl border border-white/10 bg-gray-900/80 overflow-hidden">
+                        <!-- Tab Bar -->
+                        <div class="flex items-center gap-1 px-4 py-2 bg-black/30 border-b border-white/5 overflow-x-auto">
+                            <button data-tab-btn="deploy" data-tab="dockerfile" onclick="switchTab('deploy','dockerfile')" class="px-3 py-1.5 text-xs font-medium rounded-md transition-all text-white bg-white/10 shadow-sm">Dockerfile</button>
+                            <button data-tab-btn="deploy" data-tab="compose" onclick="switchTab('deploy','compose')" class="px-3 py-1.5 text-xs font-medium rounded-md transition-all text-gray-400 hover:text-white hover:bg-white/5">docker-compose</button>
+                            <button data-tab-btn="deploy" data-tab="daemon" onclick="switchTab('deploy','daemon')" class="px-3 py-1.5 text-xs font-medium rounded-md transition-all text-gray-400 hover:text-white hover:bg-white/5">Daemon Mode</button>
+                            <button data-tab-btn="deploy" data-tab="systemd" onclick="switchTab('deploy','systemd')" class="px-3 py-1.5 text-xs font-medium rounded-md transition-all text-gray-400 hover:text-white hover:bg-white/5">systemd</button>
+                            <div class="ml-auto">
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors px-2 py-1">Copy</button>
+                            </div>
+                        </div>
+
+                        <!-- Dockerfile Tab -->
+                        <div id="deploy-dockerfile" data-tab-group="deploy">
+                            <pre class="p-4 text-sm leading-relaxed overflow-x-auto"><code><span class="tc"># Multi-stage build for minimal image size</span>
+<span class="tk">FROM</span> rust:latest <span class="tk">AS</span> builder
+
+<span class="tk">WORKDIR</span> /usr/src/soli-proxy
+<span class="tk">COPY</span> . .
+
+<span class="tc"># Build with optional Lua scripting support</span>
+<span class="tk">RUN</span> cargo build --release
+<span class="tc"># Or with Lua 5.4 scripting:</span>
+<span class="tc"># RUN cargo build --release</span>
+
+<span class="tc"># --- Runtime stage ---</span>
+<span class="tk">FROM</span> debian:bookworm-slim
+
+<span class="tk">RUN</span> apt-get update && apt-get install -y ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+<span class="tk">COPY</span> --from=builder /usr/src/soli-proxy/target/release/soli-proxy /usr/local/bin/
+<span class="tk">COPY</span> config.toml /etc/soli-proxy/config.toml
+
+<span class="tk">EXPOSE</span> <span class="tn">80</span> <span class="tn">443</span> <span class="tn">9090</span>
+
+<span class="tk">ENTRYPOINT</span> [<span class="ts">"soli-proxy"</span>]
+<span class="tk">CMD</span> [<span class="ts">"--config"</span>, <span class="ts">"/etc/soli-proxy/config.toml"</span>]</code></pre>
+                        </div>
+
+                        <!-- docker-compose Tab -->
+                        <div id="deploy-compose" data-tab-group="deploy" class="hidden">
+                            <pre class="p-4 text-sm leading-relaxed overflow-x-auto"><code><span class="tk">version</span>: <span class="ts">"3.8"</span>
+
+<span class="tk">services</span>:
+  <span class="tf">soli-proxy</span>:
+    <span class="tk">build</span>: .
+    <span class="tk">container_name</span>: soli-proxy
+    <span class="tk">restart</span>: unless-stopped
+    <span class="tk">ports</span>:
+      - <span class="ts">"80:80"</span>       <span class="tc"># HTTP</span>
+      - <span class="ts">"443:443"</span>     <span class="tc"># HTTPS</span>
+      - <span class="ts">"9090:9090"</span>   <span class="tc"># Admin API</span>
+    <span class="tk">volumes</span>:
+      - <span class="ts">./config.toml:/etc/soli-proxy/config.toml:ro</span>
+      - <span class="ts">./certs:/etc/soli-proxy/certs</span>
+      - <span class="ts">./sites:/etc/soli-proxy/sites</span>
+    <span class="tk">environment</span>:
+      - <span class="tf">SOLI_LOG_LEVEL</span>=<span class="ts">info</span>
+    <span class="tk">cap_add</span>:
+      - NET_BIND_SERVICE</code></pre>
+                        </div>
+
+                        <!-- Daemon Mode Tab -->
+                        <div id="deploy-daemon" data-tab-group="deploy" class="hidden">
+                            <pre class="p-4 text-sm leading-relaxed overflow-x-auto"><code><span class="tc"># Start soli-proxy as a background daemon</span>
+./soli-proxy -d
+
+<span class="tc"># The daemon writes its PID and log files to</span>
+<span class="tc"># configurable directories via environment variables:</span>
+
+<span class="tc"># PID file location (default: /var/run)</span>
+<span class="tk">export</span> <span class="tf">SOLI_PID_DIR</span>=<span class="ts">"/var/run/soli-proxy"</span>
+
+<span class="tc"># Log file location (default: /var/log)</span>
+<span class="tk">export</span> <span class="tf">SOLI_LOG_DIR</span>=<span class="ts">"/var/log/soli-proxy"</span>
+
+<span class="tc"># Start as daemon with custom directories</span>
+<span class="tf">SOLI_PID_DIR</span>=<span class="ts">/opt/soli/run</span> <span class="tf">SOLI_LOG_DIR</span>=<span class="ts">/opt/soli/logs</span> ./soli-proxy -d
+
+<span class="tc"># Stop the daemon (reads PID from SOLI_PID_DIR)</span>
+<span class="tk">kill</span> $(<span class="tf">cat</span> /var/run/soli-proxy/soli-proxy.pid)</code></pre>
+                        </div>
+
+                        <!-- systemd Tab -->
+                        <div id="deploy-systemd" data-tab-group="deploy" class="hidden">
+                            <pre class="p-4 text-sm leading-relaxed overflow-x-auto"><code><span class="tc"># /etc/systemd/system/soli-proxy.service</span>
+[<span class="tk">Unit</span>]
+<span class="tf">Description</span>=<span class="ts">Soli Proxy - HTTP/2 Reverse Proxy</span>
+<span class="tf">After</span>=network.target
+<span class="tf">Documentation</span>=https://proxy.solisoft.net/docs
+
+[<span class="tk">Service</span>]
+<span class="tf">Type</span>=simple
+<span class="tf">User</span>=soli-proxy
+<span class="tf">Group</span>=soli-proxy
+<span class="tf">ExecStart</span>=<span class="ts">/usr/local/bin/soli-proxy --config /etc/soli-proxy/config.toml</span>
+<span class="tf">Restart</span>=on-failure
+<span class="tf">RestartSec</span>=<span class="tn">5</span>
+
+<span class="tc"># Allow binding to ports 80 and 443 without root</span>
+<span class="tf">AmbientCapabilities</span>=<span class="ts">CAP_NET_BIND_SERVICE</span>
+<span class="tf">NoNewPrivileges</span>=true
+
+<span class="tf">LimitNOFILE</span>=<span class="tn">65535</span>
+<span class="tf">WorkingDirectory</span>=/etc/soli-proxy
+
+[<span class="tk">Install</span>]
+<span class="tf">WantedBy</span>=multi-user.target</code></pre>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ============================================================ -->
+                <!-- PRIVILEGED PORTS -->
+                <!-- ============================================================ -->
+                <div class="mb-16 reveal-on-scroll">
+                    <h2 class="text-xl font-bold text-white mb-2 flex items-center gap-2">
+                        <span class="text-emerald-400">#</span> Privileged Ports
+                    </h2>
+                    <p class="text-gray-400 mb-6">Binding to ports 80 and 443 normally requires root. There are two recommended approaches to avoid running the proxy as root.</p>
+
+                    <div class="space-y-6">
+                        <!-- Option 1: setcap -->
+                        <div class="rounded-xl border border-white/10 bg-gray-900/60 p-6">
+                            <h3 class="text-white font-semibold mb-3 flex items-center gap-2">
+                                <span class="w-6 h-6 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center text-xs font-bold">1</span>
+                                Linux Capabilities (setcap)
+                            </h3>
+                            <p class="text-gray-400 text-sm mb-4">Grant the binary the specific capability to bind to privileged ports. This is the simplest approach for standalone deployments.</p>
+                            <div class="code-window rounded-lg border border-white/10 bg-black/30 overflow-hidden">
+                                <div class="flex items-center justify-between px-4 py-2 bg-black/30 border-b border-white/5">
+                                    <span class="text-xs text-gray-500">terminal</span>
+                                    <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors px-2 py-1">Copy</button>
+                                </div>
+                                <pre class="p-4 text-sm leading-relaxed overflow-x-auto"><code><span class="tk">sudo</span> setcap <span class="ts">'cap_net_bind_service=+ep'</span> soli-proxy</code></pre>
+                            </div>
+                        </div>
+
+                        <!-- Option 2: systemd -->
+                        <div class="rounded-xl border border-white/10 bg-gray-900/60 p-6">
+                            <h3 class="text-white font-semibold mb-3 flex items-center gap-2">
+                                <span class="w-6 h-6 rounded-full bg-cyan-500/20 text-cyan-400 flex items-center justify-center text-xs font-bold">2</span>
+                                systemd AmbientCapabilities
+                            </h3>
+                            <p class="text-gray-400 text-sm mb-4">When running under systemd, the unit file can grant the capability at runtime. No need to modify the binary itself.</p>
+                            <div class="code-window rounded-lg border border-white/10 bg-black/30 overflow-hidden">
+                                <div class="flex items-center justify-between px-4 py-2 bg-black/30 border-b border-white/5">
+                                    <span class="text-xs text-gray-500">soli-proxy.service</span>
+                                    <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors px-2 py-1">Copy</button>
+                                </div>
+                                <pre class="p-4 text-sm leading-relaxed overflow-x-auto"><code>[<span class="tk">Service</span>]
+<span class="tf">AmbientCapabilities</span>=<span class="ts">CAP_NET_BIND_SERVICE</span>
+<span class="tf">NoNewPrivileges</span>=true</code></pre>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ============================================================ -->
+                <!-- DEV MODE -->
+                <!-- ============================================================ -->
+                <div class="mb-16 reveal-on-scroll">
+                    <h2 class="text-xl font-bold text-white mb-2 flex items-center gap-2">
+                        <span class="text-emerald-400">#</span> Dev Mode
+                    </h2>
+                    <p class="text-gray-400 mb-6">Development mode streamlines local workflows with automatic <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">.test</code> domain aliases, stdout logging, and dev flags for app start scripts.</p>
+
+                    <div class="code-window rounded-xl border border-white/10 bg-gray-900/80 overflow-hidden mb-6">
+                        <div class="flex items-center justify-between px-4 py-2 bg-black/30 border-b border-white/5">
+                            <span class="text-xs text-gray-500">terminal</span>
+                            <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors px-2 py-1">Copy</button>
+                        </div>
+                        <pre class="p-4 text-sm leading-relaxed overflow-x-auto"><code><span class="tc"># Start Soli Proxy in development mode</span>
+./soli-proxy --dev</code></pre>
+                    </div>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div class="rounded-xl border border-white/10 bg-gray-900/60 p-5">
+                            <div class="flex items-center gap-2 mb-3">
+                                <svg class="w-4 h-4 text-emerald-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                                <h3 class="text-white font-semibold text-sm">Dev Flag for Apps</h3>
+                            </div>
+                            <p class="text-gray-400 text-sm">Adds <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">--dev</code> flag to app start scripts, enabling framework-specific dev features like hot reload and debug logging.</p>
+                        </div>
+
+                        <div class="rounded-xl border border-white/10 bg-gray-900/60 p-5">
+                            <div class="flex items-center gap-2 mb-3">
+                                <svg class="w-4 h-4 text-cyan-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"/></svg>
+                                <h3 class="text-white font-semibold text-sm">.test Domain Aliases</h3>
+                            </div>
+                            <p class="text-gray-400 text-sm">Automatically registers <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">.test</code> domain aliases (e.g., <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">app.example.test</code>) for each configured app.</p>
+                        </div>
+
+                        <div class="rounded-xl border border-white/10 bg-gray-900/60 p-5">
+                            <div class="flex items-center gap-2 mb-3">
+                                <svg class="w-4 h-4 text-teal-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                                <h3 class="text-white font-semibold text-sm">Stdout Logging</h3>
+                            </div>
+                            <p class="text-gray-400 text-sm">All logs go to stdout for easy viewing in your terminal. No log files to manage during development.</p>
+                        </div>
+
+                        <div class="rounded-xl border border-white/10 bg-gray-900/60 p-5">
+                            <div class="flex items-center gap-2 mb-3">
+                                <svg class="w-4 h-4 text-amber-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+                                <h3 class="text-white font-semibold text-sm">Use .test, Not .dev</h3>
+                            </div>
+                            <p class="text-gray-400 text-sm">Recommended: use the <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">.test</code> TLD for local development. The <code class="text-gray-300 text-xs bg-gray-500/10 px-1.5 py-0.5 rounded">.dev</code> TLD is owned by Google and forces HSTS in browsers.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ============================================================ -->
+                <!-- PROJECT ROADMAP -->
+                <!-- ============================================================ -->
+                <div class="mb-16 reveal-on-scroll">
+                    <h2 class="text-xl font-bold text-white mb-2 flex items-center gap-2">
+                        <span class="text-emerald-400">#</span> Project Roadmap
+                    </h2>
+                    <p class="text-gray-400 mb-6">Current feature status and maturity. Soli Proxy ships with a comprehensive feature set; additional capabilities are available through Lua scripting.</p>
+
+                    <div class="rounded-xl border border-white/10 bg-gray-900/80 overflow-hidden">
+                        <table class="w-full text-sm">
+                            <thead>
+                                <tr class="border-b border-white/10 bg-black/20">
+                                    <th class="text-left text-gray-400 font-semibold px-6 py-3">Feature</th>
+                                    <th class="text-left text-gray-400 font-semibold px-6 py-3">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-white/5">
+                                <tr class="hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-3 text-white">HTTP/2 Proxy</td>
+                                    <td class="px-6 py-3"><span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/20"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>Stable</span></td>
+                                </tr>
+                                <tr class="hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-3 text-white">Automatic TLS</td>
+                                    <td class="px-6 py-3"><span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/20"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>Stable</span></td>
+                                </tr>
+                                <tr class="hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-3 text-white">Let's Encrypt (ACME)</td>
+                                    <td class="px-6 py-3"><span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/20"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>Stable</span></td>
+                                </tr>
+                                <tr class="hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-3 text-white">Prometheus Metrics</td>
+                                    <td class="px-6 py-3"><span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/20"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>Stable</span></td>
+                                </tr>
+                                <tr class="hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-3 text-white">Hot Config Reload</td>
+                                    <td class="px-6 py-3"><span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/20"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>Stable</span></td>
+                                </tr>
+                                <tr class="hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-3 text-white">App Hosting</td>
+                                    <td class="px-6 py-3"><span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/20"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>Stable</span></td>
+                                </tr>
+                                <tr class="hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-3 text-white">Blue-Green Deployment</td>
+                                    <td class="px-6 py-3"><span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/20"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>Stable</span></td>
+                                </tr>
+                                <tr class="hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-3 text-white">WebSocket Proxy</td>
+                                    <td class="px-6 py-3"><span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/20"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>Stable</span></td>
+                                </tr>
+                                <tr class="hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-3 text-white">Lua 5.4 Scripting</td>
+                                    <td class="px-6 py-3"><span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/20"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>Stable</span></td>
+                                </tr>
+                                <tr class="hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-3 text-white">Circuit Breaker</td>
+                                    <td class="px-6 py-3"><span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/20"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>Stable</span></td>
+                                </tr>
+                                <tr class="hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-3 text-white">Admin REST API</td>
+                                    <td class="px-6 py-3"><span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/20"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>Stable</span></td>
+                                </tr>
+                                <tr class="hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-3 text-white">Rate Limiting</td>
+                                    <td class="px-6 py-3"><span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-cyan-500/10 text-cyan-400 ring-1 ring-cyan-500/20"><span class="w-1.5 h-1.5 rounded-full bg-cyan-400"></span>Via Lua</span></td>
+                                </tr>
+                                <tr class="hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-3 text-white">Authentication</td>
+                                    <td class="px-6 py-3"><span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-cyan-500/10 text-cyan-400 ring-1 ring-cyan-500/20"><span class="w-1.5 h-1.5 rounded-full bg-cyan-400"></span>Via Lua</span></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- ============================================================ -->
+                <!-- NAVIGATION -->
+                <!-- ============================================================ -->
+                <!-- Navigation -->
+                <div class="flex items-center justify-between pt-8 border-t border-white/10 reveal-on-scroll">
+                    <a href="/docs/security" class="group flex items-center gap-3 text-gray-400 hover:text-white transition-colors">
+                        <svg class="w-5 h-5 transition-transform group-hover:-translate-x-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 17l-5-5m0 0l5-5m-5 5h12"/></svg>
+                        <div>
+                            <div class="text-xs text-gray-500">Previous</div>
+                            <div class="font-medium">Security</div>
+                        </div>
+                    </a>
+                    <a href="/docs/getting-started" class="group flex items-center gap-3 text-gray-400 hover:text-white transition-colors text-right">
+                        <div>
+                            <div class="text-xs text-gray-500">Next</div>
+                            <div class="font-medium">Getting Started</div>
+                        </div>
+                        <svg class="w-5 h-5 transition-transform group-hover:translate-x-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+                    </a>
+                </div>
+
+            </div>
+        </div>
+    </div>
+</section>

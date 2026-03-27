@@ -1,0 +1,15 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+    .btn {
+        @apply px-6 py-3 rounded-xl font-semibold transition-all duration-300 text-sm;
+    }
+    .btn-primary {
+        @apply bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-500/25 hover:shadow-emerald-500/40 hover:scale-105;
+    }
+    .btn-outline {
+        @apply ring-1 ring-white/20 hover:ring-white/40 hover:bg-white/5 text-white backdrop-blur-sm;
+    }
+}

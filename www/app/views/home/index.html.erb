@@ -1,0 +1,252 @@
+<!-- ============================================================ -->
+<!-- HERO -->
+<!-- ============================================================ -->
+<section id="hero" class="relative isolate overflow-hidden">
+    <div class="absolute inset-0 -z-10 overflow-hidden">
+        <div class="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full bg-emerald-600/20 blur-[120px] animate-blob"></div>
+        <div class="absolute top-[-10%] right-[-10%] w-[40%] h-[40%] rounded-full bg-cyan-600/20 blur-[120px] animate-blob animation-delay-2000"></div>
+        <div class="absolute bottom-[-10%] left-[20%] w-[40%] h-[40%] rounded-full bg-teal-600/20 blur-[120px] animate-blob animation-delay-4000"></div>
+        <div class="absolute bottom-[-20%] right-[10%] w-[40%] h-[40%] rounded-full bg-emerald-600/15 blur-[120px] animate-blob animation-delay-6000"></div>
+        <div class="absolute inset-0 bg-[linear-gradient(to_right,rgba(255,255,255,0.02)_1px,transparent_1px),linear-gradient(to_bottom,rgba(255,255,255,0.02)_1px,transparent_1px)] bg-[size:4rem_4rem]"></div>
+    </div>
+
+    <div class="container mx-auto max-w-7xl px-6 py-24 sm:py-32 lg:py-40 lg:px-8">
+        <div class="text-center">
+            <div class="mb-8 flex justify-center reveal-on-scroll">
+                <div class="relative rounded-full px-4 py-1.5 text-sm leading-6 text-gray-300 ring-1 ring-white/10 hover:ring-white/20 hover:bg-white/5 transition-all cursor-default backdrop-blur-md bg-white/5">
+                    <span class="inline-flex items-center gap-2">
+                        <span class="relative flex h-2 w-2">
+                            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                            <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                        </span>
+                        <span class="font-medium text-emerald-300">Built with Rust</span>
+                        <span class="w-1 h-1 rounded-full bg-gray-600"></span>
+                        <span>Hyper 1.0 &middot; HTTP/2 &middot; TLS</span>
+                    </span>
+                </div>
+            </div>
+
+            <h1 class="text-4xl font-bold tracking-tight text-white sm:text-6xl lg:text-7xl reveal-on-scroll" style="transition-delay: 100ms;">
+                <span class="block">HTTP/2 Reverse</span>
+                <span class="inline-block mt-2 bg-gradient-to-r from-emerald-300 via-cyan-300 to-teal-300 bg-clip-text text-transparent pb-2">Proxy Server</span>
+            </h1>
+
+            <p class="mt-6 text-lg leading-8 text-gray-300 sm:text-xl max-w-2xl mx-auto reveal-on-scroll" style="transition-delay: 200ms;">
+                High-performance proxy with automatic TLS, app hosting with blue-green deployments,
+                Lua scripting, circuit breakers, and WebSocket support.
+            </p>
+
+            <div class="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4 reveal-on-scroll" style="transition-delay: 300ms;">
+                <a href="/docs/getting-started" class="group relative inline-flex items-center justify-center gap-2 rounded-xl bg-white px-8 py-4 text-sm font-semibold text-gray-900 shadow-lg shadow-emerald-500/20 hover:bg-gray-50 transition-all duration-300 hover:scale-105 hover:shadow-xl hover:shadow-emerald-500/30">
+                    <span>Get Started</span>
+                    <svg class="w-4 h-4 transition-transform group-hover:translate-x-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+                </a>
+                <a href="https://github.com/solisoft/soli-proxy" target="_blank" class="group inline-flex items-center justify-center gap-2 rounded-xl px-8 py-4 text-sm font-semibold text-white ring-1 ring-white/20 hover:ring-white/40 hover:bg-white/5 transition-all duration-300 backdrop-blur-sm">
+                    <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clip-rule="evenodd"/></svg>
+                    <span>View on GitHub</span>
+                </a>
+            </div>
+
+            <div class="mt-16 flex flex-wrap justify-center gap-8 sm:gap-16 reveal-on-scroll" style="transition-delay: 400ms;">
+                <div class="text-center group">
+                    <div class="text-3xl font-bold text-white group-hover:text-emerald-400 transition-colors">18M+</div>
+                    <div class="text-sm text-gray-400 mt-1">Routing ops/s</div>
+                </div>
+                <div class="text-center group">
+                    <div class="text-3xl font-bold text-white group-hover:text-cyan-400 transition-colors">&lt;0.3ms</div>
+                    <div class="text-sm text-gray-400 mt-1">Proxy Latency</div>
+                </div>
+                <div class="text-center group">
+                    <div class="text-3xl font-bold text-white group-hover:text-teal-400 transition-colors">Zero</div>
+                    <div class="text-sm text-gray-400 mt-1">Downtime Deploys</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- FEATURES GRID -->
+<!-- ============================================================ -->
+<section id="features" class="relative py-24 sm:py-32">
+    <div class="container mx-auto max-w-7xl px-6 lg:px-8">
+        <div class="reveal-on-scroll">
+            <h2 class="text-base font-semibold leading-7 text-emerald-400 tracking-wide uppercase">Why Soli Proxy?</h2>
+            <p class="mt-2 text-3xl font-bold tracking-tight text-white sm:text-4xl">Everything you need in a modern reverse proxy</p>
+            <p class="mt-6 text-lg leading-8 text-gray-400">Built on Rust &amp; Hyper 1.0 for maximum performance with zero compromises on features.</p>
+        </div>
+
+        <div class="mt-16 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 lg:gap-8">
+            <!-- App Hosting (spans 2) -->
+            <div class="group relative rounded-3xl bg-gray-900 border border-white/10 p-8 lg:col-span-2 hover:bg-white/5 transition-all duration-300 reveal-on-scroll overflow-hidden">
+                <div class="absolute top-0 right-0 -mt-20 -mr-20 w-80 h-80 bg-emerald-500/20 rounded-full blur-3xl group-hover:bg-emerald-500/30 transition-all duration-500"></div>
+                <div class="relative flex flex-col md:flex-row gap-8 items-start md:items-center h-full">
+                    <div class="flex-1">
+                        <div class="flex h-12 w-12 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-400 mb-6 group-hover:scale-110 transition-transform">
+                            <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 14.25h13.5m-13.5 0a3 3 0 01-3-3m3 3a3 3 0 100 6h13.5a3 3 0 100-6m-16.5-3a3 3 0 013-3h13.5a3 3 0 013 3m-19.5 0a4.5 4.5 0 01.9-2.7L5.737 5.1a3.375 3.375 0 012.7-1.35h7.126c1.062 0 2.062.5 2.7 1.35l2.587 3.45a4.5 4.5 0 01.9 2.7m0 0a3 3 0 01-3 3m0 3h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008zm-3 6h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008z"/></svg>
+                        </div>
+                        <h3 class="text-2xl font-bold text-white mb-3">App Hosting &amp; Blue-Green Deploys</h3>
+                        <p class="text-gray-400 leading-relaxed">Drop a Soli app in <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">sites/</code> and it's live. Auto-discovery, port allocation, health checks, and zero-downtime blue-green deployments. Domains get TLS certificates automatically.</p>
+                    </div>
+                    <div class="hidden md:block w-1/3 bg-black/30 rounded-lg p-4 font-mono text-xs text-emerald-300 border border-emerald-500/20 shadow-lg">
+                        <div class="text-gray-500">sites/myapp/app.infos</div>
+                        <div class="mt-2">name = <span class="ts">"myapp"</span></div>
+                        <div>domain = <span class="ts">"my.app.com"</span></div>
+                        <div>start_script = <span class="ts">"./start.sh"</span></div>
+                        <div>health_check = <span class="ts">"/health"</span></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Automatic TLS -->
+            <div class="group relative rounded-3xl bg-gray-900 border border-white/10 p-8 hover:bg-white/5 transition-all duration-300 reveal-on-scroll overflow-hidden" style="transition-delay: 100ms;">
+                <div class="absolute bottom-0 left-0 w-full h-1/2 bg-gradient-to-t from-cyan-500/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
+                <div class="flex h-12 w-12 items-center justify-center rounded-xl bg-cyan-500/10 text-cyan-400 mb-6 group-hover:scale-110 transition-transform">
+                    <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/></svg>
+                </div>
+                <h3 class="text-xl font-bold text-white mb-3">Automatic TLS</h3>
+                <p class="text-gray-400 leading-relaxed mb-4">Self-signed certs for dev, Let's Encrypt for production. Per-domain SNI routing with auto-renewal.</p>
+                <ul class="space-y-2 text-sm text-gray-300">
+                    <li class="flex items-center gap-2"><svg class="w-4 h-4 text-emerald-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>ACME HTTP-01 Challenges</li>
+                    <li class="flex items-center gap-2"><svg class="w-4 h-4 text-emerald-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>12h Auto-Renewal Check</li>
+                    <li class="flex items-center gap-2"><svg class="w-4 h-4 text-emerald-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Self-Signed Fallback</li>
+                </ul>
+            </div>
+
+            <!-- WebSocket Proxy -->
+            <div class="group relative rounded-3xl bg-gray-900 border border-white/10 p-8 hover:bg-white/5 transition-all duration-300 reveal-on-scroll" style="transition-delay: 200ms;">
+                <div class="flex h-12 w-12 items-center justify-center rounded-xl bg-teal-500/10 text-teal-400 mb-6 group-hover:scale-110 transition-transform">
+                    <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5"/></svg>
+                </div>
+                <h3 class="text-xl font-bold text-white mb-2">WebSocket Proxy</h3>
+                <p class="text-gray-400 text-sm">Transparent WebSocket proxying with bidirectional streaming. Works with livereload, real-time apps, and any WS protocol.</p>
+            </div>
+
+            <!-- Hot Reload -->
+            <div class="group relative rounded-3xl bg-gray-900 border border-white/10 p-8 hover:bg-white/5 transition-all duration-300 reveal-on-scroll" style="transition-delay: 300ms;">
+                <div class="flex h-12 w-12 items-center justify-center rounded-xl bg-teal-500/10 text-teal-400 mb-6 group-hover:rotate-12 transition-transform">
+                    <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/></svg>
+                </div>
+                <h3 class="text-xl font-bold text-white mb-2">Hot Config Reload</h3>
+                <p class="text-gray-400 text-sm">Config changes applied instantly without restarting. Send SIGUSR1, use the Admin API, or let the file watcher do it automatically.</p>
+            </div>
+
+            <!-- Lua Scripting -->
+            <div class="group relative rounded-3xl bg-gray-900 border border-white/10 p-8 hover:bg-white/5 transition-all duration-300 reveal-on-scroll" style="transition-delay: 400ms;">
+                <div class="flex h-12 w-12 items-center justify-center rounded-xl bg-cyan-500/10 text-cyan-400 mb-6 group-hover:scale-110 transition-transform">
+                    <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M17.25 6.75L22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3l-4.5 16.5"/></svg>
+                </div>
+                <h3 class="text-xl font-bold text-white mb-2">Lua 5.4 Scripting</h3>
+                <p class="text-gray-400 text-sm">Extend with Lua scripts for auth, routing, response transform, and logging. Per-route or global. Zero overhead when disabled.</p>
+            </div>
+
+            <!-- Circuit Breaker + Metrics -->
+            <div class="group relative rounded-3xl bg-gray-900 border border-white/10 p-8 hover:bg-white/5 transition-all duration-300 reveal-on-scroll" style="transition-delay: 500ms;">
+                <div class="flex h-12 w-12 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-400 mb-6 group-hover:scale-110 transition-transform">
+                    <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z"/></svg>
+                </div>
+                <h3 class="text-xl font-bold text-white mb-2">Circuit Breaker &amp; Metrics</h3>
+                <p class="text-gray-400 text-sm">Per-backend circuit breaker with automatic failover. Built-in Prometheus /metrics endpoint for Grafana dashboards.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- DOCS OVERVIEW -->
+<!-- ============================================================ -->
+<section class="relative py-24 sm:py-32 bg-white/[0.02]">
+    <div class="container mx-auto max-w-7xl px-6 lg:px-8">
+        <div class="mb-12 reveal-on-scroll text-center">
+            <h2 class="text-3xl font-bold tracking-tight text-white sm:text-4xl">
+                <span class="bg-gradient-to-r from-emerald-400 via-cyan-400 to-teal-400 bg-clip-text text-transparent">Documentation</span>
+            </h2>
+            <p class="mt-4 text-lg text-gray-400">Everything you need to get started and go to production</p>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 reveal-on-scroll">
+            <a href="/docs/getting-started" class="group rounded-2xl bg-gray-900 border border-white/10 p-6 hover:bg-white/5 hover:border-emerald-500/30 transition-all duration-300">
+                <div class="flex items-center gap-3 mb-3">
+                    <div class="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400 group-hover:scale-110 transition-transform">
+                        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                    </div>
+                    <h3 class="font-bold text-white group-hover:text-emerald-400 transition-colors">Getting Started</h3>
+                </div>
+                <p class="text-sm text-gray-400">Install, configure, and run your first proxy in under a minute.</p>
+            </a>
+            <a href="/docs/apps" class="group rounded-2xl bg-gray-900 border border-white/10 p-6 hover:bg-white/5 hover:border-emerald-500/30 transition-all duration-300">
+                <div class="flex items-center gap-3 mb-3">
+                    <div class="w-8 h-8 rounded-lg bg-cyan-500/10 flex items-center justify-center text-cyan-400 group-hover:scale-110 transition-transform">
+                        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2"/></svg>
+                    </div>
+                    <h3 class="font-bold text-white group-hover:text-cyan-400 transition-colors">Apps</h3>
+                </div>
+                <p class="text-sm text-gray-400">Auto-discovery, app.infos configuration, blue-green deployments, and dev mode.</p>
+            </a>
+            <a href="/docs/configuration" class="group rounded-2xl bg-gray-900 border border-white/10 p-6 hover:bg-white/5 hover:border-emerald-500/30 transition-all duration-300">
+                <div class="flex items-center gap-3 mb-3">
+                    <div class="w-8 h-8 rounded-lg bg-teal-500/10 flex items-center justify-center text-teal-400 group-hover:scale-110 transition-transform">
+                        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                    </div>
+                    <h3 class="font-bold text-white group-hover:text-teal-400 transition-colors">Configuration</h3>
+                </div>
+                <p class="text-sm text-gray-400">Routing rules, config.toml settings, multi-domain setup, and regex patterns.</p>
+            </a>
+            <a href="/docs/admin-api" class="group rounded-2xl bg-gray-900 border border-white/10 p-6 hover:bg-white/5 hover:border-emerald-500/30 transition-all duration-300">
+                <div class="flex items-center gap-3 mb-3">
+                    <div class="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400 group-hover:scale-110 transition-transform">
+                        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                    </div>
+                    <h3 class="font-bold text-white group-hover:text-emerald-400 transition-colors">Admin API</h3>
+                </div>
+                <p class="text-sm text-gray-400">REST API for runtime management, app control, route CRUD, and metrics.</p>
+            </a>
+            <a href="/docs/scripting" class="group rounded-2xl bg-gray-900 border border-white/10 p-6 hover:bg-white/5 hover:border-emerald-500/30 transition-all duration-300">
+                <div class="flex items-center gap-3 mb-3">
+                    <div class="w-8 h-8 rounded-lg bg-cyan-500/10 flex items-center justify-center text-cyan-400 group-hover:scale-110 transition-transform">
+                        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>
+                    </div>
+                    <h3 class="font-bold text-white group-hover:text-cyan-400 transition-colors">Lua Scripting</h3>
+                </div>
+                <p class="text-sm text-gray-400">Four hook points for auth, routing, response transforms, and logging.</p>
+            </a>
+            <a href="/docs/security" class="group rounded-2xl bg-gray-900 border border-white/10 p-6 hover:bg-white/5 hover:border-emerald-500/30 transition-all duration-300">
+                <div class="flex items-center gap-3 mb-3">
+                    <div class="w-8 h-8 rounded-lg bg-teal-500/10 flex items-center justify-center text-teal-400 group-hover:scale-110 transition-transform">
+                        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+                    </div>
+                    <h3 class="font-bold text-white group-hover:text-teal-400 transition-colors">TLS &amp; Security</h3>
+                </div>
+                <p class="text-sm text-gray-400">ACME certificates, circuit breakers, and per-backend failover protection.</p>
+            </a>
+        </div>
+    </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- CTA -->
+<!-- ============================================================ -->
+<section class="relative py-24 sm:py-32">
+    <div class="container mx-auto max-w-7xl px-6 lg:px-8">
+        <div class="relative isolate overflow-hidden rounded-3xl bg-gradient-to-r from-emerald-900 to-cyan-900 px-8 py-16 sm:px-16 sm:py-24 shadow-2xl ring-1 ring-white/10">
+            <div class="absolute -top-24 right-0 -z-10 transform-gpu blur-3xl opacity-50" aria-hidden="true">
+                <div class="aspect-[1404/767] w-[87.75rem] bg-gradient-to-r from-emerald-400 to-cyan-400 opacity-25"></div>
+            </div>
+
+            <div class="reveal-on-scroll text-center">
+                <h2 class="text-3xl font-bold tracking-tight text-white sm:text-4xl">Ready to deploy?</h2>
+                <p class="mt-4 text-lg leading-8 text-emerald-100">
+                    Get Soli Proxy running in under a minute. Rust-powered performance, zero-downtime deployments.
+                </p>
+                <div class="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4">
+                    <a href="/docs/getting-started" class="rounded-xl bg-white px-8 py-4 text-sm font-bold text-gray-900 shadow-lg hover:bg-gray-50 transition-all duration-300 hover:scale-105">
+                        Quick Start Guide
+                    </a>
+                    <a href="https://github.com/solisoft/soli-proxy" target="_blank" class="rounded-xl px-8 py-4 text-sm font-semibold text-white ring-2 ring-white/30 hover:ring-white/50 hover:bg-white/10 transition-all duration-300">
+                        View on GitHub
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

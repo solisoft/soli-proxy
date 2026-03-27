@@ -1,0 +1,383 @@
+<!-- ============================================================ -->
+<!-- GETTING STARTED -->
+<!-- ============================================================ -->
+<section class="relative py-16 sm:py-24">
+    <div class="container mx-auto max-w-7xl px-6 lg:px-8">
+        <div class="flex gap-12">
+
+            <!-- Sidebar -->
+            <aside class="hidden lg:block w-56 shrink-0">
+                <nav class="doc-sidebar sticky top-24 space-y-1 text-sm">
+                    <div class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3 px-3">Documentation</div>
+                    <a href="/docs/getting-started" class="active block px-3 py-2 rounded-lg text-white bg-white/10 transition-all">Getting Started</a>
+                    <a href="/docs/apps" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Apps</a>
+                    <a href="/docs/configuration" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Configuration</a>
+                    <a href="/docs/admin-api" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Admin API</a>
+                    <a href="/docs/scripting" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Scripting</a>
+                    <a href="/docs/security" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Security</a>
+                    <a href="/docs/deployment" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Deployment</a>
+                    <a href="/docs/benchmark" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Benchmark</a>
+                </nav>
+            </aside>
+
+            <!-- Content -->
+            <div class="flex-1 min-w-0">
+
+                <!-- Page Header -->
+                <div class="mb-12 reveal-on-scroll">
+                    <div class="flex items-center gap-3 text-sm text-gray-400 mb-4">
+                        <a href="/" class="hover:text-white transition-colors">Home</a>
+                        <svg class="w-4 h-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                        <a href="/docs" class="hover:text-white transition-colors">Docs</a>
+                        <svg class="w-4 h-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                        <span class="text-white">Getting Started</span>
+                    </div>
+                    <div class="flex items-center gap-3 mb-4">
+                        <div class="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center text-emerald-400">
+                            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                        </div>
+                        <div>
+                            <h1 class="text-3xl font-bold text-white sm:text-4xl">Getting Started</h1>
+                            <p class="mt-1 text-gray-400">Install, configure, and run Soli Proxy in under a minute</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ============================== -->
+                <!-- 1. Installation -->
+                <!-- ============================== -->
+                <div class="reveal-on-scroll">
+                    <div class="flex items-center gap-3 mb-6">
+                        <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-400 text-lg font-bold">1</div>
+                        <h2 class="text-2xl font-bold text-white" id="installation">Installation</h2>
+                    </div>
+
+                    <p class="text-gray-400 leading-relaxed mb-6">
+                        Soli Proxy can be installed easily using the install.sh script, which downloads pre-built binaries for your platform. The script supports Linux and macOS on x86_64 and arm64 architectures.
+                    </p>
+
+                    <!-- Code: Quick install -->
+                    <div class="rounded-2xl bg-gray-950 ring-1 ring-white/10 overflow-hidden mb-6">
+                        <div class="flex items-center justify-between px-4 py-3 border-b border-white/5">
+                            <div class="flex items-center gap-2">
+                                <div class="w-3 h-3 rounded-full bg-red-500/80"></div>
+                                <div class="w-3 h-3 rounded-full bg-yellow-500/80"></div>
+                                <div class="w-3 h-3 rounded-full bg-green-500/80"></div>
+                                <span class="ml-2 text-xs text-gray-500 font-mono">terminal</span>
+                            </div>
+                            <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors px-2 py-1 rounded hover:bg-white/5">Copy</button>
+                        </div>
+                        <pre class="p-4 text-sm leading-relaxed overflow-x-auto"><code><span class="tc"># Quick install to ~/.local/bin</span>
+curl -sSL https://raw.githubusercontent.com/solisoft/soli-proxy/main/install.sh | sh
+
+<span class="tc"># Or run the script locally</span>
+chmod +x install.sh && ./install.sh
+
+<span class="tc"># For system-wide installation (requires sudo)</span>
+./install.sh --system</code></pre>
+                    </div>
+
+                    <div class="rounded-xl bg-emerald-500/5 border border-emerald-500/20 p-5 mb-8">
+                        <div class="flex items-start gap-3">
+                            <svg class="w-5 h-5 text-emerald-400 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                            <div>
+                                <p class="text-sm text-emerald-200 font-semibold mb-1">Platform support</p>
+                                <p class="text-sm text-gray-400">The install.sh script automatically detects your OS (Linux, macOS) and architecture (x86_64, arm64). Add <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">~/.local/bin</code> to your PATH if needed.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <p class="text-gray-400 leading-relaxed mb-6">
+                        Alternatively, you can build Soli Proxy from source. You need a working Rust toolchain (<code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">rustc 1.75+</code>). Clone the repository and compile the release binary.
+                    </p>
+
+                    <!-- Code: Clone & Build -->
+                    <div class="rounded-2xl bg-gray-950 ring-1 ring-white/10 overflow-hidden mb-6">
+                        <div class="flex items-center justify-between px-4 py-3 border-b border-white/5">
+                            <div class="flex items-center gap-2">
+                                <div class="w-3 h-3 rounded-full bg-red-500/80"></div>
+                                <div class="w-3 h-3 rounded-full bg-yellow-500/80"></div>
+                                <div class="w-3 h-3 rounded-full bg-green-500/80"></div>
+                                <span class="ml-2 text-xs text-gray-500 font-mono">terminal</span>
+                            </div>
+                            <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors px-2 py-1 rounded hover:bg-white/5">Copy</button>
+                        </div>
+                        <pre class="p-4 text-sm leading-relaxed overflow-x-auto"><code><span class="tc"># Clone the repository</span>
+git clone https://github.com/solisoft/soli-proxy.git
+<span class="tk">cd</span> soli-proxy
+
+<span class="tc"># Build the release binary</span>
+cargo build --release
+
+<span class="tc"># The binary is at soli-proxy</span></code></pre>
+                    </div>
+
+                    <p class="text-gray-400 leading-relaxed mb-6">
+                        To enable <strong class="text-white">Lua 5.4 scripting</strong>, the runtime is embedded by default and allows per-route script hooks.
+                    </p>
+
+                    <!-- Code: Build with scripting -->
+                    <div class="rounded-2xl bg-gray-950 ring-1 ring-white/10 overflow-hidden mb-8">
+                        <div class="flex items-center justify-between px-4 py-3 border-b border-white/5">
+                            <div class="flex items-center gap-2">
+                                <div class="w-3 h-3 rounded-full bg-red-500/80"></div>
+                                <div class="w-3 h-3 rounded-full bg-yellow-500/80"></div>
+                                <div class="w-3 h-3 rounded-full bg-green-500/80"></div>
+                                <span class="ml-2 text-xs text-gray-500 font-mono">terminal</span>
+                            </div>
+                            <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors px-2 py-1 rounded hover:bg-white/5">Copy</button>
+                        </div>
+                        <pre class="p-4 text-sm leading-relaxed overflow-x-auto"><code><span class="tc"># Build with Lua scripting support</span>
+cargo build --release</code></pre>
+                    </div>
+                </div>
+
+                <!-- ============================== -->
+                <!-- 2. Routing Configuration -->
+                <!-- ============================== -->
+                <div class="reveal-on-scroll mt-16">
+                    <div class="flex items-center gap-3 mb-6">
+                        <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-cyan-500/10 text-cyan-400 text-lg font-bold">2</div>
+                        <h2 class="text-2xl font-bold text-white" id="routing">Routing Configuration</h2>
+                    </div>
+
+                    <p class="text-gray-400 leading-relaxed mb-6">
+                        Routes are defined in <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">proxy.conf</code>. Each line maps a pattern to a backend using the <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">-></code> operator. Soli Proxy supports domain-based routing, path-based routing, WebSocket targets, and a default fallback.
+                    </p>
+
+                    <!-- Code: proxy.conf -->
+                    <div class="rounded-2xl bg-gray-950 ring-1 ring-white/10 overflow-hidden mb-6">
+                        <div class="flex items-center justify-between px-4 py-3 border-b border-white/5">
+                            <div class="flex items-center gap-2">
+                                <div class="w-3 h-3 rounded-full bg-red-500/80"></div>
+                                <div class="w-3 h-3 rounded-full bg-yellow-500/80"></div>
+                                <div class="w-3 h-3 rounded-full bg-green-500/80"></div>
+                                <span class="ml-2 text-xs text-gray-500 font-mono">proxy.conf</span>
+                            </div>
+                            <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors px-2 py-1 rounded hover:bg-white/5">Copy</button>
+                        </div>
+                        <pre class="p-4 text-sm leading-relaxed overflow-x-auto"><code><span class="tc"># Domain-based routing</span>
+<span class="tf">app.example.com</span>  <span class="tk">-></span>  <span class="ts">http://localhost:3000/</span>
+<span class="tf">api.example.com</span>  <span class="tk">-></span>  <span class="ts">http://localhost:8080/</span>
+
+<span class="tc"># Path-based routing (matched in order)</span>
+<span class="tf">/api/*</span>    <span class="tk">-></span>  <span class="ts">http://localhost:8888/</span>
+<span class="tf">/ws</span>       <span class="tk">-></span>  <span class="ts">ws://localhost:8888/</span>
+
+<span class="tc"># Default fallback (catches everything else)</span>
+<span class="tf">default</span>   <span class="tk">-></span>  <span class="ts">http://localhost:8080/</span></code></pre>
+                    </div>
+
+                    <div class="rounded-xl bg-emerald-500/5 border border-emerald-500/20 p-5 mb-8">
+                        <div class="flex items-start gap-3">
+                            <svg class="w-5 h-5 text-emerald-400 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                            <div>
+                                <p class="text-sm text-emerald-200 font-semibold mb-1">Routing order matters</p>
+                                <p class="text-sm text-gray-400">Domain rules are matched first by hostname. Path rules are matched in the order they appear. The <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">default</code> rule is the catch-all fallback when no other rule matches. Use <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">ws://</code> for WebSocket backends.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ============================== -->
+                <!-- 3. config.toml Overview -->
+                <!-- ============================== -->
+                <div class="reveal-on-scroll mt-16">
+                    <div class="flex items-center gap-3 mb-6">
+                        <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-teal-500/10 text-teal-400 text-lg font-bold">3</div>
+                        <h2 class="text-2xl font-bold text-white" id="config-toml">config.toml Overview</h2>
+                    </div>
+
+                    <p class="text-gray-400 leading-relaxed mb-6">
+                        Server behavior is controlled by <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">config.toml</code> in the project root. It contains sections for the HTTP server, TLS, admin API, logging, circuit breakers, and more. Here are the most important sections to get started.
+                    </p>
+
+                    <!-- Code: config.toml -->
+                    <div class="rounded-2xl bg-gray-950 ring-1 ring-white/10 overflow-hidden mb-6">
+                        <div class="flex items-center justify-between px-4 py-3 border-b border-white/5">
+                            <div class="flex items-center gap-2">
+                                <div class="w-3 h-3 rounded-full bg-red-500/80"></div>
+                                <div class="w-3 h-3 rounded-full bg-yellow-500/80"></div>
+                                <div class="w-3 h-3 rounded-full bg-green-500/80"></div>
+                                <span class="ml-2 text-xs text-gray-500 font-mono">config.toml</span>
+                            </div>
+                            <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors px-2 py-1 rounded hover:bg-white/5">Copy</button>
+                        </div>
+                        <pre class="p-4 text-sm leading-relaxed overflow-x-auto"><code><span class="tc"># --- Server ---</span>
+<span class="tt">[server]</span>
+<span class="tf">bind</span>       = <span class="ts">"0.0.0.0:80"</span>
+<span class="tf">https_port</span> = <span class="tn">443</span>
+
+<span class="tc"># --- TLS ---</span>
+<span class="tt">[tls]</span>
+<span class="tf">mode</span>      = <span class="ts">"auto"</span>       <span class="tc"># "auto" for self-signed, "letsencrypt" for prod</span>
+<span class="tf">cache_dir</span> = <span class="ts">"./certs"</span>
+
+<span class="tc"># --- Let's Encrypt (production) ---</span>
+<span class="tt">[letsencrypt]</span>
+<span class="tf">staging</span>      = <span class="tk">false</span>
+<span class="tf">email</span>        = <span class="ts">"admin@example.com"</span>
+<span class="tf">terms_agreed</span> = <span class="tk">true</span>
+
+<span class="tc"># --- Admin API ---</span>
+<span class="tt">[admin]</span>
+<span class="tf">enabled</span>       = <span class="tk">true</span>
+<span class="tf">bind</span>          = <span class="ts">"0.0.0.0:9090"</span>
+<span class="tf">api_key</span>       = <span class="ts">"your-secret-key"</span>
+<span class="tc"># username      = "admin"</span>
+<span class="tc"># password_hash = "$2b$..."</span>
+
+<span class="tc"># --- Apps ---</span>
+<span class="tt">[apps]</span>
+<span class="tc"># default_user  = "www-data"</span>
+<span class="tc"># default_group = "www-data"</span>
+
+<span class="tc"># --- Circuit Breaker ---</span>
+<span class="tt">[circuit_breaker]</span>
+<span class="tf">failure_threshold</span>    = <span class="tn">5</span>
+<span class="tf">recovery_timeout_secs</span> = <span class="tn">30</span>
+<span class="tf">success_threshold</span>    = <span class="tn">2</span>
+<span class="tf">failure_status_codes</span> = [<span class="tn">502</span>, <span class="tn">503</span>, <span class="tn">504</span>]
+
+<span class="tc"># --- Lua Scripting (optional) ---</span>
+<span class="tt">[scripting]</span>
+<span class="tf">enabled</span>        = <span class="tk">false</span>
+<span class="tf">scripts_dir</span>    = <span class="ts">"./scripts/lua"</span>
+<span class="tf">hook_timeout_ms</span> = <span class="tn">10</span></code></pre>
+                    </div>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-8">
+                        <div class="rounded-xl bg-gray-900 border border-white/10 p-5">
+                            <h4 class="text-sm font-semibold text-white mb-2 flex items-center gap-2">
+                                <svg class="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14"/></svg>
+                                Development
+                            </h4>
+                            <p class="text-sm text-gray-400">Set <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 py-0.5 rounded">tls.mode = "auto"</code> to use self-signed certificates. The proxy generates them automatically on first run.</p>
+                        </div>
+                        <div class="rounded-xl bg-gray-900 border border-white/10 p-5">
+                            <h4 class="text-sm font-semibold text-white mb-2 flex items-center gap-2">
+                                <svg class="w-4 h-4 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+                                Production
+                            </h4>
+                            <p class="text-sm text-gray-400">Set <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 py-0.5 rounded">tls.mode = "letsencrypt"</code> and configure the <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 py-0.5 rounded">[letsencrypt]</code> section with your email for automatic ACME certificates.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ============================== -->
+                <!-- 4. CLI Usage -->
+                <!-- ============================== -->
+                <div class="reveal-on-scroll mt-16">
+                    <div class="flex items-center gap-3 mb-6">
+                        <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-400 text-lg font-bold">4</div>
+                        <h2 class="text-2xl font-bold text-white" id="cli-usage">CLI Usage</h2>
+                    </div>
+
+                    <p class="text-gray-400 leading-relaxed mb-6">
+                        The <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">soli-proxy</code> binary accepts flags for daemon mode, dev mode, and a custom configuration path. By default it reads <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">./proxy.conf</code> from the current directory.
+                    </p>
+
+                    <!-- Code: CLI examples -->
+                    <div class="rounded-2xl bg-gray-950 ring-1 ring-white/10 overflow-hidden mb-6">
+                        <div class="flex items-center justify-between px-4 py-3 border-b border-white/5">
+                            <div class="flex items-center gap-2">
+                                <div class="w-3 h-3 rounded-full bg-red-500/80"></div>
+                                <div class="w-3 h-3 rounded-full bg-yellow-500/80"></div>
+                                <div class="w-3 h-3 rounded-full bg-green-500/80"></div>
+                                <span class="ml-2 text-xs text-gray-500 font-mono">terminal</span>
+                            </div>
+                            <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors px-2 py-1 rounded hover:bg-white/5">Copy</button>
+                        </div>
+                        <pre class="p-4 text-sm leading-relaxed overflow-x-auto"><code><span class="tc"># Run in foreground (reads ./proxy.conf)</span>
+soli-proxy
+
+<span class="tc"># Run as daemon (background, writes PID file)</span>
+soli-proxy <span class="tk">-d</span>
+soli-proxy <span class="tk">--daemon</span>
+
+<span class="tc"># Dev mode (apps started with --dev flag)</span>
+soli-proxy <span class="tk">--dev</span>
+
+<span class="tc"># Custom config path</span>
+soli-proxy <span class="ts">/etc/soli-proxy/proxy.conf</span>
+
+<span class="tc"># Combine flags</span>
+soli-proxy <span class="tk">-d</span> <span class="tk">--dev</span> <span class="ts">/etc/soli-proxy/proxy.conf</span></code></pre>
+                    </div>
+
+                    <!-- CLI reference table -->
+                    <div class="rounded-2xl bg-gray-950 ring-1 ring-white/10 overflow-hidden mb-6">
+                        <table class="w-full text-sm">
+                            <thead>
+                                <tr class="border-b border-white/10">
+                                    <th class="text-left px-5 py-3 text-gray-400 font-semibold">Flag</th>
+                                    <th class="text-left px-5 py-3 text-gray-400 font-semibold">Description</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-white/5">
+                                <tr>
+                                    <td class="px-5 py-3"><code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">-d</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">--daemon</code></td>
+                                    <td class="px-5 py-3 text-gray-400">Run as a background daemon. Forks the process and writes a PID file.</td>
+                                </tr>
+                                <tr>
+                                    <td class="px-5 py-3"><code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">--dev</code></td>
+                                    <td class="px-5 py-3 text-gray-400">Enable dev mode. Apps in <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 py-0.5 rounded">sites/</code> are started with the <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 py-0.5 rounded">--dev</code> flag.</td>
+                                </tr>
+                                <tr>
+                                    <td class="px-5 py-3"><code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">&lt;path&gt;</code></td>
+                                    <td class="px-5 py-3 text-gray-400">Custom path to <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 py-0.5 rounded">proxy.conf</code>. Defaults to <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 py-0.5 rounded">./proxy.conf</code> in the working directory.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- Hot reload -->
+                    <h3 class="text-lg font-semibold text-white mb-4 mt-10" id="hot-reload">Hot Reload with SIGUSR1</h3>
+
+                    <p class="text-gray-400 leading-relaxed mb-6">
+                        You can reload the routing configuration at runtime without restarting the server. Send the <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">SIGUSR1</code> signal to the running process and Soli Proxy will re-read <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">proxy.conf</code> and apply changes immediately.
+                    </p>
+
+                    <div class="rounded-2xl bg-gray-950 ring-1 ring-white/10 overflow-hidden mb-6">
+                        <div class="flex items-center justify-between px-4 py-3 border-b border-white/5">
+                            <div class="flex items-center gap-2">
+                                <div class="w-3 h-3 rounded-full bg-red-500/80"></div>
+                                <div class="w-3 h-3 rounded-full bg-yellow-500/80"></div>
+                                <div class="w-3 h-3 rounded-full bg-green-500/80"></div>
+                                <span class="ml-2 text-xs text-gray-500 font-mono">terminal</span>
+                            </div>
+                            <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors px-2 py-1 rounded hover:bg-white/5">Copy</button>
+                        </div>
+                        <pre class="p-4 text-sm leading-relaxed overflow-x-auto"><code><span class="tc"># Reload config without restart</span>
+kill -SIGUSR1 $(cat run/soli-proxy.pid)
+
+<span class="tc"># Or if you know the PID</span>
+kill -USR1 <span class="tn">12345</span></code></pre>
+                    </div>
+
+                    <div class="rounded-xl bg-cyan-500/5 border border-cyan-500/20 p-5 mb-8">
+                        <div class="flex items-start gap-3">
+                            <svg class="w-5 h-5 text-cyan-400 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                            <div>
+                                <p class="text-sm text-cyan-200 font-semibold mb-1">Zero downtime</p>
+                                <p class="text-sm text-gray-400">Config reloads are atomic. Existing connections continue on the old routing table while new connections use the updated rules. You can also reload via the <a href="/docs/admin-api" class="text-cyan-400 hover:underline">Admin API</a> if you prefer an HTTP interface.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Navigation -->
+                <div class="flex items-center justify-end pt-8 border-t border-white/10 reveal-on-scroll mt-16">
+                    <a href="/docs/apps" class="group flex items-center gap-3 text-gray-400 hover:text-white transition-colors text-right">
+                        <div>
+                            <div class="text-xs text-gray-500">Next</div>
+                            <div class="font-medium">Apps</div>
+                        </div>
+                        <svg class="w-5 h-5 transition-transform group-hover:translate-x-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+                    </a>
+                </div>
+
+            </div>
+        </div>
+    </div>
+</section>

@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><%= title %> - Soli Proxy</title>
+    <meta name="description" content="Soli Proxy - A high-performance HTTP/2 reverse proxy server built with Rust and Hyper 1.0.">
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+    <link rel="stylesheet" href="<%= public_path("css/application.css") %>">
+    <script src="/js/main.js" defer></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        code, pre { font-family: 'JetBrains Mono', monospace; }
+
+        .glass-nav {
+            background: rgba(3, 7, 18, 0.8);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .hero-gradient {
+            background-color: #030712;
+            background-image:
+                radial-gradient(ellipse 80% 50% at 50% -20%, rgba(16, 185, 129, 0.15) 0%, transparent 50%),
+                radial-gradient(ellipse 60% 40% at 100% 100%, rgba(6, 182, 212, 0.1) 0%, transparent 50%),
+                radial-gradient(ellipse 50% 30% at 0% 100%, rgba(20, 184, 166, 0.08) 0%, transparent 50%);
+            background-attachment: fixed;
+        }
+
+        .gradient-text {
+            background: linear-gradient(135deg, #6ee7b7 0%, #67e8f9 50%, #5eead4 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .btn-glow {
+            position: relative;
+            overflow: hidden;
+        }
+        .btn-glow::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
+            transform: translateX(-100%);
+            transition: transform 0.5s;
+        }
+        .btn-glow:hover::before {
+            transform: translateX(100%);
+        }
+
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb {
+            background: rgba(16, 185, 129, 0.3);
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(16, 185, 129, 0.5);
+        }
+
+        .reveal-on-scroll {
+            opacity: 0;
+            transform: translateY(30px);
+            transition: all 0.8s cubic-bezier(0.5, 0, 0, 1);
+        }
+        .reveal-visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        .mobile-nav {
+            transform: translateY(-100%);
+            transition: transform 0.3s ease;
+        }
+        .mobile-nav.open {
+            transform: translateY(0);
+        }
+
+        @keyframes blob {
+            0% { transform: translate(0px, 0px) scale(1); }
+            33% { transform: translate(30px, -50px) scale(1.1); }
+            66% { transform: translate(-20px, 20px) scale(0.9); }
+            100% { transform: translate(0px, 0px) scale(1); }
+        }
+        .animate-blob { animation: blob 7s infinite; }
+        .animation-delay-2000 { animation-delay: 2s; }
+        .animation-delay-4000 { animation-delay: 4s; }
+        .animation-delay-6000 { animation-delay: 6s; }
+
+        /* Syntax highlighting */
+        .tk { color: #c084fc; }
+        .ts { color: #4ade80; }
+        .tc { color: #64748b; }
+        .tf { color: #67e8f9; }
+        .tn { color: #fb923c; }
+        .tt { color: #f472b6; }
+
+        .doc-sidebar a.active {
+            color: #fff;
+            background: rgba(255, 255, 255, 0.1);
+        }
+    </style>
+</head>
+<body class="bg-gray-950 text-white flex flex-col min-h-full hero-gradient antialiased selection:bg-emerald-500/50 selection:text-white">
+    <!-- Navigation -->
+    <nav class="glass-nav sticky top-0 z-50">
+        <div class="px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <div class="flex items-center">
+                    <a href="/" class="flex items-center gap-3 group">
+                        <div class="relative">
+                            <div class="absolute inset-0 bg-gradient-to-br from-emerald-500 to-cyan-500 rounded-xl blur-lg opacity-50 group-hover:opacity-75 transition-opacity"></div>
+                            <div class="relative w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-500 to-cyan-500 flex items-center justify-center font-bold text-white shadow-lg">
+                                S
+                            </div>
+                        </div>
+                        <span class="text-xl font-bold tracking-tight">
+                            <span class="text-white">Soli</span>
+                            <span class="text-emerald-400 font-normal">Proxy</span>
+                        </span>
+                    </a>
+                </div>
+
+                <div class="hidden md:flex items-center gap-1">
+                    <a href="/#features" class="px-3 py-2 text-sm font-medium text-gray-300 hover:text-white rounded-lg hover:bg-white/5 transition-all">Features</a>
+                    <a href="/docs" class="px-3 py-2 text-sm font-medium text-gray-300 hover:text-white rounded-lg hover:bg-white/5 transition-all">Docs</a>
+                    <a href="https://github.com/solisoft/soli-proxy" target="_blank" class="px-3 py-2 text-sm font-medium text-gray-300 hover:text-white rounded-lg hover:bg-white/5 transition-all flex items-center gap-2">
+                        <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clip-rule="evenodd"/></svg>
+                        GitHub
+                    </a>
+                    <div class="w-px h-6 bg-white/10 mx-2"></div>
+                    <a href="/docs/getting-started" class="btn-glow ml-2 inline-flex items-center gap-2 px-5 py-2 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg transition-all shadow-lg shadow-emerald-500/25 hover:shadow-emerald-500/40">
+                        Get Started
+                        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+                    </a>
+                </div>
+
+                <div class="md:hidden flex items-center">
+                    <button onclick="toggleMobileNav()" class="p-2 text-gray-400 hover:text-white transition-colors">
+                        <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div id="mobileNav" class="mobile-nav md:hidden absolute top-full left-0 right-0 bg-gray-950/95 backdrop-blur-xl border-b border-white/5">
+            <div class="px-4 py-4 space-y-1">
+                <a href="/#features" class="block px-4 py-3 text-gray-300 hover:text-white hover:bg-white/5 rounded-lg transition-all">Features</a>
+                <a href="/docs" class="block px-4 py-3 text-gray-300 hover:text-white hover:bg-white/5 rounded-lg transition-all">Docs</a>
+                <div class="px-4 py-2 text-xs font-semibold text-gray-500 uppercase tracking-wider">Documentation</div>
+                <a href="/docs/getting-started" class="block px-6 py-2 text-gray-400 hover:text-white hover:bg-white/5 rounded-lg transition-all text-sm">Getting Started</a>
+                <a href="/docs/apps" class="block px-6 py-2 text-gray-400 hover:text-white hover:bg-white/5 rounded-lg transition-all text-sm">Apps</a>
+                <a href="/docs/configuration" class="block px-6 py-2 text-gray-400 hover:text-white hover:bg-white/5 rounded-lg transition-all text-sm">Configuration</a>
+                <a href="/docs/admin-api" class="block px-6 py-2 text-gray-400 hover:text-white hover:bg-white/5 rounded-lg transition-all text-sm">Admin API</a>
+                <a href="/docs/scripting" class="block px-6 py-2 text-gray-400 hover:text-white hover:bg-white/5 rounded-lg transition-all text-sm">Scripting</a>
+                <a href="/docs/security" class="block px-6 py-2 text-gray-400 hover:text-white hover:bg-white/5 rounded-lg transition-all text-sm">Security</a>
+                <a href="/docs/deployment" class="block px-6 py-2 text-gray-400 hover:text-white hover:bg-white/5 rounded-lg transition-all text-sm">Deployment</a>
+                <a href="https://github.com/solisoft/soli-proxy" target="_blank" class="block px-4 py-3 text-gray-300 hover:text-white hover:bg-white/5 rounded-lg transition-all">GitHub</a>
+                <div class="pt-2">
+                    <a href="/docs/getting-started" class="block px-4 py-3 text-center text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg transition-all font-semibold">Get Started</a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main class="flex-grow">
+        <%= yield %>
+    </main>
+
+    <!-- Footer -->
+    <footer class="border-t border-white/5 bg-gray-950/80 backdrop-blur-xl mt-auto">
+        <div class="py-12 px-4 sm:px-6 lg:px-8">
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-8 mb-8">
+                <div class="md:col-span-2">
+                    <div class="flex items-center gap-3 mb-4">
+                        <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-500 to-cyan-500 flex items-center justify-center font-bold text-white text-sm">S</div>
+                        <span class="font-bold text-lg text-white">Soli Proxy</span>
+                    </div>
+                    <p class="text-gray-400 text-sm">
+                        A high-performance HTTP/2 reverse proxy server built with Rust and Hyper 1.0. Automatic TLS, app hosting, and zero-downtime deployments.
+                    </p>
+                </div>
+
+                <div>
+                    <h4 class="text-sm font-semibold text-white mb-4">Documentation</h4>
+                    <ul class="space-y-2 text-sm">
+                        <li><a href="/docs/getting-started" class="text-gray-400 hover:text-white transition-colors">Getting Started</a></li>
+                        <li><a href="/docs/apps" class="text-gray-400 hover:text-white transition-colors">Apps</a></li>
+                        <li><a href="/docs/configuration" class="text-gray-400 hover:text-white transition-colors">Configuration</a></li>
+                        <li><a href="/docs/admin-api" class="text-gray-400 hover:text-white transition-colors">Admin API</a></li>
+                    </ul>
+                </div>
+
+                <div>
+                    <h4 class="text-sm font-semibold text-white mb-4">More</h4>
+                    <ul class="space-y-2 text-sm">
+                        <li><a href="/docs/scripting" class="text-gray-400 hover:text-white transition-colors">Lua Scripting</a></li>
+                        <li><a href="/docs/security" class="text-gray-400 hover:text-white transition-colors">TLS &amp; Security</a></li>
+                        <li><a href="/docs/deployment" class="text-gray-400 hover:text-white transition-colors">Deployment</a></li>
+                        <li><a href="https://github.com/solisoft/soli-proxy" target="_blank" class="text-gray-400 hover:text-white transition-colors">GitHub</a></li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="pt-8 border-t border-white/5 flex flex-col sm:flex-row items-center justify-between gap-4">
+                <p class="text-sm text-gray-500">&copy; 2026 SoliSoft. MIT License.</p>
+                <div class="flex items-center gap-6">
+                    <a href="https://github.com/solisoft/soli-proxy" target="_blank" class="text-gray-400 hover:text-white transition-colors">
+                        <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clip-rule="evenodd"/></svg>
+                    </a>
+                </div>
+            </div>
+        </div>
+    </footer>
+</body>
+</html>

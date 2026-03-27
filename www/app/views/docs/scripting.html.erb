@@ -1,0 +1,533 @@
+<!-- ============================================================ -->
+<!-- SCRIPTING DOCUMENTATION -->
+<!-- ============================================================ -->
+<section class="relative py-16 sm:py-24">
+    <div class="container mx-auto max-w-7xl px-6 lg:px-8">
+        <div class="flex gap-12">
+
+            <!-- Sidebar -->
+            <aside class="hidden lg:block w-56 shrink-0">
+                <nav class="doc-sidebar sticky top-24 space-y-1 text-sm">
+                    <div class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3 px-3">Documentation</div>
+                    <a href="/docs/getting-started" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Getting Started</a>
+                    <a href="/docs/apps" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Apps</a>
+                    <a href="/docs/configuration" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Configuration</a>
+                    <a href="/docs/admin-api" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Admin API</a>
+                    <a href="/docs/scripting" class="active block px-3 py-2 rounded-lg text-white bg-white/10 transition-all">Scripting</a>
+                    <a href="/docs/security" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Security</a>
+                    <a href="/docs/deployment" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Deployment</a>
+                    <a href="/docs/benchmark" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Benchmark</a>
+                </nav>
+            </aside>
+
+            <!-- Content -->
+            <div class="flex-1 min-w-0">
+
+                <!-- Page Header -->
+                <div class="mb-12 reveal-on-scroll">
+                    <div class="flex items-center gap-3 text-sm text-gray-400 mb-4">
+                        <a href="/" class="hover:text-white transition-colors">Home</a>
+                        <svg class="w-4 h-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                        <a href="/docs" class="hover:text-white transition-colors">Docs</a>
+                        <svg class="w-4 h-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                        <span class="text-white">Scripting</span>
+                    </div>
+                    <div class="flex items-center gap-3 mb-4">
+                        <div class="w-10 h-10 rounded-xl bg-cyan-500/10 flex items-center justify-center text-cyan-400">
+                            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>
+                        </div>
+                        <div>
+                            <h1 class="text-3xl font-bold text-white">Lua Scripting</h1>
+                            <p class="text-gray-400 text-sm mt-1">Extend Soli Proxy with Lua 5.4 scripts for auth, routing, transforms, and logging</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ============================================================ -->
+                <!-- 1. ENABLE SCRIPTING -->
+                <!-- ============================================================ -->
+                <div class="mb-12 reveal-on-scroll">
+                    <h2 class="text-xl font-bold text-white mb-4 flex items-center gap-2">
+                        <span class="w-7 h-7 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400 text-xs font-bold">1</span>
+                        Enable Scripting
+                    </h2>
+                    <p class="text-gray-400 mb-6 leading-relaxed">
+                        Scripting is enabled by default. Configure it in <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">config.toml</code>.
+                    </p>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <!-- config.toml snippet -->
+                        <div class="code-window rounded-xl bg-black/40 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2.5 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5">
+                                        <div class="w-2.5 h-2.5 rounded-full bg-red-500/60"></div>
+                                        <div class="w-2.5 h-2.5 rounded-full bg-yellow-500/60"></div>
+                                        <div class="w-2.5 h-2.5 rounded-full bg-green-500/60"></div>
+                                    </div>
+                                    <span class="text-xs text-gray-500">config.toml</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm leading-relaxed overflow-x-auto"><code><span class="tc"># Enable Lua scripting engine</span>
+<span class="tt">[scripting]</span>
+<span class="tk">enabled</span> = <span class="tk">true</span>
+<span class="tk">scripts_dir</span> = <span class="ts">"scripts/"</span>
+<span class="tk">max_memory_mb</span> = <span class="tn">64</span>
+<span class="tk">timeout_ms</span> = <span class="tn">5000</span></code></pre>
+                        </div>
+
+                        <!-- Build command -->
+                        <div class="code-window rounded-xl bg-black/40 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2.5 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5">
+                                        <div class="w-2.5 h-2.5 rounded-full bg-red-500/60"></div>
+                                        <div class="w-2.5 h-2.5 rounded-full bg-yellow-500/60"></div>
+                                        <div class="w-2.5 h-2.5 rounded-full bg-green-500/60"></div>
+                                    </div>
+                                    <span class="text-xs text-gray-500">Terminal</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm leading-relaxed overflow-x-auto"><code><span class="tc"># Build with scripting support</span>
+<span class="tf">cargo</span> build --release --features <span class="ts">scripting</span>
+
+<span class="tc"># Verify the feature is active</span>
+<span class="tf">soli-proxy</span> --version
+<span class="tc"># soli-proxy 0.1.0 [scripting]</span></code></pre>
+                        </div>
+                    </div>
+
+                    <div class="mt-4 rounded-xl bg-cyan-500/5 border border-cyan-500/20 p-4">
+                        <div class="flex items-start gap-3">
+                            <svg class="w-5 h-5 text-cyan-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                                                        <p class="text-sm text-gray-300">Lua scripting is embedded in the binary with zero additional runtime overhead.
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ============================================================ -->
+                <!-- 2. REQUEST LIFECYCLE -->
+                <!-- ============================================================ -->
+                <div class="mb-12 reveal-on-scroll">
+                    <h2 class="text-xl font-bold text-white mb-4 flex items-center gap-2">
+                        <span class="w-7 h-7 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400 text-xs font-bold">2</span>
+                        Request Lifecycle
+                    </h2>
+                    <p class="text-gray-400 mb-6 leading-relaxed">
+                        Every proxied request passes through four hook points. Each hook receives context about the request and can inspect, modify, or short-circuit the flow.
+                    </p>
+
+                    <div class="code-window rounded-xl bg-black/40 border border-white/10 overflow-hidden">
+                        <div class="flex items-center justify-between px-4 py-2.5 bg-white/5 border-b border-white/5">
+                            <div class="flex items-center gap-2">
+                                <div class="flex gap-1.5">
+                                    <div class="w-2.5 h-2.5 rounded-full bg-red-500/60"></div>
+                                    <div class="w-2.5 h-2.5 rounded-full bg-yellow-500/60"></div>
+                                    <div class="w-2.5 h-2.5 rounded-full bg-green-500/60"></div>
+                                </div>
+                                <span class="text-xs text-gray-500">Request Lifecycle</span>
+                            </div>
+                        </div>
+                        <pre class="p-4 sm:p-6 text-xs sm:text-sm leading-relaxed overflow-x-auto"><code class="text-gray-300"><span class="tc">  Client</span>
+<span class="tc">    |</span>
+<span class="tc">    v</span>
+<span class="tf">Request arrives</span>
+    |
+    v
+<span class="tk">on_request</span>(<span class="tt">req</span>)          <span class="tc">-- Auth, WAF, validation. Return req:deny() to block.</span>
+    |
+    v
+<span class="tf">find_target</span>              <span class="tc">-- Proxy resolves backend from routing table</span>
+    |
+    v
+<span class="tk">on_route</span>(<span class="tt">req</span>, <span class="tt">target</span>)    <span class="tc">-- Dynamic routing, A/B testing. Return URL to override.</span>
+    |
+    v
+<span class="tf">Backend request</span>          <span class="tc">-- Soli forwards to upstream server</span>
+    |
+    v
+<span class="tk">on_response</span>(<span class="tt">req</span>, <span class="tt">resp</span>)   <span class="tc">-- CORS, header stripping, body transform.</span>
+    |
+    v
+<span class="tk">on_request_end</span>(<span class="tt">...</span>)      <span class="tc">-- Logging, metrics. Fire-and-forget.</span>
+    |
+    v
+<span class="tc">  Client</span></code></pre>
+                    </div>
+                </div>
+
+                <!-- ============================================================ -->
+                <!-- 3. HOOK CARDS (2x2 grid) -->
+                <!-- ============================================================ -->
+                <div class="mb-12 reveal-on-scroll">
+                    <h2 class="text-xl font-bold text-white mb-4 flex items-center gap-2">
+                        <span class="w-7 h-7 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400 text-xs font-bold">3</span>
+                        Hook Reference
+                    </h2>
+                    <p class="text-gray-400 mb-6 leading-relaxed">
+                        Each hook runs in a sandboxed Lua 5.4 environment with access to the request context and built-in modules.
+                    </p>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <!-- on_request -->
+                        <div class="rounded-xl bg-gray-900 border border-white/10 p-6 hover:bg-white/[0.03] transition-all">
+                            <div class="flex items-center gap-3 mb-3">
+                                <div class="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center">
+                                    <svg class="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+                                </div>
+                                <div>
+                                    <h3 class="font-bold text-white font-mono text-sm">on_request</h3>
+                                    <span class="text-xs text-gray-500">Pre-routing</span>
+                                </div>
+                            </div>
+                            <p class="text-sm text-gray-400 mb-4">Authentication, WAF rules, request validation. Runs before the target backend is resolved.</p>
+                            <div class="rounded-lg bg-black/30 border border-white/5 p-3">
+                                <code class="text-xs text-gray-300 leading-relaxed block">
+                                    <span class="tk">function</span> <span class="tf">on_request</span>(<span class="tt">req</span>)<br>
+                                    &nbsp;&nbsp;<span class="tc">-- inspect req:method(), req:path()</span><br>
+                                    &nbsp;&nbsp;<span class="tc">-- inspect req:header("Authorization")</span><br>
+                                    &nbsp;&nbsp;<span class="tk">return</span> req:<span class="tf">deny</span>(<span class="tn">403</span>, <span class="ts">"Forbidden"</span>)<br>
+                                    <span class="tk">end</span>
+                                </code>
+                            </div>
+                        </div>
+
+                        <!-- on_route -->
+                        <div class="rounded-xl bg-gray-900 border border-white/10 p-6 hover:bg-white/[0.03] transition-all">
+                            <div class="flex items-center gap-3 mb-3">
+                                <div class="w-8 h-8 rounded-lg bg-cyan-500/10 flex items-center justify-center">
+                                    <svg class="w-4 h-4 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+                                </div>
+                                <div>
+                                    <h3 class="font-bold text-white font-mono text-sm">on_route</h3>
+                                    <span class="text-xs text-gray-500">Routing override</span>
+                                </div>
+                            </div>
+                            <p class="text-sm text-gray-400 mb-4">Dynamic routing, A/B testing, canary deploys. Return a URL string to override the resolved target.</p>
+                            <div class="rounded-lg bg-black/30 border border-white/5 p-3">
+                                <code class="text-xs text-gray-300 leading-relaxed block">
+                                    <span class="tk">function</span> <span class="tf">on_route</span>(<span class="tt">req</span>, <span class="tt">target</span>)<br>
+                                    &nbsp;&nbsp;<span class="tc">-- return URL string to override</span><br>
+                                    &nbsp;&nbsp;<span class="tk">return</span> <span class="ts">"http://canary:8081"</span><br>
+                                    <span class="tk">end</span>
+                                </code>
+                            </div>
+                        </div>
+
+                        <!-- on_response -->
+                        <div class="rounded-xl bg-gray-900 border border-white/10 p-6 hover:bg-white/[0.03] transition-all">
+                            <div class="flex items-center gap-3 mb-3">
+                                <div class="w-8 h-8 rounded-lg bg-teal-500/10 flex items-center justify-center">
+                                    <svg class="w-4 h-4 text-teal-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"/></svg>
+                                </div>
+                                <div>
+                                    <h3 class="font-bold text-white font-mono text-sm">on_response</h3>
+                                    <span class="text-xs text-gray-500">Post-backend</span>
+                                </div>
+                            </div>
+                            <p class="text-sm text-gray-400 mb-4">CORS headers, header stripping, body transforms. Modify the response before it reaches the client.</p>
+                            <div class="rounded-lg bg-black/30 border border-white/5 p-3">
+                                <code class="text-xs text-gray-300 leading-relaxed block">
+                                    <span class="tc">-- Available methods:</span><br>
+                                    resp:<span class="tf">set_header</span>(<span class="ts">"X-Key"</span>, <span class="ts">"val"</span>)<br>
+                                    resp:<span class="tf">remove_header</span>(<span class="ts">"Server"</span>)<br>
+                                    resp:<span class="tf">set_status</span>(<span class="tn">200</span>)<br>
+                                    resp:<span class="tf">replace_body</span>(<span class="ts">"new body"</span>)
+                                </code>
+                            </div>
+                        </div>
+
+                        <!-- on_request_end -->
+                        <div class="rounded-xl bg-gray-900 border border-white/10 p-6 hover:bg-white/[0.03] transition-all">
+                            <div class="flex items-center gap-3 mb-3">
+                                <div class="w-8 h-8 rounded-lg bg-orange-500/10 flex items-center justify-center">
+                                    <svg class="w-4 h-4 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                                </div>
+                                <div>
+                                    <h3 class="font-bold text-white font-mono text-sm">on_request_end</h3>
+                                    <span class="text-xs text-gray-500">Fire-and-forget</span>
+                                </div>
+                            </div>
+                            <p class="text-sm text-gray-400 mb-4">Logging, metrics collection, analytics. Receives <code class="text-orange-300 text-xs bg-orange-500/10 px-1 py-0.5 rounded">duration_ms</code> and <code class="text-orange-300 text-xs bg-orange-500/10 px-1 py-0.5 rounded">target_url</code>. Cannot modify the response.</p>
+                            <div class="rounded-lg bg-black/30 border border-white/5 p-3">
+                                <code class="text-xs text-gray-300 leading-relaxed block">
+                                    <span class="tk">function</span> <span class="tf">on_request_end</span>(<span class="tt">req</span>, <span class="tt">resp</span>,<br>
+                                    &nbsp;&nbsp;&nbsp;&nbsp;<span class="tt">duration_ms</span>, <span class="tt">target_url</span>)<br>
+                                    &nbsp;&nbsp;log.<span class="tf">info</span>(<span class="ts">"Took "</span> .. duration_ms .. <span class="ts">"ms"</span>)<br>
+                                    <span class="tk">end</span>
+                                </code>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ============================================================ -->
+                <!-- 4. SCRIPT EXAMPLES (Tabbed) -->
+                <!-- ============================================================ -->
+                <div class="mb-12 reveal-on-scroll">
+                    <h2 class="text-xl font-bold text-white mb-4 flex items-center gap-2">
+                        <span class="w-7 h-7 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400 text-xs font-bold">4</span>
+                        Script Examples
+                    </h2>
+                    <p class="text-gray-400 mb-6 leading-relaxed">
+                        Real-world examples showing common patterns. Place these in your <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">scripts/</code> directory.
+                    </p>
+
+                    <div class="code-window rounded-xl bg-black/40 border border-white/10 overflow-hidden">
+                        <!-- Tab Bar -->
+                        <div class="flex items-center gap-1 px-4 py-2.5 bg-white/5 border-b border-white/5 overflow-x-auto">
+                            <button data-tab-btn="scripts" data-tab="auth" onclick="switchTab('scripts','auth')" class="px-3 py-1.5 text-xs font-medium rounded-md transition-all text-white bg-white/10 shadow-sm">auth.lua</button>
+                            <button data-tab-btn="scripts" data-tab="routing" onclick="switchTab('scripts','routing')" class="px-3 py-1.5 text-xs font-medium rounded-md transition-all text-gray-400 hover:text-white hover:bg-white/5">routing.lua</button>
+                            <button data-tab-btn="scripts" data-tab="cors" onclick="switchTab('scripts','cors')" class="px-3 py-1.5 text-xs font-medium rounded-md transition-all text-gray-400 hover:text-white hover:bg-white/5">cors.lua</button>
+                            <button data-tab-btn="scripts" data-tab="ratelimit" onclick="switchTab('scripts','ratelimit')" class="px-3 py-1.5 text-xs font-medium rounded-md transition-all text-gray-400 hover:text-white hover:bg-white/5">rate_limit.lua</button>
+                            <div class="flex-1"></div>
+                            <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors shrink-0">Copy</button>
+                        </div>
+
+                        <!-- auth.lua -->
+                        <div id="scripts-auth" data-tab-group="scripts">
+                            <pre class="p-4 sm:p-6 text-sm leading-relaxed overflow-x-auto"><code><span class="tc">-- auth.lua: Basic authentication with environment-stored credentials</span>
+<span class="tc">-- Attach to routes that need authentication</span>
+
+<span class="tk">local</span> base64 = <span class="tf">require</span>(<span class="ts">"base64"</span>)
+<span class="tk">local</span> crypto = <span class="tf">require</span>(<span class="ts">"crypto"</span>)
+<span class="tk">local</span> env    = <span class="tf">require</span>(<span class="ts">"env"</span>)
+
+<span class="tk">function</span> <span class="tf">on_request</span>(req)
+    <span class="tk">local</span> auth = req:<span class="tf">header</span>(<span class="ts">"Authorization"</span>)
+
+    <span class="tk">if</span> <span class="tk">not</span> auth <span class="tk">or</span> <span class="tk">not</span> auth:<span class="tf">match</span>(<span class="ts">"^Basic "</span>) <span class="tk">then</span>
+        <span class="tk">return</span> req:<span class="tf">deny</span>(<span class="tn">401</span>, <span class="ts">"Unauthorized"</span>)
+    <span class="tk">end</span>
+
+    <span class="tc">-- Decode Base64 credentials</span>
+    <span class="tk">local</span> decoded = base64.<span class="tf">decode</span>(auth:<span class="tf">sub</span>(<span class="tn">7</span>))
+    <span class="tk">local</span> user, pass = decoded:<span class="tf">match</span>(<span class="ts">"^(.+):(.+)$"</span>)
+
+    <span class="tc">-- Compare hashed password against env var</span>
+    <span class="tk">local</span> expected = env.<span class="tf">get</span>(<span class="ts">"AUTH_HASH_"</span> .. user)
+    <span class="tk">local</span> hashed   = crypto.<span class="tf">sha256</span>(pass)
+
+    <span class="tk">if</span> <span class="tk">not</span> expected <span class="tk">or</span> hashed ~= expected <span class="tk">then</span>
+        <span class="tk">return</span> req:<span class="tf">deny</span>(<span class="tn">403</span>, <span class="ts">"Invalid credentials"</span>)
+    <span class="tk">end</span>
+
+    <span class="tc">-- Set upstream header for the backend</span>
+    req:<span class="tf">set_header</span>(<span class="ts">"X-Authenticated-User"</span>, user)
+<span class="tk">end</span></code></pre>
+                        </div>
+
+                        <!-- routing.lua -->
+                        <div id="scripts-routing" data-tab-group="scripts" class="hidden">
+                            <pre class="p-4 sm:p-6 text-sm leading-relaxed overflow-x-auto"><code><span class="tc">-- routing.lua: A/B testing and header-based routing</span>
+<span class="tc">-- 10% of traffic goes to canary, rest to stable</span>
+
+<span class="tk">function</span> <span class="tf">on_route</span>(req, target)
+    <span class="tc">-- Header-based routing: honor explicit backend requests</span>
+    <span class="tk">local</span> override = req:<span class="tf">header</span>(<span class="ts">"X-Backend"</span>)
+    <span class="tk">if</span> override == <span class="ts">"canary"</span> <span class="tk">then</span>
+        <span class="tk">return</span> <span class="ts">"http://canary-backend:8081"</span>
+    <span class="tk">end</span>
+
+    <span class="tc">-- A/B testing: 10% canary split</span>
+    <span class="tk">if</span> <span class="tf">math.random</span>(<span class="tn">100</span>) &lt;= <span class="tn">10</span> <span class="tk">then</span>
+        <span class="tk">return</span> <span class="ts">"http://canary-backend:8081"</span>
+    <span class="tk">end</span>
+
+    <span class="tc">-- Return nil to use the default resolved target</span>
+    <span class="tk">return</span> <span class="tk">nil</span>
+<span class="tk">end</span></code></pre>
+                        </div>
+
+                        <!-- cors.lua -->
+                        <div id="scripts-cors" data-tab-group="scripts" class="hidden">
+                            <pre class="p-4 sm:p-6 text-sm leading-relaxed overflow-x-auto"><code><span class="tc">-- cors.lua: CORS headers, strip Server header, custom 502 page</span>
+
+<span class="tk">function</span> <span class="tf">on_response</span>(req, resp)
+    <span class="tc">-- Add CORS headers</span>
+    resp:<span class="tf">set_header</span>(<span class="ts">"Access-Control-Allow-Origin"</span>, <span class="ts">"*"</span>)
+    resp:<span class="tf">set_header</span>(<span class="ts">"Access-Control-Allow-Methods"</span>, <span class="ts">"GET, POST, PUT, DELETE, OPTIONS"</span>)
+    resp:<span class="tf">set_header</span>(<span class="ts">"Access-Control-Allow-Headers"</span>, <span class="ts">"Content-Type, Authorization"</span>)
+    resp:<span class="tf">set_header</span>(<span class="ts">"Access-Control-Max-Age"</span>, <span class="ts">"86400"</span>)
+
+    <span class="tc">-- Strip server identity</span>
+    resp:<span class="tf">remove_header</span>(<span class="ts">"Server"</span>)
+    resp:<span class="tf">remove_header</span>(<span class="ts">"X-Powered-By"</span>)
+
+    <span class="tc">-- Custom error page for Bad Gateway</span>
+    <span class="tk">if</span> resp:<span class="tf">status</span>() == <span class="tn">502</span> <span class="tk">then</span>
+        resp:<span class="tf">set_status</span>(<span class="tn">503</span>)
+        resp:<span class="tf">replace_body</span>(<span class="ts">[[
+&lt;html&gt;&lt;body style="font-family:sans-serif;text-align:center;padding:4rem"&gt;
+  &lt;h1&gt;Service Temporarily Unavailable&lt;/h1&gt;
+  &lt;p&gt;Please try again in a moment.&lt;/p&gt;
+&lt;/body&gt;&lt;/html&gt;
+]]</span>)
+    <span class="tk">end</span>
+<span class="tk">end</span></code></pre>
+                        </div>
+
+                        <!-- rate_limit.lua -->
+                        <div id="scripts-ratelimit" data-tab-group="scripts" class="hidden">
+                            <pre class="p-4 sm:p-6 text-sm leading-relaxed overflow-x-auto"><code><span class="tc">-- rate_limit.lua: Simple sliding-window rate limiter</span>
+<span class="tc">-- Uses the shared key-value store (persists across requests)</span>
+
+<span class="tk">local</span> shared = <span class="tf">require</span>(<span class="ts">"shared"</span>)
+<span class="tk">local</span> time   = <span class="tf">require</span>(<span class="ts">"time"</span>)
+
+<span class="tk">local</span> MAX_REQUESTS  = <span class="tn">100</span>      <span class="tc">-- requests per window</span>
+<span class="tk">local</span> WINDOW_MS     = <span class="tn">60000</span>    <span class="tc">-- 60-second window</span>
+
+<span class="tk">function</span> <span class="tf">on_request</span>(req)
+    <span class="tk">local</span> ip  = req:<span class="tf">remote_ip</span>()
+    <span class="tk">local</span> now = time.<span class="tf">now_ms</span>()
+
+    <span class="tc">-- Build a key like "rl:192.168.1.1:17284500"</span>
+    <span class="tk">local</span> window = <span class="tf">math.floor</span>(now / WINDOW_MS)
+    <span class="tk">local</span> key    = <span class="ts">"rl:"</span> .. ip .. <span class="ts">":"</span> .. window
+
+    <span class="tc">-- Atomic increment, returns new count</span>
+    <span class="tk">local</span> count = shared.<span class="tf">incr</span>(key, <span class="tn">1</span>, WINDOW_MS)
+
+    <span class="tk">if</span> count &gt; MAX_REQUESTS <span class="tk">then</span>
+        <span class="tk">return</span> req:<span class="tf">deny</span>(<span class="tn">429</span>, <span class="ts">"Rate limit exceeded"</span>)
+    <span class="tk">end</span>
+
+    <span class="tc">-- Expose remaining quota in response header</span>
+    req:<span class="tf">set_header</span>(<span class="ts">"X-RateLimit-Remaining"</span>,
+        <span class="tf">tostring</span>(MAX_REQUESTS - count))
+<span class="tk">end</span></code></pre>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ============================================================ -->
+                <!-- 5. PER-ROUTE SCRIPTS -->
+                <!-- ============================================================ -->
+                <div class="mb-12 reveal-on-scroll">
+                    <h2 class="text-xl font-bold text-white mb-4 flex items-center gap-2">
+                        <span class="w-7 h-7 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400 text-xs font-bold">5</span>
+                        Per-Route Scripts
+                    </h2>
+                    <p class="text-gray-400 mb-6 leading-relaxed">
+                        Attach scripts globally or per-route using the <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">@script:</code> directive in <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">proxy.conf</code>. Multiple scripts are comma-separated and executed in order.
+                    </p>
+
+                    <div class="code-window rounded-xl bg-black/40 border border-white/10 overflow-hidden">
+                        <div class="flex items-center justify-between px-4 py-2.5 bg-white/5 border-b border-white/5">
+                            <div class="flex items-center gap-2">
+                                <div class="flex gap-1.5">
+                                    <div class="w-2.5 h-2.5 rounded-full bg-red-500/60"></div>
+                                    <div class="w-2.5 h-2.5 rounded-full bg-yellow-500/60"></div>
+                                    <div class="w-2.5 h-2.5 rounded-full bg-green-500/60"></div>
+                                </div>
+                                <span class="text-xs text-gray-500">proxy.conf</span>
+                            </div>
+                            <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                        </div>
+                        <pre class="p-4 sm:p-6 text-sm leading-relaxed overflow-x-auto"><code><span class="tc"># Global scripts run on EVERY request</span>
+<span class="tt">[global]</span>
+<span class="tk">@script</span>:<span class="ts">cors.lua</span>,<span class="ts">logging.lua</span>
+
+<span class="tc"># Route-specific scripts (run after globals)</span>
+<span class="tt">[api.example.com]</span>
+/api/* -> http://api-backend:<span class="tn">3000</span>  <span class="tk">@script</span>:<span class="ts">auth.lua</span>
+/      -> http://web-backend:<span class="tn">8080</span>
+
+<span class="tc"># Multiple scripts per route</span>
+<span class="tt">[admin.example.com]</span>
+/admin/* -> http://admin-backend:<span class="tn">4000</span>  <span class="tk">@script</span>:<span class="ts">auth.lua</span>,<span class="ts">rate_limit.lua</span>
+/*       -> http://web-backend:<span class="tn">8080</span></code></pre>
+                    </div>
+
+                    <div class="mt-4 rounded-xl bg-emerald-500/5 border border-emerald-500/20 p-4">
+                        <div class="flex items-start gap-3">
+                            <svg class="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                            <div class="text-sm text-gray-300">
+                                <strong class="text-white">Execution order:</strong> Global scripts run first, then route-specific scripts. Within each group, scripts execute left-to-right. If any script calls <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 py-0.5 rounded">req:deny()</code>, the chain stops immediately.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ============================================================ -->
+                <!-- 6. BUILT-IN MODULES -->
+                <!-- ============================================================ -->
+                <div class="mb-12 reveal-on-scroll">
+                    <h2 class="text-xl font-bold text-white mb-4 flex items-center gap-2">
+                        <span class="w-7 h-7 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400 text-xs font-bold">6</span>
+                        Built-in Modules
+                    </h2>
+                    <p class="text-gray-400 mb-6 leading-relaxed">
+                        These modules are available in every Lua script via <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">require()</code>. No external dependencies needed.
+                    </p>
+
+                    <div class="overflow-x-auto rounded-xl border border-white/10">
+                        <table class="w-full text-sm text-left">
+                            <thead>
+                                <tr class="bg-white/5 border-b border-white/10">
+                                    <th class="px-6 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Module</th>
+                                    <th class="px-6 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Functions</th>
+                                    <th class="px-6 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Description</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-white/5">
+                                <tr class="hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-4"><code class="text-cyan-300 font-mono text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">log</code></td>
+                                    <td class="px-6 py-4 text-gray-300 font-mono text-xs">info(), warn(), error(), debug()</td>
+                                    <td class="px-6 py-4 text-gray-400">Write to the proxy log at different levels</td>
+                                </tr>
+                                <tr class="hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-4"><code class="text-cyan-300 font-mono text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">base64</code></td>
+                                    <td class="px-6 py-4 text-gray-300 font-mono text-xs">encode(), decode()</td>
+                                    <td class="px-6 py-4 text-gray-400">Base64 encoding and decoding</td>
+                                </tr>
+                                <tr class="hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-4"><code class="text-cyan-300 font-mono text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">crypto</code></td>
+                                    <td class="px-6 py-4 text-gray-300 font-mono text-xs">sha256(), hmac_sha256()</td>
+                                    <td class="px-6 py-4 text-gray-400">Cryptographic hashing functions</td>
+                                </tr>
+                                <tr class="hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-4"><code class="text-cyan-300 font-mono text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">env</code></td>
+                                    <td class="px-6 py-4 text-gray-300 font-mono text-xs">get(), set()</td>
+                                    <td class="px-6 py-4 text-gray-400">Read and write environment variables</td>
+                                </tr>
+                                <tr class="hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-4"><code class="text-cyan-300 font-mono text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">time</code></td>
+                                    <td class="px-6 py-4 text-gray-300 font-mono text-xs">now_ms(), now_s(), format()</td>
+                                    <td class="px-6 py-4 text-gray-400">High-resolution timestamps and formatting</td>
+                                </tr>
+                                <tr class="hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-4"><code class="text-cyan-300 font-mono text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">shared</code></td>
+                                    <td class="px-6 py-4 text-gray-300 font-mono text-xs">get(), set(), incr(), del()</td>
+                                    <td class="px-6 py-4 text-gray-400">Shared key-value store across all requests (with TTL support)</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Navigation -->
+                <div class="flex items-center justify-between pt-8 border-t border-white/10 reveal-on-scroll">
+                    <a href="/docs/admin-api" class="group flex items-center gap-3 text-gray-400 hover:text-white transition-colors">
+                        <svg class="w-5 h-5 transition-transform group-hover:-translate-x-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 17l-5-5m0 0l5-5m-5 5h12"/></svg>
+                        <div>
+                            <div class="text-xs text-gray-500">Previous</div>
+                            <div class="font-medium">Admin API</div>
+                        </div>
+                    </a>
+                    <a href="/docs/security" class="group flex items-center gap-3 text-gray-400 hover:text-white transition-colors text-right">
+                        <div>
+                            <div class="text-xs text-gray-500">Next</div>
+                            <div class="font-medium">Security</div>
+                        </div>
+                        <svg class="w-5 h-5 transition-transform group-hover:translate-x-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+                    </a>
+                </div>
+
+            </div>
+        </div>
+    </div>
+</section>

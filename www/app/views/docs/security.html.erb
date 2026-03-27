@@ -1,0 +1,582 @@
+<!-- ============================================================ -->
+<!-- TLS & SECURITY -->
+<!-- ============================================================ -->
+<section class="relative py-16 sm:py-24">
+    <div class="container mx-auto max-w-7xl px-6 lg:px-8">
+        <div class="flex gap-12">
+
+            <!-- Sidebar -->
+            <aside class="hidden lg:block w-56 shrink-0">
+                <nav class="doc-sidebar sticky top-24 space-y-1 text-sm">
+                    <div class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3 px-3">Documentation</div>
+                    <a href="/docs/getting-started" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Getting Started</a>
+                    <a href="/docs/apps" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Apps</a>
+                    <a href="/docs/configuration" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Configuration</a>
+                    <a href="/docs/admin-api" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Admin API</a>
+                    <a href="/docs/scripting" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Scripting</a>
+                    <a href="/docs/security" class="active block px-3 py-2 rounded-lg text-white bg-white/10 transition-all">Security</a>
+                    <a href="/docs/deployment" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Deployment</a>
+                    <a href="/docs/benchmark" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Benchmark</a>
+                </nav>
+            </aside>
+
+            <!-- Content -->
+            <div class="flex-1 min-w-0">
+
+                <!-- Page Header -->
+                <div class="mb-12 reveal-on-scroll">
+                    <div class="flex items-center gap-3 text-sm text-gray-400 mb-4">
+                        <a href="/" class="hover:text-white transition-colors">Home</a>
+                        <svg class="w-4 h-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                        <a href="/docs" class="hover:text-white transition-colors">Docs</a>
+                        <svg class="w-4 h-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                        <span class="text-white">Security</span>
+                    </div>
+                    <div class="flex items-center gap-3 mb-4">
+                        <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-400">
+                            <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/></svg>
+                        </div>
+                        <div>
+                            <h1 class="text-3xl font-bold tracking-tight text-white sm:text-4xl">TLS &amp; Security</h1>
+                            <p class="mt-1 text-gray-400">Automatic certificates, circuit breakers, and observability</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ============================================================ -->
+                <!-- 1. TLS MODES -->
+                <!-- ============================================================ -->
+                <div class="mb-16 reveal-on-scroll">
+                    <h2 class="text-2xl font-bold text-white mb-2 flex items-center gap-3">
+                        <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-cyan-500/10 text-cyan-400 text-sm font-bold">1</span>
+                        TLS Modes
+                    </h2>
+                    <p class="text-gray-400 mb-8">Soli Proxy supports two TLS modes. Switch between them with a single configuration line.</p>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <!-- Auto Mode Card -->
+                        <div class="group relative rounded-2xl bg-gray-900 border border-white/10 p-6 hover:bg-white/5 transition-all duration-300 overflow-hidden">
+                            <div class="absolute top-0 right-0 -mt-12 -mr-12 w-40 h-40 bg-cyan-500/10 rounded-full blur-3xl group-hover:bg-cyan-500/20 transition-all duration-500"></div>
+                            <div class="relative">
+                                <div class="flex items-center gap-3 mb-4">
+                                    <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-cyan-500/10 text-cyan-400">
+                                        <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/></svg>
+                                    </div>
+                                    <div>
+                                        <h3 class="text-lg font-bold text-white">Auto Mode</h3>
+                                        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-cyan-500/10 text-cyan-300">Default</span>
+                                    </div>
+                                </div>
+                                <p class="text-gray-400 text-sm mb-4">Generates a self-signed certificate for <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">localhost</code> on startup. Perfect for local development -- HTTPS works immediately with no external dependencies.</p>
+                                <div class="rounded-xl bg-black/40 border border-white/5 overflow-hidden">
+                                    <div class="flex items-center gap-2 px-4 py-2 bg-white/5 border-b border-white/5">
+                                        <div class="flex gap-1.5">
+                                            <div class="w-2.5 h-2.5 rounded-full bg-red-500/80"></div>
+                                            <div class="w-2.5 h-2.5 rounded-full bg-yellow-500/80"></div>
+                                            <div class="w-2.5 h-2.5 rounded-full bg-green-500/80"></div>
+                                        </div>
+                                        <span class="text-xs text-gray-500 ml-2">config.toml</span>
+                                    </div>
+                                    <pre class="p-4 text-sm font-mono overflow-x-auto"><code><span class="tc"># Self-signed cert for localhost</span>
+[<span class="tk">tls</span>]
+<span class="tf">mode</span> = <span class="ts">"auto"</span></code></pre>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Let's Encrypt Mode Card -->
+                        <div class="group relative rounded-2xl bg-gray-900 border border-white/10 p-6 hover:bg-white/5 transition-all duration-300 overflow-hidden">
+                            <div class="absolute top-0 right-0 -mt-12 -mr-12 w-40 h-40 bg-emerald-500/10 rounded-full blur-3xl group-hover:bg-emerald-500/20 transition-all duration-500"></div>
+                            <div class="relative">
+                                <div class="flex items-center gap-3 mb-4">
+                                    <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-400">
+                                        <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/></svg>
+                                    </div>
+                                    <div>
+                                        <h3 class="text-lg font-bold text-white">Let's Encrypt Mode</h3>
+                                        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-300">Production</span>
+                                    </div>
+                                </div>
+                                <p class="text-gray-400 text-sm mb-4">Automatic ACME HTTP-01 challenge validation for all configured domains. Certificates are issued, stored, and renewed without any manual intervention.</p>
+                                <div class="rounded-xl bg-black/40 border border-white/5 overflow-hidden">
+                                    <div class="flex items-center gap-2 px-4 py-2 bg-white/5 border-b border-white/5">
+                                        <div class="flex gap-1.5">
+                                            <div class="w-2.5 h-2.5 rounded-full bg-red-500/80"></div>
+                                            <div class="w-2.5 h-2.5 rounded-full bg-yellow-500/80"></div>
+                                            <div class="w-2.5 h-2.5 rounded-full bg-green-500/80"></div>
+                                        </div>
+                                        <span class="text-xs text-gray-500 ml-2">config.toml</span>
+                                    </div>
+                                    <pre class="p-4 text-sm font-mono overflow-x-auto"><code>[<span class="tk">tls</span>]
+<span class="tf">mode</span> = <span class="ts">"letsencrypt"</span>
+<span class="tf">cache_dir</span> = <span class="ts">"./certs"</span>
+
+[<span class="tk">letsencrypt</span>]
+<span class="tf">staging</span> = <span class="tn">false</span>
+<span class="tf">email</span> = <span class="ts">"admin@example.com"</span>
+<span class="tf">terms_agreed</span> = <span class="tn">true</span></code></pre>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ============================================================ -->
+                <!-- 2. CERTIFICATE AUTO-PROVISIONING -->
+                <!-- ============================================================ -->
+                <div class="mb-16 reveal-on-scroll">
+                    <h2 class="text-2xl font-bold text-white mb-2 flex items-center gap-3">
+                        <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-400 text-sm font-bold">2</span>
+                        Certificate Auto-Provisioning
+                    </h2>
+                    <p class="text-gray-400 mb-8">The entire certificate lifecycle is fully automated -- from domain discovery to renewal.</p>
+
+                    <!-- Pipeline Steps -->
+                    <div class="space-y-4 mb-10">
+                        <!-- Step 1 -->
+                        <div class="group flex items-start gap-4 rounded-xl bg-gray-900 border border-white/10 p-5 hover:bg-white/5 transition-all duration-300">
+                            <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-400 text-sm font-bold mt-0.5">1</div>
+                            <div>
+                                <h4 class="font-semibold text-white mb-1">Domain Discovery</h4>
+                                <p class="text-gray-400 text-sm">Domains are collected from two sources: hostnames in <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">proxy.conf</code> routing rules and <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">domain</code> fields in <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">sites/*/app.infos</code> files. All unique domains are queued for certificate provisioning.</p>
+                            </div>
+                        </div>
+
+                        <!-- Step 2 -->
+                        <div class="group flex items-start gap-4 rounded-xl bg-gray-900 border border-white/10 p-5 hover:bg-white/5 transition-all duration-300">
+                            <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-400 text-sm font-bold mt-0.5">2</div>
+                            <div>
+                                <h4 class="font-semibold text-white mb-1">ACME Account</h4>
+                                <p class="text-gray-400 text-sm">An ACME account is created on first run and persisted to <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">certs/account_credentials.json</code>. On subsequent starts, the existing account is restored automatically.</p>
+                            </div>
+                        </div>
+
+                        <!-- Step 3 -->
+                        <div class="group flex items-start gap-4 rounded-xl bg-gray-900 border border-white/10 p-5 hover:bg-white/5 transition-all duration-300">
+                            <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-cyan-500/10 text-cyan-400 text-sm font-bold mt-0.5">3</div>
+                            <div>
+                                <h4 class="font-semibold text-white mb-1">HTTP-01 Challenge Validation</h4>
+                                <p class="text-gray-400 text-sm">The proxy intercepts requests to <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">/.well-known/acme-challenge/</code> and serves the ACME token response. This happens transparently before any backend routing.</p>
+                            </div>
+                        </div>
+
+                        <!-- Step 4 -->
+                        <div class="group flex items-start gap-4 rounded-xl bg-gray-900 border border-white/10 p-5 hover:bg-white/5 transition-all duration-300">
+                            <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-cyan-500/10 text-cyan-400 text-sm font-bold mt-0.5">4</div>
+                            <div>
+                                <h4 class="font-semibold text-white mb-1">Certificate Issuance &amp; SNI Routing</h4>
+                                <p class="text-gray-400 text-sm">Once validated, the certificate and private key are stored per-domain. The TLS acceptor uses SNI (Server Name Indication) to serve the correct certificate for each incoming connection.</p>
+                            </div>
+                        </div>
+
+                        <!-- Step 5 -->
+                        <div class="group flex items-start gap-4 rounded-xl bg-gray-900 border border-white/10 p-5 hover:bg-white/5 transition-all duration-300">
+                            <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-teal-500/10 text-teal-400 text-sm font-bold mt-0.5">5</div>
+                            <div>
+                                <h4 class="font-semibold text-white mb-1">Auto-Renewal</h4>
+                                <p class="text-gray-400 text-sm">A background task checks every <strong class="text-white">12 hours</strong> whether any certificate is within <strong class="text-white">30 days</strong> of expiry. Certificates nearing expiry are renewed automatically with zero downtime.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Certificate Storage Layout -->
+                    <div class="rounded-xl bg-black/40 border border-white/5 overflow-hidden">
+                        <div class="flex items-center gap-2 px-4 py-2 bg-white/5 border-b border-white/5">
+                            <div class="flex gap-1.5">
+                                <div class="w-2.5 h-2.5 rounded-full bg-red-500/80"></div>
+                                <div class="w-2.5 h-2.5 rounded-full bg-yellow-500/80"></div>
+                                <div class="w-2.5 h-2.5 rounded-full bg-green-500/80"></div>
+                            </div>
+                            <span class="text-xs text-gray-500 ml-2">certs/ directory layout</span>
+                        </div>
+                        <pre class="p-4 text-sm font-mono overflow-x-auto"><code><span class="tf">certs/</span>
+  <span class="tc">account_credentials.json</span>   <span class="tc"># ACME account keypair</span>
+  <span class="tf">example.com/</span>
+    <span class="ts">cert.pem</span>                  <span class="tc"># Full certificate chain</span>
+    <span class="ts">key.pem</span>                   <span class="tc"># Private key</span>
+  <span class="tf">api.example.com/</span>
+    <span class="ts">cert.pem</span>
+    <span class="ts">key.pem</span>
+  <span class="tf">myapp.example.com/</span>
+    <span class="ts">cert.pem</span>
+    <span class="ts">key.pem</span></code></pre>
+                    </div>
+                </div>
+
+                <!-- ============================================================ -->
+                <!-- 3. CIRCUIT BREAKER -->
+                <!-- ============================================================ -->
+                <div class="mb-16 reveal-on-scroll">
+                    <h2 class="text-2xl font-bold text-white mb-2 flex items-center gap-3">
+                        <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-400 text-sm font-bold">3</span>
+                        Circuit Breaker
+                    </h2>
+                    <p class="text-gray-400 mb-8">Per-backend circuit breakers track health and automatically stop routing traffic to failing backends.</p>
+
+                    <!-- Three State Cards -->
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+                        <!-- Closed (Healthy) -->
+                        <div class="group relative rounded-2xl bg-gray-900 border border-emerald-500/20 p-6 hover:border-emerald-500/40 transition-all duration-300 overflow-hidden">
+                            <div class="absolute inset-0 bg-gradient-to-b from-emerald-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
+                            <div class="relative">
+                                <div class="flex items-center gap-3 mb-3">
+                                    <div class="w-3 h-3 rounded-full bg-emerald-400 shadow-lg shadow-emerald-400/50"></div>
+                                    <h4 class="font-bold text-white text-lg">Closed</h4>
+                                </div>
+                                <p class="text-emerald-300 text-xs font-semibold uppercase tracking-wider mb-2">Healthy</p>
+                                <p class="text-gray-400 text-sm">Traffic flows normally. Failures are counted. When consecutive failures reach <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 py-0.5 rounded">failure_threshold</code>, the breaker opens.</p>
+                                <div class="mt-4 flex items-center justify-center">
+                                    <svg class="w-5 h-5 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"/></svg>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Open (Unhealthy) -->
+                        <div class="group relative rounded-2xl bg-gray-900 border border-red-500/20 p-6 hover:border-red-500/40 transition-all duration-300 overflow-hidden">
+                            <div class="absolute inset-0 bg-gradient-to-b from-red-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
+                            <div class="relative">
+                                <div class="flex items-center gap-3 mb-3">
+                                    <div class="w-3 h-3 rounded-full bg-red-400 shadow-lg shadow-red-400/50"></div>
+                                    <h4 class="font-bold text-white text-lg">Open</h4>
+                                </div>
+                                <p class="text-red-300 text-xs font-semibold uppercase tracking-wider mb-2">Unhealthy</p>
+                                <p class="text-gray-400 text-sm">All requests to this backend are rejected immediately (503). After <code class="text-red-300 text-xs bg-red-500/10 px-1 py-0.5 rounded">recovery_timeout_secs</code>, the breaker moves to half-open.</p>
+                                <div class="mt-4 flex items-center justify-center">
+                                    <svg class="w-5 h-5 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"/></svg>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Half-Open (Probing) -->
+                        <div class="group relative rounded-2xl bg-gray-900 border border-yellow-500/20 p-6 hover:border-yellow-500/40 transition-all duration-300 overflow-hidden">
+                            <div class="absolute inset-0 bg-gradient-to-b from-yellow-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
+                            <div class="relative">
+                                <div class="flex items-center gap-3 mb-3">
+                                    <div class="w-3 h-3 rounded-full bg-yellow-400 shadow-lg shadow-yellow-400/50"></div>
+                                    <h4 class="font-bold text-white text-lg">Half-Open</h4>
+                                </div>
+                                <p class="text-yellow-300 text-xs font-semibold uppercase tracking-wider mb-2">Probing</p>
+                                <p class="text-gray-400 text-sm">A single probe request is allowed through. If <code class="text-yellow-300 text-xs bg-yellow-500/10 px-1 py-0.5 rounded">success_threshold</code> consecutive successes occur, the breaker closes. Any failure re-opens it.</p>
+                                <div class="mt-4 flex items-center justify-center">
+                                    <svg class="w-5 h-5 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"/></svg>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- State Flow Diagram -->
+                    <div class="rounded-xl bg-gray-900 border border-white/10 p-6 mb-8">
+                        <h4 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-4">State Transitions</h4>
+                        <div class="flex items-center justify-center gap-3 flex-wrap text-sm">
+                            <div class="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 font-semibold">
+                                <div class="w-2 h-2 rounded-full bg-emerald-400"></div>
+                                Closed
+                            </div>
+                            <div class="flex items-center gap-1 text-gray-500">
+                                <span class="text-xs">failures >= threshold</span>
+                                <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+                            </div>
+                            <div class="flex items-center gap-2 px-4 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-red-300 font-semibold">
+                                <div class="w-2 h-2 rounded-full bg-red-400"></div>
+                                Open
+                            </div>
+                            <div class="flex items-center gap-1 text-gray-500">
+                                <span class="text-xs">timeout elapsed</span>
+                                <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+                            </div>
+                            <div class="flex items-center gap-2 px-4 py-2 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-yellow-300 font-semibold">
+                                <div class="w-2 h-2 rounded-full bg-yellow-400"></div>
+                                Half-Open
+                            </div>
+                            <div class="flex items-center gap-1 text-gray-500">
+                                <span class="text-xs">successes >= threshold</span>
+                                <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+                            </div>
+                            <div class="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 font-semibold">
+                                <div class="w-2 h-2 rounded-full bg-emerald-400"></div>
+                                Closed
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Configuration -->
+                    <div class="rounded-xl bg-black/40 border border-white/5 overflow-hidden mb-8">
+                        <div class="flex items-center gap-2 px-4 py-2 bg-white/5 border-b border-white/5">
+                            <div class="flex gap-1.5">
+                                <div class="w-2.5 h-2.5 rounded-full bg-red-500/80"></div>
+                                <div class="w-2.5 h-2.5 rounded-full bg-yellow-500/80"></div>
+                                <div class="w-2.5 h-2.5 rounded-full bg-green-500/80"></div>
+                            </div>
+                            <span class="text-xs text-gray-500 ml-2">config.toml</span>
+                        </div>
+                        <pre class="p-4 text-sm font-mono overflow-x-auto"><code><span class="tc"># Circuit Breaker Configuration</span>
+<span class="tc"># Tracks backend health and stops sending traffic to failing backends.</span>
+<span class="tc"># When all targets for a route are open, returns 503 Service Unavailable.</span>
+[<span class="tk">circuit_breaker</span>]
+<span class="tf">failure_threshold</span> = <span class="tn">5</span>               <span class="tc"># consecutive failures before opening</span>
+<span class="tf">recovery_timeout_secs</span> = <span class="tn">30</span>          <span class="tc"># seconds before probing an open backend</span>
+<span class="tf">success_threshold</span> = <span class="tn">2</span>               <span class="tc"># successful probes to close breaker</span>
+<span class="tf">failure_status_codes</span> = [<span class="tn">502</span>, <span class="tn">503</span>, <span class="tn">504</span>]  <span class="tc"># HTTP codes that count as failures</span></code></pre>
+                    </div>
+
+                    <!-- Multi-target Failover Example -->
+                    <h3 class="text-lg font-bold text-white mb-4">Multi-Target Load Balancing</h3>
+                    <p class="text-gray-400 text-sm mb-4">When a route has multiple targets, Soli Proxy supports three load balancing strategies. Use <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">@lb:round-robin</code>, <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">@lb:weighted</code>, or <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">@lb:failover</code> to specify the strategy. Default is round-robin.</p>
+
+                    <div class="rounded-xl bg-black/40 border border-white/5 overflow-hidden mb-8">
+                        <div class="flex items-center gap-2 px-4 py-2 bg-white/5 border-b border-white/5">
+                            <div class="flex gap-1.5">
+                                <div class="w-2.5 h-2.5 rounded-full bg-red-500/80"></div>
+                                <div class="w-2.5 h-2.5 rounded-full bg-yellow-500/80"></div>
+                                <div class="w-2.5 h-2.5 rounded-full bg-green-500/80"></div>
+                            </div>
+                            <span class="text-xs text-gray-500 ml-2">proxy.conf</span>
+                        </div>
+                        <pre class="p-4 text-sm font-mono overflow-x-auto"><code><span class="tc"># Round-robin load balancing (default)</span>
+<span class="tf">api.example.com</span> -> <span class="ts">http://backend-1:3000</span>, <span class="ts">http://backend-2:3000</span>
+
+<span class="tc"># Weighted load balancing</span>
+<span class="tf">example.com/api/*</span> -> <span class="ts">http://api-primary:8080</span>, <span class="ts">http://api-secondary:8080</span>  <span class="tc"># @lb:weighted</span>
+
+<span class="tc"># Failover: use second target only if first fails</span>
+<span class="tf">example.com/backup/*</span> -> <span class="ts">http://primary:8080</span>, <span class="ts">http://backup:8080</span>  <span class="tc"># @lb:failover</span></code></pre>
+                    </div>
+
+                    <!-- API Endpoints -->
+                    <h3 class="text-lg font-bold text-white mb-4">Admin API Endpoints</h3>
+                    <div class="space-y-3">
+                        <div class="flex items-start gap-4 rounded-xl bg-gray-900 border border-white/10 p-4">
+                            <span class="shrink-0 inline-flex items-center px-2.5 py-1 rounded-md text-xs font-bold bg-cyan-500/10 text-cyan-300 border border-cyan-500/20">GET</span>
+                            <div>
+                                <code class="text-white text-sm font-mono">/api/v1/circuit-breaker</code>
+                                <p class="text-gray-400 text-xs mt-1">Returns the current state of every tracked backend: state (closed/open/half_open), consecutive failures, and consecutive successes.</p>
+                            </div>
+                        </div>
+                        <div class="flex items-start gap-4 rounded-xl bg-gray-900 border border-white/10 p-4">
+                            <span class="shrink-0 inline-flex items-center px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">POST</span>
+                            <div>
+                                <code class="text-white text-sm font-mono">/api/v1/circuit-breaker/reset</code>
+                                <p class="text-gray-400 text-xs mt-1">Resets all circuit breakers to the closed (healthy) state. Useful after deploying a fix to a failing backend.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Example Response -->
+                    <div class="rounded-xl bg-black/40 border border-white/5 overflow-hidden mt-4">
+                        <div class="flex items-center gap-2 px-4 py-2 bg-white/5 border-b border-white/5">
+                            <div class="flex gap-1.5">
+                                <div class="w-2.5 h-2.5 rounded-full bg-red-500/80"></div>
+                                <div class="w-2.5 h-2.5 rounded-full bg-yellow-500/80"></div>
+                                <div class="w-2.5 h-2.5 rounded-full bg-green-500/80"></div>
+                            </div>
+                            <span class="text-xs text-gray-500 ml-2">GET /api/v1/circuit-breaker response</span>
+                        </div>
+                        <pre class="p-4 text-sm font-mono overflow-x-auto"><code>{
+  <span class="tf">"http://backend-1:3000"</span>: {
+    <span class="tf">"state"</span>: <span class="ts">"closed"</span>,
+    <span class="tf">"consecutive_failures"</span>: <span class="tn">0</span>,
+    <span class="tf">"consecutive_successes"</span>: <span class="tn">12</span>
+  },
+  <span class="tf">"http://backend-2:3000"</span>: {
+    <span class="tf">"state"</span>: <span class="ts">"open"</span>,
+    <span class="tf">"consecutive_failures"</span>: <span class="tn">5</span>,
+    <span class="tf">"consecutive_successes"</span>: <span class="tn">0</span>
+  }
+}</code></pre>
+                    </div>
+                </div>
+
+                <!-- ============================================================ -->
+                <!-- 4. PROMETHEUS METRICS -->
+                <!-- ============================================================ -->
+                <div class="mb-16 reveal-on-scroll">
+                    <h2 class="text-2xl font-bold text-white mb-2 flex items-center gap-3">
+                        <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-cyan-500/10 text-cyan-400 text-sm font-bold">4</span>
+                        Prometheus Metrics
+                    </h2>
+                    <p class="text-gray-400 mb-8">Soli Proxy exposes a built-in <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">/metrics</code> endpoint in Prometheus text format, ready for scraping by Prometheus, Grafana Agent, or any compatible collector.</p>
+
+                    <!-- Enable Metrics -->
+                    <div class="rounded-xl bg-black/40 border border-white/5 overflow-hidden mb-8">
+                        <div class="flex items-center gap-2 px-4 py-2 bg-white/5 border-b border-white/5">
+                            <div class="flex gap-1.5">
+                                <div class="w-2.5 h-2.5 rounded-full bg-red-500/80"></div>
+                                <div class="w-2.5 h-2.5 rounded-full bg-yellow-500/80"></div>
+                                <div class="w-2.5 h-2.5 rounded-full bg-green-500/80"></div>
+                            </div>
+                            <span class="text-xs text-gray-500 ml-2">config.toml</span>
+                        </div>
+                        <pre class="p-4 text-sm font-mono overflow-x-auto"><code>[<span class="tk">metrics</span>]
+<span class="tf">enabled</span> = <span class="tn">true</span>
+<span class="tf">endpoint</span> = <span class="ts">"/metrics"</span></code></pre>
+                    </div>
+
+                    <!-- Sample Output -->
+                    <h3 class="text-lg font-bold text-white mb-4">Sample Output</h3>
+                    <div class="rounded-xl bg-black/40 border border-white/5 overflow-hidden mb-8">
+                        <div class="flex items-center gap-2 px-4 py-2 bg-white/5 border-b border-white/5">
+                            <div class="flex gap-1.5">
+                                <div class="w-2.5 h-2.5 rounded-full bg-red-500/80"></div>
+                                <div class="w-2.5 h-2.5 rounded-full bg-yellow-500/80"></div>
+                                <div class="w-2.5 h-2.5 rounded-full bg-green-500/80"></div>
+                            </div>
+                            <span class="text-xs text-gray-500 ml-2">curl http://localhost/metrics</span>
+                        </div>
+                        <pre class="p-4 text-sm font-mono overflow-x-auto"><code><span class="tc"># HELP proxy_requests_total Total number of HTTP requests</span>
+<span class="tc"># TYPE proxy_requests_total counter</span>
+<span class="tf">proxy_requests_total</span> <span class="tn">48291</span>
+
+<span class="tc"># HELP proxy_requests_in_flight Number of requests currently being processed</span>
+<span class="tc"># TYPE proxy_requests_in_flight gauge</span>
+<span class="tf">proxy_requests_in_flight</span> <span class="tn">12</span>
+
+<span class="tc"># HELP proxy_bytes_received Total bytes received from clients</span>
+<span class="tc"># TYPE proxy_bytes_received counter</span>
+<span class="tf">proxy_bytes_received</span> <span class="tn">2847103</span>
+
+<span class="tc"># HELP proxy_bytes_sent Total bytes sent to clients</span>
+<span class="tc"># TYPE proxy_bytes_sent counter</span>
+<span class="tf">proxy_bytes_sent</span> <span class="tn">91740258</span>
+
+<span class="tc"># HELP proxy_response_time_seconds Average response time in seconds</span>
+<span class="tc"># TYPE proxy_response_time_seconds gauge</span>
+<span class="tf">proxy_response_time_seconds</span> <span class="tn">0.000284</span>
+
+<span class="tc"># HELP proxy_tls_connections_total Total number of TLS connections</span>
+<span class="tc"># TYPE proxy_tls_connections_total counter</span>
+<span class="tf">proxy_tls_connections_total</span> <span class="tn">15820</span>
+
+<span class="tc"># HELP proxy_errors_total Total number of proxy errors</span>
+<span class="tc"># TYPE proxy_errors_total counter</span>
+<span class="tf">proxy_errors_total</span> <span class="tn">3</span>
+
+<span class="tc"># HELP proxy_response_status_codes_total HTTP response status codes</span>
+<span class="tc"># TYPE proxy_response_status_codes_total counter</span>
+<span class="tf">proxy_response_status_codes_total</span>{<span class="tk">code</span>=<span class="ts">"200"</span>} <span class="tn">45102</span>
+<span class="tf">proxy_response_status_codes_total</span>{<span class="tk">code</span>=<span class="ts">"301"</span>} <span class="tn">2040</span>
+<span class="tf">proxy_response_status_codes_total</span>{<span class="tk">code</span>=<span class="ts">"404"</span>} <span class="tn">1146</span>
+<span class="tf">proxy_response_status_codes_total</span>{<span class="tk">code</span>=<span class="ts">"503"</span>} <span class="tn">3</span></code></pre>
+                    </div>
+
+                    <!-- Metrics Reference Table -->
+                    <h3 class="text-lg font-bold text-white mb-4">Metrics Reference</h3>
+                    <div class="rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-sm text-left">
+                                <thead>
+                                    <tr class="border-b border-white/10 bg-white/5">
+                                        <th class="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Metric</th>
+                                        <th class="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Type</th>
+                                        <th class="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Description</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-white/5">
+                                    <tr class="hover:bg-white/5 transition-colors">
+                                        <td class="px-4 py-3"><code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded font-mono">proxy_requests_total</code></td>
+                                        <td class="px-4 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-cyan-500/10 text-cyan-300">counter</span></td>
+                                        <td class="px-4 py-3 text-gray-400">Total number of HTTP requests processed</td>
+                                    </tr>
+                                    <tr class="hover:bg-white/5 transition-colors">
+                                        <td class="px-4 py-3"><code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded font-mono">proxy_requests_in_flight</code></td>
+                                        <td class="px-4 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-300">gauge</span></td>
+                                        <td class="px-4 py-3 text-gray-400">Number of requests currently being processed</td>
+                                    </tr>
+                                    <tr class="hover:bg-white/5 transition-colors">
+                                        <td class="px-4 py-3"><code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded font-mono">proxy_bytes_received</code></td>
+                                        <td class="px-4 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-cyan-500/10 text-cyan-300">counter</span></td>
+                                        <td class="px-4 py-3 text-gray-400">Total bytes received from clients</td>
+                                    </tr>
+                                    <tr class="hover:bg-white/5 transition-colors">
+                                        <td class="px-4 py-3"><code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded font-mono">proxy_bytes_sent</code></td>
+                                        <td class="px-4 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-cyan-500/10 text-cyan-300">counter</span></td>
+                                        <td class="px-4 py-3 text-gray-400">Total bytes sent to clients</td>
+                                    </tr>
+                                    <tr class="hover:bg-white/5 transition-colors">
+                                        <td class="px-4 py-3"><code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded font-mono">proxy_response_time_seconds</code></td>
+                                        <td class="px-4 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-300">gauge</span></td>
+                                        <td class="px-4 py-3 text-gray-400">Average response time in seconds</td>
+                                    </tr>
+                                    <tr class="hover:bg-white/5 transition-colors">
+                                        <td class="px-4 py-3"><code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded font-mono">proxy_tls_connections_total</code></td>
+                                        <td class="px-4 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-cyan-500/10 text-cyan-300">counter</span></td>
+                                        <td class="px-4 py-3 text-gray-400">Total number of TLS connections established</td>
+                                    </tr>
+                                    <tr class="hover:bg-white/5 transition-colors">
+                                        <td class="px-4 py-3"><code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded font-mono">proxy_errors_total</code></td>
+                                        <td class="px-4 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-cyan-500/10 text-cyan-300">counter</span></td>
+                                        <td class="px-4 py-3 text-gray-400">Total number of proxy errors encountered</td>
+                                    </tr>
+                                    <tr class="hover:bg-white/5 transition-colors">
+                                        <td class="px-4 py-3"><code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded font-mono">proxy_response_status_codes_total</code></td>
+                                        <td class="px-4 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-cyan-500/10 text-cyan-300">counter</span></td>
+                                        <td class="px-4 py-3 text-gray-400">HTTP response status codes with <code class="text-xs text-gray-300">code</code> label</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ============================================================ -->
+                <!-- WORKER PRIVILEGE DROPPING -->
+                <!-- ============================================================ -->
+                <div class="mb-16 reveal-on-scroll">
+                    <h2 class="text-xl font-bold text-white mb-2 flex items-center gap-2">
+                        <span class="text-emerald-400">#</span> Worker Privilege Dropping
+                    </h2>
+                    <p class="text-gray-400 mb-6">By default, app workers inherit the same privileges as the Soli Proxy process. If you run the proxy as root (to bind ports 80/443), all workers also run as root. This is a security risk — a compromised app gives attackers full system access.</p>
+
+                    <div class="space-y-6">
+                        <div class="rounded-xl border border-white/10 bg-gray-900/60 p-6">
+                            <h3 class="text-white font-semibold mb-3">Configuring Per-App Users</h3>
+                            <p class="text-gray-400 text-sm mb-4">Use the <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">user</code> and <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">group</code> fields in <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">app.infos</code> to run each app as a different user:</p>
+                            <div class="code-window rounded-lg border border-white/10 bg-black/30 overflow-hidden">
+                                <div class="flex items-center justify-between px-4 py-2 bg-black/30 border-b border-white/5">
+                                    <span class="text-xs text-gray-500">app.infos</span>
+                                    <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors px-2 py-1">Copy</button>
+                                </div>
+                                <pre class="p-4 text-sm leading-relaxed overflow-x-auto"><code><span class="tc"># Run app workers as a specific user</span>
+<span class="tf">name</span> = <span class="ts">"myapp"</span>
+<span class="tf">domain</span> = <span class="ts">"myapp.example.com"</span>
+<span class="tf">start_script</span> = <span class="ts">"npm start"</span>
+<span class="tf">user</span> = <span class="ts">"nobody"</span>
+<span class="tf">group</span> = <span class="ts">"nogroup"</span></code></pre>
+                            </div>
+                        </div>
+
+                        <div class="rounded-xl bg-red-500/5 border border-red-500/20 p-5">
+                            <div class="flex items-start gap-3">
+                                <svg class="w-5 h-5 text-red-400 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+                                <div>
+                                    <p class="text-sm text-red-200 font-semibold mb-1">Never run app workers as root in production</p>
+                                    <p class="text-sm text-gray-400">Always configure a dedicated non-root user for each app. This limits the blast radius if an app is compromised.</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ============================================================ -->
+                <!-- NAVIGATION FOOTER -->
+                <!-- ============================================================ -->
+                <div class="flex items-center justify-between pt-8 border-t border-white/10 reveal-on-scroll">
+                    <a href="/docs/scripting" class="group flex items-center gap-3 text-gray-400 hover:text-white transition-colors">
+                        <svg class="w-5 h-5 transition-transform group-hover:-translate-x-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 17l-5-5m0 0l5-5m-5 5h12"/></svg>
+                        <div>
+                            <div class="text-xs text-gray-500">Previous</div>
+                            <div class="font-medium">Scripting</div>
+                        </div>
+                    </a>
+                    <a href="/docs/deployment" class="group flex items-center gap-3 text-gray-400 hover:text-white transition-colors text-right">
+                        <div>
+                            <div class="text-xs text-gray-500">Next</div>
+                            <div class="font-medium">Deployment</div>
+                        </div>
+                        <svg class="w-5 h-5 transition-transform group-hover:translate-x-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+                    </a>
+                </div>
+
+            </div>
+        </div>
+    </div>
+</section>

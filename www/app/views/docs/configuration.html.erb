@@ -1,0 +1,846 @@
+<!-- ============================================================ -->
+<!-- CONFIGURATION DOCS -->
+<!-- ============================================================ -->
+<section class="relative py-16 sm:py-24">
+    <div class="container mx-auto max-w-7xl px-6 lg:px-8">
+        <div class="flex gap-12">
+
+            <!-- Sidebar -->
+            <aside class="hidden lg:block w-56 shrink-0">
+                <nav class="doc-sidebar sticky top-24 space-y-1 text-sm">
+                    <div class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3 px-3">Documentation</div>
+                    <a href="/docs/getting-started" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Getting Started</a>
+                    <a href="/docs/apps" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Apps</a>
+                    <a href="/docs/configuration" class="active block px-3 py-2 rounded-lg text-white bg-white/10 transition-all">Configuration</a>
+                    <a href="/docs/admin-api" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Admin API</a>
+                    <a href="/docs/scripting" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Scripting</a>
+                    <a href="/docs/security" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Security</a>
+                    <a href="/docs/deployment" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Deployment</a>
+                    <a href="/docs/benchmark" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Benchmark</a>
+                </nav>
+            </aside>
+
+            <!-- Content -->
+            <div class="flex-1 min-w-0">
+
+                <!-- Page Header -->
+                <div class="mb-12 reveal-on-scroll">
+                    <div class="flex items-center gap-3 text-sm text-gray-400 mb-4">
+                        <a href="/" class="hover:text-white transition-colors">Home</a>
+                        <svg class="w-4 h-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                        <a href="/docs" class="hover:text-white transition-colors">Docs</a>
+                        <svg class="w-4 h-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                        <span class="text-white">Configuration</span>
+                    </div>
+                    <div class="flex items-center gap-3 mb-4">
+                        <div class="w-10 h-10 rounded-xl bg-teal-500/10 flex items-center justify-center text-teal-400">
+                            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                        </div>
+                        <div>
+                            <h1 class="text-3xl font-bold text-white sm:text-4xl">Configuration</h1>
+                        </div>
+                    </div>
+                    <p class="text-lg text-gray-400 leading-relaxed">
+                        Soli Proxy uses two files: <code class="text-emerald-300 text-sm bg-emerald-500/10 px-1.5 py-0.5 rounded">proxy.conf</code> for routing rules and <code class="text-emerald-300 text-sm bg-emerald-500/10 px-1.5 py-0.5 rounded">config.toml</code> for server settings. Both support hot reloading without downtime.
+                    </p>
+                </div>
+
+                <!-- ============================================================ -->
+                <!-- PROXY.CONF ROUTING RULES -->
+                <!-- ============================================================ -->
+                <div class="mb-16 reveal-on-scroll" style="transition-delay: 100ms;">
+                    <h2 class="text-2xl font-bold text-white mb-2 flex items-center gap-3">
+                        <span class="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400 text-sm font-mono">1</span>
+                        Routing Rules &mdash; proxy.conf
+                    </h2>
+                    <p class="text-gray-400 mb-6 ml-11">
+                        Each line maps a source pattern to one or more backend targets using the <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">-&gt;</code> arrow syntax. Rules are evaluated top-to-bottom; the first match wins.
+                    </p>
+
+                    <!-- Domain-only rules -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-3">Domain-Only Rules</h3>
+                        <p class="text-gray-400 text-sm mb-3">Match requests by their <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Host</code> header. Any path on that domain is forwarded to the target.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">proxy.conf</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tc"># All traffic to example.com goes to backend on port 8080</span>
+<span class="tf">example.com</span> <span class="tk">-></span> <span class="ts">http://backend:8080</span>
+
+<span class="tc"># Multiple domains, each with its own backend</span>
+<span class="tf">api.example.com</span>   <span class="tk">-></span> <span class="ts">http://api-server:3000</span>
+<span class="tf">admin.example.com</span> <span class="tk">-></span> <span class="ts">http://admin-panel:4000</span></code></pre>
+                        </div>
+                    </div>
+
+                    <!-- Domain + Path prefix -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-3">Domain + Path Prefix</h3>
+                        <p class="text-gray-400 text-sm mb-3">Combine a domain with a path prefix to route specific URL paths on a domain to a different backend.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">proxy.conf</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tc"># Only /api/* paths on app.example.com go to the API service</span>
+<span class="tf">app.example.com/api/*</span> <span class="tk">-></span> <span class="ts">http://api:8082</span>
+
+<span class="tc"># Everything else on app.example.com goes to the frontend</span>
+<span class="tf">app.example.com</span> <span class="tk">-></span> <span class="ts">http://frontend:3000</span></code></pre>
+                        </div>
+                    </div>
+
+                    <!-- Path-only rules -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-3">Path-Only Rules (Any Domain)</h3>
+                        <p class="text-gray-400 text-sm mb-3">Match by URL path regardless of the host. Paths ending in <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">/*</code> match any subpath (prefix match). Paths without a wildcard require an exact match.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">proxy.conf</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tc"># Prefix match: /api/ and all subpaths</span>
+<span class="tf">/api/*</span> <span class="tk">-></span> <span class="ts">http://api:8090</span>
+
+<span class="tc"># Exact match: only /health (not /health/check)</span>
+<span class="tf">/health</span> <span class="tk">-></span> <span class="ts">http://monitoring:9090</span>
+
+<span class="tc"># WebSocket route</span>
+<span class="tf">/ws</span> <span class="tk">-></span> <span class="ts">ws://realtime:8888</span></code></pre>
+                        </div>
+                    </div>
+
+                    <!-- Regex rules -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-3">Regex Rules</h3>
+                        <p class="text-gray-400 text-sm mb-3">Prefix the source with <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">~</code> to use a regular expression. The regex is matched against the full request path.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/05">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">proxy.conf</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tc"># Match versioned API paths: /v1/..., /v2/..., etc.</span>
+<span class="tf">~^/v[0-9]+/.*$</span> <span class="tk">-></span> <span class="ts">http://versioned:8091</span>
+
+<span class="tc"># Match UUID-based resource paths</span>
+<span class="tf">~^/resources/[0-9a-f]{8}-[0-9a-f]{4}-.*$</span> <span class="tk">-></span> <span class="ts">http://resources:8092</span></code></pre>
+                        </div>
+                    </div>
+
+                    <!-- HTML URL Rewriting -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-3">HTML URL Rewriting</h3>
+                        <p class="text-gray-400 text-sm mb-3">When using path prefix rules (like <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">/api/* -> http://api:8090</code>), the proxy automatically rewrites URLs in HTML responses to include the prefix. This ensures assets loaded by the browser point to the correct path.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/05">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">proxy.conf</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tc"># Route /api/* to backend (prefix stripped from request)</span>
+<span class="tf">/api/*</span> <span class="tk">-></span> <span class="ts">http://api:8090</span></code></pre>
+                        </div>
+                        <p class="text-gray-400 text-sm mt-3">With the rule above, when the backend returns HTML like:</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden mt-2">
+                            <pre class="p-4 text-sm overflow-x-auto"><code>&lt;link rel="stylesheet" href="/style.css"&gt;
+&lt;script src="/app.js"&gt;&lt;/script&gt;
+&lt;form action="/submit"&gt;</code></pre>
+                        </div>
+                        <p class="text-gray-400 text-sm mt-3">The proxy rewrites it to:</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden mt-2">
+                            <pre class="p-4 text-sm overflow-x-auto"><code>&lt;link rel="stylesheet" href="/api/style.css"&gt;
+&lt;script src="/api/app.js"&gt;&lt;/script&gt;
+&lt;form action="/api/submit"&gt;</code></pre>
+                        </div>
+                        <p class="text-gray-400 text-sm mt-3">The rewriting applies to <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">href</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">src</code>, and <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">action</code> attributes in HTML responses. It also handles gzip/deflate compression transparently.</p>
+                    </div>
+
+                    <!-- Multi-backend -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-3">Multi-Backend (Load Balancing)</h3>
+                        <p class="text-gray-400 text-sm mb-3">Specify multiple backends separated by commas. Use backslash <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">\</code> at the end of a line to continue on the next line. Traffic is distributed across all targets.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">proxy.conf</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tc"># Two backends on a single line</span>
+<span class="tf">/app/*</span> <span class="tk">-></span> <span class="ts">http://b1:8080</span>, <span class="ts">http://b2:8080</span>
+
+<span class="tc"># Line continuation with backslash for readability</span>
+<span class="tf">/api/*</span> <span class="tk">-></span> <span class="ts">http://backend1:8080</span>, \
+          <span class="ts">http://backend2:8080</span>, \
+          <span class="ts">http://backend3:8080</span></code></pre>
+                        </div>
+                    </div>
+
+                    <!-- Per-route Lua scripts -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-3">Per-Route Lua Scripts</h3>
+                        <p class="text-gray-400 text-sm mb-3">Append <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@script:filename.lua</code> to attach Lua scripts to specific routes. Multiple scripts are comma-separated.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">proxy.conf</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tc"># Single script on a route</span>
+<span class="tf">/admin/*</span> <span class="tk">-></span> <span class="ts">http://admin:4000</span> <span class="tt">@script:auth.lua</span>
+
+<span class="tc"># Multiple scripts on a route</span>
+<span class="tf">/api/*</span> <span class="tk">-></span> <span class="ts">http://api:3000</span> <span class="tt">@script:auth.lua,rate_limit.lua</span>
+
+<span class="tc"># Works with multi-backend and line continuation</span>
+<span class="tf">/api/*</span> <span class="tk">-></span> <span class="ts">http://a:8080</span>, \
+          <span class="ts">http://b:8080</span> <span class="tt">@script:auth.lua</span></code></pre>
+                        </div>
+                    </div>
+
+                    <!-- Global scripts -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-3">Global Scripts</h3>
+                        <p class="text-gray-400 text-sm mb-3">The <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">[global]</code> directive applies Lua scripts to every request, regardless of the matched route.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">proxy.conf</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tc"># These scripts run on every request</span>
+<span class="tk">[global]</span> <span class="tt">@script:cors.lua,logging.lua</span>
+
+<span class="tc"># Routes follow as normal</span>
+<span class="tf">/api/*</span> <span class="tk">-></span> <span class="ts">http://api:3000</span> <span class="tt">@script:auth.lua</span>
+<span class="tf">default</span> <span class="tk">-></span> <span class="ts">http://localhost:8080</span></code></pre>
+                        </div>
+                    </div>
+
+                    <!-- Default fallback -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-3">Default Fallback</h3>
+                        <p class="text-gray-400 text-sm mb-3">The <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">default</code> rule catches any request that did not match a previous rule. Place it at the end of your config.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">proxy.conf</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tc"># Catch-all fallback (must be last)</span>
+<span class="tf">default</span> <span class="tk">-></span> <span class="ts">http://localhost:8080</span></code></pre>
+                        </div>
+                    </div>
+
+                    <!-- Full example -->
+                    <div class="ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-3">Complete Example</h3>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">proxy.conf</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tc"># Global middleware</span>
+<span class="tk">[global]</span> <span class="tt">@script:cors.lua,logging.lua</span>
+
+<span class="tc"># Domain-based routing</span>
+<span class="tf">api.example.com</span>    <span class="tk">-></span> <span class="ts">http://api:3000</span> <span class="tt">@script:auth.lua</span>
+<span class="tf">admin.example.com</span>  <span class="tk">-></span> <span class="ts">http://admin:4000</span> <span class="tt">@script:auth.lua</span>
+<span class="tf">cdn.example.com</span>    <span class="tk">-></span> <span class="ts">http://static:8080</span>
+
+<span class="tc"># Domain + path prefix</span>
+<span class="tf">app.example.com/api/*</span> <span class="tk">-></span> <span class="ts">http://api:3000</span>
+<span class="tf">app.example.com</span>       <span class="tk">-></span> <span class="ts">http://frontend:8080</span>
+
+<span class="tc"># Path-only with load balancing</span>
+<span class="tf">/api/*</span> <span class="tk">-></span> <span class="ts">http://backend1:8080</span>, \
+          <span class="ts">http://backend2:8080</span>, \
+          <span class="ts">http://backend3:8080</span>
+
+<span class="tc"># Regex for versioned endpoints</span>
+<span class="tf">~^/v[0-9]+/.*$</span> <span class="tk">-></span> <span class="ts">http://versioned:8091</span>
+
+<span class="tc"># WebSocket</span>
+<span class="tf">/ws</span> <span class="tk">-></span> <span class="ts">ws://realtime:8888</span>
+
+<span class="tc"># Catch-all fallback</span>
+<span class="tf">default</span> <span class="tk">-></span> <span class="ts">http://localhost:8080</span></code></pre>
+                        </div>
+                    </div>
+
+                    <!-- Rule matching order info box -->
+                    <div class="mt-8 ml-11 rounded-xl bg-cyan-500/5 border border-cyan-500/20 p-5">
+                        <div class="flex gap-3">
+                            <div class="shrink-0 mt-0.5">
+                                <svg class="w-5 h-5 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                            </div>
+                            <div>
+                                <h4 class="text-sm font-semibold text-cyan-300 mb-1">Matching Order</h4>
+                                <p class="text-sm text-gray-400">Rules are evaluated top-to-bottom. The first rule that matches the incoming request wins. Place more specific rules (domain + path, regex) before broader ones (domain-only, default). The <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1 py-0.5 rounded">default</code> rule should always be last.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ============================================================ -->
+                <!-- CONFIG.TOML REFERENCE -->
+                <!-- ============================================================ -->
+                <div class="mb-16 reveal-on-scroll" style="transition-delay: 200ms;">
+                    <h2 class="text-2xl font-bold text-white mb-2 flex items-center gap-3">
+                        <span class="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400 text-sm font-mono">2</span>
+                        Server Settings &mdash; config.toml
+                    </h2>
+                    <p class="text-gray-400 mb-8 ml-11">
+                        The <code class="text-emerald-300 text-sm bg-emerald-500/10 px-1.5 py-0.5 rounded">config.toml</code> file controls server behavior, TLS, admin API, scripting, and more. All sections are optional with sensible defaults.
+                    </p>
+
+                    <!-- [server] -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-1 flex items-center gap-2">
+                            <span class="text-emerald-400 font-mono text-sm">[server]</span>
+                        </h3>
+                        <p class="text-gray-400 text-sm mb-3">Core server binding and threading options.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">config.toml</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tk">[server]</span>
+<span class="tf">bind</span> = <span class="ts">"0.0.0.0:80"</span>            <span class="tc"># HTTP listen address</span>
+<span class="tf">https_port</span> = <span class="tn">443</span>               <span class="tc"># HTTPS listen port</span>
+<span class="tf">worker_threads</span> = <span class="ts">"auto"</span>        <span class="tc"># "auto" = num CPUs, or a number</span></code></pre>
+                        </div>
+                        <div class="mt-3 overflow-x-auto">
+                            <table class="w-full text-sm text-left">
+                                <thead><tr class="border-b border-white/10 text-gray-400">
+                                    <th class="py-2 pr-4 font-medium">Key</th>
+                                    <th class="py-2 pr-4 font-medium">Type</th>
+                                    <th class="py-2 pr-4 font-medium">Default</th>
+                                    <th class="py-2 font-medium">Description</th>
+                                </tr></thead>
+                                <tbody class="text-gray-300">
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">bind</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"0.0.0.0:80"</td><td class="py-2">Address and port for HTTP</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">https_port</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">443</td><td class="py-2">Port for HTTPS/TLS listener</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">worker_threads</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"auto"</td><td class="py-2">Tokio worker thread count</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- [tls] -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-1 flex items-center gap-2">
+                            <span class="text-emerald-400 font-mono text-sm">[tls]</span>
+                        </h3>
+                        <p class="text-gray-400 text-sm mb-3">TLS mode and certificate storage.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">config.toml</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tk">[tls]</span>
+<span class="tf">mode</span> = <span class="ts">"auto"</span>                  <span class="tc"># "auto" = self-signed dev certs</span>
+                                <span class="tc"># "letsencrypt" = ACME production certs</span>
+<span class="tf">cache_dir</span> = <span class="ts">"./certs"</span>          <span class="tc"># Directory to store certificates</span></code></pre>
+                        </div>
+                        <div class="mt-3 overflow-x-auto">
+                            <table class="w-full text-sm text-left">
+                                <thead><tr class="border-b border-white/10 text-gray-400">
+                                    <th class="py-2 pr-4 font-medium">Key</th>
+                                    <th class="py-2 pr-4 font-medium">Type</th>
+                                    <th class="py-2 pr-4 font-medium">Default</th>
+                                    <th class="py-2 font-medium">Description</th>
+                                </tr></thead>
+                                <tbody class="text-gray-300">
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">mode</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"auto"</td><td class="py-2">"auto" for self-signed, "letsencrypt" for ACME</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">cache_dir</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"./certs"</td><td class="py-2">Certificate storage directory</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- [letsencrypt] -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-1 flex items-center gap-2">
+                            <span class="text-emerald-400 font-mono text-sm">[letsencrypt]</span>
+                        </h3>
+                        <p class="text-gray-400 text-sm mb-3">ACME / Let's Encrypt settings. Only used when <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1 py-0.5 rounded">tls.mode = "letsencrypt"</code>.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">config.toml</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tk">[letsencrypt]</span>
+<span class="tf">staging</span> = <span class="tn">false</span>               <span class="tc"># true = use staging ACME server (for testing)</span>
+<span class="tf">email</span> = <span class="ts">"admin@example.com"</span>   <span class="tc"># Contact email for certificate notifications</span>
+<span class="tf">terms_agreed</span> = <span class="tn">true</span>          <span class="tc"># You must agree to the ACME ToS</span></code></pre>
+                        </div>
+                        <div class="mt-3 overflow-x-auto">
+                            <table class="w-full text-sm text-left">
+                                <thead><tr class="border-b border-white/10 text-gray-400">
+                                    <th class="py-2 pr-4 font-medium">Key</th>
+                                    <th class="py-2 pr-4 font-medium">Type</th>
+                                    <th class="py-2 pr-4 font-medium">Default</th>
+                                    <th class="py-2 font-medium">Description</th>
+                                </tr></thead>
+                                <tbody class="text-gray-300">
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">staging</td><td class="py-2 pr-4">bool</td><td class="py-2 pr-4 text-gray-500">false</td><td class="py-2">Use Let's Encrypt staging for testing</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">email</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">--</td><td class="py-2">Contact email for ACME notifications</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">terms_agreed</td><td class="py-2 pr-4">bool</td><td class="py-2 pr-4 text-gray-500">--</td><td class="py-2">Accept the ACME Terms of Service</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- [admin] -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-1 flex items-center gap-2">
+                            <span class="text-emerald-400 font-mono text-sm">[admin]</span>
+                        </h3>
+                        <p class="text-gray-400 text-sm mb-3">REST Admin API for runtime management. See the <a href="/docs/admin-api" class="text-emerald-400 hover:text-emerald-300 underline underline-offset-2">Admin API docs</a> for endpoints.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">config.toml</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tk">[admin]</span>
+<span class="tf">enabled</span> = <span class="tn">true</span>                <span class="tc"># Enable the admin API</span>
+<span class="tf">bind</span> = <span class="ts">"0.0.0.0:9090"</span>         <span class="tc"># Admin API listen address</span>
+<span class="tf">api_key</span> = <span class="ts">"your-secret-key"</span>   <span class="tc"># Optional: require X-API-Key header</span></code></pre>
+                        </div>
+                        <div class="mt-3 overflow-x-auto">
+                            <table class="w-full text-sm text-left">
+                                <thead><tr class="border-b border-white/10 text-gray-400">
+                                    <th class="py-2 pr-4 font-medium">Key</th>
+                                    <th class="py-2 pr-4 font-medium">Type</th>
+                                    <th class="py-2 pr-4 font-medium">Default</th>
+                                    <th class="py-2 font-medium">Description</th>
+                                </tr></thead>
+                                <tbody class="text-gray-300">
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">enabled</td><td class="py-2 pr-4">bool</td><td class="py-2 pr-4 text-gray-500">false</td><td class="py-2">Enable or disable the admin API</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">bind</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"127.0.0.1:9090"</td><td class="py-2">Address and port for admin API</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">api_key</td><td class="py-2 pr-4">string?</td><td class="py-2 pr-4 text-gray-500">none</td><td class="py-2">If set, all requests require X-API-Key header</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- [circuit_breaker] -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-1 flex items-center gap-2">
+                            <span class="text-emerald-400 font-mono text-sm">[circuit_breaker]</span>
+                        </h3>
+                        <p class="text-gray-400 text-sm mb-3">Tracks backend health and stops sending traffic to failing backends. When all targets for a route are open, returns 503 Service Unavailable.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">config.toml</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tk">[circuit_breaker]</span>
+<span class="tf">failure_threshold</span> = <span class="tn">5</span>        <span class="tc"># Consecutive failures before opening</span>
+<span class="tf">recovery_timeout_secs</span> = <span class="tn">30</span>   <span class="tc"># Seconds before probing an open backend</span>
+<span class="tf">success_threshold</span> = <span class="tn">2</span>        <span class="tc"># Successful probes needed to close</span>
+<span class="tf">failure_status_codes</span> = [<span class="tn">502</span>, <span class="tn">503</span>, <span class="tn">504</span>]  <span class="tc"># HTTP codes that count as failures</span></code></pre>
+                        </div>
+                        <div class="mt-3 overflow-x-auto">
+                            <table class="w-full text-sm text-left">
+                                <thead><tr class="border-b border-white/10 text-gray-400">
+                                    <th class="py-2 pr-4 font-medium">Key</th>
+                                    <th class="py-2 pr-4 font-medium">Type</th>
+                                    <th class="py-2 pr-4 font-medium">Default</th>
+                                    <th class="py-2 font-medium">Description</th>
+                                </tr></thead>
+                                <tbody class="text-gray-300">
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">failure_threshold</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">5</td><td class="py-2">Failures before breaker opens</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">recovery_timeout_secs</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">30</td><td class="py-2">Seconds to wait before half-open probe</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">success_threshold</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">2</td><td class="py-2">Successes needed to close breaker</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">failure_status_codes</td><td class="py-2 pr-4">array</td><td class="py-2 pr-4 text-gray-500">[502, 503, 504]</td><td class="py-2">HTTP status codes treated as failures</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- [scripting] -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-1 flex items-center gap-2">
+                            <span class="text-emerald-400 font-mono text-sm">[scripting]</span>
+                        </h3>
+                        <p class="text-gray-400 text-sm mb-3">Lua 5.4 scripting engine. See the <a href="/docs/scripting" class="text-emerald-400 hover:text-emerald-300 underline underline-offset-2">Scripting docs</a> for hook details.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">config.toml</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tk">[scripting]</span>
+<span class="tf">enabled</span> = <span class="tn">true</span>                <span class="tc"># Enable Lua scripting engine</span>
+<span class="tf">scripts_dir</span> = <span class="ts">"./scripts/lua"</span>  <span class="tc"># Directory containing Lua scripts</span>
+<span class="tf">hook_timeout_ms</span> = <span class="tn">10</span>         <span class="tc"># Max execution time per hook (ms)</span></code></pre>
+                        </div>
+                        <div class="mt-3 overflow-x-auto">
+                            <table class="w-full text-sm text-left">
+                                <thead><tr class="border-b border-white/10 text-gray-400">
+                                    <th class="py-2 pr-4 font-medium">Key</th>
+                                    <th class="py-2 pr-4 font-medium">Type</th>
+                                    <th class="py-2 pr-4 font-medium">Default</th>
+                                    <th class="py-2 font-medium">Description</th>
+                                </tr></thead>
+                                <tbody class="text-gray-300">
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">enabled</td><td class="py-2 pr-4">bool</td><td class="py-2 pr-4 text-gray-500">false</td><td class="py-2">Enable or disable scripting engine</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">scripts_dir</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"./scripts/lua"</td><td class="py-2">Path to Lua script files</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">hook_timeout_ms</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">10</td><td class="py-2">Max execution time per hook call</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- [logging] -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-1 flex items-center gap-2">
+                            <span class="text-emerald-400 font-mono text-sm">[logging]</span>
+                        </h3>
+                        <p class="text-gray-400 text-sm mb-3">Structured logging configuration.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">config.toml</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tk">[logging]</span>
+<span class="tf">level</span> = <span class="ts">"info"</span>                <span class="tc"># trace, debug, info, warn, error</span>
+<span class="tf">format</span> = <span class="ts">"json"</span>               <span class="tc"># "json" or "pretty"</span>
+<span class="tf">output</span> = <span class="ts">"stdout"</span>             <span class="tc"># "stdout" or "file:/var/log/soli-proxy.log"</span></code></pre>
+                        </div>
+                        <div class="mt-3 overflow-x-auto">
+                            <table class="w-full text-sm text-left">
+                                <thead><tr class="border-b border-white/10 text-gray-400">
+                                    <th class="py-2 pr-4 font-medium">Key</th>
+                                    <th class="py-2 pr-4 font-medium">Type</th>
+                                    <th class="py-2 pr-4 font-medium">Default</th>
+                                    <th class="py-2 font-medium">Description</th>
+                                </tr></thead>
+                                <tbody class="text-gray-300">
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">level</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"info"</td><td class="py-2">Log verbosity level</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">format</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"json"</td><td class="py-2">Output format (json or pretty)</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">output</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"stdout"</td><td class="py-2">Output target (stdout or file path)</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- [limits] -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-1 flex items-center gap-2">
+                            <span class="text-emerald-400 font-mono text-sm">[limits]</span>
+                        </h3>
+                        <p class="text-gray-400 text-sm mb-3">Connection and request limits.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">config.toml</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tk">[limits]</span>
+<span class="tf">max_connections</span> = <span class="tn">10000</span>      <span class="tc"># Maximum concurrent connections</span>
+<span class="tf">max_request_size</span> = <span class="ts">"10MB"</span>    <span class="tc"># Maximum request body size</span>
+<span class="tf">keep_alive_timeout</span> = <span class="tn">30</span>     <span class="tc"># Keep-alive timeout in seconds</span>
+<span class="tf">request_timeout</span> = <span class="tn">60</span>        <span class="tc"># Total request timeout in seconds</span></code></pre>
+                        </div>
+                        <div class="mt-3 overflow-x-auto">
+                            <table class="w-full text-sm text-left">
+                                <thead><tr class="border-b border-white/10 text-gray-400">
+                                    <th class="py-2 pr-4 font-medium">Key</th>
+                                    <th class="py-2 pr-4 font-medium">Type</th>
+                                    <th class="py-2 pr-4 font-medium">Default</th>
+                                    <th class="py-2 font-medium">Description</th>
+                                </tr></thead>
+                                <tbody class="text-gray-300">
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">max_connections</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">10000</td><td class="py-2">Max concurrent connections</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">max_request_size</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"10MB"</td><td class="py-2">Max request body size</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">keep_alive_timeout</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">30</td><td class="py-2">Keep-alive timeout (seconds)</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">request_timeout</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">60</td><td class="py-2">Total request timeout (seconds)</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- [rate_limiting] -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-1 flex items-center gap-2">
+                            <span class="text-emerald-400 font-mono text-sm">[rate_limiting]</span>
+                        </h3>
+                        <p class="text-gray-400 text-sm mb-3">Global rate limiting with token bucket strategy.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">config.toml</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tk">[rate_limiting]</span>
+<span class="tf">enabled</span> = <span class="tn">true</span>                <span class="tc"># Enable rate limiting</span>
+<span class="tf">strategy</span> = <span class="ts">"token_bucket"</span>     <span class="tc"># Rate limiting algorithm</span>
+<span class="tf">requests_per_second</span> = <span class="tn">1000</span>   <span class="tc"># Sustained request rate</span>
+<span class="tf">burst_size</span> = <span class="tn">2000</span>            <span class="tc"># Maximum burst above sustained rate</span></code></pre>
+                        </div>
+                        <div class="mt-3 overflow-x-auto">
+                            <table class="w-full text-sm text-left">
+                                <thead><tr class="border-b border-white/10 text-gray-400">
+                                    <th class="py-2 pr-4 font-medium">Key</th>
+                                    <th class="py-2 pr-4 font-medium">Type</th>
+                                    <th class="py-2 pr-4 font-medium">Default</th>
+                                    <th class="py-2 font-medium">Description</th>
+                                </tr></thead>
+                                <tbody class="text-gray-300">
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">enabled</td><td class="py-2 pr-4">bool</td><td class="py-2 pr-4 text-gray-500">true</td><td class="py-2">Enable or disable rate limiting</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">strategy</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"token_bucket"</td><td class="py-2">Rate limiting algorithm</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">requests_per_second</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">1000</td><td class="py-2">Sustained request rate per second</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">burst_size</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">2000</td><td class="py-2">Max burst above sustained rate</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Full config.toml example -->
+                    <div class="ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-3">Complete config.toml Example</h3>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">config.toml</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tk">[server]</span>
+<span class="tf">bind</span> = <span class="ts">"0.0.0.0:80"</span>
+<span class="tf">https_port</span> = <span class="tn">443</span>
+<span class="tf">worker_threads</span> = <span class="ts">"auto"</span>
+
+<span class="tk">[tls]</span>
+<span class="tf">mode</span> = <span class="ts">"letsencrypt"</span>
+<span class="tf">cache_dir</span> = <span class="ts">"./certs"</span>
+
+<span class="tk">[letsencrypt]</span>
+<span class="tf">staging</span> = <span class="tn">false</span>
+<span class="tf">email</span> = <span class="ts">"admin@example.com"</span>
+<span class="tf">terms_agreed</span> = <span class="tn">true</span>
+
+<span class="tk">[admin]</span>
+<span class="tf">enabled</span> = <span class="tn">true</span>
+<span class="tf">bind</span> = <span class="ts">"127.0.0.1:9090"</span>
+<span class="tf">api_key</span> = <span class="ts">"your-secret-key"</span>
+
+<span class="tk">[circuit_breaker]</span>
+<span class="tf">failure_threshold</span> = <span class="tn">5</span>
+<span class="tf">recovery_timeout_secs</span> = <span class="tn">30</span>
+<span class="tf">success_threshold</span> = <span class="tn">2</span>
+<span class="tf">failure_status_codes</span> = [<span class="tn">502</span>, <span class="tn">503</span>, <span class="tn">504</span>]
+
+<span class="tk">[scripting]</span>
+<span class="tf">enabled</span> = <span class="tn">true</span>
+<span class="tf">scripts_dir</span> = <span class="ts">"./scripts/lua"</span>
+<span class="tf">hook_timeout_ms</span> = <span class="tn">10</span>
+
+<span class="tk">[logging]</span>
+<span class="tf">level</span> = <span class="ts">"info"</span>
+<span class="tf">format</span> = <span class="ts">"json"</span>
+<span class="tf">output</span> = <span class="ts">"stdout"</span>
+
+<span class="tk">[limits]</span>
+<span class="tf">max_connections</span> = <span class="tn">10000</span>
+<span class="tf">max_request_size</span> = <span class="ts">"10MB"</span>
+<span class="tf">keep_alive_timeout</span> = <span class="tn">30</span>
+<span class="tf">request_timeout</span> = <span class="tn">60</span>
+
+<span class="tk">[rate_limiting]</span>
+<span class="tf">enabled</span> = <span class="tn">true</span>
+<span class="tf">strategy</span> = <span class="ts">"token_bucket"</span>
+<span class="tf">requests_per_second</span> = <span class="tn">1000</span>
+<span class="tf">burst_size</span> = <span class="tn">2000</span></code></pre>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ============================================================ -->
+                <!-- HOT RELOADING -->
+                <!-- ============================================================ -->
+                <div class="mb-16 reveal-on-scroll" style="transition-delay: 300ms;">
+                    <h2 class="text-2xl font-bold text-white mb-2 flex items-center gap-3">
+                        <span class="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400 text-sm font-mono">3</span>
+                        Hot Reloading
+                    </h2>
+                    <p class="text-gray-400 mb-8 ml-11">
+                        Configuration changes are applied without restarting the proxy or dropping active connections. There are three ways to trigger a reload.
+                    </p>
+
+                    <!-- Three methods grid -->
+                    <div class="ml-11 grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+                        <!-- SIGUSR1 -->
+                        <div class="rounded-xl bg-gray-900 border border-white/10 p-5 hover:bg-white/5 transition-all">
+                            <div class="flex items-center gap-2 mb-3">
+                                <div class="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400">
+                                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                                </div>
+                                <h4 class="font-semibold text-white">SIGUSR1 Signal</h4>
+                            </div>
+                            <p class="text-sm text-gray-400 mb-3">Send a Unix signal to the running process for immediate reload.</p>
+                            <code class="text-xs text-emerald-300 bg-emerald-500/10 px-2 py-1 rounded block">kill -USR1 $(pidof soli-proxy)</code>
+                        </div>
+
+                        <!-- Admin API -->
+                        <div class="rounded-xl bg-gray-900 border border-white/10 p-5 hover:bg-white/5 transition-all">
+                            <div class="flex items-center gap-2 mb-3">
+                                <div class="w-8 h-8 rounded-lg bg-cyan-500/10 flex items-center justify-center text-cyan-400">
+                                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                                </div>
+                                <h4 class="font-semibold text-white">Admin API</h4>
+                            </div>
+                            <p class="text-sm text-gray-400 mb-3">HTTP endpoint for programmatic reload from scripts or CI/CD.</p>
+                            <code class="text-xs text-cyan-300 bg-cyan-500/10 px-2 py-1 rounded block">POST http://localhost:9090/reload</code>
+                        </div>
+
+                        <!-- File Watcher -->
+                        <div class="rounded-xl bg-gray-900 border border-white/10 p-5 hover:bg-white/5 transition-all">
+                            <div class="flex items-center gap-2 mb-3">
+                                <div class="w-8 h-8 rounded-lg bg-teal-500/10 flex items-center justify-center text-teal-400">
+                                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                                </div>
+                                <h4 class="font-semibold text-white">File Watcher</h4>
+                            </div>
+                            <p class="text-sm text-gray-400 mb-3">Automatic detection when proxy.conf is modified on disk.</p>
+                            <code class="text-xs text-teal-300 bg-teal-500/10 px-2 py-1 rounded block">Automatic &mdash; no action needed</code>
+                        </div>
+                    </div>
+
+                    <!-- SIGUSR1 example -->
+                    <div class="ml-11 mb-8">
+                        <h3 class="text-lg font-semibold text-white mb-3">SIGUSR1 Signal</h3>
+                        <p class="text-gray-400 text-sm mb-3">Send the <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">SIGUSR1</code> signal to the Soli Proxy process. This is the simplest reload method for manual operations.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">bash</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tc"># Find and signal the process</span>
+<span class="tf">kill</span> <span class="tk">-USR1</span> <span class="ts">$(pidof soli-proxy)</span>
+
+<span class="tc"># Or if using systemd</span>
+<span class="tf">systemctl</span> <span class="tk">kill</span> <span class="ts">--signal=USR1</span> soli-proxy</code></pre>
+                        </div>
+                    </div>
+
+                    <!-- Admin API reload -->
+                    <div class="ml-11 mb-8">
+                        <h3 class="text-lg font-semibold text-white mb-3">Admin API Reload</h3>
+                        <p class="text-gray-400 text-sm mb-3">Call the Admin API reload endpoint. Requires the admin API to be enabled in <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">config.toml</code>.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">bash</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tc"># Without API key</span>
+<span class="tf">curl</span> <span class="tk">-X POST</span> <span class="ts">http://localhost:9090/reload</span>
+
+<span class="tc"># With API key authentication</span>
+<span class="tf">curl</span> <span class="tk">-X POST</span> <span class="ts">http://localhost:9090/reload</span> \
+  <span class="tk">-H</span> <span class="ts">"X-API-Key: your-secret-key"</span></code></pre>
+                        </div>
+                    </div>
+
+                    <!-- File Watcher -->
+                    <div class="ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-3">Automatic File Watcher</h3>
+                        <p class="text-gray-400 text-sm mb-3">
+                            Soli Proxy watches the <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">proxy.conf</code> file for changes using OS-level file notifications (inotify on Linux, FSEvents on macOS). When a change is detected, configuration is reloaded automatically.
+                        </p>
+                        <div class="rounded-xl bg-emerald-500/5 border border-emerald-500/20 p-5">
+                            <div class="flex gap-3">
+                                <div class="shrink-0 mt-0.5">
+                                    <svg class="w-5 h-5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                                </div>
+                                <div>
+                                    <h4 class="text-sm font-semibold text-emerald-300 mb-1">Smart Suppression</h4>
+                                    <p class="text-sm text-gray-400">When routes are modified via the Admin API, the file watcher suppresses the next filesystem event to avoid a double reload. The Admin API writes to <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 py-0.5 rounded">proxy.conf</code> and swaps the in-memory config atomically.</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Navigation -->
+                <div class="flex items-center justify-between pt-8 border-t border-white/10 reveal-on-scroll">
+                    <a href="/docs/apps" class="group flex items-center gap-3 text-gray-400 hover:text-white transition-colors">
+                        <svg class="w-5 h-5 transition-transform group-hover:-translate-x-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 17l-5-5m0 0l5-5m-5 5h12"/></svg>
+                        <div>
+                            <div class="text-xs text-gray-500">Previous</div>
+                            <div class="font-medium">Apps</div>
+                        </div>
+                    </a>
+                    <a href="/docs/admin-api" class="group flex items-center gap-3 text-gray-400 hover:text-white transition-colors text-right">
+                        <div>
+                            <div class="text-xs text-gray-500">Next</div>
+                            <div class="font-medium">Admin API</div>
+                        </div>
+                        <svg class="w-5 h-5 transition-transform group-hover:translate-x-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+                    </a>
+                </div>
+
+            </div>
+        </div>
+    </div>
+</section>

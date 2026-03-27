@@ -1,0 +1,439 @@
+<section class="relative py-16 sm:py-24">
+    <div class="container mx-auto max-w-7xl px-6 lg:px-8">
+        <div class="flex gap-12">
+
+            <!-- Sidebar -->
+            <aside class="hidden lg:block w-56 shrink-0">
+                <nav class="doc-sidebar sticky top-24 space-y-1 text-sm">
+                    <div class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3 px-3">Documentation</div>
+                    <a href="/docs/getting-started" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Getting Started</a>
+                    <a href="/docs/apps" class="active block px-3 py-2 rounded-lg text-white bg-white/10 transition-all">Apps</a>
+                    <a href="/docs/configuration" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Configuration</a>
+                    <a href="/docs/admin-api" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Admin API</a>
+                    <a href="/docs/scripting" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Scripting</a>
+                    <a href="/docs/security" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Security</a>
+                    <a href="/docs/deployment" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Deployment</a>
+                    <a href="/docs/benchmark" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Benchmark</a>
+                </nav>
+            </aside>
+
+            <!-- Content -->
+            <div class="flex-1 min-w-0">
+
+                <!-- Page Header -->
+                <div class="mb-12 reveal-on-scroll">
+                    <div class="flex items-center gap-3 text-sm text-gray-400 mb-4">
+                        <a href="/" class="hover:text-white transition-colors">Home</a>
+                        <svg class="w-4 h-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                        <a href="/docs" class="hover:text-white transition-colors">Docs</a>
+                        <svg class="w-4 h-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                        <span class="text-white">Apps</span>
+                    </div>
+                    <div class="flex items-center gap-3 mb-4">
+                        <div class="w-10 h-10 rounded-xl bg-cyan-500/10 flex items-center justify-center text-cyan-400">
+                            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 14.25h13.5m-13.5 0a3 3 0 01-3-3m3 3a3 3 0 100 6h13.5a3 3 0 100-6m-16.5-3a3 3 0 013-3h13.5a3 3 0 013 3m-19.5 0a4.5 4.5 0 01.9-2.7L5.737 5.1a3.375 3.375 0 012.7-1.35h7.126c1.062 0 2.062.5 2.7 1.35l2.587 3.45a4.5 4.5 0 01.9 2.7m0 0a3 3 0 01-3 3m0 3h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008zm-3 6h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008z"/></svg>
+                        </div>
+                        <div>
+                            <h1 class="text-3xl font-bold text-white sm:text-4xl">App Hosting</h1>
+                            <p class="mt-1 text-gray-400">Auto-discovery, blue-green deployments, and zero-downtime updates</p>
+                        </div>
+                    </div>
+                </div>
+
+        <!-- Overview -->
+        <div class="mb-16 reveal-on-scroll">
+            <h2 class="text-xl font-bold text-white mb-4">Overview</h2>
+            <p class="text-gray-400 leading-relaxed mb-4">
+                Soli Proxy can host and manage web applications directly. Drop an app folder in <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">sites/</code> with an <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">app.infos</code> configuration file, and the proxy automatically:
+            </p>
+            <ul class="space-y-2 text-gray-300 mb-6">
+                <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-400 shrink-0 mt-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Discovers the app and allocates ports</li>
+                <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-400 shrink-0 mt-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Starts the app using its <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">start_script</code></li>
+                <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-400 shrink-0 mt-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Registers routes for its domain</li>
+                <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-400 shrink-0 mt-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Issues TLS certificates (in production)</li>
+                <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-400 shrink-0 mt-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Watches for file changes and re-discovers</li>
+            </ul>
+        </div>
+
+        <!-- Directory Structure -->
+        <div class="mb-16 reveal-on-scroll">
+            <h2 class="text-xl font-bold text-white mb-4">Directory Structure</h2>
+            <div class="rounded-2xl bg-gray-950 ring-1 ring-white/10 overflow-hidden code-window">
+                <div class="flex items-center justify-between px-4 py-3 border-b border-white/5 bg-white/5">
+                    <span class="text-xs text-gray-500 font-mono">Project layout</span>
+                    <button class="text-xs text-gray-500 hover:text-white px-2 py-1 rounded hover:bg-white/10 transition-all" onclick="copyCode(this)">Copy</button>
+                </div>
+                <div class="p-6">
+<pre class="text-sm leading-7"><code>soli-proxy/
+  proxy.conf              <span class="tc"># static routing rules</span>
+  config.toml             <span class="tc"># server configuration</span>
+  sites/                  <span class="tc"># app hosting directory</span>
+    myapp/                <span class="tc"># one folder per app</span>
+      app.infos           <span class="tc"># app configuration (TOML)</span>
+      ...                 <span class="tc"># app source code</span>
+    blog/
+      app.infos
+      ...
+    _admin/               <span class="tc"># built-in admin UI (underscore prefix)</span>
+      app.infos
+      ...
+  run/                    <span class="tc"># runtime state (auto-created)</span>
+    ports.lock            <span class="tc"># persistent port assignments (JSON)</span>
+    logs/                 <span class="tc"># per-app deployment logs</span>
+      myapp/
+        blue.log
+        green.log</code></pre>
+                </div>
+            </div>
+        </div>
+
+        <!-- app.infos Reference -->
+        <div class="mb-16 reveal-on-scroll">
+            <h2 class="text-xl font-bold text-white mb-4">app.infos Reference</h2>
+            <p class="text-gray-400 mb-6">Each app must have an <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">app.infos</code> file in its root directory. This is a TOML file with the following fields:</p>
+
+            <div class="rounded-2xl bg-gray-950 ring-1 ring-white/10 overflow-hidden code-window mb-6">
+                <div class="flex items-center justify-between px-4 py-3 border-b border-white/5 bg-white/5">
+                    <span class="text-xs text-gray-500 font-mono">sites/myapp/app.infos</span>
+                    <button class="text-xs text-gray-500 hover:text-white px-2 py-1 rounded hover:bg-white/10 transition-all" onclick="copyCode(this)">Copy</button>
+                </div>
+                <div class="p-6">
+<pre class="text-sm leading-7"><code><span class="tc"># Required</span>
+name = <span class="ts">"myapp"</span>                          <span class="tc"># unique identifier</span>
+domain = <span class="ts">"myapp.example.com"</span>             <span class="tc"># domain to route traffic to this app</span>
+
+<span class="tc"># Startup</span>
+start_script = <span class="ts">"soli serve . --port $PORT --workers $WORKERS"</span>
+stop_script = <span class="ts">""</span>                           <span class="tc"># optional: custom stop command</span>
+workers = <span class="tn">2</span>                                <span class="tc"># worker processes (default: 1)</span>
+
+<span class="tc"># Health</span>
+health_check = <span class="ts">"/"</span>                       <span class="tc"># endpoint to probe (default: "/")</span>
+graceful_timeout = <span class="tn">30</span>                      <span class="tc"># seconds before SIGKILL (default: 30)</span>
+
+<span class="tc"># Ports</span>
+port_range_start = <span class="tn">9000</span>                    <span class="tc"># minimum port (optional)</span>
+port_range_end = <span class="tn">9999</span>                      <span class="tc"># maximum port (optional)</span></code></pre>
+                </div>
+            </div>
+
+            <!-- Fields table -->
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm text-left">
+                    <thead>
+                        <tr class="border-b border-white/10">
+                            <th class="px-4 py-3 text-gray-400 font-semibold">Field</th>
+                            <th class="px-4 py-3 text-gray-400 font-semibold">Required</th>
+                            <th class="px-4 py-3 text-gray-400 font-semibold">Description</th>
+                        </tr>
+                    </thead>
+                    <tbody class="text-gray-300">
+                        <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">name</td><td class="px-4 py-3"><span class="text-xs font-bold text-red-400 bg-red-500/10 px-2 py-0.5 rounded">Yes</span></td><td class="px-4 py-3 text-gray-400">Unique app identifier. Used in logs, API, and port assignment.</td></tr>
+                        <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">domain</td><td class="px-4 py-3"><span class="text-xs font-bold text-red-400 bg-red-500/10 px-2 py-0.5 rounded">Yes</span></td><td class="px-4 py-3 text-gray-400">Domain name to route to this app. Leave empty for internal apps (like <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">_admin</code>).</td></tr>
+                        <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">start_script</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Shell command to start the app. Receives <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">$PORT</code> and <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">$WORKERS</code> env vars.</td></tr>
+                        <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">stop_script</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Custom stop command. If empty, sends SIGTERM then SIGKILL.</td></tr>
+                        <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">workers</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Number of worker processes. Default: 1.</td></tr>
+                        <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">user</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Run workers as this user. If set, also sets the primary group. Default: inherit from proxy.</td></tr>
+                        <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">group</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Run workers with this primary group. Default: uses user's primary group.</td></tr>
+                        <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">health_check</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">HTTP path to probe after startup. Must return 2xx. Default: <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">/</code>.</td></tr>
+                        <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">graceful_timeout</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Seconds to wait after SIGTERM before SIGKILL. Default: 30.</td></tr>
+                        <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">port_range_start</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Minimum port for allocation. Default: auto.</td></tr>
+                        <tr><td class="px-4 py-3 font-mono text-xs text-cyan-300">port_range_end</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Maximum port for allocation. Default: auto.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Environment Variables -->
+        <div class="mb-16 reveal-on-scroll">
+            <h2 class="text-xl font-bold text-white mb-4">Environment Variables</h2>
+            <p class="text-gray-400 mb-4">The following environment variables are set when running an app's <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">start_script</code>:</p>
+            <div class="space-y-3">
+                <div class="flex items-center justify-between p-4 rounded-xl bg-gray-900 border border-white/10">
+                    <div><code class="text-sm text-cyan-300">$PORT</code><div class="text-xs text-gray-500 mt-1">The port number the app should listen on</div></div>
+                    <span class="text-xs font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded">Always set</span>
+                </div>
+                <div class="flex items-center justify-between p-4 rounded-xl bg-gray-900 border border-white/10">
+                    <div><code class="text-sm text-cyan-300">$WORKERS</code><div class="text-xs text-gray-500 mt-1">Number of workers from app.infos config</div></div>
+                    <span class="text-xs font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded">Always set</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Auto-Discovery -->
+        <div class="mb-16 reveal-on-scroll">
+            <h2 class="text-xl font-bold text-white mb-4">Auto-Discovery</h2>
+            <p class="text-gray-400 leading-relaxed mb-4">
+                The proxy automatically scans the <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">sites/</code> directory for apps on startup and watches for changes at runtime. The discovery process:
+            </p>
+            <div class="space-y-4 mb-6">
+                <div class="rounded-xl bg-gray-900 border border-white/10 p-5">
+                    <div class="flex items-center gap-3 mb-2">
+                        <div class="w-7 h-7 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400 text-xs font-bold">1</div>
+                        <h4 class="font-semibold text-white">Scan</h4>
+                    </div>
+                    <p class="text-sm text-gray-400">Reads all subdirectories in <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">sites/</code> and parses their <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">app.infos</code> files.</p>
+                </div>
+                <div class="rounded-xl bg-gray-900 border border-white/10 p-5">
+                    <div class="flex items-center gap-3 mb-2">
+                        <div class="w-7 h-7 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400 text-xs font-bold">2</div>
+                        <h4 class="font-semibold text-white">Allocate Ports</h4>
+                    </div>
+                    <p class="text-sm text-gray-400">Each app gets two ports (blue and green slots). Assignments persist in <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">run/ports.lock</code> so they survive restarts.</p>
+                </div>
+                <div class="rounded-xl bg-gray-900 border border-white/10 p-5">
+                    <div class="flex items-center gap-3 mb-2">
+                        <div class="w-7 h-7 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400 text-xs font-bold">3</div>
+                        <h4 class="font-semibold text-white">Start Apps</h4>
+                    </div>
+                    <p class="text-sm text-gray-400">Apps with a <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">start_script</code> are launched. The health check endpoint is polled for up to 30 seconds.</p>
+                </div>
+                <div class="rounded-xl bg-gray-900 border border-white/10 p-5">
+                    <div class="flex items-center gap-3 mb-2">
+                        <div class="w-7 h-7 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400 text-xs font-bold">4</div>
+                        <h4 class="font-semibold text-white">Register Routes</h4>
+                    </div>
+                    <p class="text-sm text-gray-400">A routing rule is created for each app's <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">domain</code>, pointing to the active slot's port on localhost.</p>
+                </div>
+                <div class="rounded-xl bg-gray-900 border border-white/10 p-5">
+                    <div class="flex items-center gap-3 mb-2">
+                        <div class="w-7 h-7 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400 text-xs font-bold">5</div>
+                        <h4 class="font-semibold text-white">Issue Certificates</h4>
+                    </div>
+                    <p class="text-sm text-gray-400">In production (<code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">tls.mode = "letsencrypt"</code>), Let's Encrypt certificates are automatically requested for each app domain.</p>
+                </div>
+            </div>
+
+            <p class="text-sm text-gray-500">A file system watcher monitors <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">sites/</code> and re-runs discovery when changes are detected (debounced to 500ms). Apps removed from disk are automatically cleaned up.</p>
+        </div>
+
+        <!-- Blue-Green Deployment -->
+        <div class="mb-16 reveal-on-scroll">
+            <h2 class="text-xl font-bold text-white mb-4">Blue-Green Deployment</h2>
+            <p class="text-gray-400 leading-relaxed mb-6">
+                Each app has two deployment slots: <strong class="text-blue-400">blue</strong> and <strong class="text-emerald-400">green</strong>. Only one slot serves traffic at a time. Deploying starts the new version on the inactive slot, verifies health, then switches routing.
+            </p>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                <div class="rounded-xl bg-gray-900 border border-white/10 p-5 text-center">
+                    <div class="w-10 h-10 mx-auto rounded-full bg-blue-500/20 flex items-center justify-center text-blue-400 mb-3 text-sm font-bold">B</div>
+                    <h4 class="font-semibold text-white text-sm mb-1">Blue Slot</h4>
+                    <p class="text-xs text-gray-500">Currently serving traffic on port 16401</p>
+                </div>
+                <div class="rounded-xl bg-gray-900 border border-emerald-500/30 p-5 text-center">
+                    <div class="flex justify-center mb-3">
+                        <svg class="w-6 h-6 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+                    </div>
+                    <h4 class="font-semibold text-emerald-400 text-sm mb-1">Deploy</h4>
+                    <p class="text-xs text-gray-500">New version starts on green, passes health check, routes switch</p>
+                </div>
+                <div class="rounded-xl bg-gray-900 border border-white/10 p-5 text-center">
+                    <div class="w-10 h-10 mx-auto rounded-full bg-emerald-500/20 flex items-center justify-center text-emerald-400 mb-3 text-sm font-bold">G</div>
+                    <h4 class="font-semibold text-white text-sm mb-1">Green Slot</h4>
+                    <p class="text-xs text-gray-500">New version now serving on port 16402</p>
+                </div>
+            </div>
+
+            <div class="rounded-2xl bg-gray-950 ring-1 ring-white/10 overflow-hidden code-window">
+                <div class="flex items-center justify-between px-4 py-3 border-b border-white/5 bg-white/5">
+                    <span class="text-xs text-gray-500 font-mono">Terminal &mdash; deploy via Admin API</span>
+                    <button class="text-xs text-gray-500 hover:text-white px-2 py-1 rounded hover:bg-white/10 transition-all" onclick="copyCode(this)">Copy</button>
+                </div>
+                <div class="p-6">
+<pre class="text-sm leading-7"><code><span class="tc"># Deploy new version to the inactive slot</span>
+curl -X POST http://127.0.0.1:9090/api/v1/apps/myapp/deploy
+
+<span class="tc"># Rollback to previous slot</span>
+curl -X POST http://127.0.0.1:9090/api/v1/apps/myapp/rollback
+
+<span class="tc"># Restart current slot</span>
+curl -X POST http://127.0.0.1:9090/api/v1/apps/myapp/restart
+
+<span class="tc"># Stop the app</span>
+curl -X POST http://127.0.0.1:9090/api/v1/apps/myapp/stop
+
+<span class="tc"># View deployment logs</span>
+curl http://127.0.0.1:9090/api/v1/apps/myapp/logs</code></pre>
+                </div>
+            </div>
+        </div>
+
+        <!-- Deployment Lifecycle -->
+        <div class="mb-16 reveal-on-scroll">
+            <h2 class="text-xl font-bold text-white mb-4">Deployment Lifecycle</h2>
+
+            <div class="rounded-2xl bg-gray-950 ring-1 ring-white/10 overflow-hidden code-window mb-6">
+                <div class="px-4 py-3 border-b border-white/5 bg-white/5">
+                    <span class="text-xs text-gray-500 font-mono">Deployment flow</span>
+                </div>
+                <div class="p-6">
+<pre class="text-sm leading-7"><code><span class="tf">start_instance</span>(slot)
+    |
+    +-- Set <span class="ts">PORT</span> and <span class="ts">WORKERS</span> env vars
+    +-- Run <span class="ts">start_script</span> in new process group
+    +-- Redirect stdout/stderr to <span class="ts">run/logs/{app}/{slot}.log</span>
+    |
+<span class="tf">wait_for_health</span>(port, path)
+    |
+    +-- Poll <span class="ts">http://localhost:{port}{health_check}</span>
+    +-- Retry for up to <span class="tn">30</span> seconds
+    +-- Success (2xx) &rarr; mark slot as healthy
+    |
+<span class="tf">switch_routes</span>()
+    |
+    +-- Update routing rule to point to new port
+    +-- Old slot receives <span class="ts">SIGTERM</span>
+    +-- Wait <span class="ts">graceful_timeout</span> seconds
+    +-- Force <span class="ts">SIGKILL</span> if still running</code></pre>
+                </div>
+            </div>
+
+            <p class="text-sm text-gray-500">Process termination sends signals to the entire process group (not just the PID), ensuring child processes are also stopped.</p>
+        </div>
+
+        <!-- Dev Mode -->
+        <div class="mb-16 reveal-on-scroll">
+            <h2 class="text-xl font-bold text-white mb-4">Dev Mode</h2>
+            <p class="text-gray-400 leading-relaxed mb-6">
+                When the proxy is started with <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">--dev</code>, it enables development-friendly features:
+            </p>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
+                <div class="rounded-xl bg-gray-900 border border-white/10 p-5">
+                    <h4 class="font-semibold text-white text-sm mb-2">.test Domain Aliases</h4>
+                    <p class="text-xs text-gray-400 mb-3">Each app gets an additional <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">.test</code> domain alias by replacing the TLD:</p>
+                    <div class="font-mono text-xs space-y-1">
+                        <div><span class="text-gray-500">myapp.example.com</span> <span class="text-gray-600">&rarr;</span> <span class="text-emerald-400">myapp.example.test</span></div>
+                        <div><span class="text-gray-500">blog.solisoft.net</span> <span class="text-gray-600">&rarr;</span> <span class="text-emerald-400">blog.solisoft.test</span></div>
+                    </div>
+                </div>
+                <div class="rounded-xl bg-gray-900 border border-white/10 p-5">
+                    <h4 class="font-semibold text-white text-sm mb-2">App --dev Flag</h4>
+                    <p class="text-xs text-gray-400 mb-3">The <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">--dev</code> flag is appended to each app's start_script:</p>
+                    <div class="font-mono text-xs space-y-1">
+                        <div class="text-gray-500">soli serve . --port $PORT</div>
+                        <div class="text-emerald-400">soli serve . --port $PORT --dev</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="rounded-2xl bg-gray-950 ring-1 ring-white/10 overflow-hidden code-window">
+                <div class="flex items-center justify-between px-4 py-3 border-b border-white/5 bg-white/5">
+                    <span class="text-xs text-gray-500 font-mono">Terminal</span>
+                    <button class="text-xs text-gray-500 hover:text-white px-2 py-1 rounded hover:bg-white/10 transition-all" onclick="copyCode(this)">Copy</button>
+                </div>
+                <div class="p-6">
+<pre class="text-sm leading-7"><code><span class="tc"># Start proxy in dev mode</span>
+./soli-proxy --dev
+
+<span class="tc"># Then point your .test domains to your local machine in /etc/hosts:</span>
+<span class="tc"># 192.168.1.30  myapp.example.test</span>
+<span class="tc"># 192.168.1.30  blog.solisoft.test</span></code></pre>
+                </div>
+            </div>
+
+            <div class="mt-4 p-4 rounded-xl bg-yellow-500/5 border border-yellow-500/20">
+                <p class="text-sm text-yellow-300"><strong>Tip:</strong> Use <code class="text-yellow-200 text-xs bg-yellow-500/10 px-1 rounded">.test</code> (RFC 6761) for local development instead of <code class="text-yellow-200 text-xs bg-yellow-500/10 px-1 rounded">.dev</code>. The <code class="text-yellow-200 text-xs bg-yellow-500/10 px-1 rounded">.dev</code> TLD is owned by Google and browsers force HTTPS via HSTS preloading.</p>
+            </div>
+        </div>
+
+        <!-- WebSocket Support -->
+        <div class="mb-16 reveal-on-scroll">
+            <h2 class="text-xl font-bold text-white mb-4">WebSocket Support</h2>
+            <p class="text-gray-400 leading-relaxed mb-4">
+                WebSocket connections are transparently proxied to backend apps. The proxy detects the <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">Upgrade: websocket</code> header and establishes a bidirectional TCP tunnel between the client and backend. This works automatically for livereload, real-time updates, and any WebSocket protocol.
+            </p>
+            <p class="text-sm text-gray-500">WebSocket proxying works on both HTTP and HTTPS connections. No additional configuration is needed.</p>
+        </div>
+
+        <!-- ACME Certificates -->
+        <div class="mb-16 reveal-on-scroll">
+            <h2 class="text-xl font-bold text-white mb-4">Automatic TLS Certificates</h2>
+            <p class="text-gray-400 leading-relaxed mb-4">
+                When <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">tls.mode = "letsencrypt"</code>, the proxy automatically issues Let's Encrypt certificates for each app domain. The certificate renewal task runs every 12 hours and dynamically discovers new domains from the config.
+            </p>
+            <p class="text-gray-400 leading-relaxed mb-4">
+                Domains that are not eligible for ACME certificates are automatically excluded:
+            </p>
+            <ul class="space-y-1 text-sm text-gray-400 mb-4">
+                <li class="flex items-center gap-2"><span class="text-red-400">&#x2717;</span> <code class="text-xs bg-gray-800 px-1.5 py-0.5 rounded">localhost</code></li>
+                <li class="flex items-center gap-2"><span class="text-red-400">&#x2717;</span> <code class="text-xs bg-gray-800 px-1.5 py-0.5 rounded">*.localhost</code></li>
+                <li class="flex items-center gap-2"><span class="text-red-400">&#x2717;</span> <code class="text-xs bg-gray-800 px-1.5 py-0.5 rounded">*.test</code> (dev mode aliases)</li>
+                <li class="flex items-center gap-2"><span class="text-red-400">&#x2717;</span> IP addresses</li>
+                <li class="flex items-center gap-2"><span class="text-emerald-400">&#x2713;</span> All other domains get certificates automatically</li>
+            </ul>
+        </div>
+
+        <!-- Admin API for Apps -->
+        <div class="mb-16 reveal-on-scroll">
+            <h2 class="text-xl font-bold text-white mb-4">Admin API Endpoints</h2>
+            <p class="text-gray-400 mb-6">Manage apps at runtime via the <a href="/docs/admin-api" class="text-emerald-400 hover:text-emerald-300 underline underline-offset-2">Admin REST API</a>:</p>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm text-left">
+                    <thead>
+                        <tr class="border-b border-white/10">
+                            <th class="px-4 py-3 text-gray-400 font-semibold">Method</th>
+                            <th class="px-4 py-3 text-gray-400 font-semibold">Endpoint</th>
+                            <th class="px-4 py-3 text-gray-400 font-semibold">Description</th>
+                        </tr>
+                    </thead>
+                    <tbody class="text-gray-300">
+                        <tr class="border-b border-white/5 hover:bg-white/[0.02]"><td class="px-4 py-3"><span class="text-xs font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded">GET</span></td><td class="px-4 py-3 font-mono text-xs text-cyan-300">/api/v1/apps</td><td class="px-4 py-3">List all discovered apps</td></tr>
+                        <tr class="border-b border-white/5 hover:bg-white/[0.02]"><td class="px-4 py-3"><span class="text-xs font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded">GET</span></td><td class="px-4 py-3 font-mono text-xs text-cyan-300">/api/v1/apps/{name}</td><td class="px-4 py-3">App details: config, ports, slots, status</td></tr>
+                        <tr class="border-b border-white/5 hover:bg-white/[0.02]"><td class="px-4 py-3"><span class="text-xs font-bold text-yellow-400 bg-yellow-500/10 px-2 py-0.5 rounded">POST</span></td><td class="px-4 py-3 font-mono text-xs text-cyan-300">/api/v1/apps/{name}/deploy</td><td class="px-4 py-3">Deploy to inactive slot (blue-green)</td></tr>
+                        <tr class="border-b border-white/5 hover:bg-white/[0.02]"><td class="px-4 py-3"><span class="text-xs font-bold text-yellow-400 bg-yellow-500/10 px-2 py-0.5 rounded">POST</span></td><td class="px-4 py-3 font-mono text-xs text-cyan-300">/api/v1/apps/{name}/restart</td><td class="px-4 py-3">Restart the current active slot</td></tr>
+                        <tr class="border-b border-white/5 hover:bg-white/[0.02]"><td class="px-4 py-3"><span class="text-xs font-bold text-yellow-400 bg-yellow-500/10 px-2 py-0.5 rounded">POST</span></td><td class="px-4 py-3 font-mono text-xs text-cyan-300">/api/v1/apps/{name}/rollback</td><td class="px-4 py-3">Switch to the other slot</td></tr>
+                        <tr class="border-b border-white/5 hover:bg-white/[0.02]"><td class="px-4 py-3"><span class="text-xs font-bold text-yellow-400 bg-yellow-500/10 px-2 py-0.5 rounded">POST</span></td><td class="px-4 py-3 font-mono text-xs text-cyan-300">/api/v1/apps/{name}/stop</td><td class="px-4 py-3">Stop the app</td></tr>
+                        <tr class="hover:bg-white/[0.02]"><td class="px-4 py-3"><span class="text-xs font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded">GET</span></td><td class="px-4 py-3 font-mono text-xs text-cyan-300">/api/v1/apps/{name}/logs</td><td class="px-4 py-3">Blue and green deployment logs</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Example -->
+        <div class="mb-16 reveal-on-scroll">
+            <h2 class="text-xl font-bold text-white mb-4">Complete Example</h2>
+            <p class="text-gray-400 mb-6">Here's a minimal Soli app deployed via the proxy:</p>
+
+            <div class="rounded-2xl bg-gray-950 ring-1 ring-white/10 overflow-hidden code-window mb-4">
+                <div class="flex items-center justify-between px-4 py-3 border-b border-white/5 bg-white/5">
+                    <span class="text-xs text-gray-500 font-mono">sites/blog/app.infos</span>
+                    <button class="text-xs text-gray-500 hover:text-white px-2 py-1 rounded hover:bg-white/10 transition-all" onclick="copyCode(this)">Copy</button>
+                </div>
+                <div class="p-6">
+<pre class="text-sm leading-7"><code>name = <span class="ts">"blog"</span>
+domain = <span class="ts">"blog.example.com"</span>
+start_script = <span class="ts">"soli serve . --port $PORT --workers $WORKERS"</span>
+workers = <span class="tn">2</span>
+health_check = <span class="ts">"/"</span>
+graceful_timeout = <span class="tn">30</span></code></pre>
+                </div>
+            </div>
+
+            <p class="text-sm text-gray-500">
+                That's it. The proxy discovers the app, starts it, registers <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">blog.example.com</code> routing, and (in production) issues a TLS certificate. In dev mode, <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">blog.example.test</code> is also available.
+            </p>
+        </div>
+
+                <!-- Navigation -->
+                <div class="flex items-center justify-between pt-8 border-t border-white/10 reveal-on-scroll">
+                    <a href="/docs/getting-started" class="group flex items-center gap-3 text-gray-400 hover:text-white transition-colors">
+                        <svg class="w-5 h-5 transition-transform group-hover:-translate-x-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 17l-5-5m0 0l5-5m-5 5h12"/></svg>
+                        <div>
+                            <div class="text-xs text-gray-500">Previous</div>
+                            <div class="font-medium">Getting Started</div>
+                        </div>
+                    </a>
+                    <a href="/docs/configuration" class="group flex items-center gap-3 text-gray-400 hover:text-white transition-colors text-right">
+                        <div>
+                            <div class="text-xs text-gray-500">Next</div>
+                            <div class="font-medium">Configuration</div>
+                        </div>
+                        <svg class="w-5 h-5 transition-transform group-hover:translate-x-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+                    </a>
+                </div>
+
+            </div>
+        </div>
+    </div>
+</section>
