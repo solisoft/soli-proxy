@@ -586,11 +586,10 @@ impl TuiApp {
         // Re-probe after action to update status
         mgr.probe_running_apps();
 
-        let msg = match result {
-            Ok(msg) => msg,
-            Err(e) => format!("Error: {}", e),
+        match result {
+            Ok(_) => self.modal = Modal::None,
+            Err(e) => self.modal = Modal::AppActionResult(format!("Error: {}", e)),
         };
-        self.modal = Modal::AppActionResult(msg);
     }
 
     fn handle_log_viewer_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
