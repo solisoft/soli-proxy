@@ -79,6 +79,36 @@ impl TlsManager {
         Ok(())
     }
 
+    /// Load ALL cached ACME certs from disk by scanning the certs directory.
+    /// This ensures certs for app domains are loaded even if not in proxy.conf.
+    pub fn load_all_cached_certs(&self) -> Result<()> {
+        let cert_dir = &self.cache_dir;
+        if !cert_dir.exists() {
+            return Ok(());
+        }
+        for dir_entry in std::fs::read_dir(cert_dir)? {
+            let entry = dir_entry?;
+            let filename = entry.file_name();
+            let name = filename.to_str().unwrap_or("");
+            if let Some(domain) = name.strip_suffix(".cert.pem") {
+                if domain == "self-signed" {
+                    continue;
+                }
+                match load_certificate(cert_dir, domain) {
+                    Ok(Some(ck)) => {
+                        self.resolver.set_cert(domain, ck);
+                        tracing::info!("Loaded cached certificate for {}", domain);
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        tracing::warn!("Failed to load cached cert for {}: {}", domain, e);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Build the ServerConfig using the cert resolver. Call after loading certs.
     pub fn build(&mut self) -> Result<()> {
         let config = build_server_config(self.resolver.clone())?;

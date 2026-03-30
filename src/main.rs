@@ -569,6 +569,10 @@ async fn run_server(
         if let Err(e) = tls_manager.load_cached_certs(&domains) {
             tracing::warn!("Failed to load cached ACME certs: {}", e);
         }
+        // Also load all cached certs to catch app domains not in proxy.conf
+        if let Err(e) = tls_manager.load_all_cached_certs() {
+            tracing::warn!("Failed to load all cached certs: {}", e);
+        }
     }
 
     // Build the TLS ServerConfig with the cert resolver
