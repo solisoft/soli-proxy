@@ -609,6 +609,17 @@ impl AppManager {
     async fn sync_routes(&self) {
         let app_domains = self.get_running_app_domains().await;
 
+        let acme_eligible: Vec<String> = app_domains
+            .keys()
+            .filter(|d| is_acme_eligible(d))
+            .cloned()
+            .collect();
+
+        if !acme_eligible.is_empty() {
+            self.config_manager
+                .register_app_acme_domains(acme_eligible.clone());
+        }
+
         if let Some(ref acme) = *self.acme_service.lock().await {
             for domain in app_domains.keys() {
                 if is_acme_eligible(domain) {

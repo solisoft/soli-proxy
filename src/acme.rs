@@ -397,7 +397,7 @@ pub fn spawn_renewal_task(
             tokio::time::sleep(interval).await;
 
             // Re-read domains from config each cycle to include dynamically added ones
-            let domains = config_manager.get_config().acme_domains();
+            let domains = config_manager.get_all_acme_domains();
             tracing::info!("ACME renewal check: examining {} domain(s)", domains.len());
 
             for domain in &domains {

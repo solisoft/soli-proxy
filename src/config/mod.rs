@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::RwLock;
 use tokio::sync::mpsc;
 use url::Url;
 
@@ -19,6 +20,9 @@ pub trait ConfigManagerTrait: Send + Sync {
     fn update_rules(&self, rules: Vec<ProxyRule>, global_scripts: Vec<String>) -> Result<()>;
     fn add_route(&self, rule: ProxyRule) -> Result<()>;
     fn remove_route(&self, index: usize) -> Result<()>;
+    fn register_app_acme_domains(&self, domains: Vec<String>);
+    fn unregister_app_acme_domain(&self, domain: &str);
+    fn get_all_acme_domains(&self) -> Vec<String>;
 }
 
 #[derive(Deserialize, Default, Clone, Debug)]
@@ -321,6 +325,7 @@ pub struct ConfigManager {
     config_path: PathBuf,
     _watcher: Option<RecommendedWatcher>,
     suppress_watch: Arc<AtomicBool>,
+    app_acme_domains: Arc<RwLock<Vec<String>>>,
 }
 
 impl Clone for ConfigManager {
@@ -330,6 +335,7 @@ impl Clone for ConfigManager {
             config_path: self.config_path.clone(),
             _watcher: None,
             suppress_watch: self.suppress_watch.clone(),
+            app_acme_domains: self.app_acme_domains.clone(),
         }
     }
 }
@@ -343,6 +349,7 @@ impl ConfigManager {
             config_path: path,
             _watcher: None,
             suppress_watch: Arc::new(AtomicBool::new(false)),
+            app_acme_domains: Arc::new(RwLock::new(Vec::new())),
         })
     }
 
@@ -530,6 +537,31 @@ realm = "Restricted"
         Ok(())
     }
 
+    pub fn register_app_acme_domains(&self, domains: Vec<String>) {
+        let mut registered = self.app_acme_domains.write().unwrap();
+        for domain in domains {
+            if !registered.contains(&domain) {
+                registered.push(domain);
+            }
+        }
+    }
+
+    pub fn unregister_app_acme_domain(&self, domain: &str) {
+        let mut registered = self.app_acme_domains.write().unwrap();
+        registered.retain(|d| d != domain);
+    }
+
+    pub fn get_all_acme_domains(&self) -> Vec<String> {
+        let mut domains = self.config.load().acme_domains();
+        let app_domains = self.app_acme_domains.read().unwrap();
+        for domain in app_domains.iter() {
+            if !domains.contains(domain) {
+                domains.push(domain.clone());
+            }
+        }
+        domains
+    }
+
     /// Persist current rules to proxy.conf and swap in-memory config
     fn persist_rules(&self, rules: Vec<ProxyRule>, global_scripts: Vec<String>) -> Result<()> {
         let content = serializer::serialize_proxy_conf(&rules, &global_scripts);
@@ -603,6 +635,18 @@ impl ConfigManagerTrait for ConfigManager {
 
     fn remove_route(&self, index: usize) -> Result<()> {
         self.remove_route(index)
+    }
+
+    fn register_app_acme_domains(&self, domains: Vec<String>) {
+        self.register_app_acme_domains(domains)
+    }
+
+    fn unregister_app_acme_domain(&self, domain: &str) {
+        self.unregister_app_acme_domain(domain)
+    }
+
+    fn get_all_acme_domains(&self) -> Vec<String> {
+        self.get_all_acme_domains()
     }
 }
 
