@@ -748,10 +748,13 @@ fn parse_proxy_config(content: &str) -> Result<(Vec<ProxyRule>, Vec<String>)> {
                     if path.is_empty() || path == "*" {
                         RuleMatcher::Domain(domain.to_string())
                     } else if path.ends_with("/*") {
-                        RuleMatcher::DomainPath(
-                            domain.to_string(),
-                            path.trim_end_matches('*').to_string(),
-                        )
+                        let path_prefix = path.trim_end_matches('*').to_string();
+                        let path_prefix = if path_prefix.starts_with('/') {
+                            path_prefix
+                        } else {
+                            format!("/{}", path_prefix)
+                        };
+                        RuleMatcher::DomainPath(domain.to_string(), path_prefix)
                     } else {
                         RuleMatcher::DomainPath(domain.to_string(), path.to_string())
                     }
