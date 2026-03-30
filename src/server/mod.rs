@@ -952,9 +952,69 @@ async fn handle_regular_request(
     config: &crate::config::Config,
     lua_engine: &OptionalLuaEngine,
     circuit_breaker: &SharedCircuitBreaker,
-    _app_manager: Option<Arc<AppManager>>,
+    app_manager: Option<Arc<AppManager>>,
     load_balancer: Arc<LoadBalancerState>,
 ) -> Result<(Response<BoxBody>, String, Vec<String>), hyper::Error> {
+    let host = req
+        .uri()
+        .host()
+        .or(req.headers().get("host").and_then(|h| h.to_str().ok()))
+        .map(|h| h.split(':').next().unwrap_or(h).to_string());
+
+    if let (Some(ref manager), Some(ref h)) = (app_manager, host) {
+        if let Some(target) = manager.resolve_app_target(h).await {
+            let base_url = target.url.to_string();
+            let path = req.uri().path();
+            let target_url = if target.url.as_str().ends_with('/') {
+                format!("{}{}", target.url, &path[1..])
+            } else {
+                format!("{}{}", target.url, path)
+            };
+            let forwarded_host = h.clone();
+
+            let (mut parts, body) = req.into_parts();
+            let uri: hyper::Uri = target_url.parse().expect("valid URI");
+            parts.uri = uri;
+            parts.version = http::Version::HTTP_11;
+            parts.extensions = http::Extensions::new();
+
+            let mut request = Request::from_parts(parts, body);
+            request
+                .headers_mut()
+                .insert("X-Forwarded-For", X_FORWARDED_FOR_VALUE.clone());
+            request
+                .headers_mut()
+                .insert("X-Forwarded-Host", forwarded_host.parse().unwrap());
+
+            match client.request(request).await {
+                Ok(response) => {
+                    let status_code = response.status().as_u16();
+                    if circuit_breaker.is_failure_status(status_code) {
+                        circuit_breaker.record_failure(&base_url);
+                    } else {
+                        circuit_breaker.record_success(&base_url);
+                    }
+                    let (parts, body) = response.into_parts();
+                    let boxed = body.map_err(|_| unreachable!()).boxed();
+                    return Ok((Response::from_parts(parts, boxed), target_url, vec![]));
+                }
+                Err(e) => {
+                    circuit_breaker.record_failure(&base_url);
+                    tracing::error!("Backend request failed: {} (target: {})", e, target_url);
+                    let body = http_body_util::Full::new(Bytes::from("Bad Gateway")).boxed();
+                    return Ok((
+                        Response::builder()
+                            .status(502)
+                            .body(body)
+                            .expect("Failed to build response"),
+                        target_url,
+                        vec![],
+                    ));
+                }
+            }
+        }
+    }
+
     let route = find_matching_rule(&req, &config.rules);
 
     match route {

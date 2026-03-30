@@ -182,6 +182,30 @@ enum Commands {
         #[arg(long)]
         reinstall: bool,
     },
+    Deploy {
+        #[arg(short, long, default_value = "./proxy.conf")]
+        conf: String,
+
+        app_name: String,
+    },
+    Restart {
+        #[arg(short, long, default_value = "./proxy.conf")]
+        conf: String,
+
+        app_name: String,
+    },
+    Stop {
+        #[arg(short, long, default_value = "./proxy.conf")]
+        conf: String,
+
+        app_name: String,
+    },
+    Logs {
+        #[arg(short, long, default_value = "./proxy.conf")]
+        conf: String,
+
+        app_name: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -198,6 +222,22 @@ fn main() -> Result<()> {
 
     if let Some(Commands::Update { reinstall }) = cli.command {
         return run_update(reinstall);
+    }
+
+    if let Some(Commands::Deploy { conf, app_name }) = cli.command {
+        return run_app_command(&conf, &app_name, "deploy");
+    }
+
+    if let Some(Commands::Restart { conf, app_name }) = cli.command {
+        return run_app_command(&conf, &app_name, "restart");
+    }
+
+    if let Some(Commands::Stop { conf, app_name }) = cli.command {
+        return run_app_command(&conf, &app_name, "stop");
+    }
+
+    if let Some(Commands::Logs { conf, app_name }) = cli.command {
+        return run_app_command(&conf, &app_name, "logs");
     }
 
     if cli.daemon {
@@ -347,6 +387,70 @@ fn run_update(reinstall: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn run_app_command(config_path: &str, app_name: &str, action: &str) -> Result<()> {
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async move {
+        let config_manager = ConfigManager::new(config_path)?;
+        let config_ref = Arc::new(config_manager);
+        let port_manager = Arc::new(PortManager::new("./run").unwrap());
+        let _ = port_manager.load().await;
+
+        let app_manager =
+            AppManager::new("./sites", port_manager.clone(), config_ref.clone(), false)?;
+        let app_manager = Arc::new(app_manager);
+
+        if let Err(e) = app_manager.discover_apps_readonly().await {
+            tracing::error!("Failed to discover apps: {}", e);
+        }
+
+        match action {
+            "deploy" => {
+                let target_slot =
+                    app_manager
+                        .get_app(app_name)
+                        .await
+                        .map_or("blue".to_string(), |app| {
+                            if app.current_slot == "blue" {
+                                "green".to_string()
+                            } else {
+                                "blue".to_string()
+                            }
+                        });
+                app_manager.deploy(app_name, &target_slot).await?;
+                println!("{} deployed successfully", app_name);
+            }
+            "restart" => {
+                app_manager.restart(app_name).await?;
+                println!("{} restarted successfully", app_name);
+            }
+            "stop" => {
+                app_manager.stop(app_name).await?;
+                println!("{} stopped successfully", app_name);
+            }
+            "logs" => {
+                let blue_log = app_manager
+                    .deployment_manager
+                    .get_deployment_log(app_name, "blue")
+                    .await
+                    .unwrap_or_default();
+                let green_log = app_manager
+                    .deployment_manager
+                    .get_deployment_log(app_name, "green")
+                    .await
+                    .unwrap_or_default();
+                println!("=== {} (blue) ===", app_name);
+                println!("{}", blue_log);
+                println!("=== {} (green) ===", app_name);
+                println!("{}", green_log);
+            }
+            _ => {
+                anyhow::bail!("Unknown action: {}", action);
+            }
+        }
+        Ok(())
+    })
 }
 
 async fn run_server(

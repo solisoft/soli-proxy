@@ -25,6 +25,33 @@ fn validate_path_component(name: &str, label: &str) -> Result<()> {
     Ok(())
 }
 
+async fn ensure_docker_network(network_name: &str) -> Result<()> {
+    let output = tokio::process::Command::new("docker")
+        .args(["network", "inspect", network_name])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        tracing::info!("Creating Docker network: {}", network_name);
+        let output = tokio::process::Command::new("docker")
+            .args(["network", "create", "--driver", "bridge", network_name])
+            .output()
+            .await?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!(
+                "Failed to create Docker network {}: {}",
+                network_name,
+                stderr
+            );
+        }
+        tracing::info!("Docker network {} created", network_name);
+    }
+
+    Ok(())
+}
+
 /// Parse a start script into a program and arguments without using a shell.
 /// Performs variable substitution for $PORT and $WORKERS.
 /// This avoids shell injection by never passing the script through `sh -c`.
@@ -156,7 +183,6 @@ impl DeploymentManager {
     }
 
     pub async fn start_instance(&self, app: &AppInfo, slot: &str) -> Result<u32> {
-        // Validate slot and app name to prevent path traversal in log paths
         if slot != "blue" && slot != "green" {
             anyhow::bail!("Invalid slot name: {:?}", slot);
         }
@@ -168,9 +194,203 @@ impl DeploymentManager {
             app.green.port
         };
 
+        if let Some(ref docker_image) = app.config.docker_image {
+            return self
+                .start_docker_instance(app, slot, port, docker_image)
+                .await;
+        }
+
+        self.start_native_instance(app, slot, port).await
+    }
+
+    async fn start_docker_instance(
+        &self,
+        app: &AppInfo,
+        slot: &str,
+        port: u16,
+        docker_image: &str,
+    ) -> Result<u32> {
+        let container_name = format!("{}-{}", app.config.name, slot);
+
+        let _ = self.stop_docker_container(&container_name).await;
+
+        let base_script = if let Some(ref script) = app.config.start_script {
+            script.clone()
+        } else if app.path.join("app").exists() && app.path.join("app/models").exists() {
+            "soli serve .".to_string()
+        } else {
+            anyhow::bail!("No start script configured for {}", app.config.name)
+        };
+
+        let script = if self.dev_mode && base_script.starts_with("soli ") {
+            format!("{} --dev", base_script)
+        } else {
+            base_script.clone()
+        };
+
+        let output_file = PathBuf::from(format!("run/logs/{}/{}.log", app.config.name, slot));
+        std::fs::create_dir_all(output_file.parent().unwrap())?;
+
+        let output = std::fs::File::create(&output_file)?;
+
+        let docker_network = app.config.docker_network.as_deref().unwrap_or("soli-apps");
+
+        ensure_docker_network(docker_network).await?;
+
+        let mut docker_args = vec![
+            "run".to_string(),
+            "-d".to_string(),
+            "--name".to_string(),
+            container_name.clone(),
+            "--network".to_string(),
+            docker_network.to_string(),
+        ];
+
+        if let Some(ref options) = app.config.docker_options {
+            docker_args.push(options.clone());
+        }
+
+        docker_args.push("-e".to_string());
+        docker_args.push(format!("PORT={}", port));
+        docker_args.push("-e".to_string());
+        docker_args.push(format!("WORKERS={}", app.config.workers));
+
+        if let Some(ref health_check) = app.config.health_check {
+            docker_args.push("-e".to_string());
+            docker_args.push(format!("HEALTH_CHECK={}", health_check));
+        }
+
+        docker_args.push(docker_image.to_string());
+
+        let shell_cmd = if script.contains(" ") {
+            format!("/bin/sh -c '{}'", script.replace("'", "'\\''"))
+        } else {
+            script.clone()
+        };
+        docker_args.push(shell_cmd);
+
+        tracing::info!(
+            "Starting Docker container {} for {} slot {} with image {}",
+            container_name,
+            app.config.name,
+            slot,
+            docker_image
+        );
+
+        let output_text = tokio::process::Command::new("docker")
+            .args(&docker_args)
+            .current_dir(&app.path)
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::from(output))
+            .output()
+            .await?;
+
+        if !output_text.status.success() {
+            anyhow::bail!(
+                "Docker run failed for {} slot {}: {}",
+                app.config.name,
+                slot,
+                String::from_utf8_lossy(&output_text.stderr)
+            );
+        }
+
+        let container_id = String::from_utf8_lossy(&output_text.stdout)
+            .trim()
+            .to_string();
+        let pid = self.get_container_pid(&container_name).await?;
+
+        tracing::info!(
+            "Started Docker container {} ({} slot {}) with PID {}",
+            container_id,
+            app.config.name,
+            slot,
+            pid
+        );
+
+        let app_name = app.config.name.clone();
+        let slot_name = slot.to_string();
+        let container_id_for_monitoring = container_id.clone();
+        tokio::spawn(async move {
+            loop {
+                sleep(Duration::from_secs(5)).await;
+                let status = tokio::process::Command::new("docker")
+                    .args([
+                        "inspect",
+                        "-f",
+                        "{{.State.Status}}",
+                        &container_id_for_monitoring,
+                    ])
+                    .output()
+                    .await;
+
+                match status {
+                    Ok(output) if output.status.success() => {
+                        let status_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                        if status_str == "exited" || status_str == "dead" {
+                            tracing::warn!(
+                                "Container {} ({} slot {}) exited",
+                                container_id_for_monitoring,
+                                app_name,
+                                slot_name
+                            );
+                            break;
+                        }
+                    }
+                    Ok(_) | Err(_) => {
+                        tracing::warn!(
+                            "Container {} ({} slot {}) no longer exists",
+                            container_id_for_monitoring,
+                            app_name,
+                            slot_name
+                        );
+                        break;
+                    }
+                }
+            }
+        });
+
+        Ok(pid)
+    }
+
+    async fn get_container_pid(&self, container_name: &str) -> Result<u32> {
+        let output = tokio::process::Command::new("docker")
+            .args(["inspect", "-f", "{{.State.Pid}}", container_name])
+            .output()
+            .await?;
+
+        if !output.status.success() {
+            anyhow::bail!("Failed to get PID for container {}", container_name);
+        }
+
+        let pid_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        pid_str
+            .parse::<u32>()
+            .map_err(|_| anyhow::anyhow!("Invalid PID from docker inspect: {}", pid_str))
+    }
+
+    async fn stop_docker_container(&self, container_name: &str) -> Result<()> {
+        let check_output = tokio::process::Command::new("docker")
+            .args(["inspect", "-f", "{{.Id}}", container_name])
+            .output()
+            .await?;
+
+        if check_output.status.success() {
+            tracing::info!("Stopping existing container {}", container_name);
+            let _ = tokio::process::Command::new("docker")
+                .args(["stop", "-t", "30", container_name])
+                .output()
+                .await;
+            let _ = tokio::process::Command::new("docker")
+                .args(["rm", "-f", container_name])
+                .output()
+                .await;
+        }
+        Ok(())
+    }
+
+    async fn start_native_instance(&self, app: &AppInfo, slot: &str, port: u16) -> Result<u32> {
         if self.check_port_in_use(port).await {
-            // Port is occupied — likely an orphaned process from a previous daemon.
-            // Kill it so we can bind the port.
             if let Some(orphan_pid) = super::find_pid_by_port(port) {
                 tracing::warn!(
                     "Killing orphaned process {} on port {} before starting {} slot {}",
@@ -187,7 +407,6 @@ impl DeploymentManager {
                     .output()
                     .await;
 
-                // Wait briefly for the process to die
                 for _ in 0..20 {
                     sleep(Duration::from_millis(100)).await;
                     if !self.check_port_in_use(port).await {
@@ -196,7 +415,6 @@ impl DeploymentManager {
                 }
 
                 if self.check_port_in_use(port).await {
-                    // Force kill
                     let _ = tokio::process::Command::new("kill")
                         .arg("-9")
                         .arg("--")
@@ -236,8 +454,6 @@ impl DeploymentManager {
 
         let output = std::fs::File::create(&output_file)?;
 
-        // Parse the script into program + args instead of using `sh -c`
-        // to prevent shell injection from malicious app.infos files.
         let (program, args) = parse_start_command(&script, port, app.config.workers)?;
 
         let mut cmd = tokio::process::Command::new(&program);
@@ -287,7 +503,6 @@ impl DeploymentManager {
         let pid = child.id().unwrap_or(0);
         tracing::info!("Started {} slot {} with PID {}", app.config.name, slot, pid);
 
-        // Monitor the child process in the background so we can log how it exits
         let app_name = app.config.name.clone();
         let slot_name = slot.to_string();
         tokio::spawn(async move {
@@ -339,6 +554,11 @@ impl DeploymentManager {
     }
 
     pub async fn stop_instance(&self, app: &AppInfo, slot: &str) -> Result<()> {
+        if let Some(ref _docker_image) = app.config.docker_image {
+            let container_name = format!("{}-{}", app.config.name, slot);
+            return self.stop_docker_container(&container_name).await;
+        }
+
         let pid = if slot == "blue" {
             app.blue.pid
         } else {
@@ -350,7 +570,6 @@ impl DeploymentManager {
 
             #[cfg(unix)]
             {
-                // Kill the entire process group (negative PID) so child processes are included
                 let pgid = format!("-{}", pid);
 
                 tokio::process::Command::new("kill")

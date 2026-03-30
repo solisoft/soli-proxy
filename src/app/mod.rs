@@ -30,6 +30,9 @@ pub struct AppConfig {
     pub workers: u16,
     pub user: Option<String>,
     pub group: Option<String>,
+    pub docker_image: Option<String>,
+    pub docker_options: Option<String>,
+    pub docker_network: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -46,6 +49,9 @@ impl Default for AppConfig {
             workers: 1,
             user: None,
             group: None,
+            docker_image: None,
+            docker_options: None,
+            docker_network: None,
         }
     }
 }
@@ -397,6 +403,48 @@ impl AppManager {
         *self.acme_service.lock().await = Some(service);
     }
 
+    pub async fn get_running_app_domains(&self) -> HashMap<String, (u16, Option<String>)> {
+        let apps = self.apps.lock().await;
+        let mut result = HashMap::new();
+        for app in apps.values() {
+            if app.config.domain.is_empty() {
+                continue;
+            }
+            let (port, pid) = if app.current_slot == "blue" {
+                (app.blue.port, app.blue.pid)
+            } else {
+                (app.green.port, app.green.pid)
+            };
+            if pid.is_none() {
+                continue;
+            }
+            result.insert(
+                app.config.domain.clone(),
+                (port, app.config.health_check.clone()),
+            );
+            if let Some(non_www) = strip_www(&app.config.domain) {
+                result.insert(non_www, (port, app.config.health_check.clone()));
+            }
+            if self.dev_mode {
+                if let Some(dev) = dev_domain(&app.config.domain) {
+                    result.insert(dev, (port, app.config.health_check.clone()));
+                }
+            }
+        }
+        result
+    }
+
+    pub async fn resolve_app_target(&self, host: &str) -> Option<super::config::Target> {
+        let app_domains = self.get_running_app_domains().await;
+        if let Some((port, _)) = app_domains.get(host) {
+            let url = format!("http://localhost:{}", port);
+            if let Ok(url) = Url::parse(&url) {
+                return Some(super::config::Target { url, weight: 100 });
+            }
+        }
+        None
+    }
+
     pub async fn discover_apps(&self) -> Result<(), anyhow::Error> {
         self.discover_apps_inner(true).await
     }
@@ -558,115 +606,9 @@ impl AppManager {
     }
 
     /// Synchronize proxy routes with discovered apps.
-    /// Adds Domain routes for apps that don't have one yet,
-    /// and removes orphaned auto-registered routes for apps that no longer exist.
-    /// Only routes apps that have a running instance (PID) on the current slot,
-    /// so routes are not created until the app is actually serving traffic.
     async fn sync_routes(&self) {
-        let apps = self.apps.lock().await;
-        let cfg = self.config_manager.get_config();
-        let mut rules = cfg.rules.clone();
-        let global_scripts = cfg.global_scripts.clone();
+        let app_domains = self.get_running_app_domains().await;
 
-        // Collect domains from discovered apps (only those with a running instance)
-        let mut app_domains: HashMap<String, u16> = HashMap::new();
-        for app in apps.values() {
-            if !app.config.domain.is_empty() {
-                let (port, pid) = if app.current_slot == "blue" {
-                    (app.blue.port, app.blue.pid)
-                } else {
-                    (app.green.port, app.green.pid)
-                };
-                // Only route apps that have a running process
-                if pid.is_none() {
-                    continue;
-                }
-                app_domains.insert(app.config.domain.clone(), port);
-                // If domain starts with www., also register the non-www version
-                if let Some(non_www) = strip_www(&app.config.domain) {
-                    app_domains.insert(non_www, port);
-                }
-                // In dev mode, also register .dev alias
-                if self.dev_mode {
-                    if let Some(dev) = dev_domain(&app.config.domain) {
-                        app_domains.insert(dev, port);
-                    }
-                }
-            }
-        }
-
-        // Find existing Domain rules and their domains
-        let mut existing_domains: HashMap<String, usize> = HashMap::new();
-        for (i, rule) in rules.iter().enumerate() {
-            if let super::config::RuleMatcher::Domain(ref domain) = rule.matcher {
-                existing_domains.insert(domain.clone(), i);
-            }
-        }
-
-        let mut changed = false;
-
-        // Add or update routes for discovered apps
-        for (domain, port) in &app_domains {
-            let target_url = format!("http://localhost:{}", port);
-            if let Some(&idx) = existing_domains.get(domain) {
-                // Route exists — update target if port changed
-                let current_target = rules[idx].targets.first().map(|t| t.url.to_string());
-                let expected = format!("{}/", target_url);
-                if current_target.as_deref() != Some(&expected) {
-                    if let Ok(url) = Url::parse(&target_url) {
-                        rules[idx].targets = vec![super::config::Target { url, weight: 100 }];
-                        changed = true;
-                        tracing::info!("Updated route for domain {} -> {}", domain, target_url);
-                    }
-                }
-            } else {
-                // No route for this domain — add one
-                if let Ok(url) = Url::parse(&target_url) {
-                    rules.push(super::config::ProxyRule {
-                        matcher: super::config::RuleMatcher::Domain(domain.clone()),
-                        targets: vec![super::config::Target { url, weight: 100 }],
-                        headers: vec![],
-                        scripts: vec![],
-                        auth: vec![],
-                        load_balancing: super::config::LoadBalancingStrategy::default(),
-                    });
-                    changed = true;
-                    tracing::info!("Added route for domain {} -> {}", domain, target_url);
-                }
-            }
-        }
-
-        // Remove orphaned Domain routes (domain not in any discovered app)
-        let mut indices_to_remove: Vec<usize> = Vec::new();
-        for (i, rule) in rules.iter().enumerate() {
-            if let super::config::RuleMatcher::Domain(ref domain) = rule.matcher {
-                if !app_domains.contains_key(domain) {
-                    // Check if the target looks like an auto-registered localhost route
-                    let is_auto = rule
-                        .targets
-                        .iter()
-                        .all(|t| t.url.host_str() == Some("localhost"));
-                    if is_auto {
-                        indices_to_remove.push(i);
-                        tracing::info!("Removing orphaned route for domain {}", domain);
-                    }
-                }
-            }
-        }
-
-        // Remove in reverse order to preserve indices
-        for idx in indices_to_remove.into_iter().rev() {
-            rules.remove(idx);
-            changed = true;
-        }
-
-        if changed {
-            if let Err(e) = self.config_manager.update_rules(rules, global_scripts) {
-                tracing::error!("Failed to sync routes: {}", e);
-            }
-        }
-
-        // Trigger ACME cert issuance for ACME-eligible app domains
         if let Some(ref acme) = *self.acme_service.lock().await {
             for domain in app_domains.keys() {
                 if is_acme_eligible(domain) {

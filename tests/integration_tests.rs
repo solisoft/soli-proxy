@@ -1331,3 +1331,123 @@ mod admin_tests {
         assert_eq!(resp.status().as_u16(), 401);
     }
 }
+
+#[test]
+fn test_cli_deploy_command_args() {
+    let args = vec!["soli-proxy", "deploy", "myapp"];
+    let cli = clap::Command::new("soli-proxy")
+        .subcommand(
+            clap::Command::new("deploy")
+                .arg(
+                    clap::Arg::new("conf")
+                        .short('c')
+                        .long("conf")
+                        .default_value("./proxy.conf"),
+                )
+                .arg(clap::Arg::new("app_name").required(true)),
+        )
+        .try_get_matches_from(args.iter())
+        .unwrap();
+
+    if let Some(sub) = cli.subcommand_matches("deploy") {
+        assert_eq!(sub.get_one::<String>("app_name").unwrap(), "myapp");
+        assert_eq!(sub.get_one::<String>("conf").unwrap(), "./proxy.conf");
+    } else {
+        panic!("deploy subcommand not found");
+    }
+}
+
+#[test]
+fn test_cli_restart_command_args() {
+    let args = vec!["soli-proxy", "restart", "-c", "/path/to/conf", "myapp"];
+    let cli = clap::Command::new("soli-proxy")
+        .subcommand(
+            clap::Command::new("restart")
+                .arg(
+                    clap::Arg::new("conf")
+                        .short('c')
+                        .long("conf")
+                        .default_value("./proxy.conf"),
+                )
+                .arg(clap::Arg::new("app_name").required(true)),
+        )
+        .try_get_matches_from(args.iter())
+        .unwrap();
+
+    if let Some(sub) = cli.subcommand_matches("restart") {
+        assert_eq!(sub.get_one::<String>("app_name").unwrap(), "myapp");
+        assert_eq!(sub.get_one::<String>("conf").unwrap(), "/path/to/conf");
+    } else {
+        panic!("restart subcommand not found");
+    }
+}
+
+#[test]
+fn test_cli_stop_command_args() {
+    let args = vec!["soli-proxy", "stop", "myapp"];
+    let cli = clap::Command::new("soli-proxy")
+        .subcommand(
+            clap::Command::new("stop")
+                .arg(
+                    clap::Arg::new("conf")
+                        .short('c')
+                        .long("conf")
+                        .default_value("./proxy.conf"),
+                )
+                .arg(clap::Arg::new("app_name").required(true)),
+        )
+        .try_get_matches_from(args.iter())
+        .unwrap();
+
+    if let Some(sub) = cli.subcommand_matches("stop") {
+        assert_eq!(sub.get_one::<String>("app_name").unwrap(), "myapp");
+    } else {
+        panic!("stop subcommand not found");
+    }
+}
+
+#[test]
+fn test_cli_logs_command_args() {
+    let args = vec!["soli-proxy", "logs", "-c", "/custom/conf", "myapp"];
+    let cli = clap::Command::new("soli-proxy")
+        .subcommand(
+            clap::Command::new("logs")
+                .arg(
+                    clap::Arg::new("conf")
+                        .short('c')
+                        .long("conf")
+                        .default_value("./proxy.conf"),
+                )
+                .arg(clap::Arg::new("app_name").required(true)),
+        )
+        .try_get_matches_from(args.iter())
+        .unwrap();
+
+    if let Some(sub) = cli.subcommand_matches("logs") {
+        assert_eq!(sub.get_one::<String>("app_name").unwrap(), "myapp");
+        assert_eq!(sub.get_one::<String>("conf").unwrap(), "/custom/conf");
+    } else {
+        panic!("logs subcommand not found");
+    }
+}
+
+#[test]
+fn test_cli_update_command_with_reinstall() {
+    let args = vec!["soli-proxy", "update", "--reinstall"];
+    let cli = clap::Command::new("soli-proxy")
+        .subcommand(
+            clap::Command::new("update").arg(
+                clap::Arg::new("reinstall")
+                    .long("reinstall")
+                    .action(clap::ArgAction::SetTrue),
+            ),
+        )
+        .try_get_matches_from(args.iter())
+        .unwrap();
+
+    if let Some(sub) = cli.subcommand_matches("update") {
+        assert!(sub.get_flag("reinstall"));
+    } else {
+        panic!("update subcommand not found");
+    }
+}
