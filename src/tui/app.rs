@@ -48,8 +48,9 @@ pub enum Modal {
     None,
     RouteForm,
     DeleteConfirm(usize),
-    AppActionMenu(String, usize), // app_name, selected action index
-    AppActionResult(String),      // result message
+    AppActionMenu(String, usize),      // app_name, selected action index
+    AppActionProgress(String, String), // app_name, action description
+    AppActionResult(String),           // result message
     LogViewer(String, String),
 }
 
@@ -67,6 +68,7 @@ pub struct TuiApp {
     route_form: Option<RouteForm>,
     pub app_stats: HashMap<String, AppStats>,
     pub app_history: HashMap<String, AppHistory>,
+    pending_action: Option<tokio::task::JoinHandle<Result<String, String>>>,
 }
 
 impl TuiApp {
@@ -83,6 +85,7 @@ impl TuiApp {
             route_form: None,
             app_stats: HashMap::new(),
             app_history: HashMap::new(),
+            pending_action: None,
         };
         app.collect_stats();
         app
@@ -189,6 +192,37 @@ impl TuiApp {
     /// Called on each tick (auto-refresh).
     pub fn on_tick(&mut self) {
         self.collect_stats();
+        self.check_pending_action();
+    }
+
+    pub fn has_pending_action(&self) -> bool {
+        self.pending_action.is_some()
+    }
+
+    pub fn check_pending_action(&mut self) {
+        let finished = self
+            .pending_action
+            .as_ref()
+            .is_some_and(|h| h.is_finished());
+        if !finished {
+            return;
+        }
+        let handle = self.pending_action.take().unwrap();
+        match self.ctx.runtime.block_on(handle) {
+            Ok(Ok(msg)) => {
+                // Re-probe after action to update status
+                if let Some(ref mgr) = self.ctx.app_manager {
+                    mgr.probe_running_apps();
+                }
+                self.modal = Modal::AppActionResult(msg);
+            }
+            Ok(Err(e)) => {
+                self.modal = Modal::AppActionResult(format!("Error: {}", e));
+            }
+            Err(e) => {
+                self.modal = Modal::AppActionResult(format!("Error: {}", e));
+            }
+        }
     }
 
     pub fn render(&self, f: &mut Frame) {
@@ -218,6 +252,9 @@ impl TuiApp {
             Modal::AppActionMenu(app_name, selected) => {
                 self.render_app_action_menu(f, app_name, *selected)
             }
+            Modal::AppActionProgress(app_name, action) => {
+                self.render_app_action_progress(f, app_name, action)
+            }
             Modal::AppActionResult(msg) => self.render_app_action_result(f, msg),
             Modal::LogViewer(app_name, slot) => self.render_log_viewer(f, app_name, slot),
             Modal::None => {}
@@ -239,6 +276,7 @@ impl TuiApp {
             Modal::RouteForm => self.handle_route_form_key(key),
             Modal::DeleteConfirm(_) => self.handle_delete_modal_key(key),
             Modal::AppActionMenu(_, _) => self.handle_app_action_menu_key(key),
+            Modal::AppActionProgress(_, _) => self.handle_app_action_progress_key(key),
             Modal::AppActionResult(_) => self.handle_app_action_result_key(key),
             Modal::LogViewer(_, _) => self.handle_log_viewer_key(key),
         }
@@ -539,6 +577,28 @@ impl TuiApp {
             return;
         }
 
+        // Stop is fast and synchronous — keep it blocking
+        if action == "Stop" {
+            let mgr = match self.ctx.app_manager.as_ref() {
+                Some(m) => m.clone(),
+                None => {
+                    self.modal = Modal::AppActionResult("App manager not available".to_string());
+                    return;
+                }
+            };
+            let name = app_name.to_string();
+            let result = self
+                .ctx
+                .run_app_action(mgr.stop(&name))
+                .map(|_| format!("Stopped {}", name));
+            mgr.probe_running_apps();
+            match result {
+                Ok(msg) => self.modal = Modal::AppActionResult(msg),
+                Err(e) => self.modal = Modal::AppActionResult(format!("Error: {}", e)),
+            };
+            return;
+        }
+
         let mgr = match self.ctx.app_manager.as_ref() {
             Some(m) => m.clone(),
             None => {
@@ -548,9 +608,10 @@ impl TuiApp {
         };
 
         let name = app_name.to_string();
-        let result = match action {
+        let action_desc = format!("{}ing {}", action.trim_end_matches('y'), name);
+
+        let handle = match action {
             "Deploy" => {
-                // Deploy to the inactive slot
                 let apps = mgr.list_apps_sync();
                 let target_slot = apps
                     .iter()
@@ -564,32 +625,61 @@ impl TuiApp {
                     })
                     .unwrap_or("blue");
                 let slot = target_slot.to_string();
-                self.ctx
-                    .run_app_action(mgr.deploy(&name, &slot))
-                    .map(|_| format!("Deployed {} to slot {}", name, slot))
+                self.ctx.runtime.spawn(async move {
+                    mgr.deploy(&name, &slot)
+                        .await
+                        .map(|_| format!("Deployed {} to slot {}", name, slot))
+                        .map_err(|e| e.to_string())
+                })
             }
-            "Restart" => self
-                .ctx
-                .run_app_action(mgr.restart(&name))
-                .map(|_| format!("Restarted {}", name)),
-            "Stop" => self
-                .ctx
-                .run_app_action(mgr.stop(&name))
-                .map(|_| format!("Stopped {}", name)),
-            "Rollback" => self
-                .ctx
-                .run_app_action(mgr.rollback(&name))
-                .map(|_| format!("Rolled back {}", name)),
-            _ => Ok("Unknown action".to_string()),
+            "Restart" => self.ctx.runtime.spawn(async move {
+                mgr.restart(&name)
+                    .await
+                    .map(|_| format!("Restarted {}", name))
+                    .map_err(|e| e.to_string())
+            }),
+            "Rollback" => self.ctx.runtime.spawn(async move {
+                mgr.rollback(&name)
+                    .await
+                    .map(|_| format!("Rolled back {}", name))
+                    .map_err(|e| e.to_string())
+            }),
+            _ => return,
         };
 
-        // Re-probe after action to update status
-        mgr.probe_running_apps();
+        self.pending_action = Some(handle);
+        self.modal = Modal::AppActionProgress(app_name.to_string(), action_desc);
+    }
 
-        match result {
-            Ok(_) => self.modal = Modal::None,
-            Err(e) => self.modal = Modal::AppActionResult(format!("Error: {}", e)),
-        };
+    fn handle_app_action_progress_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        use crossterm::event::KeyCode;
+        if key.code == KeyCode::Esc {
+            // Dismiss the progress modal but let the action continue in background
+            self.modal = Modal::None;
+        }
+        false
+    }
+
+    fn render_app_action_progress(&self, f: &mut Frame, app_name: &str, action: &str) {
+        let area = f.area();
+        let w = 50u16.min(area.width.saturating_sub(4));
+        let h = 6u16.min(area.height.saturating_sub(4));
+        let x = (area.width.saturating_sub(w)) / 2;
+        let y = (area.height.saturating_sub(h)) / 2;
+        let modal_area = Rect::new(x, y, w, h);
+
+        f.render_widget(Clear, modal_area);
+
+        let block = Block::default()
+            .title(format!(" {} ", action))
+            .borders(Borders::ALL)
+            .style(Style::default().fg(Color::Yellow));
+
+        let text = Paragraph::new(format!("\n{}...\n\nPress Esc to dismiss", app_name))
+            .block(block)
+            .alignment(Alignment::Center);
+
+        f.render_widget(text, modal_area);
     }
 
     fn handle_log_viewer_key(&mut self, key: crossterm::event::KeyEvent) -> bool {

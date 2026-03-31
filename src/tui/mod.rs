@@ -136,14 +136,23 @@ fn run_tui_loop(terminal: &mut ratatui::DefaultTerminal, ctx: TuiContext) -> Res
     let mut last_tick = Instant::now();
 
     loop {
-        let timeout = tick_rate.saturating_sub(last_tick.elapsed());
+        // Poll more frequently when a background action is running
+        let poll_timeout = if app.has_pending_action() {
+            Duration::from_millis(200)
+        } else {
+            tick_rate.saturating_sub(last_tick.elapsed())
+        };
 
-        if crossterm::event::poll(timeout)? {
+        if crossterm::event::poll(poll_timeout)? {
             if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
                 if app.handle_key(key) {
                     break;
                 }
             }
+        }
+
+        if app.has_pending_action() {
+            app.check_pending_action();
         }
 
         if last_tick.elapsed() >= tick_rate {
