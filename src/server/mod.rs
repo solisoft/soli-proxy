@@ -974,7 +974,7 @@ async fn handle_regular_request(
         Some(matched_route) => {
             let path = req.uri().path().to_string();
             let from_domain_rule = matched_route.from_domain_rule;
-            let matched_prefix = matched_route.matched_prefix();
+            let matched_prefix = matched_route.matched_prefix(is_tls);
 
             if !matched_route.auth.is_empty() && !verify_basic_auth(&req, &matched_route.auth) {
                 tracing::debug!("Basic auth failed for {}", req.uri().path());
@@ -1432,12 +1432,17 @@ struct MatchedRoute<'a> {
     route_scripts: Vec<String>,
     auth: Vec<crate::auth::BasicAuth>,
     load_balancing: &'a crate::config::LoadBalancingStrategy,
+    host: String,
 }
 
 impl<'a> MatchedRoute<'a> {
-    fn matched_prefix(&self) -> Option<String> {
+    fn matched_prefix(&self, is_tls: bool) -> Option<String> {
         match &self.resolution {
             UrlResolution::StripPrefix(prefix) => Some(prefix.trim_end_matches('/').to_string()),
+            UrlResolution::AppendPath => {
+                let scheme = if is_tls { "https" } else { "http" };
+                Some(format!("{}://{}", scheme, self.host))
+            }
             _ => None,
         }
     }
@@ -1494,6 +1499,7 @@ fn find_matching_rule<'a>(
                         route_scripts: rule.scripts.clone(),
                         auth: rule.auth.clone(),
                         load_balancing: &rule.load_balancing,
+                        host: domain.clone(),
                     });
                 }
             }
@@ -1510,6 +1516,7 @@ fn find_matching_rule<'a>(
                             route_scripts: rule.scripts.clone(),
                             auth: rule.auth.clone(),
                             load_balancing: &rule.load_balancing,
+                            host: domain.clone(),
                         });
                     }
                 }
@@ -1530,6 +1537,7 @@ fn find_matching_rule<'a>(
                         route_scripts: rule.scripts.clone(),
                         auth: rule.auth.clone(),
                         load_balancing: &rule.load_balancing,
+                        host: host.to_string(),
                     });
                 }
             }
@@ -1546,6 +1554,7 @@ fn find_matching_rule<'a>(
                             route_scripts: rule.scripts.clone(),
                             auth: rule.auth.clone(),
                             load_balancing: &rule.load_balancing,
+                            host: host.to_string(),
                         });
                     }
                 }
@@ -1559,6 +1568,7 @@ fn find_matching_rule<'a>(
                         route_scripts: rule.scripts.clone(),
                         auth: rule.auth.clone(),
                         load_balancing: &rule.load_balancing,
+                        host: host.to_string(),
                     });
                 }
             }
@@ -1577,6 +1587,7 @@ fn find_matching_rule<'a>(
                     route_scripts: rule.scripts.clone(),
                     auth: rule.auth.clone(),
                     load_balancing: &rule.load_balancing,
+                    host: host.to_string(),
                 });
             }
         }
@@ -1673,7 +1684,7 @@ fn find_target(
     let path = req.uri().path();
     let target = route.targets.first()?;
     let resolved = resolve_target_url(target, path, &route.resolution);
-    let matched_prefix = route.matched_prefix();
+    let matched_prefix = route.matched_prefix(false);
     Some((
         resolved,
         route.from_domain_rule,
