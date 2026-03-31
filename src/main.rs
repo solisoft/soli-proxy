@@ -745,6 +745,30 @@ async fn run_server(
         if let Err(e) = manager.discover_apps().await {
             tracing::error!("Failed to discover apps: {}", e);
         }
+
+        // In dev mode, regenerate the self-signed fallback cert to include .test domains
+        if dev_mode {
+            let app_domains = manager.get_running_app_domains().await;
+            let test_domains: Vec<String> = app_domains
+                .keys()
+                .filter(|d| d.ends_with(".test"))
+                .cloned()
+                .collect();
+            if !test_domains.is_empty() {
+                tracing::info!(
+                    "Regenerating fallback cert with .test domains: {:?}",
+                    test_domains
+                );
+                if let Err(e) = tls_manager.regenerate_fallback_with_sans(&test_domains) {
+                    tracing::error!("Failed to regenerate fallback cert: {}", e);
+                }
+                // Rebuild TLS server config with new cert
+                if let Err(e) = tls_manager.build() {
+                    tracing::error!("Failed to rebuild TLS config: {}", e);
+                }
+            }
+        }
+
         let manager_clone = manager.clone();
         let watch_enabled = watch || dev_mode;
         if watch_enabled {

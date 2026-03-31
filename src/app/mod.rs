@@ -561,9 +561,11 @@ impl AppManager {
         }
 
         // Auto-start discovered apps in parallel (locks are per-app)
-        if auto_start && !apps_to_start.is_empty() {
+        // sync_routes is called after deploys complete so that .test domains
+        // are available for TLS cert generation in main.rs
+        if auto_start {
             let manager = self.clone();
-            tokio::spawn(async move {
+            let deploy_task = tokio::spawn(async move {
                 let mut handles = Vec::new();
                 for app_name in apps_to_start {
                     let mgr = manager.clone();
@@ -596,11 +598,9 @@ impl AppManager {
                 for handle in handles {
                     let _ = handle.await;
                 }
+                manager.sync_routes().await;
             });
-        }
-
-        if auto_start {
-            self.sync_routes().await;
+            deploy_task.await.ok();
         }
         Ok(())
     }

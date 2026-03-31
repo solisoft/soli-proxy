@@ -31,10 +31,15 @@ impl TlsManager {
 
     /// Load self-signed fallback cert. Always called to ensure TLS works.
     pub fn load_self_signed_fallback(&self) -> Result<()> {
+        self.load_self_signed_fallback_with_extra_sans(&[])
+    }
+
+    /// Load self-signed fallback cert with additional SANs for dev mode.
+    pub fn load_self_signed_fallback_with_extra_sans(&self, extra_sans: &[String]) -> Result<()> {
         let cert_path = self.cache_dir.join("self-signed.cert.pem");
         let key_path = self.cache_dir.join("self-signed.key.pem");
 
-        if cert_path.exists() && key_path.exists() {
+        if cert_path.exists() && key_path.exists() && extra_sans.is_empty() {
             let cert_pem = std::fs::read(&cert_path)?;
             let key_pem = std::fs::read(&key_path)?;
             let ck = certified_key_from_pem(&cert_pem, &key_pem)?;
@@ -44,7 +49,7 @@ impl TlsManager {
         }
 
         tracing::info!("Generating self-signed TLS certificate...");
-        let (cert_pem, key_pem) = generate_self_signed_cert()?;
+        let (cert_pem, key_pem) = generate_self_signed_cert(extra_sans)?;
 
         std::fs::create_dir_all(&self.cache_dir)?;
         std::fs::write(&cert_path, &cert_pem).context("Failed to write self-signed certificate")?;
@@ -58,6 +63,12 @@ impl TlsManager {
             cert_path.display()
         );
         Ok(())
+    }
+
+    /// Regenerate fallback certificate with additional SANs (for dev mode .test domains).
+    pub fn regenerate_fallback_with_sans(&self, extra_sans: &[String]) -> Result<()> {
+        tracing::info!("Regenerating self-signed fallback certificate with extra SANs...");
+        self.load_self_signed_fallback_with_extra_sans(extra_sans)
     }
 
     /// Load cached ACME certs from disk into the resolver.
@@ -129,13 +140,22 @@ impl TlsManager {
     }
 }
 
-fn generate_self_signed_cert() -> Result<(String, String)> {
+fn generate_self_signed_cert(extra_sans: &[String]) -> Result<(String, String)> {
     let mut params = CertificateParams::default();
 
-    params.subject_alt_names = vec![
+    let mut sans = vec![
         rcgen::SanType::DnsName("localhost".to_string()),
         rcgen::SanType::IpAddress([127, 0, 0, 1].into()),
     ];
+    for san in extra_sans {
+        if let Ok(ip) = san.parse::<std::net::IpAddr>() {
+            sans.push(rcgen::SanType::IpAddress(ip));
+        } else {
+            sans.push(rcgen::SanType::DnsName(san.clone()));
+        }
+    }
+
+    params.subject_alt_names = sans;
 
     let cert = Certificate::from_params(params).context("Failed to generate certificate")?;
     let cert_pem = cert
