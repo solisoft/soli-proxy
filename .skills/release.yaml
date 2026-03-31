@@ -8,74 +8,61 @@ parameters:
     default: auto
     description: |
       Version bump type: 'auto' (default), 'patch', 'minor', or 'major'.
-      'auto' analyzes commits since last tag to determine bump type.
+      'auto' detects from commits: feat=minor, fix=patch, BREAKING=major.
 
 steps:
-  - name: Run cargo fmt
-    command: cargo fmt
-
-  - name: Run cargo clippy
-    command: cargo clippy -- -D warnings
-
-  - name: Run cargo test
-    command: cargo test
-
-  - name: Get current version
-    command: grep '^version = ' Cargo.toml | sed 's/.*"\(.*\)"/\1/'
-
-  - name: Determine bump type
-    if: bump == auto
+  - name: Run all checks and release
     command: |
-      # Get commits since last tag
-      LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-      if [ -z "$LAST_TAG" ]; then
-        echo "patch"  # Default to patch if no tags
-      else
-        # Check for breaking changes, feats, or fixes since last tag
-        COMMITS=$(git log ${LAST_TAG}..HEAD --oneline 2>/dev/null || echo "")
-        if echo "$COMMITS" | grep -qiE "!:|BREAKING"; then
-          echo "major"
-        elif echo "$COMMITS" | grep -qiE "feat:"; then
-          echo "minor"
+      set -e
+
+      # Run checks
+      cargo fmt
+      cargo clippy -- -D warnings
+      cargo test
+
+      # Get current version
+      CURRENT=$(grep '^version = ' Cargo.toml | sed 's/.*"\(.*\)"/\1/')
+      echo "Current version: $CURRENT"
+
+      # Determine bump type
+      FINAL_BUMP="$BUMP"
+      if [ "$BUMP" = "auto" ]; then
+        LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+        if [ -z "$LAST_TAG" ]; then
+          FINAL_BUMP=patch
         else
-          echo "patch"
+          COMMITS=$(git log ${LAST_TAG}..HEAD --oneline 2>/dev/null || echo "")
+          if echo "$COMMITS" | grep -qiE "!:|BREAKING"; then
+            FINAL_BUMP=major
+          elif echo "$COMMITS" | grep -qiE "feat:"; then
+            FINAL_BUMP=minor
+          else
+            FINAL_BUMP=patch
+          fi
         fi
       fi
+      echo "Bump type: $FINAL_BUMP"
 
-  - name: Bump version
-    command: |
-      CURRENT=$(grep '^version = ' Cargo.toml | sed 's/.*"\(.*\)"/\1/')
-      BUMP=${BUMP:-patch}
-
-      # Parse version
+      # Calculate new version
       IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
-
-      case $BUMP in
+      case $FINAL_BUMP in
         major) NEW="$((MAJOR+1)).0.0" ;;
         minor) NEW="${MAJOR}.$((MINOR+1)).0" ;;
         patch) NEW="${MAJOR}.${MINOR}.$((PATCH+1))" ;;
-        *) NEW="${MAJOR}.${MINOR}.$((PATCH+1))" ;;
       esac
+      echo "New version: $NEW"
 
       # Update Cargo.toml
       sed -i "s/^version = \".*\"/version = \"$NEW\"/" Cargo.toml
-
-      # Update Cargo.lock (will be updated on next cargo command)
       cargo check --quiet 2>/dev/null || true
 
-      echo "Bumped version: $CURRENT -> $NEW"
-      echo "NEW_VERSION=$NEW" >> $GITHUB_OUTPUT
-
-  - name: Create release commit
-    command: |
+      # Commit and tag
       git add Cargo.toml Cargo.lock
-      git commit -m "chore: Release soli-proxy version $NEW_VERSION"
+      git commit -m "chore: Release soli-proxy version $NEW"
+      git tag "v$NEW"
 
-  - name: Create git tag
-    command: |
-      git tag "v$NEW_VERSION"
-
-  - name: Push to trigger release
-    command: |
+      # Push
       git push origin main
-      git push origin "v$NEW_VERSION"
+      git push origin "v$NEW"
+
+      echo "Released v$NEW"
