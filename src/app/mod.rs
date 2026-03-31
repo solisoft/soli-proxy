@@ -13,7 +13,7 @@ pub mod port_manager;
 
 use crate::circuit_breaker::SharedCircuitBreaker;
 use crate::metrics::Metrics as AppMetrics;
-pub use deployment::{DeploymentManager, DeploymentStatus};
+pub use deployment::{DeploymentManager, DeploymentStatus, ProcessExit};
 pub use port_manager::{PortAllocator, PortManager};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -364,14 +364,16 @@ impl AppManager {
         }
 
         let cfg = config_manager.get_config();
+        let (process_exit_tx, process_exit_rx) = tokio::sync::mpsc::unbounded_channel();
         let deployment_manager = Arc::new(DeploymentManager::new(
             dev_mode,
             cfg.apps.default_user.clone(),
             cfg.apps.default_group.clone(),
+            process_exit_tx,
         ));
         let (event_tx, _) = broadcast::channel(32);
 
-        Ok(Self {
+        let manager = Self {
             sites_dir: sites_path,
             port_allocator,
             apps: Arc::new(Mutex::new(HashMap::new())),
@@ -384,7 +386,11 @@ impl AppManager {
             health_check_path: health_check_path.to_string(),
             health_check_interval_secs,
             circuit_breaker: None,
-        })
+        };
+
+        manager.spawn_process_exit_monitor(process_exit_rx);
+
+        Ok(manager)
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<AppEvent> {
@@ -443,6 +449,46 @@ impl AppManager {
             }
         }
         None
+    }
+
+    /// Find the app name for a given host domain.
+    pub async fn app_name_for_host(&self, host: &str) -> Option<String> {
+        let apps = self.apps.lock().await;
+        for (name, app) in apps.iter() {
+            if app.config.domain == host {
+                return Some(name.clone());
+            }
+            if strip_www(&app.config.domain).as_deref() == Some(host) {
+                return Some(name.clone());
+            }
+            if self.dev_mode && dev_domain(&app.config.domain).as_deref() == Some(host) {
+                return Some(name.clone());
+            }
+        }
+        None
+    }
+
+    /// Trigger a failover for the given app in a background task.
+    /// Used by the request handler as a safety net when a backend connection fails.
+    pub fn trigger_async_failover(&self, app_name: String) {
+        let manager = self.clone();
+        tokio::spawn(async move {
+            // Skip if a deploy is already in progress
+            if manager.deployment_manager.is_deploying(&app_name) {
+                tracing::debug!(
+                    "Skipping request-triggered failover for {} — deploy already in progress",
+                    app_name
+                );
+                return;
+            }
+            tracing::warn!(
+                "Request-triggered failover for {} (backend connection failed)",
+                app_name
+            );
+            if let Err(e) = manager.failover(&app_name).await {
+                tracing::error!("Request-triggered failover failed for {}: {}", app_name, e);
+            }
+        });
     }
 
     pub async fn discover_apps(&self) -> Result<(), anyhow::Error> {
@@ -1047,16 +1093,21 @@ impl AppManager {
     }
 
     pub async fn restart(&self, app_name: &str) -> Result<(), anyhow::Error> {
-        let slot = {
+        let target_slot = {
             let apps = self.apps.lock().await;
             let app = apps
                 .get(app_name)
                 .ok_or_else(|| anyhow::anyhow!("App not found: {}", app_name))?;
-            app.current_slot.clone()
+            // Deploy to the OTHER slot for zero-downtime restart:
+            // new slot starts → health check → traffic switch → old slot stops
+            if app.current_slot == "blue" {
+                "green".to_string()
+            } else {
+                "blue".to_string()
+            }
         };
 
-        self.stop(app_name).await?;
-        self.deploy(app_name, &slot).await
+        self.deploy(app_name, &target_slot).await
     }
 
     pub async fn failover(&self, app_name: &str) -> Result<(), anyhow::Error> {
@@ -1315,6 +1366,70 @@ impl AppManager {
                 interval.tick().await;
                 tracing::debug!("Running scheduled health check...");
                 manager.check_health().await;
+            }
+        });
+    }
+
+    /// Listens for unexpected process exits and triggers immediate failover.
+    /// This eliminates the delay between process death and the next scheduled
+    /// health check, achieving near-zero downtime on unexpected crashes.
+    fn spawn_process_exit_monitor(
+        &self,
+        mut rx: tokio::sync::mpsc::UnboundedReceiver<ProcessExit>,
+    ) {
+        let manager = self.clone();
+        tokio::spawn(async move {
+            while let Some(exit) = rx.recv().await {
+                tracing::warn!(
+                    "Detected unexpected exit of {} slot {} (PID {}), triggering immediate failover",
+                    exit.app_name,
+                    exit.slot,
+                    exit.pid
+                );
+
+                // Verify the PID still matches the current slot — if it was
+                // already replaced by a concurrent deploy, skip failover.
+                let should_failover = {
+                    let apps = manager.apps.lock().await;
+                    if let Some(app) = apps.get(&exit.app_name) {
+                        let current_pid = if app.current_slot == "blue" {
+                            app.blue.pid
+                        } else {
+                            app.green.pid
+                        };
+                        // Only failover if the dead PID is still the active one
+                        current_pid == Some(exit.pid) && app.current_slot == exit.slot
+                    } else {
+                        false
+                    }
+                };
+
+                if should_failover {
+                    // Clear the dead PID so health checks and routing
+                    // know this slot is gone
+                    {
+                        let mut apps = manager.apps.lock().await;
+                        if let Some(app) = apps.get_mut(&exit.app_name) {
+                            let instance = if exit.slot == "blue" {
+                                &mut app.blue
+                            } else {
+                                &mut app.green
+                            };
+                            instance.pid = None;
+                            instance.status = InstanceStatus::Failed;
+                        }
+                    }
+
+                    if let Err(e) = manager.failover(&exit.app_name).await {
+                        tracing::error!("Immediate failover failed for {}: {}", exit.app_name, e);
+                    }
+                } else {
+                    tracing::debug!(
+                        "Skipping failover for {} — PID {} is no longer the active slot",
+                        exit.app_name,
+                        exit.pid
+                    );
+                }
             }
         });
     }

@@ -1322,6 +1322,17 @@ async fn handle_regular_request(
                                 e,
                                 target_url
                             );
+                            // Trigger immediate async failover so the next
+                            // request hits a healthy backend
+                            {
+                                let mgr = manager.clone();
+                                let host = h.clone();
+                                tokio::spawn(async move {
+                                    if let Some(app_name) = mgr.app_name_for_host(&host).await {
+                                        mgr.trigger_async_failover(app_name);
+                                    }
+                                });
+                            }
                             let body =
                                 http_body_util::Full::new(Bytes::from("Bad Gateway")).boxed();
                             return Ok((

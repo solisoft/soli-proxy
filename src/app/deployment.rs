@@ -3,9 +3,18 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::mpsc;
 use tokio::time::sleep;
 
 use super::AppInfo;
+
+/// Notification sent when a managed process exits unexpectedly.
+#[derive(Debug, Clone)]
+pub struct ProcessExit {
+    pub app_name: String,
+    pub slot: String,
+    pub pid: u32,
+}
 
 /// Validate that a name is safe for use in filesystem paths.
 /// Rejects empty strings, path separators, "..", and control characters.
@@ -90,16 +99,14 @@ pub enum DeploymentStatus {
 pub struct DeploymentManager {
     /// Per-app deployment locks: contains app names currently being deployed
     deploying_apps: Arc<Mutex<HashSet<String>>>,
+    /// PIDs that are being intentionally stopped (not unexpected exits)
+    stopping_pids: Arc<Mutex<HashSet<u32>>>,
+    /// Channel to notify AppManager of unexpected process exits
+    process_exit_tx: mpsc::UnboundedSender<ProcessExit>,
     dev_mode: bool,
     http_client: reqwest::Client,
     default_user: Option<String>,
     default_group: Option<String>,
-}
-
-impl Default for DeploymentManager {
-    fn default() -> Self {
-        Self::new(false, None, None)
-    }
 }
 
 impl DeploymentManager {
@@ -107,6 +114,7 @@ impl DeploymentManager {
         dev_mode: bool,
         default_user: Option<String>,
         default_group: Option<String>,
+        process_exit_tx: mpsc::UnboundedSender<ProcessExit>,
     ) -> Self {
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
@@ -115,6 +123,8 @@ impl DeploymentManager {
 
         Self {
             deploying_apps: Arc::new(Mutex::new(HashSet::new())),
+            stopping_pids: Arc::new(Mutex::new(HashSet::new())),
+            process_exit_tx,
             dev_mode,
             http_client,
             default_user,
@@ -311,6 +321,8 @@ impl DeploymentManager {
         let app_name = app.config.name.clone();
         let slot_name = slot.to_string();
         let container_id_for_monitoring = container_id.clone();
+        let stopping_pids = self.stopping_pids.clone();
+        let exit_tx = self.process_exit_tx.clone();
         tokio::spawn(async move {
             loop {
                 sleep(Duration::from_secs(5)).await;
@@ -348,6 +360,15 @@ impl DeploymentManager {
                     }
                 }
             }
+            // If intentional stop, skip notification
+            if stopping_pids.lock().unwrap().remove(&pid) {
+                return;
+            }
+            let _ = exit_tx.send(ProcessExit {
+                app_name,
+                slot: slot_name,
+                pid,
+            });
         });
 
         Ok(pid)
@@ -505,6 +526,8 @@ impl DeploymentManager {
 
         let app_name = app.config.name.clone();
         let slot_name = slot.to_string();
+        let stopping_pids = self.stopping_pids.clone();
+        let exit_tx = self.process_exit_tx.clone();
         tokio::spawn(async move {
             match child.wait().await {
                 Ok(status) => {
@@ -548,6 +571,16 @@ impl DeploymentManager {
                     );
                 }
             }
+            // If this was an intentional stop, just clean up the marker
+            if stopping_pids.lock().unwrap().remove(&pid) {
+                return;
+            }
+            // Unexpected exit — notify AppManager for immediate failover
+            let _ = exit_tx.send(ProcessExit {
+                app_name,
+                slot: slot_name,
+                pid,
+            });
         });
 
         Ok(pid)
@@ -566,6 +599,8 @@ impl DeploymentManager {
         };
 
         if let Some(pid) = pid {
+            // Mark as intentional stop so the exit monitor ignores it
+            self.stopping_pids.lock().unwrap().insert(pid);
             tracing::info!("Stopping {} slot {} (PID: {})", app.config.name, slot, pid);
 
             #[cfg(unix)]
