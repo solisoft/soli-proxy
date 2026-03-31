@@ -209,12 +209,12 @@ impl TuiApp {
         }
         let handle = self.pending_action.take().unwrap();
         match self.ctx.runtime.block_on(handle) {
-            Ok(Ok(msg)) => {
+            Ok(Ok(_msg)) => {
                 // Re-probe after action to update status
                 if let Some(ref mgr) = self.ctx.app_manager {
                     mgr.probe_running_apps();
                 }
-                self.modal = Modal::AppActionResult(msg);
+                // Just refresh UI silently on success
             }
             Ok(Err(e)) => {
                 self.modal = Modal::AppActionResult(format!("Error: {}", e));

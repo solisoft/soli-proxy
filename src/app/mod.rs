@@ -114,7 +114,11 @@ impl AppInfo {
 
         let mut config = if app_infos_path.exists() {
             let content = std::fs::read_to_string(&app_infos_path)?;
-            toml::from_str(&content)?
+            if content.trim().is_empty() {
+                AppConfig::default()
+            } else {
+                toml::from_str(&content)?
+            }
         } else {
             AppConfig::default()
         };
