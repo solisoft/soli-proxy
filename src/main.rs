@@ -400,6 +400,7 @@ fn run_app_command(config_path: &str, app_name: &str, action: &str) -> Result<()
         let app_manager =
             AppManager::new("./sites", port_manager.clone(), config_ref.clone(), false)?;
         let app_manager = Arc::new(app_manager);
+        app_manager.spawn_process_exit_monitor();
 
         if let Err(e) = app_manager.discover_apps_readonly().await {
             tracing::error!("Failed to discover apps: {}", e);
@@ -592,6 +593,7 @@ async fn run_server(
             tracing::info!("App manager initialized for {}", sites_dir);
             m.set_circuit_breaker(circuit_breaker.clone());
             m.spawn_health_check();
+            m.spawn_process_exit_monitor();
             Some(Arc::new(m))
         }
         Err(e) => {

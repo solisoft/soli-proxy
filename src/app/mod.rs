@@ -195,6 +195,8 @@ pub struct AppManager {
     health_check_path: String,
     health_check_interval_secs: u64,
     circuit_breaker: Option<SharedCircuitBreaker>,
+    process_exit_rx:
+        Arc<parking_lot::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<ProcessExit>>>>,
 }
 
 /// Convert a domain to its `.test` alias by replacing the TLD.
@@ -386,9 +388,8 @@ impl AppManager {
             health_check_path: health_check_path.to_string(),
             health_check_interval_secs,
             circuit_breaker: None,
+            process_exit_rx: Arc::new(parking_lot::Mutex::new(Some(process_exit_rx))),
         };
-
-        manager.spawn_process_exit_monitor(process_exit_rx);
 
         Ok(manager)
     }
@@ -1373,10 +1374,12 @@ impl AppManager {
     /// Listens for unexpected process exits and triggers immediate failover.
     /// This eliminates the delay between process death and the next scheduled
     /// health check, achieving near-zero downtime on unexpected crashes.
-    fn spawn_process_exit_monitor(
-        &self,
-        mut rx: tokio::sync::mpsc::UnboundedReceiver<ProcessExit>,
-    ) {
+    pub fn spawn_process_exit_monitor(&self) {
+        let mut rx = self
+            .process_exit_rx
+            .lock()
+            .take()
+            .expect("monitor already spawned");
         let manager = self.clone();
         tokio::spawn(async move {
             while let Some(exit) = rx.recv().await {
