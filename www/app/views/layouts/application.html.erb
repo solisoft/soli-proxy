@@ -65,22 +65,13 @@
             background: rgba(16, 185, 129, 0.5);
         }
 
-        .reveal-on-scroll {
-            opacity: 0;
-            transform: translateY(30px);
-            transition: all 0.8s cubic-bezier(0.5, 0, 0, 1);
-        }
-        .reveal-visible {
-            opacity: 1;
-            transform: translateY(0);
-        }
+
 
         .mobile-nav {
-            transform: translateY(-100%);
-            transition: transform 0.3s ease;
+            display: none;
         }
         .mobile-nav.open {
-            transform: translateY(0);
+            display: block;
         }
 
         @keyframes blob {
@@ -110,7 +101,7 @@
 </head>
 <body class="bg-gray-950 text-white flex flex-col min-h-full hero-gradient antialiased selection:bg-emerald-500/50 selection:text-white">
     <!-- Navigation -->
-    <nav class="glass-nav sticky top-0 z-50">
+    <nav class="glass-nav sticky top-0 z-50 relative">
         <div class="px-4 sm:px-6 lg:px-8">
             <div class="flex justify-between h-16">
                 <div class="flex items-center">
@@ -143,14 +134,15 @@
                 </div>
 
                 <div class="md:hidden flex items-center">
-                    <button onclick="toggleMobileNav()" class="p-2 text-gray-400 hover:text-white transition-colors">
-                        <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+                    <button onclick="toggleMobileNav()" aria-label="Toggle navigation" class="p-2 text-gray-400 hover:text-white transition-colors">
+                        <svg id="menuIcon" class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+                        <svg id="closeIcon" class="w-6 h-6 hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                     </button>
                 </div>
             </div>
         </div>
 
-        <div id="mobileNav" class="mobile-nav md:hidden absolute top-full left-0 right-0 bg-gray-950/95 backdrop-blur-xl border-b border-white/5">
+        <div id="mobileNav" class="mobile-nav absolute top-full left-0 right-0 z-40 bg-gray-950 border-b border-white/5">
             <div class="px-4 py-4 space-y-1">
                 <a href="/#features" class="block px-4 py-3 text-gray-300 hover:text-white hover:bg-white/5 rounded-lg transition-all">Features</a>
                 <a href="/docs" class="block px-4 py-3 text-gray-300 hover:text-white hover:bg-white/5 rounded-lg transition-all">Docs</a>

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use soli_proxy::acme;
-use soli_proxy::app::{AppManager, PortManager};
+use soli_proxy::app::{AppEvent, AppManager, PortManager};
 use soli_proxy::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 use soli_proxy::new_challenge_store;
 use soli_proxy::new_metrics;
@@ -777,6 +777,39 @@ async fn run_server(
             tokio::spawn(async move {
                 if let Err(e) = manager_clone.start_watcher().await {
                     tracing::error!("Failed to start app watcher: {}", e);
+                }
+            });
+        }
+
+        if dev_mode {
+            let mut tls_mgr = tls_manager.clone();
+            let mgr_for_events = manager.clone();
+            tokio::spawn(async move {
+                let mut rx = mgr_for_events.subscribe();
+                loop {
+                    if let Ok(event) = rx.recv().await {
+                        if matches!(event, AppEvent::Deployed { .. }) {
+                            let domains = mgr_for_events.get_running_app_domains().await;
+                            let test_domains: Vec<String> = domains
+                                .keys()
+                                .filter(|d| d.ends_with(".test"))
+                                .cloned()
+                                .collect();
+                            if !test_domains.is_empty() {
+                                tracing::info!(
+                                    "Dev mode: regenerating fallback cert with .test domains: {:?}",
+                                    test_domains
+                                );
+                                if let Err(e) = tls_mgr.regenerate_fallback_with_sans(&test_domains)
+                                {
+                                    tracing::error!("Failed to regenerate fallback cert: {}", e);
+                                }
+                                if let Err(e) = tls_mgr.build() {
+                                    tracing::error!("Failed to rebuild TLS config: {}", e);
+                                }
+                            }
+                        }
+                    }
                 }
             });
         }

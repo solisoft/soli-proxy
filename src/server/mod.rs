@@ -82,6 +82,11 @@ async fn record_app_metrics(
 static X_FORWARDED_FOR_VALUE: std::sync::LazyLock<HeaderValue> =
     std::sync::LazyLock::new(|| HeaderValue::from_static("127.0.0.1"));
 
+static X_FORWARDED_PROTO_HTTPS: std::sync::LazyLock<HeaderValue> =
+    std::sync::LazyLock::new(|| HeaderValue::from_static("https"));
+static X_FORWARDED_PROTO_HTTP: std::sync::LazyLock<HeaderValue> =
+    std::sync::LazyLock::new(|| HeaderValue::from_static("http"));
+
 /// Verify Basic Auth credentials against stored hashes
 /// Returns true if credentials are valid, false otherwise
 fn verify_basic_auth(req: &Request<Incoming>, auth_entries: &[crate::auth::BasicAuth]) -> bool {
@@ -440,6 +445,7 @@ async fn handle_http11_connection(
             circuit_breaker.clone(),
             app_manager.clone(),
             load_balancer.clone(),
+            false,
         )
     });
 
@@ -485,6 +491,7 @@ async fn handle_https2_connection(
                 circuit_breaker.clone(),
                 app_manager.clone(),
                 load_balancer.clone(),
+                true,
             )
         });
         let conn = hyper::server::conn::http2::Builder::new(exec)
@@ -507,6 +514,7 @@ async fn handle_https2_connection(
                 circuit_breaker.clone(),
                 app_manager.clone(),
                 load_balancer.clone(),
+                true,
             )
         });
         let conn = hyper::server::conn::http1::Builder::new()
@@ -589,6 +597,7 @@ async fn handle_request(
     circuit_breaker: SharedCircuitBreaker,
     app_manager: Option<Arc<AppManager>>,
     load_balancer: Arc<LoadBalancerState>,
+    is_tls: bool,
 ) -> Result<Response<BoxBody>, hyper::Error> {
     let start_time = std::time::Instant::now();
     metrics.inc_in_flight();
@@ -660,6 +669,7 @@ async fn handle_request(
         &circuit_breaker,
         app_manager.clone(),
         load_balancer.clone(),
+        is_tls,
     )
     .await;
     let duration = start_time.elapsed();
@@ -946,6 +956,7 @@ async fn handle_websocket_request(
 }
 
 /// Returns (Response, target_url_for_logging, route_scripts)
+#[allow(clippy::too_many_arguments)]
 async fn handle_regular_request(
     req: Request<Incoming>,
     client: ProxyClient,
@@ -954,6 +965,7 @@ async fn handle_regular_request(
     circuit_breaker: &SharedCircuitBreaker,
     app_manager: Option<Arc<AppManager>>,
     load_balancer: Arc<LoadBalancerState>,
+    is_tls: bool,
 ) -> Result<(Response<BoxBody>, String, Vec<String>), hyper::Error> {
     let route = find_matching_rule(&req, &config.rules);
 
@@ -1055,6 +1067,14 @@ async fn handle_regular_request(
             request
                 .headers_mut()
                 .insert("X-Forwarded-For", X_FORWARDED_FOR_VALUE.clone());
+            request.headers_mut().insert(
+                "X-Forwarded-Proto",
+                if is_tls {
+                    X_FORWARDED_PROTO_HTTPS.clone()
+                } else {
+                    X_FORWARDED_PROTO_HTTP.clone()
+                },
+            );
 
             if from_domain_rule {
                 if let Some(host) = host_header {
@@ -1179,6 +1199,30 @@ async fn handle_regular_request(
                         }
                     }
 
+                    // Rewrite Location header for redirects when a prefix is matched
+                    // This ensures redirects go through the proxy, not directly to the backend
+                    if let Some(prefix) = matched_prefix.as_ref() {
+                        if (300..400).contains(&status_code) {
+                            if let Some(location) = response.headers().get("location") {
+                                if let Ok(location_str) = location.to_str() {
+                                    if location_str.starts_with('/') {
+                                        let new_location = format!("{}{}", prefix, location_str);
+                                        let (mut parts, body) = response.into_parts();
+                                        parts
+                                            .headers
+                                            .insert("location", new_location.parse().unwrap());
+                                        let boxed = body.map_err(|_| unreachable!()).boxed();
+                                        return Ok((
+                                            Response::from_parts(parts, boxed),
+                                            target_url,
+                                            route_scripts,
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     let is_html = response
                         .headers()
                         .get("content-type")
@@ -1299,6 +1343,14 @@ async fn handle_regular_request(
                     request
                         .headers_mut()
                         .insert("X-Forwarded-For", X_FORWARDED_FOR_VALUE.clone());
+                    request.headers_mut().insert(
+                        "X-Forwarded-Proto",
+                        if is_tls {
+                            X_FORWARDED_PROTO_HTTPS.clone()
+                        } else {
+                            X_FORWARDED_PROTO_HTTP.clone()
+                        },
+                    );
                     request
                         .headers_mut()
                         .insert("X-Forwarded-Host", forwarded_host.parse().unwrap());

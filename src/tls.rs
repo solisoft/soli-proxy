@@ -9,6 +9,7 @@ use crate::acme::{
 };
 use crate::config::TlsConfig;
 
+#[derive(Clone)]
 pub struct TlsManager {
     server_config: Option<Arc<ServerConfig>>,
     resolver: Arc<AcmeCertResolver>,

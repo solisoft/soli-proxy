@@ -30,7 +30,15 @@ function switchTab(group, tab) {
 
 // Mobile nav toggle
 function toggleMobileNav() {
-    document.getElementById('mobileNav').classList.toggle('open');
+    var nav = document.getElementById('mobileNav');
+    var menuIcon = document.getElementById('menuIcon');
+    var closeIcon = document.getElementById('closeIcon');
+    
+    if (!nav) return;
+    
+    nav.classList.toggle('open');
+    menuIcon.classList.toggle('hidden');
+    closeIcon.classList.toggle('hidden');
 }
 
 // Smooth scroll for anchor links
@@ -46,19 +54,5 @@ document.addEventListener('DOMContentLoaded', function() {
             var nav = document.getElementById('mobileNav');
             if (nav && nav.classList.contains('open')) nav.classList.remove('open');
         });
-    });
-
-    // Scroll reveal observer
-    var observer = new IntersectionObserver(function(entries) {
-        entries.forEach(function(entry) {
-            if (entry.isIntersecting) {
-                entry.target.classList.add('reveal-visible');
-                observer.unobserve(entry.target);
-            }
-        });
-    }, { root: null, rootMargin: '0px', threshold: 0.1 });
-
-    document.querySelectorAll('.reveal-on-scroll').forEach(function(el) {
-        observer.observe(el);
     });
 });

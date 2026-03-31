@@ -21,7 +21,7 @@
             <div class="flex-1 min-w-0">
 
                 <!-- Page Header -->
-                <div class="mb-12 reveal-on-scroll">
+                <div class="mb-12">
                     <div class="flex items-center gap-3 text-sm text-gray-400 mb-4">
                         <a href="/" class="hover:text-white transition-colors">Home</a>
                         <svg class="w-4 h-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
@@ -41,7 +41,7 @@
                 </div>
 
         <!-- Overview -->
-        <div class="mb-16 reveal-on-scroll">
+        <div class="mb-16">
             <h2 class="text-xl font-bold text-white mb-4">Overview</h2>
             <p class="text-gray-400 leading-relaxed mb-4">
                 Soli Proxy can host and manage web applications directly. Drop an app folder in <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">sites/</code> with an <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">app.infos</code> configuration file, and the proxy automatically:
@@ -56,7 +56,7 @@
         </div>
 
         <!-- Directory Structure -->
-        <div class="mb-16 reveal-on-scroll">
+        <div class="mb-16">
             <h2 class="text-xl font-bold text-white mb-4">Directory Structure</h2>
             <div class="rounded-2xl bg-gray-950 ring-1 ring-white/10 overflow-hidden code-window">
                 <div class="flex items-center justify-between px-4 py-3 border-b border-white/5 bg-white/5">
@@ -88,7 +88,7 @@
         </div>
 
         <!-- app.infos Reference -->
-        <div class="mb-16 reveal-on-scroll">
+        <div class="mb-16">
             <h2 class="text-xl font-bold text-white mb-4">app.infos Reference</h2>
             <p class="text-gray-400 mb-6">Each app must have an <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">app.infos</code> file in its root directory. This is a TOML file with the following fields:</p>
 
@@ -113,7 +113,12 @@ graceful_timeout = <span class="tn">30</span>                      <span class="
 
 <span class="tc"># Ports</span>
 port_range_start = <span class="tn">9000</span>                    <span class="tc"># minimum port (optional)</span>
-port_range_end = <span class="tn">9999</span>                      <span class="tc"># maximum port (optional)</span></code></pre>
+port_range_end = <span class="tn">9999</span>                      <span class="tc"># maximum port (optional)</span>
+
+<span class="tc"># Docker (optional)</span>
+docker_image = <span class="ts">"myapp:latest"</span>               <span class="tc"># run app in Docker container</span>
+docker_options = <span class="ts">"--memory=512m"</span>              <span class="tc"># additional Docker run options</span>
+docker_network = <span class="ts">"soli-apps"</span>               <span class="tc"># Docker network (default: soli-apps)</span></code></pre>
                 </div>
             </div>
 
@@ -138,14 +143,17 @@ port_range_end = <span class="tn">9999</span>                      <span class="
                         <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">health_check</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">HTTP path to probe after startup. Must return 2xx. Default: <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">/</code>.</td></tr>
                         <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">graceful_timeout</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Seconds to wait after SIGTERM before SIGKILL. Default: 30.</td></tr>
                         <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">port_range_start</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Minimum port for allocation. Default: auto.</td></tr>
-                        <tr><td class="px-4 py-3 font-mono text-xs text-cyan-300">port_range_end</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Maximum port for allocation. Default: auto.</td></tr>
+                        <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">port_range_end</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Maximum port for allocation. Default: auto.</td></tr>
+                        <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">docker_image</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Docker image to use for this app. When set, app runs inside a Docker container instead of as a local process.</td></tr>
+                        <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">docker_options</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Additional options to pass to <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">docker run</code>. Example: <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">--memory=512m --cpus=1</code></td></tr>
+                        <tr><td class="px-4 py-3 font-mono text-xs text-cyan-300">docker_network</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Docker network to join. Apps on the same network can communicate by container name. Default: <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">soli-apps</code></td></tr>
                     </tbody>
                 </table>
             </div>
         </div>
 
         <!-- Environment Variables -->
-        <div class="mb-16 reveal-on-scroll">
+        <div class="mb-16">
             <h2 class="text-xl font-bold text-white mb-4">Environment Variables</h2>
             <p class="text-gray-400 mb-4">The following environment variables are set when running an app's <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">start_script</code>:</p>
             <div class="space-y-3">
@@ -161,7 +169,7 @@ port_range_end = <span class="tn">9999</span>                      <span class="
         </div>
 
         <!-- Auto-Discovery -->
-        <div class="mb-16 reveal-on-scroll">
+        <div class="mb-16">
             <h2 class="text-xl font-bold text-white mb-4">Auto-Discovery</h2>
             <p class="text-gray-400 leading-relaxed mb-4">
                 The proxy automatically scans the <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">sites/</code> directory for apps on startup and watches for changes at runtime. The discovery process:
@@ -208,7 +216,7 @@ port_range_end = <span class="tn">9999</span>                      <span class="
         </div>
 
         <!-- Blue-Green Deployment -->
-        <div class="mb-16 reveal-on-scroll">
+        <div class="mb-16">
             <h2 class="text-xl font-bold text-white mb-4">Blue-Green Deployment</h2>
             <p class="text-gray-400 leading-relaxed mb-6">
                 Each app has two deployment slots: <strong class="text-blue-400">blue</strong> and <strong class="text-emerald-400">green</strong>. Only one slot serves traffic at a time. Deploying starts the new version on the inactive slot, verifies health, then switches routing.
@@ -259,7 +267,7 @@ curl http://127.0.0.1:9090/api/v1/apps/myapp/logs</code></pre>
         </div>
 
         <!-- Deployment Lifecycle -->
-        <div class="mb-16 reveal-on-scroll">
+        <div class="mb-16">
             <h2 class="text-xl font-bold text-white mb-4">Deployment Lifecycle</h2>
 
             <div class="rounded-2xl bg-gray-950 ring-1 ring-white/10 overflow-hidden code-window mb-6">
@@ -292,7 +300,7 @@ curl http://127.0.0.1:9090/api/v1/apps/myapp/logs</code></pre>
         </div>
 
         <!-- Dev Mode -->
-        <div class="mb-16 reveal-on-scroll">
+        <div class="mb-16">
             <h2 class="text-xl font-bold text-white mb-4">Dev Mode</h2>
             <p class="text-gray-400 leading-relaxed mb-6">
                 When the proxy is started with <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">--dev</code>, it enables development-friendly features:
@@ -338,7 +346,7 @@ curl http://127.0.0.1:9090/api/v1/apps/myapp/logs</code></pre>
         </div>
 
         <!-- WebSocket Support -->
-        <div class="mb-16 reveal-on-scroll">
+        <div class="mb-16">
             <h2 class="text-xl font-bold text-white mb-4">WebSocket Support</h2>
             <p class="text-gray-400 leading-relaxed mb-4">
                 WebSocket connections are transparently proxied to backend apps. The proxy detects the <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">Upgrade: websocket</code> header and establishes a bidirectional TCP tunnel between the client and backend. This works automatically for livereload, real-time updates, and any WebSocket protocol.
@@ -346,8 +354,66 @@ curl http://127.0.0.1:9090/api/v1/apps/myapp/logs</code></pre>
             <p class="text-sm text-gray-500">WebSocket proxying works on both HTTP and HTTPS connections. No additional configuration is needed.</p>
         </div>
 
+        <!-- Docker App Hosting -->
+        <div class="mb-16">
+            <h2 class="text-xl font-bold text-white mb-4">Docker App Hosting</h2>
+            <p class="text-gray-400 leading-relaxed mb-4">
+                Apps can run inside Docker containers instead of as local processes. This provides isolation, consistent environments, and easier scaling. To enable Docker hosting, add <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">docker_image</code> to your <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">app.infos</code>:
+            </p>
+
+            <div class="rounded-2xl bg-gray-950 ring-1 ring-white/10 overflow-hidden code-window mb-6">
+                <div class="flex items-center justify-between px-4 py-3 border-b border-white/5 bg-white/5">
+                    <span class="text-xs text-gray-500 font-mono">sites/myapp/app.infos</span>
+                    <button class="text-xs text-gray-500 hover:text-white px-2 py-1 rounded hover:bg-white/10 transition-all" onclick="copyCode(this)">Copy</button>
+                </div>
+                <div class="p-6">
+<pre class="text-sm leading-7"><code>name = <span class="ts">"myapp"</span>
+domain = <span class="ts">"myapp.example.com"</span>
+docker_image = <span class="ts">"mycompany/myapp:latest"</span>
+docker_options = <span class="ts">"--memory=512m --cpus=1"</span>
+start_script = <span class="ts">"/start.sh"</span></code></pre>
+                </div>
+            </div>
+
+            <div class="space-y-4 mb-6">
+                <div class="rounded-xl bg-gray-900 border border-white/10 p-5">
+                    <h4 class="font-semibold text-white text-sm mb-2">How it works</h4>
+                    <ul class="text-sm text-gray-400 space-y-1">
+                        <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-400 shrink-0 mt-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Proxy runs <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">docker run</code> with your image</li>
+                        <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-400 shrink-0 mt-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Container uses host networking (<code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">--network=host</code>)</li>
+                        <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-400 shrink-0 mt-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Environment variables <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">$PORT</code> and <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">$WORKERS</code> are passed to container</li>
+                        <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-400 shrink-0 mt-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Blue-green deployments work the same — each slot is a separate container</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="rounded-2xl bg-gray-950 ring-1 ring-white/10 overflow-hidden code-window mb-6">
+                <div class="flex items-center justify-between px-4 py-3 border-b border-white/5 bg-white/5">
+                    <span class="text-xs text-gray-500 font-mono">Dockerfile example for your app</span>
+                    <button class="text-xs text-gray-500 hover:text-white px-2 py-1 rounded hover:bg-white/10 transition-all" onclick="copyCode(this)">Copy</button>
+                </div>
+                <div class="p-6">
+<pre class="text-sm leading-7"><code><span class="tk">FROM</span> node:20-alpine
+<span class="tk">WORKDIR</span> /app
+<span class="tk">COPY</span> . .
+<span class="tk">EXPOSE</span> <span class="tn">$PORT</span>
+<span class="tk">CMD</span> [<span class="ts">"node"</span>, <span class="ts">"server.js"</span>]</code></pre>
+                </div>
+            </div>
+
+            <div class="rounded-xl bg-amber-500/5 border border-amber-500/20 p-5">
+                <div class="flex items-start gap-3">
+                    <svg class="w-5 h-5 text-amber-400 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+                    <div>
+                        <p class="text-sm text-amber-200 font-semibold mb-1">Prerequisites</p>
+                        <p class="text-sm text-gray-400">The Docker socket must be mounted into the proxy container for Docker-based apps to work. In docker-compose, add: <code class="text-amber-200 text-xs bg-amber-500/10 px-1 rounded">/var/run/docker.sock:/var/run/docker.sock</code></p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- ACME Certificates -->
-        <div class="mb-16 reveal-on-scroll">
+        <div class="mb-16">
             <h2 class="text-xl font-bold text-white mb-4">Automatic TLS Certificates</h2>
             <p class="text-gray-400 leading-relaxed mb-4">
                 When <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">tls.mode = "letsencrypt"</code>, the proxy automatically issues Let's Encrypt certificates for each app domain. The certificate renewal task runs every 12 hours and dynamically discovers new domains from the config.
@@ -365,7 +431,7 @@ curl http://127.0.0.1:9090/api/v1/apps/myapp/logs</code></pre>
         </div>
 
         <!-- Admin API for Apps -->
-        <div class="mb-16 reveal-on-scroll">
+        <div class="mb-16">
             <h2 class="text-xl font-bold text-white mb-4">Admin API Endpoints</h2>
             <p class="text-gray-400 mb-6">Manage apps at runtime via the <a href="/docs/admin-api" class="text-emerald-400 hover:text-emerald-300 underline underline-offset-2">Admin REST API</a>:</p>
             <div class="overflow-x-auto">
@@ -390,8 +456,86 @@ curl http://127.0.0.1:9090/api/v1/apps/myapp/logs</code></pre>
             </div>
         </div>
 
+        <!-- CLI Commands -->
+        <div class="mb-16">
+            <h2 class="text-xl font-bold text-white mb-4" id="cli-commands">CLI Commands</h2>
+            <p class="text-gray-400 mb-6">Manage apps directly from the command line using the <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">soli-proxy</code> binary:</p>
+
+            <div class="space-y-6">
+                <!-- Deploy -->
+                <div class="rounded-2xl bg-gray-950 ring-1 ring-white/10 overflow-hidden code-window">
+                    <div class="flex items-center justify-between px-4 py-3 border-b border-white/5 bg-white/5">
+                        <span class="text-xs text-gray-500 font-mono">Terminal &mdash; deploy</span>
+                        <button class="text-xs text-gray-500 hover:text-white px-2 py-1 rounded hover:bg-white/10 transition-all" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <div class="p-6">
+<pre class="text-sm leading-7"><code><span class="tc"># Deploy an app (blue-green)</span>
+soli-proxy deploy myapp
+
+<span class="tc"># With custom config path</span>
+soli-proxy deploy -c /path/to/proxy.conf myapp</code></pre>
+                    </div>
+                </div>
+
+                <!-- Restart -->
+                <div class="rounded-2xl bg-gray-950 ring-1 ring-white/10 overflow-hidden code-window">
+                    <div class="flex items-center justify-between px-4 py-3 border-b border-white/5 bg-white/5">
+                        <span class="text-xs text-gray-500 font-mono">Terminal &mdash; restart</span>
+                        <button class="text-xs text-gray-500 hover:text-white px-2 py-1 rounded hover:bg-white/10 transition-all" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <div class="p-6">
+<pre class="text-sm leading-7"><code><span class="tc"># Restart an app</span>
+soli-proxy restart myapp
+
+<span class="tc"># With custom config path</span>
+soli-proxy restart -c /path/to/proxy.conf myapp</code></pre>
+                    </div>
+                </div>
+
+                <!-- Stop -->
+                <div class="rounded-2xl bg-gray-950 ring-1 ring-white/10 overflow-hidden code-window">
+                    <div class="flex items-center justify-between px-4 py-3 border-b border-white/5 bg-white/5">
+                        <span class="text-xs text-gray-500 font-mono">Terminal &mdash; stop</span>
+                        <button class="text-xs text-gray-500 hover:text-white px-2 py-1 rounded hover:bg-white/10 transition-all" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <div class="p-6">
+<pre class="text-sm leading-7"><code><span class="tc"># Stop an app</span>
+soli-proxy stop myapp
+
+<span class="tc"># With custom config path</span>
+soli-proxy stop -c /path/to/proxy.conf myapp</code></pre>
+                    </div>
+                </div>
+
+                <!-- Logs -->
+                <div class="rounded-2xl bg-gray-950 ring-1 ring-white/10 overflow-hidden code-window">
+                    <div class="flex items-center justify-between px-4 py-3 border-b border-white/5 bg-white/5">
+                        <span class="text-xs text-gray-500 font-mono">Terminal &mdash; logs</span>
+                        <button class="text-xs text-gray-500 hover:text-white px-2 py-1 rounded hover:bg-white/10 transition-all" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <div class="p-6">
+<pre class="text-sm leading-7"><code><span class="tc"># View app logs (blue and green slots)</span>
+soli-proxy logs myapp
+
+<span class="tc"># With custom config path</span>
+soli-proxy logs -c /path/to/proxy.conf myapp</code></pre>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mt-6 rounded-xl bg-emerald-500/5 border border-emerald-500/20 p-5">
+                <div class="flex items-start gap-3">
+                    <svg class="w-5 h-5 text-emerald-400 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                    <div>
+                        <p class="text-sm text-emerald-200 font-semibold mb-1">CLI vs Admin API</p>
+                        <p class="text-sm text-gray-400">CLI commands are convenient for scripts and quick operations. The <a href="/docs/admin-api" class="text-emerald-400 hover:text-emerald-300 underline underline-offset-2">Admin REST API</a> is better for programmatic access and integrations.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Example -->
-        <div class="mb-16 reveal-on-scroll">
+        <div class="mb-16">
             <h2 class="text-xl font-bold text-white mb-4">Complete Example</h2>
             <p class="text-gray-400 mb-6">Here's a minimal Soli app deployed via the proxy:</p>
 
@@ -416,7 +560,7 @@ graceful_timeout = <span class="tn">30</span></code></pre>
         </div>
 
                 <!-- Navigation -->
-                <div class="flex items-center justify-between pt-8 border-t border-white/10 reveal-on-scroll">
+                <div class="flex items-center justify-between pt-8 border-t border-white/10 ">
                     <a href="/docs/getting-started" class="group flex items-center gap-3 text-gray-400 hover:text-white transition-colors">
                         <svg class="w-5 h-5 transition-transform group-hover:-translate-x-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 17l-5-5m0 0l5-5m-5 5h12"/></svg>
                         <div>
