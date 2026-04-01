@@ -157,6 +157,12 @@ impl DeploymentManager {
         self.deploying_apps.lock().unwrap().remove(app_name);
     }
 
+    /// Mark a PID as being intentionally stopped, so the process exit
+    /// monitor ignores its death.
+    pub fn mark_stopping(&self, pid: u32) {
+        self.stopping_pids.lock().unwrap().insert(pid);
+    }
+
     /// Deploy an app to a slot. Returns the PID of the started process.
     pub async fn deploy(&self, app: &AppInfo, slot: &str) -> Result<u32> {
         {
@@ -522,7 +528,15 @@ impl DeploymentManager {
         };
 
         let pid = child.id().unwrap_or(0);
-        tracing::info!("Started {} slot {} with PID {}", app.config.name, slot, pid);
+        tracing::info!(
+            "Started {} slot {} with PID {} using command: {} {:?}",
+            app.config.name,
+            slot,
+            pid,
+            program,
+            args
+        );
+        tracing::info!("Full start command: {} {}", program, args.join(" "));
 
         let app_name = app.config.name.clone();
         let slot_name = slot.to_string();

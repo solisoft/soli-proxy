@@ -432,11 +432,27 @@ impl AppManager {
             };
             tracing::debug!("get_running_app_domains: app {} domain={} current_slot={} blue_port={} blue_pid={:?} green_port={} green_pid={:?}",
                 app.config.name, app.config.domain, app.current_slot, app.blue.port, app.blue.pid, app.green.port, app.green.pid);
-            if pid.is_none() {
+            // If current slot has no PID, fall back to the other slot.
+            // This prevents permanent 421 when current_slot points to a
+            // dead slot but the other slot has a running process.
+            let (port, pid) = if pid.is_none() {
                 tracing::debug!(
-                    "get_running_app_domains: app {} has no pid for slot {}, skipping",
+                    "get_running_app_domains: app {} has no pid for slot {}, trying other slot",
                     app.config.name,
                     app.current_slot
+                );
+                if app.current_slot == "blue" {
+                    (app.green.port, app.green.pid)
+                } else {
+                    (app.blue.port, app.blue.pid)
+                }
+            } else {
+                (port, pid)
+            };
+            if pid.is_none() {
+                tracing::debug!(
+                    "get_running_app_domains: app {} has no pid on either slot, skipping",
+                    app.config.name,
                 );
                 continue;
             }
@@ -1023,7 +1039,12 @@ impl AppManager {
                 slot,
                 old_slot_name
             );
-            self.deployment_manager.stop_instance(&app, slot).await?;
+            // Kill using the PID directly — the `app` snapshot is stale
+            // (taken before start_instance) and has pid=None for this slot,
+            // which would cause stop_instance to silently no-op and leak
+            // the process.
+            self.deployment_manager.mark_stopping(pid);
+            kill_process_group(pid).await;
             {
                 let mut apps = self.apps.lock().await;
                 if let Some(app_info) = apps.get_mut(app_name) {
@@ -1032,7 +1053,7 @@ impl AppManager {
                     } else {
                         &mut app_info.green
                     };
-                    instance.status = InstanceStatus::Stopped;
+                    instance.status = InstanceStatus::Failed;
                     instance.pid = None;
                 }
             }
@@ -1373,6 +1394,61 @@ impl AppManager {
                     if let Err(e) = self.failover(&app_name).await {
                         tracing::error!("Failed to failover {}: {}", app_name, e);
                     }
+                }
+            }
+        }
+
+        // Safety net: detect apps where current slot has pid=None but a
+        // process is actually listening on a port (orphaned by a failed
+        // deploy/failover). Re-adopt the process and fix current_slot.
+        let orphan_candidates: Vec<(String, u16, u16)> = {
+            let apps_guard = self.apps.lock().await;
+            apps_guard
+                .iter()
+                .filter_map(|(name, app)| {
+                    let current_pid = if app.current_slot == "blue" {
+                        app.blue.pid
+                    } else {
+                        app.green.pid
+                    };
+                    if current_pid.is_none() && !app.config.domain.is_empty() {
+                        Some((name.clone(), app.blue.port, app.green.port))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+
+        for (app_name, blue_port, green_port) in orphan_candidates {
+            if self.deployment_manager.is_deploying(&app_name) {
+                continue;
+            }
+            // Check both ports for a running process
+            for (slot, port) in [("blue", blue_port), ("green", green_port)] {
+                if port == 0 {
+                    continue;
+                }
+                if let Some(found_pid) = find_pid_by_port(port) {
+                    tracing::warn!(
+                        "Re-adopting orphaned process PID {} on port {} for {} slot {}",
+                        found_pid,
+                        port,
+                        app_name,
+                        slot
+                    );
+                    let mut apps_guard = self.apps.lock().await;
+                    if let Some(app_info) = apps_guard.get_mut(&app_name) {
+                        let instance = if slot == "blue" {
+                            &mut app_info.blue
+                        } else {
+                            &mut app_info.green
+                        };
+                        instance.pid = Some(found_pid);
+                        instance.status = InstanceStatus::Running;
+                        app_info.current_slot = slot.to_string();
+                    }
+                    break; // Found a running process, no need to check other slot
                 }
             }
         }
