@@ -426,6 +426,9 @@ impl DeploymentManager {
                     app.config.name,
                     slot
                 );
+                // Mark as intentional stop so the process exit monitor
+                // doesn't trigger a spurious failover when the orphan dies.
+                self.stopping_pids.lock().unwrap().insert(orphan_pid);
                 let pgid = format!("-{}", orphan_pid);
                 let _ = tokio::process::Command::new("kill")
                     .arg("-TERM")

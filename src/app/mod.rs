@@ -667,6 +667,7 @@ impl AppManager {
                                             port,
                                             app_name
                                         );
+                                        mgr.deployment_manager.mark_stopping(orphan_pid);
                                         kill_process_group(orphan_pid).await;
                                     }
                                 }
@@ -972,20 +973,32 @@ impl AppManager {
             }
         };
 
-        // Stop existing process on target slot if it's still running
+        // Stop existing process on target slot if it's still running.
+        // Read from live state (not the snapshot) because a previous failed
+        // deploy may have leaked a process whose PID was cleared from the
+        // snapshot but is still tracked in the live map.
         {
-            let target_inst = if slot == "blue" {
-                &app.blue
-            } else {
-                &app.green
+            let target_pid = {
+                let apps = self.apps.lock().await;
+                apps.get(app_name).and_then(|a| {
+                    if slot == "blue" {
+                        a.blue.pid
+                    } else {
+                        a.green.pid
+                    }
+                })
             };
-            if target_inst.pid.is_some() {
+            if let Some(existing_pid) = target_pid {
                 tracing::info!(
-                    "Stopping existing {} slot (PID: {:?}) before deploy",
+                    "Stopping existing {} slot (PID: {}) before deploy",
                     slot,
-                    target_inst.pid
+                    existing_pid
                 );
-                self.deployment_manager.stop_instance(&app, slot).await?;
+                // Kill by PID directly — the snapshot `app` may have
+                // pid=None for this slot (stale from a previous failed
+                // deploy), which would cause stop_instance to no-op.
+                self.deployment_manager.mark_stopping(existing_pid);
+                kill_process_group(existing_pid).await;
                 let mut apps = self.apps.lock().await;
                 if let Some(app_info) = apps.get_mut(app_name) {
                     let inst = if slot == "blue" {
