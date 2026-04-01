@@ -90,15 +90,28 @@ pub async fn get_app(state: &Arc<AdminState>, name: &str) -> Response<BoxBody> {
 pub async fn post_app_deploy(state: &Arc<AdminState>, name: &str) -> Response<BoxBody> {
     match &state.app_manager {
         Some(manager) => {
-            // Determine target slot based on current slot (alternate)
+            // Determine target slot: if current slot has no running process
+            // (e.g. after a failed auto-deploy), retry the same slot instead
+            // of alternating to the other one.
             let target_slot = manager
                 .get_app(name)
                 .await
                 .map_or("blue".to_string(), |app| {
-                    if app.current_slot == "blue" {
-                        "green".to_string()
+                    let current_pid = if app.current_slot == "blue" {
+                        app.blue.pid
                     } else {
-                        "blue".to_string()
+                        app.green.pid
+                    };
+                    if current_pid.is_some() {
+                        // Current slot is running — alternate for blue-green switch
+                        if app.current_slot == "blue" {
+                            "green".to_string()
+                        } else {
+                            "blue".to_string()
+                        }
+                    } else {
+                        // Nothing running on current slot — retry it
+                        app.current_slot.clone()
                     }
                 });
 

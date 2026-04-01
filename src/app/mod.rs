@@ -1378,6 +1378,14 @@ impl AppManager {
                     continue;
                 }
                 if let Some(found_pid) = find_pid_by_port(port) {
+                    if self.deployment_manager.is_deploying(&app_name) {
+                        tracing::debug!(
+                            "Skipping orphan re-adoption for {} on port {} — deploy in progress",
+                            app_name,
+                            port
+                        );
+                        continue;
+                    }
                     tracing::warn!(
                         "Re-adopting orphaned process PID {} on port {} for {} slot {}",
                         found_pid,
