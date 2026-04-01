@@ -25,6 +25,7 @@ pub struct AppConfig {
     pub stop_script: Option<String>,
     pub health_check: Option<String>,
     pub graceful_timeout: u32,
+    pub drain_delay: u32,
     pub port_range_start: u16,
     pub port_range_end: u16,
     pub workers: u16,
@@ -44,6 +45,7 @@ impl Default for AppConfig {
             stop_script: None,
             health_check: Some("/health".to_string()),
             graceful_timeout: 30,
+            drain_delay: 5,
             port_range_start: 9000,
             port_range_end: 9999,
             workers: 1,
@@ -122,6 +124,11 @@ impl AppInfo {
         } else {
             AppConfig::default()
         };
+
+        // Clamp drain_delay to be less than graceful_timeout
+        if config.drain_delay >= config.graceful_timeout {
+            config.drain_delay = config.graceful_timeout / 2;
+        }
 
         let app_name = path
             .file_name()
@@ -1097,7 +1104,19 @@ impl AppManager {
             cb.reset_target(&format!("http://localhost:{}/", new_port));
         }
 
-        // 5. Stop the old slot if it was running on a different slot
+        // 5a. Drain delay: give in-flight requests time to complete on the old slot
+        let drain_delay = app.config.drain_delay as u64;
+        if drain_delay > 0 {
+            tracing::info!(
+                "Waiting {}s drain delay for {} before stopping old slot {}",
+                drain_delay,
+                app_name,
+                old_slot_name
+            );
+            tokio::time::sleep(std::time::Duration::from_secs(drain_delay)).await;
+        }
+
+        // 5b. Stop the old slot if it was running on a different slot
         if old_slot_name != "unknown" && old_slot_name != slot {
             let old_app = {
                 let apps = self.apps.lock().await;
