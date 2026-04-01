@@ -67,6 +67,7 @@ pub struct TuiApp {
     pub app_stats: HashMap<String, AppStats>,
     pub app_history: HashMap<String, AppHistory>,
     pending_action: Option<tokio::task::JoinHandle<Result<String, String>>>,
+    filtered_apps_count: usize,
 }
 
 impl TuiApp {
@@ -84,6 +85,7 @@ impl TuiApp {
             app_stats: HashMap::new(),
             app_history: HashMap::new(),
             pending_action: None,
+            filtered_apps_count: 0,
         };
         app.collect_stats();
         app
@@ -190,7 +192,7 @@ impl TuiApp {
         }
     }
 
-    pub fn render(&self, f: &mut Frame) {
+    pub fn render(&mut self, f: &mut Frame) {
         let size = f.area();
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -710,13 +712,7 @@ impl TuiApp {
         match self.current_screen {
             Screen::Dashboard => 0,
             Screen::Routes => self.ctx.config_manager.get_config().rules.len(),
-            Screen::Apps => {
-                if let Some(ref mgr) = self.ctx.app_manager {
-                    mgr.list_apps_sync().len()
-                } else {
-                    0
-                }
-            }
+            Screen::Apps => self.filtered_apps_count,
             Screen::Circuits => self.ctx.circuit_breaker.get_states().len(),
             Screen::Config => 0,
             Screen::Help => 0,
@@ -817,22 +813,43 @@ impl TuiApp {
         f.render_widget(paragraph, area);
     }
 
-    fn render_main(&self, f: &mut Frame, area: Rect) {
+    fn render_main(&mut self, f: &mut Frame, area: Rect) {
         match self.current_screen {
             Screen::Dashboard => screens::dashboard::render(f, area, &self.ctx),
             Screen::Routes => {
                 screens::routes::render(f, area, &self.ctx, self.selected_index, &self.search_query)
             }
-            Screen::Apps => screens::apps::render(
-                f,
-                area,
-                &self.ctx,
-                self.selected_index,
-                self.scroll_offset,
-                &self.search_query,
-                &self.app_stats,
-                &self.app_history,
-            ),
+            Screen::Apps => {
+                let all_apps = self
+                    .ctx
+                    .app_manager
+                    .as_ref()
+                    .map(|m| m.list_apps_sync())
+                    .unwrap_or_default();
+                let filtered_count = if self.search_query.is_empty() {
+                    all_apps.len()
+                } else {
+                    let search_lower = self.search_query.to_lowercase();
+                    all_apps
+                        .into_iter()
+                        .filter(|app| {
+                            app.config.name.to_lowercase().contains(&search_lower)
+                                || app.config.domain.to_lowercase().contains(&search_lower)
+                        })
+                        .count()
+                };
+                self.filtered_apps_count = filtered_count;
+                screens::apps::render(
+                    f,
+                    area,
+                    &self.ctx,
+                    self.selected_index,
+                    self.scroll_offset,
+                    &self.search_query,
+                    &self.app_stats,
+                    &self.app_history,
+                )
+            }
             Screen::Circuits => screens::circuits::render(f, area, &self.ctx, self.selected_index),
             Screen::Config => screens::config_viewer::render(f, area, &self.ctx),
             Screen::Help => {}
