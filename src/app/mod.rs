@@ -950,19 +950,7 @@ impl AppManager {
         tracing::info!("Starting deploy for {} to slot {}", app_name, slot);
 
         if !self.deployment_manager.mark_deploying(app_name) {
-            // Wait for in-progress deploy (e.g. failover) to finish
-            tracing::info!("Deploy in progress for {}, waiting...", app_name);
-            let mut acquired = false;
-            for _ in 0..150 {
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                if self.deployment_manager.mark_deploying(app_name) {
-                    acquired = true;
-                    break;
-                }
-            }
-            if !acquired {
-                anyhow::bail!("Timed out waiting for deployment of {}", app_name);
-            }
+            anyhow::bail!("Deployment already in progress for {}", app_name);
         }
         // Ensure we unmark on any exit path
         let dm = self.deployment_manager.clone();
@@ -1216,91 +1204,8 @@ impl AppManager {
     }
 
     pub async fn rollback(&self, app_name: &str) -> Result<(), anyhow::Error> {
-        let (app, target_slot, old_slot) = {
-            let apps = self.apps.lock().await;
-            let app = apps
-                .get(app_name)
-                .ok_or_else(|| anyhow::anyhow!("App not found: {}", app_name))?
-                .clone();
-            let target_slot = if app.current_slot == "blue" {
-                "green"
-            } else {
-                "blue"
-            };
-            (
-                app.clone(),
-                target_slot.to_string(),
-                app.current_slot.clone(),
-            )
-        };
-
-        let pid = self.deployment_manager.deploy(&app, &target_slot).await?;
-
-        {
-            let mut apps = self.apps.lock().await;
-            if let Some(app_info) = apps.get_mut(app_name) {
-                app_info.current_slot = target_slot.clone();
-                let instance = if target_slot == "blue" {
-                    &mut app_info.blue
-                } else {
-                    &mut app_info.green
-                };
-                instance.status = InstanceStatus::Running;
-                instance.pid = Some(pid);
-            }
-        }
-
-        // Update proxy rules and reset circuit breaker BEFORE stopping old slot
-        self.sync_routes().await;
-        if let Err(e) = self.config_manager.reload().await {
-            tracing::error!("Failed to reload config after rollback: {}", e);
-        }
-        if let Some(ref cb) = self.circuit_breaker {
-            let new_port = if target_slot == "blue" {
-                app.blue.port
-            } else {
-                app.green.port
-            };
-            cb.reset_target(&format!("http://localhost:{}/", new_port));
-        }
-
-        // Stop the old slot
-        let old_pid = {
-            let apps = self.apps.lock().await;
-            apps.get(app_name).and_then(|a| {
-                if old_slot == "blue" {
-                    a.blue.pid
-                } else {
-                    a.green.pid
-                }
-            })
-        };
-        if let Some(pid) = old_pid {
-            tracing::info!(
-                "Stopping old slot {} (PID: {}) during rollback",
-                old_slot,
-                pid
-            );
-            self.deployment_manager
-                .stop_instance(&app, &old_slot)
-                .await?;
-            // Update old slot status
-            let mut apps = self.apps.lock().await;
-            if let Some(app_info) = apps.get_mut(app_name) {
-                let old_instance = if old_slot == "blue" {
-                    &mut app_info.blue
-                } else {
-                    &mut app_info.green
-                };
-                old_instance.status = InstanceStatus::Stopped;
-                old_instance.pid = None;
-            }
-        }
-        self.emit_event(AppEvent::Deployed {
-            app_name: app_name.to_string(),
-            slot: target_slot,
-        });
-        Ok(())
+        // Rollback = deploy to the opposite slot (same as restart)
+        self.restart(app_name).await
     }
 
     pub async fn stop(&self, app_name: &str) -> Result<(), anyhow::Error> {

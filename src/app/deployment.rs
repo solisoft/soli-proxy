@@ -163,12 +163,6 @@ impl DeploymentManager {
         self.stopping_pids.lock().unwrap().insert(pid);
     }
 
-    /// Remove a PID from the stopping set (e.g. when a deploy fails and
-    /// the old slot should be protected by the exit monitor again).
-    pub fn unmark_stopping(&self, pid: u32) {
-        self.stopping_pids.lock().unwrap().remove(&pid);
-    }
-
     /// Deploy an app to a slot. Returns the PID of the started process.
     pub async fn deploy(&self, app: &AppInfo, slot: &str) -> Result<u32> {
         {
