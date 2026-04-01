@@ -17,16 +17,17 @@ pub fn render(
     ctx: &TuiContext,
     selected_index: usize,
     scroll_offset: usize,
+    search_query: &str,
     app_stats: &HashMap<String, AppStats>,
     app_history: &HashMap<String, AppHistory>,
 ) {
-    let apps = if let Some(ref mgr) = ctx.app_manager {
+    let all_apps = if let Some(ref mgr) = ctx.app_manager {
         mgr.list_apps_sync()
     } else {
         Vec::new()
     };
 
-    if apps.is_empty() {
+    if all_apps.is_empty() {
         let block = Block::default()
             .title(" Applications ")
             .borders(Borders::ALL);
@@ -38,6 +39,30 @@ pub fn render(
             "No apps discovered. Apps are auto-discovered from the sites/ directory."
         };
         f.render_widget(Paragraph::new(msg), inner);
+        return;
+    }
+
+    let total_count = all_apps.len();
+    let apps: Vec<_> = if search_query.is_empty() {
+        all_apps
+    } else {
+        let search_lower = search_query.to_lowercase();
+        all_apps
+            .into_iter()
+            .filter(|app| {
+                app.config.name.to_lowercase().contains(&search_lower)
+                    || app.config.domain.to_lowercase().contains(&search_lower)
+            })
+            .collect()
+    };
+
+    if apps.is_empty() && total_count > 0 {
+        let block = Block::default()
+            .title(format!(" Applications (no match for '{}') ", search_query))
+            .borders(Borders::ALL);
+        f.render_widget(block, area);
+        let inner = Rect::new(area.x + 1, area.y + 1, area.width - 2, area.height - 2);
+        f.render_widget(Paragraph::new("No apps match your search."), inner);
         return;
     }
 
