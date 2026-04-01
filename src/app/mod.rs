@@ -950,7 +950,30 @@ impl AppManager {
         tracing::info!("Starting deploy for {} to slot {}", app_name, slot);
 
         if !self.deployment_manager.mark_deploying(app_name) {
-            anyhow::bail!("Deployment already in progress for {}", app_name);
+            // Another deploy (likely a failover) is in progress.
+            // Wait for it to finish rather than failing — the in-progress
+            // deploy is already deploying new code to the other slot.
+            tracing::info!(
+                "Deploy already in progress for {}, waiting for it to finish...",
+                app_name
+            );
+            for _ in 0..150 {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                if self.deployment_manager.mark_deploying(app_name) {
+                    // Got the lock — but the previous deploy already ran,
+                    // so just release and return success.
+                    self.deployment_manager.unmark_deploying(app_name);
+                    tracing::info!(
+                        "Previous deploy for {} completed, skipping redundant deploy",
+                        app_name
+                    );
+                    return Ok(());
+                }
+            }
+            anyhow::bail!(
+                "Timed out waiting for in-progress deployment of {}",
+                app_name
+            );
         }
         // Ensure we unmark on any exit path
         let dm = self.deployment_manager.clone();
