@@ -240,6 +240,14 @@ fn main() -> Result<()> {
         return run_app_command(&conf, &app_name, "logs");
     }
 
+    if !std::path::Path::new(&cli.conf).exists() {
+        eprintln!(
+            "Error: config file '{}' not found in current directory",
+            cli.conf
+        );
+        std::process::exit(1);
+    }
+
     if cli.daemon {
         kill_existing_daemon()?;
         daemonize()?;
