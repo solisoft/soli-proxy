@@ -448,20 +448,18 @@ impl DeploymentManager {
                     }
                 }
 
-                if self.check_port_in_use(port).await {
-                    let _ = tokio::process::Command::new("kill")
-                        .arg("-9")
-                        .arg("--")
-                        .arg(&pgid)
-                        .output()
-                        .await;
-                }
+                // Always SIGKILL the orphan group after port is free —
+                // the main process may have released the port but worker
+                // children can still be alive running shutdown handlers
+                // that interfere with the replacement process.
+                let _ = tokio::process::Command::new("kill")
+                    .arg("-9")
+                    .arg("--")
+                    .arg(&pgid)
+                    .output()
+                    .await;
 
-                // Wait for the orphan's entire process GROUP to fully
-                // exit, not just the main PID. With workers, the main
-                // process dies quickly but children may still be running
-                // their shutdown handlers (e.g. cleaning up PID/lock
-                // files) which can kill the replacement process.
+                // Wait for the entire process group to be gone
                 for _ in 0..20 {
                     sleep(Duration::from_millis(100)).await;
                     let alive = tokio::process::Command::new("kill")

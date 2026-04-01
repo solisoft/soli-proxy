@@ -1517,6 +1517,12 @@ impl AppManager {
                 };
 
                 if should_failover {
+                    // Kill the dead process's entire group to clean up
+                    // any surviving worker processes. The main process is
+                    // dead but workers (started via --workers N) may still
+                    // be running and could interfere with the replacement.
+                    kill_process_group(exit.pid).await;
+
                     // Clear the dead PID so health checks and routing
                     // know this slot is gone
                     {
