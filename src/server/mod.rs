@@ -968,6 +968,17 @@ async fn handle_regular_request(
     is_tls: bool,
 ) -> Result<(Response<BoxBody>, String, Vec<String>), hyper::Error> {
     let route = find_matching_rule(&req, &config.rules);
+    let host = req
+        .uri()
+        .host()
+        .or(req.headers().get("host").and_then(|h| h.to_str().ok()))
+        .map(|h| h.split(':').next().unwrap_or(h).to_string());
+    tracing::debug!(
+        "handle_regular_request: uri.host={:?}, header.host={:?}, rules.len={}",
+        req.uri().host(),
+        host,
+        config.rules.len()
+    );
 
     match route {
         #[allow(unused_mut, unused_variables)]
@@ -1321,6 +1332,7 @@ async fn handle_regular_request(
                 .host()
                 .or(req.headers().get("host").and_then(|h| h.to_str().ok()))
                 .map(|h| h.split(':').next().unwrap_or(h).to_string());
+            let app_manager_available = app_manager.is_some();
 
             if let (Some(ref manager), Some(ref h)) = (app_manager, host) {
                 if let Some(target) = manager.resolve_app_target(h).await {
@@ -1401,6 +1413,7 @@ async fn handle_regular_request(
             }
 
             let _ = lua_engine;
+            tracing::warn!("Returning 421 Misdirected Request - no route found for host, app_manager available: {}", app_manager_available);
             let body = http_body_util::Full::new(Bytes::from("Misdirected Request")).boxed();
             Ok((
                 Response::builder()

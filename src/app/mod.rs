@@ -419,6 +419,10 @@ impl AppManager {
         let mut result = HashMap::new();
         for app in apps.values() {
             if app.config.domain.is_empty() {
+                tracing::debug!(
+                    "get_running_app_domains: app {} has empty domain, skipping",
+                    app.config.name
+                );
                 continue;
             }
             let (port, pid) = if app.current_slot == "blue" {
@@ -426,7 +430,14 @@ impl AppManager {
             } else {
                 (app.green.port, app.green.pid)
             };
+            tracing::debug!("get_running_app_domains: app {} domain={} current_slot={} blue_port={} blue_pid={:?} green_port={} green_pid={:?}",
+                app.config.name, app.config.domain, app.current_slot, app.blue.port, app.blue.pid, app.green.port, app.green.pid);
             if pid.is_none() {
+                tracing::debug!(
+                    "get_running_app_domains: app {} has no pid for slot {}, skipping",
+                    app.config.name,
+                    app.current_slot
+                );
                 continue;
             }
             result.insert(
@@ -447,6 +458,11 @@ impl AppManager {
 
     pub async fn resolve_app_target(&self, host: &str) -> Option<super::config::Target> {
         let app_domains = self.get_running_app_domains().await;
+        tracing::debug!(
+            "resolve_app_target: host={}, available_domains={:?}",
+            host,
+            app_domains.keys().collect::<Vec<_>>()
+        );
         if let Some((port, _)) = app_domains.get(host) {
             let url = format!("http://localhost:{}", port);
             if let Ok(url) = Url::parse(&url) {
