@@ -214,7 +214,8 @@ impl TuiApp {
                 if let Some(ref mgr) = self.ctx.app_manager {
                     mgr.probe_running_apps();
                 }
-                // Just refresh UI silently on success
+                // Clear the progress modal silently on success
+                self.modal = Modal::None;
             }
             Ok(Err(e)) => {
                 self.modal = Modal::AppActionResult(format!("Error: {}", e));
@@ -562,7 +563,7 @@ impl TuiApp {
     fn execute_app_action(&mut self, app_name: &str, action_idx: usize) {
         let action = APP_ACTIONS[action_idx];
 
-        // View Logs: open log viewer
+        // View Logs: read-only, stays local
         if action == "View Logs" {
             if let Some(ref mgr) = self.ctx.app_manager {
                 let apps = mgr.list_apps_sync();
@@ -577,75 +578,47 @@ impl TuiApp {
             return;
         }
 
-        // Stop is fast and synchronous — keep it blocking
-        if action == "Stop" {
-            let mgr = match self.ctx.app_manager.as_ref() {
-                Some(m) => m.clone(),
-                None => {
-                    self.modal = Modal::AppActionResult("App manager not available".to_string());
-                    return;
-                }
-            };
-            let name = app_name.to_string();
-            let result = self
-                .ctx
-                .run_app_action(mgr.stop(&name))
-                .map(|_| format!("Stopped {}", name));
-            mgr.probe_running_apps();
-            match result {
-                Ok(msg) => self.modal = Modal::AppActionResult(msg),
-                Err(e) => self.modal = Modal::AppActionResult(format!("Error: {}", e)),
-            };
+        // All mutation actions go through the admin API so the daemon's
+        // AppManager handles process lifecycle (stopping_pids, exit monitor, etc.)
+        let cfg = self.ctx.config_manager.get_config();
+        if !cfg.admin.enabled {
+            self.modal = Modal::AppActionResult("Admin API not enabled".to_string());
             return;
         }
 
-        let mgr = match self.ctx.app_manager.as_ref() {
-            Some(m) => m.clone(),
-            None => {
-                self.modal = Modal::AppActionResult("App manager not available".to_string());
-                return;
-            }
+        let endpoint = match action {
+            "Deploy" => "deploy",
+            "Restart" => "restart",
+            "Stop" => "stop",
+            "Rollback" => "rollback",
+            _ => return,
         };
 
+        let url = format!(
+            "http://{}/api/v1/apps/{}/{}",
+            cfg.admin.bind, app_name, endpoint
+        );
+        let api_key = cfg.admin.api_key.clone();
         let name = app_name.to_string();
         let action_desc = format!("{}ing {}", action.trim_end_matches('y'), name);
 
-        let handle = match action {
-            "Deploy" => {
-                let apps = mgr.list_apps_sync();
-                let target_slot = apps
-                    .iter()
-                    .find(|a| a.config.name == name)
-                    .map(|a| {
-                        if a.current_slot == "blue" {
-                            "green"
-                        } else {
-                            "blue"
-                        }
-                    })
-                    .unwrap_or("blue");
-                let slot = target_slot.to_string();
-                self.ctx.runtime.spawn(async move {
-                    mgr.deploy(&name, &slot)
-                        .await
-                        .map(|_| format!("Deployed {} to slot {}", name, slot))
-                        .map_err(|e| e.to_string())
-                })
+        let handle = self.ctx.runtime.spawn(async move {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(120))
+                .build()
+                .map_err(|e| e.to_string())?;
+            let mut req = client.post(&url);
+            if let Some(ref key) = api_key {
+                req = req.header("X-Api-Key", key);
             }
-            "Restart" => self.ctx.runtime.spawn(async move {
-                mgr.restart(&name)
-                    .await
-                    .map(|_| format!("Restarted {}", name))
-                    .map_err(|e| e.to_string())
-            }),
-            "Rollback" => self.ctx.runtime.spawn(async move {
-                mgr.rollback(&name)
-                    .await
-                    .map(|_| format!("Rolled back {}", name))
-                    .map_err(|e| e.to_string())
-            }),
-            _ => return,
-        };
+            let resp = req.send().await.map_err(|e| e.to_string())?;
+            if resp.status().is_success() {
+                Ok(format!("Action completed for {}", name))
+            } else {
+                let body = resp.text().await.unwrap_or_default();
+                Err(format!("Failed: {}", body))
+            }
+        });
 
         self.pending_action = Some(handle);
         self.modal = Modal::AppActionProgress(app_name.to_string(), action_desc);
