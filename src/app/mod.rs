@@ -1024,12 +1024,27 @@ impl AppManager {
         let pid = self.deployment_manager.start_instance(&app, slot).await?;
         tracing::info!("Instance started, PID: {}", pid);
 
-        // 2. Get the old slot name before updating
-        let old_slot_name = {
+        // 2. Get the old slot name and mark its PID as stopping so the
+        //    exit monitor won't trigger a competing failover if it dies
+        //    during the deploy (e.g. killed by external deploy scripts).
+        let (old_slot_name, old_slot_pid) = {
             let apps = self.apps.lock().await;
-            apps.get(app_name)
-                .map(|a| a.current_slot.clone())
-                .unwrap_or_else(|| "unknown".to_string())
+            if let Some(a) = apps.get(app_name) {
+                let old_slot = a.current_slot.clone();
+                let old_pid = if old_slot == "blue" {
+                    a.blue.pid
+                } else if old_slot == "green" {
+                    a.green.pid
+                } else {
+                    None
+                };
+                if let Some(pid) = old_pid {
+                    self.deployment_manager.mark_stopping(pid);
+                }
+                (old_slot, old_pid)
+            } else {
+                ("unknown".to_string(), None)
+            }
         };
 
         // 3. Record PID on the new slot (but do NOT switch traffic yet —
@@ -1076,6 +1091,10 @@ impl AppManager {
                     instance.status = InstanceStatus::Failed;
                     instance.pid = None;
                 }
+            }
+            // Deploy failed — restore exit monitor protection for old slot
+            if let Some(old_pid) = old_slot_pid {
+                self.deployment_manager.unmark_stopping(old_pid);
             }
             anyhow::bail!("Health check failed for {} slot {}", app_name, slot);
         }
