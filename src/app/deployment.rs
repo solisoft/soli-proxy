@@ -457,14 +457,17 @@ impl DeploymentManager {
                         .await;
                 }
 
-                // Wait for the orphan process to fully exit, not just
-                // release the port. Its shutdown handler could interfere
-                // with the new process if still running.
+                // Wait for the orphan's entire process GROUP to fully
+                // exit, not just the main PID. With workers, the main
+                // process dies quickly but children may still be running
+                // their shutdown handlers (e.g. cleaning up PID/lock
+                // files) which can kill the replacement process.
                 for _ in 0..20 {
                     sleep(Duration::from_millis(100)).await;
                     let alive = tokio::process::Command::new("kill")
                         .arg("-0")
-                        .arg(orphan_pid.to_string())
+                        .arg("--")
+                        .arg(&pgid)
                         .output()
                         .await
                         .map(|o| o.status.success())
