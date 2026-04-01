@@ -208,6 +208,8 @@ pub struct AppManager {
     circuit_breaker: Option<SharedCircuitBreaker>,
     process_exit_rx:
         Arc<parking_lot::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<ProcessExit>>>>,
+    last_failover: Arc<parking_lot::Mutex<HashMap<String, std::time::Instant>>>,
+    failure_count: Arc<parking_lot::Mutex<HashMap<String, u32>>>,
 }
 
 /// Convert a domain to its `.test` alias by replacing the TLD.
@@ -400,6 +402,8 @@ impl AppManager {
             health_check_interval_secs,
             circuit_breaker: None,
             process_exit_rx: Arc::new(parking_lot::Mutex::new(Some(process_exit_rx))),
+            last_failover: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            failure_count: Arc::new(parking_lot::Mutex::new(HashMap::new())),
         };
 
         Ok(manager)
@@ -901,6 +905,53 @@ impl AppManager {
         }
     }
 
+    /// Load app state (current_slot) from disk so TUI can see deploys that happened
+    /// while TUI was not running.
+    pub fn load_app_state(&self) {
+        let state_file = PathBuf::from("./run/app_state.json");
+        if !state_file.exists() {
+            return;
+        }
+        if let Ok(content) = std::fs::read_to_string(&state_file) {
+            if let Ok(state) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(apps) = state.as_object() {
+                    let mut apps_guard = self.apps.blocking_lock();
+                    for (name, slot) in apps {
+                        if let Some(slot_str) = slot.as_str() {
+                            if let Some(app_info) = apps_guard.get_mut(name) {
+                                app_info.current_slot = slot_str.to_string();
+                            }
+                        }
+                    }
+                    tracing::debug!("Loaded app state from {:?}", state_file);
+                }
+            }
+        }
+    }
+
+    /// Save app state (current_slot) to disk so other processes (e.g. TUI) can see it.
+    pub async fn save_app_state(&self) {
+        let state_file = PathBuf::from("./run/app_state.json");
+        if let Some(parent) = state_file.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let state: serde_json::Value = {
+            let apps_guard = self.apps.lock().await;
+            let mut map = serde_json::Map::new();
+            for (name, app) in apps_guard.iter() {
+                map.insert(
+                    name.clone(),
+                    serde_json::Value::String(app.current_slot.clone()),
+                );
+            }
+            serde_json::Value::Object(map)
+        };
+        if let Ok(content) = serde_json::to_string_pretty(&state) {
+            let _ = std::fs::write(&state_file, content);
+            tracing::debug!("Saved app state to {:?}", state_file);
+        }
+    }
+
     pub async fn get_app(&self, name: &str) -> Option<AppInfo> {
         self.apps.lock().await.get(name).cloned()
     }
@@ -1028,6 +1079,9 @@ impl AppManager {
         }
         tracing::info!("Switched traffic from {} to {}", old_slot, slot);
 
+        // Persist state so TUI can see the change
+        self.save_app_state().await;
+
         self.sync_routes().await;
         let _ = self.config_manager.reload().await;
 
@@ -1075,6 +1129,13 @@ impl AppManager {
         }
 
         tracing::info!("Deploy completed for {} to slot {}", app_name, slot);
+
+        // Reset failure count on successful deploy
+        {
+            let mut failure_count = self.failure_count.lock();
+            failure_count.insert(app_name.to_string(), 0);
+        }
+
         self.emit_event(AppEvent::Deployed {
             app_name: app_name.to_string(),
             slot: slot.to_string(),
@@ -1261,55 +1322,6 @@ impl AppManager {
                 }
             }
         }
-
-        // Simple orphan recovery: if current_slot has no PID but port is listening,
-        // find the PID and adopt it. Never switch slots during recovery.
-        let apps_to_check: Vec<(String, String, u16)> = {
-            let apps_guard = self.apps.lock().await;
-            apps_guard
-                .iter()
-                .filter_map(|(name, app)| {
-                    if app.config.domain.is_empty() {
-                        return None;
-                    }
-                    let (slot, port, pid) = if app.current_slot == "blue" {
-                        ("blue", app.blue.port, app.blue.pid)
-                    } else {
-                        ("green", app.green.port, app.green.pid)
-                    };
-                    if port > 0 && pid.is_none() {
-                        Some((name.clone(), slot.to_string(), port))
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        };
-
-        for (app_name, slot, port) in apps_to_check {
-            if self.deployment_manager.is_deploying(&app_name) {
-                continue;
-            }
-            if let Some(found_pid) = find_pid_by_port(port) {
-                tracing::info!(
-                    "Re-adopting orphaned process PID {} on port {} for {} slot {}",
-                    found_pid,
-                    port,
-                    app_name,
-                    slot
-                );
-                let mut apps = self.apps.lock().await;
-                if let Some(app_info) = apps.get_mut(&app_name) {
-                    let instance = if slot == "blue" {
-                        &mut app_info.blue
-                    } else {
-                        &mut app_info.green
-                    };
-                    instance.pid = Some(found_pid);
-                    instance.status = InstanceStatus::Running;
-                }
-            }
-        }
     }
 
     pub fn spawn_health_check(&self) {
@@ -1343,6 +1355,21 @@ impl AppManager {
                     exit.slot,
                     exit.pid
                 );
+
+                // Check failure count - stop after 3 consecutive failures
+                {
+                    let mut failure_count = manager.failure_count.lock();
+                    let count = failure_count.entry(exit.app_name.clone()).or_insert(0);
+                    *count += 1;
+                    if *count > 3 {
+                        tracing::error!(
+                            "Skipping failover for {} — {} consecutive failures, giving up",
+                            exit.app_name,
+                            count
+                        );
+                        continue;
+                    }
+                }
 
                 // Verify the PID still matches the current slot — if it was
                 // already replaced by a concurrent deploy, skip failover.
@@ -1381,6 +1408,12 @@ impl AppManager {
                             instance.pid = None;
                             instance.status = InstanceStatus::Failed;
                         }
+                    }
+
+                    // Record failover time for cooldown
+                    {
+                        let mut last_failover = manager.last_failover.lock();
+                        last_failover.insert(exit.app_name.clone(), std::time::Instant::now());
                     }
 
                     if let Err(e) = manager.failover(&exit.app_name).await {

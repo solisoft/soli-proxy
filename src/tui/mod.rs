@@ -196,6 +196,9 @@ pub fn run_tui_with_config(conf_path: &str, sites_dir: &str, dev_mode: bool) -> 
             }
             // Probe ports to detect actually running instances
             mgr.probe_running_apps();
+            // Load app state (current_slot) from disk to see deploys that happened
+            // while TUI was not running
+            mgr.load_app_state();
             Some(mgr)
         } else {
             None

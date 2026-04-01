@@ -8,8 +8,6 @@ use ratatui::{
 
 use std::collections::{HashMap, VecDeque};
 
-use crate::metrics::AppMetricsJson;
-
 use super::{route_form::RouteForm, screens, TuiContext};
 
 /// Per-app stats combining traffic (from admin API) and system (from /proc).
@@ -93,10 +91,7 @@ impl TuiApp {
 
     /// Collect all per-app stats: traffic from admin API + system from /proc.
     fn collect_stats(&mut self) {
-        // 1. Try fetching traffic metrics from admin API (best effort)
-        let traffic = self.fetch_traffic_metrics();
-
-        // 2. Re-probe PIDs for apps that lost theirs, then collect /proc stats
+        // Re-probe PIDs for apps that lost theirs, then collect /proc stats
         if let Some(ref mgr) = self.ctx.app_manager {
             mgr.refresh_pids();
         }
@@ -117,19 +112,8 @@ impl TuiApp {
 
             let name = &app.config.name;
 
-            // Start with traffic data from API (if available)
-            let mut stats = traffic
-                .get(name)
-                .map(|m| AppStats {
-                    requests: m.requests,
-                    bytes_received: m.bytes_received,
-                    bytes_sent: m.bytes_sent,
-                    avg_response_time_ms: m.avg_response_time_ms,
-                    errors: m.errors,
-                    cpu_percent: None,
-                    memory_bytes: None,
-                })
-                .unwrap_or_default();
+            // Start with empty stats (no API calls)
+            let mut stats = AppStats::default();
 
             // Read system metrics from /proc
             if let Some(pid) = inst.pid {
@@ -165,32 +149,12 @@ impl TuiApp {
         }
     }
 
-    fn fetch_traffic_metrics(&self) -> HashMap<String, AppMetricsJson> {
-        let cfg = self.ctx.config_manager.get_config();
-        if !cfg.admin.enabled {
-            return HashMap::new();
-        }
-        let url = format!("http://{}/api/v1/app-metrics", cfg.admin.bind);
-        let api_key = cfg.admin.api_key.clone();
-
-        let result: Result<HashMap<String, AppMetricsJson>, reqwest::Error> =
-            self.ctx.runtime.block_on(async {
-                let client = reqwest::Client::builder()
-                    .timeout(std::time::Duration::from_millis(500))
-                    .build()?;
-                let mut req = client.get(&url);
-                if let Some(ref key) = api_key {
-                    req = req.header("X-Api-Key", key);
-                }
-                let resp = req.send().await?;
-                resp.json().await
-            });
-
-        result.unwrap_or_default()
-    }
-
     /// Called on each tick (auto-refresh).
     pub fn on_tick(&mut self) {
+        // Reload app state from disk to see deploys that happened via API
+        if let Some(ref mgr) = self.ctx.app_manager {
+            mgr.load_app_state();
+        }
         self.collect_stats();
         self.check_pending_action();
     }
@@ -581,92 +545,47 @@ impl TuiApp {
         let name = app_name.to_string();
         let action_desc = format!("{}ing {}", action.trim_end_matches('y'), name);
 
-        // Prefer admin API so the daemon's AppManager handles process lifecycle
-        // (stopping_pids, exit monitor, etc.). Fall back to local AppManager.
+        // Call proxy's admin API to perform the action
+        // The proxy's AppManager handles process lifecycle properly
         let cfg = self.ctx.config_manager.get_config();
-        let use_admin_api = cfg.admin.enabled;
+        if !cfg.admin.enabled {
+            self.modal = Modal::AppActionResult("Admin API not enabled".to_string());
+            return;
+        }
 
-        let handle = if use_admin_api {
-            let endpoint = match action {
-                "Deploy" => "deploy",
-                "Restart" => "restart",
-                "Stop" => "stop",
-                "Rollback" => "rollback",
-                _ => return,
-            };
-            let url = format!(
-                "http://{}/api/v1/apps/{}/{}",
-                cfg.admin.bind, app_name, endpoint
-            );
-            let api_key = cfg.admin.api_key.clone();
-            self.ctx.runtime.spawn(async move {
-                let client = reqwest::Client::builder()
-                    .timeout(std::time::Duration::from_secs(120))
-                    .build()
-                    .map_err(|e| e.to_string())?;
-                let mut req = client.post(&url);
-                if let Some(ref key) = api_key {
-                    req = req.header("X-Api-Key", key);
-                }
-                let resp = req.send().await.map_err(|e| e.to_string())?;
-                if resp.status().is_success() {
-                    Ok(format!("Action completed for {}", name))
-                } else {
-                    let body = resp.text().await.unwrap_or_default();
-                    Err(format!("Failed: {}", body))
-                }
-            })
-        } else {
-            let mgr = match self.ctx.app_manager.as_ref() {
-                Some(m) => m.clone(),
-                None => {
-                    self.modal = Modal::AppActionResult("App manager not available".to_string());
-                    return;
-                }
-            };
-            match action {
-                "Deploy" => {
-                    let apps = mgr.list_apps_sync();
-                    let target_slot = apps
-                        .iter()
-                        .find(|a| a.config.name == name)
-                        .map(|a| {
-                            if a.current_slot == "blue" {
-                                "green"
-                            } else {
-                                "blue"
-                            }
-                        })
-                        .unwrap_or("blue");
-                    let slot = target_slot.to_string();
-                    self.ctx.runtime.spawn(async move {
-                        mgr.deploy(&name, &slot)
-                            .await
-                            .map(|_| format!("Deployed {} to slot {}", name, slot))
-                            .map_err(|e| e.to_string())
-                    })
-                }
-                "Restart" => self.ctx.runtime.spawn(async move {
-                    mgr.restart(&name)
-                        .await
-                        .map(|_| format!("Restarted {}", name))
-                        .map_err(|e| e.to_string())
-                }),
-                "Stop" => self.ctx.runtime.spawn(async move {
-                    mgr.stop(&name)
-                        .await
-                        .map(|_| format!("Stopped {}", name))
-                        .map_err(|e| e.to_string())
-                }),
-                "Rollback" => self.ctx.runtime.spawn(async move {
-                    mgr.rollback(&name)
-                        .await
-                        .map(|_| format!("Rolled back {}", name))
-                        .map_err(|e| e.to_string())
-                }),
-                _ => return,
-            }
+        // Convert "0.0.0.0:9016" to "127.0.0.1:9016" for local connections
+        let admin_addr = cfg
+            .admin
+            .bind
+            .replace("0.0.0.0:", "127.0.0.1:")
+            .replace("[::]:", "127.0.0.1:");
+        let endpoint = match action {
+            "Deploy" => "deploy",
+            "Restart" => "restart",
+            "Stop" => "stop",
+            "Rollback" => "rollback",
+            _ => return,
         };
+        let url = format!("http://{}/api/v1/apps/{}/{}", admin_addr, name, endpoint);
+        let api_key = cfg.admin.api_key.clone();
+
+        let handle = self.ctx.runtime.spawn(async move {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(120))
+                .build()
+                .map_err(|e| e.to_string())?;
+            let mut req = client.post(&url);
+            if let Some(ref key) = api_key {
+                req = req.header("X-Api-Key", key);
+            }
+            let resp = req.send().await.map_err(|e| e.to_string())?;
+            if resp.status().is_success() {
+                Ok(format!("{} completed for {}", action, name))
+            } else {
+                let body = resp.text().await.unwrap_or_default();
+                Err(format!("Failed: {}", body))
+            }
+        });
 
         self.pending_action = Some(handle);
         self.modal = Modal::AppActionProgress(app_name.to_string(), action_desc);
