@@ -548,7 +548,7 @@ impl TuiApp {
         // Call proxy's admin API to perform the action
         // The proxy's AppManager handles process lifecycle properly
         let cfg = self.ctx.config_manager.get_config();
-        if !cfg.admin.enabled {
+        if cfg.admin.enabled != Some(true) {
             self.modal = Modal::AppActionResult("Admin API not enabled".to_string());
             return;
         }

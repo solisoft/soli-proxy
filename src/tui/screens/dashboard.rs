@@ -59,7 +59,7 @@ fn render_server_info(f: &mut Frame, area: Rect, ctx: &TuiContext) {
         cfg.tls.mode.clone()
     };
 
-    let admin_str = if cfg.admin.enabled {
+    let admin_str = if cfg.admin.enabled.unwrap_or(true) {
         cfg.admin.bind.clone()
     } else {
         "disabled".to_string()

@@ -824,7 +824,7 @@ async fn run_server(
     }
 
     // Spawn admin API server if enabled
-    if cfg.admin.enabled {
+    if cfg.admin.enabled.unwrap_or(true) {
         let admin_state = Arc::new(AdminState {
             config_manager: config_ref.clone(),
             metrics: admin_metrics,

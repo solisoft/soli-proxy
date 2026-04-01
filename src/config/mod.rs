@@ -55,7 +55,8 @@ pub struct AppsTomlConfig {
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct AdminConfig {
-    pub enabled: bool,
+    #[serde(default = "default_admin_enabled")]
+    pub enabled: Option<bool>,
     pub bind: String,
     pub api_key: Option<String>,
     #[serde(default)]
@@ -64,13 +65,17 @@ pub struct AdminConfig {
     pub password_hash: Option<String>,
 }
 
+fn default_admin_enabled() -> Option<bool> {
+    Some(true)
+}
+
 impl Default for AdminConfig {
     fn default() -> Self {
         let _ = dotenv::dotenv();
         let username = std::env::var("ADMIN_USER").ok();
         let password_hash = std::env::var("ADMIN_PASSWORD").ok();
         Self {
-            enabled: false,
+            enabled: Some(true),
             bind: "127.0.0.1:9090".to_string(),
             api_key: None,
             username,
