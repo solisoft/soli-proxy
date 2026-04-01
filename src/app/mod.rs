@@ -1369,30 +1369,13 @@ impl AppManager {
         };
 
         for (app_name, blue_port, green_port) in orphan_candidates {
-            if self.deployment_manager.is_deploying(&app_name) {
-                continue;
-            }
+            let is_deploying = self.deployment_manager.is_deploying(&app_name);
             // Check both ports for a running process
             for (slot, port) in [("blue", blue_port), ("green", green_port)] {
                 if port == 0 {
                     continue;
                 }
                 if let Some(found_pid) = find_pid_by_port(port) {
-                    if self.deployment_manager.is_deploying(&app_name) {
-                        tracing::debug!(
-                            "Skipping orphan re-adoption for {} on port {} — deploy in progress",
-                            app_name,
-                            port
-                        );
-                        continue;
-                    }
-                    tracing::warn!(
-                        "Re-adopting orphaned process PID {} on port {} for {} slot {}",
-                        found_pid,
-                        port,
-                        app_name,
-                        slot
-                    );
                     let mut apps_guard = self.apps.lock().await;
                     if let Some(app_info) = apps_guard.get_mut(&app_name) {
                         let instance = if slot == "blue" {
@@ -1402,7 +1385,27 @@ impl AppManager {
                         };
                         instance.pid = Some(found_pid);
                         instance.status = InstanceStatus::Running;
-                        app_info.current_slot = slot.to_string();
+                        // Never switch current_slot during a deploy — the deploy
+                        // flow manages slot switching atomically after health checks.
+                        // Orphan detection re-adopting the old slot mid-deploy would
+                        // cause the deploy to flip slots unexpectedly.
+                        if !is_deploying {
+                            app_info.current_slot = slot.to_string();
+                            tracing::warn!(
+                                "Re-adopted orphaned process PID {} on port {} for {} slot {}",
+                                found_pid,
+                                port,
+                                app_name,
+                                slot
+                            );
+                        } else {
+                            tracing::debug!(
+                                "Found orphaned PID {} on port {} for {} but skipping slot switch — deploy in progress",
+                                found_pid,
+                                port,
+                                app_name
+                            );
+                        }
                     }
                     break; // Found a running process, no need to check other slot
                 }
