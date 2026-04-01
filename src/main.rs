@@ -421,19 +421,10 @@ fn run_app_command(config_path: &str, app_name: &str, action: &str) -> Result<()
                         .get_app(app_name)
                         .await
                         .map_or("blue".to_string(), |app| {
-                            let current_pid = if app.current_slot == "blue" {
-                                app.blue.pid
+                            if app.current_slot == "blue" {
+                                "green".to_string()
                             } else {
-                                app.green.pid
-                            };
-                            if current_pid.is_some() {
-                                if app.current_slot == "blue" {
-                                    "green".to_string()
-                                } else {
-                                    "blue".to_string()
-                                }
-                            } else {
-                                app.current_slot.clone()
+                                "blue".to_string()
                             }
                         });
                 app_manager.deploy(app_name, &target_slot).await?;

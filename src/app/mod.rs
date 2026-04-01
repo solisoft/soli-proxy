@@ -952,206 +952,128 @@ impl AppManager {
         if !self.deployment_manager.mark_deploying(app_name) {
             anyhow::bail!("Deployment already in progress for {}", app_name);
         }
-        // Ensure we unmark on any exit path
         let dm = self.deployment_manager.clone();
         let deploy_name = app_name.to_string();
         let _guard = scopeguard::guard((), move |_| {
             dm.unmark_deploying(&deploy_name);
         });
 
-        let app = {
+        let app = self
+            .apps
+            .lock()
+            .await
+            .get(app_name)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("App not found: {}", app_name))?;
+
+        let old_slot = app.current_slot.clone();
+
+        // Stop existing process on target slot
+        let target_pid = {
             let apps = self.apps.lock().await;
-            match apps.get(app_name) {
-                Some(app) => {
-                    tracing::debug!(
-                        "Found app {}: blue={}:{}, green={}:{}",
-                        app_name,
-                        app.blue.status,
-                        app.blue.port,
-                        app.green.status,
-                        app.green.port
-                    );
-                    app.clone()
-                }
-                None => {
-                    tracing::error!("App not found: {}", app_name);
-                    return Err(anyhow::anyhow!("App not found: {}", app_name));
-                }
+            let a = apps.get(app_name).unwrap();
+            if slot == "blue" {
+                a.blue.pid
+            } else {
+                a.green.pid
             }
         };
-
-        // Stop existing process on target slot if it's still running.
-        // Read from live state (not the snapshot) because a previous failed
-        // deploy may have leaked a process whose PID was cleared from the
-        // snapshot but is still tracked in the live map.
-        {
-            let target_pid = {
-                let apps = self.apps.lock().await;
-                apps.get(app_name).and_then(|a| {
-                    if slot == "blue" {
-                        a.blue.pid
-                    } else {
-                        a.green.pid
-                    }
-                })
-            };
-            if let Some(existing_pid) = target_pid {
-                tracing::info!(
-                    "Stopping existing {} slot (PID: {}) before deploy",
-                    slot,
-                    existing_pid
-                );
-                // Kill by PID directly — the snapshot `app` may have
-                // pid=None for this slot (stale from a previous failed
-                // deploy), which would cause stop_instance to no-op.
-                self.deployment_manager.mark_stopping(existing_pid);
-                kill_process_group(existing_pid).await;
-                let mut apps = self.apps.lock().await;
-                if let Some(app_info) = apps.get_mut(app_name) {
-                    let inst = if slot == "blue" {
-                        &mut app_info.blue
-                    } else {
-                        &mut app_info.green
-                    };
-                    inst.status = InstanceStatus::Stopped;
-                    inst.pid = None;
-                }
-            }
+        if let Some(pid) = target_pid {
+            self.deployment_manager.mark_stopping(pid);
+            kill_process_group(pid).await;
         }
 
-        // 1. Start the new instance (without health check)
-        tracing::info!("Deploying {} to slot {}", app.config.name, slot);
+        // Start new instance
+        tracing::info!("Starting {} slot {}", app.config.name, slot);
         let pid = self.deployment_manager.start_instance(&app, slot).await?;
-        tracing::info!("Instance started, PID: {}", pid);
+        tracing::info!("Started {} slot {} with PID {}", app.config.name, slot, pid);
 
-        // 2. Get the old slot name before updating
-        let old_slot_name = {
-            let apps = self.apps.lock().await;
-            apps.get(app_name)
-                .map(|a| a.current_slot.clone())
-                .unwrap_or_else(|| "unknown".to_string())
-        };
-
-        // 3. Record PID on the new slot (but do NOT switch traffic yet —
-        //    the old slot keeps serving while the new one starts up)
+        // Update state with new PID
         {
             let mut apps = self.apps.lock().await;
-            if let Some(app_info) = apps.get_mut(app_name) {
-                let instance = if slot == "blue" {
-                    &mut app_info.blue
-                } else {
-                    &mut app_info.green
-                };
-                instance.status = InstanceStatus::Running;
-                instance.pid = Some(pid);
-                instance.last_started = Some(chrono::Utc::now().to_rfc3339());
+            let instance = if slot == "blue" {
+                &mut apps.get_mut(app_name).unwrap().blue
             } else {
-                tracing::error!("App {} not found in map after deploy!", app_name);
-            }
+                &mut apps.get_mut(app_name).unwrap().green
+            };
+            instance.pid = Some(pid);
+            instance.status = InstanceStatus::Running;
+            instance.last_started = Some(chrono::Utc::now().to_rfc3339());
         }
 
-        // 4. Wait for the health check (old slot still serving traffic)
+        // Wait for health check
         let healthy = self.deployment_manager.wait_for_health(&app, slot).await?;
         if !healthy {
-            tracing::error!(
-                "Health check failed for {} slot {}, keeping {}",
-                app_name,
-                slot,
-                old_slot_name
-            );
-            // Kill using the PID directly — the `app` snapshot is stale
-            // (taken before start_instance) and has pid=None for this slot,
-            // which would cause stop_instance to silently no-op and leak
-            // the process.
+            tracing::error!("Health check failed for {} slot {}", app_name, slot);
             self.deployment_manager.mark_stopping(pid);
             kill_process_group(pid).await;
             {
                 let mut apps = self.apps.lock().await;
-                if let Some(app_info) = apps.get_mut(app_name) {
-                    let instance = if slot == "blue" {
-                        &mut app_info.blue
-                    } else {
-                        &mut app_info.green
-                    };
-                    instance.status = InstanceStatus::Failed;
-                    instance.pid = None;
-                }
+                let instance = if slot == "blue" {
+                    &mut apps.get_mut(app_name).unwrap().blue
+                } else {
+                    &mut apps.get_mut(app_name).unwrap().green
+                };
+                instance.pid = None;
+                instance.status = InstanceStatus::Failed;
             }
             anyhow::bail!("Health check failed for {} slot {}", app_name, slot);
         }
         tracing::info!("Health check passed for {} slot {}", app.config.name, slot);
 
-        // 5. Health check passed — now switch traffic to the new slot
+        // Switch traffic
         {
             let mut apps = self.apps.lock().await;
-            if let Some(app_info) = apps.get_mut(app_name) {
-                app_info.current_slot = slot.to_string();
-                tracing::info!("Switched traffic from {} to {}", old_slot_name, slot);
-            }
+            apps.get_mut(app_name).unwrap().current_slot = slot.to_string();
         }
-        self.sync_routes().await;
-        if let Err(e) = self.config_manager.reload().await {
-            tracing::error!("Failed to reload config after deploy: {}", e);
-        }
+        tracing::info!("Switched traffic from {} to {}", old_slot, slot);
 
-        // Reset circuit breaker for the new target
+        self.sync_routes().await;
+        let _ = self.config_manager.reload().await;
+
+        // Reset circuit breaker
         if let Some(ref cb) = self.circuit_breaker {
-            let new_port = if slot == "blue" {
+            let port = if slot == "blue" {
                 app.blue.port
             } else {
                 app.green.port
             };
-            cb.reset_target(&format!("http://localhost:{}/", new_port));
+            cb.reset_target(&format!("http://localhost:{}/", port));
         }
 
-        // 5b. Stop the old slot if it was running on a different slot
-        if old_slot_name != "unknown" && old_slot_name != slot {
-            let old_app = {
+        // Stop old slot (skip if same slot)
+        if old_slot != slot && old_slot != "unknown" {
+            let old_pid = {
                 let apps = self.apps.lock().await;
-                apps.get(app_name).cloned()
-            };
-            if let Some(old_app) = old_app {
-                let old_pid = if old_slot_name == "blue" {
-                    old_app.blue.pid
+                let a = apps.get(app_name).unwrap();
+                if old_slot == "blue" {
+                    a.blue.pid
                 } else {
-                    old_app.green.pid
-                };
-                if let Some(pid) = old_pid {
-                    // Drain delay: let in-flight requests finish before killing old slot
-                    let drain = old_app.config.drain_delay as u64;
-                    if drain > 0 {
-                        tracing::info!(
-                            "Draining old slot {} for {}s before SIGTERM (PID: {})",
-                            old_slot_name,
-                            drain,
-                            pid
-                        );
-                        tokio::time::sleep(std::time::Duration::from_secs(drain)).await;
-                    }
-                    tracing::info!("Stopping old slot {} (PID: {})", old_slot_name, pid);
-                    self.deployment_manager
-                        .stop_instance(&old_app, &old_slot_name)
-                        .await?;
-                    tracing::info!("Old slot {} stopped", old_slot_name);
-
-                    let mut apps = self.apps.lock().await;
-                    if let Some(app_info) = apps.get_mut(app_name) {
-                        let old_instance = if old_slot_name == "blue" {
-                            &mut app_info.blue
-                        } else {
-                            &mut app_info.green
-                        };
-                        old_instance.status = InstanceStatus::Stopped;
-                        old_instance.pid = None;
-                    }
-                } else {
-                    tracing::warn!(
-                        "No PID found for old slot {} (status may already be stopped)",
-                        old_slot_name
-                    );
+                    a.green.pid
                 }
+            };
+            if let Some(pid) = old_pid {
+                let drain = app.config.drain_delay as u64;
+                if drain > 0 {
+                    tracing::info!("Draining old slot {} for {}s", old_slot, drain);
+                    tokio::time::sleep(std::time::Duration::from_secs(drain)).await;
+                }
+                self.deployment_manager.mark_stopping(pid);
+                kill_process_group(pid).await;
+                {
+                    let mut apps = self.apps.lock().await;
+                    let instance = if old_slot == "blue" {
+                        &mut apps.get_mut(app_name).unwrap().blue
+                    } else {
+                        &mut apps.get_mut(app_name).unwrap().green
+                    };
+                    instance.pid = None;
+                    instance.status = InstanceStatus::Stopped;
+                }
+                tracing::info!("Stopped old slot {}", old_slot);
             }
         }
+
         tracing::info!("Deploy completed for {} to slot {}", app_name, slot);
         self.emit_event(AppEvent::Deployed {
             app_name: app_name.to_string(),
@@ -1301,7 +1223,6 @@ impl AppManager {
                         (app.green.port, app.green.pid)
                     };
                     let health_path = app.config.health_check.as_deref().unwrap_or("/");
-                    // Only check apps that have a running process
                     if port > 0 && pid.is_some() {
                         Some((name.clone(), port, health_path.to_string()))
                     } else {
@@ -1312,12 +1233,7 @@ impl AppManager {
         };
 
         for (app_name, port, health_path) in apps {
-            // Skip apps that are currently deploying
             if self.deployment_manager.is_deploying(&app_name) {
-                tracing::debug!(
-                    "Skipping health check for {} (deploy in progress)",
-                    app_name
-                );
                 continue;
             }
             let url = format!("http://localhost:{}{}", port, health_path);
@@ -1327,7 +1243,7 @@ impl AppManager {
                 }
                 Ok(_) => {
                     tracing::debug!(
-                        "Health check returned non-2xx for {} on port {} (app may be starting up)",
+                        "Health check returned non-2xx for {} on port {}",
                         app_name,
                         port
                     );
@@ -1346,21 +1262,23 @@ impl AppManager {
             }
         }
 
-        // Safety net: detect apps where current slot has pid=None but a
-        // process is actually listening on a port (orphaned by a failed
-        // deploy/failover). Re-adopt the process and fix current_slot.
-        let orphan_candidates: Vec<(String, u16, u16)> = {
+        // Simple orphan recovery: if current_slot has no PID but port is listening,
+        // find the PID and adopt it. Never switch slots during recovery.
+        let apps_to_check: Vec<(String, String, u16)> = {
             let apps_guard = self.apps.lock().await;
             apps_guard
                 .iter()
                 .filter_map(|(name, app)| {
-                    let current_pid = if app.current_slot == "blue" {
-                        app.blue.pid
+                    if app.config.domain.is_empty() {
+                        return None;
+                    }
+                    let (slot, port, pid) = if app.current_slot == "blue" {
+                        ("blue", app.blue.port, app.blue.pid)
                     } else {
-                        app.green.pid
+                        ("green", app.green.port, app.green.pid)
                     };
-                    if current_pid.is_none() && !app.config.domain.is_empty() {
-                        Some((name.clone(), app.blue.port, app.green.port))
+                    if port > 0 && pid.is_none() {
+                        Some((name.clone(), slot.to_string(), port))
                     } else {
                         None
                     }
@@ -1368,46 +1286,27 @@ impl AppManager {
                 .collect()
         };
 
-        for (app_name, blue_port, green_port) in orphan_candidates {
-            let is_deploying = self.deployment_manager.is_deploying(&app_name);
-            // Check both ports for a running process
-            for (slot, port) in [("blue", blue_port), ("green", green_port)] {
-                if port == 0 {
-                    continue;
-                }
-                if let Some(found_pid) = find_pid_by_port(port) {
-                    let mut apps_guard = self.apps.lock().await;
-                    if let Some(app_info) = apps_guard.get_mut(&app_name) {
-                        let instance = if slot == "blue" {
-                            &mut app_info.blue
-                        } else {
-                            &mut app_info.green
-                        };
-                        instance.pid = Some(found_pid);
-                        instance.status = InstanceStatus::Running;
-                        // Never switch current_slot during a deploy — the deploy
-                        // flow manages slot switching atomically after health checks.
-                        // Orphan detection re-adopting the old slot mid-deploy would
-                        // cause the deploy to flip slots unexpectedly.
-                        if !is_deploying {
-                            app_info.current_slot = slot.to_string();
-                            tracing::warn!(
-                                "Re-adopted orphaned process PID {} on port {} for {} slot {}",
-                                found_pid,
-                                port,
-                                app_name,
-                                slot
-                            );
-                        } else {
-                            tracing::debug!(
-                                "Found orphaned PID {} on port {} for {} but skipping slot switch — deploy in progress",
-                                found_pid,
-                                port,
-                                app_name
-                            );
-                        }
-                    }
-                    break; // Found a running process, no need to check other slot
+        for (app_name, slot, port) in apps_to_check {
+            if self.deployment_manager.is_deploying(&app_name) {
+                continue;
+            }
+            if let Some(found_pid) = find_pid_by_port(port) {
+                tracing::info!(
+                    "Re-adopting orphaned process PID {} on port {} for {} slot {}",
+                    found_pid,
+                    port,
+                    app_name,
+                    slot
+                );
+                let mut apps = self.apps.lock().await;
+                if let Some(app_info) = apps.get_mut(&app_name) {
+                    let instance = if slot == "blue" {
+                        &mut app_info.blue
+                    } else {
+                        &mut app_info.green
+                    };
+                    instance.pid = Some(found_pid);
+                    instance.status = InstanceStatus::Running;
                 }
             }
         }
