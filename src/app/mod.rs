@@ -950,30 +950,19 @@ impl AppManager {
         tracing::info!("Starting deploy for {} to slot {}", app_name, slot);
 
         if !self.deployment_manager.mark_deploying(app_name) {
-            // Another deploy (likely a failover) is in progress.
-            // Wait for it to finish rather than failing — the in-progress
-            // deploy is already deploying new code to the other slot.
-            tracing::info!(
-                "Deploy already in progress for {}, waiting for it to finish...",
-                app_name
-            );
+            // Wait for in-progress deploy (e.g. failover) to finish
+            tracing::info!("Deploy in progress for {}, waiting...", app_name);
+            let mut acquired = false;
             for _ in 0..150 {
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 if self.deployment_manager.mark_deploying(app_name) {
-                    // Got the lock — but the previous deploy already ran,
-                    // so just release and return success.
-                    self.deployment_manager.unmark_deploying(app_name);
-                    tracing::info!(
-                        "Previous deploy for {} completed, skipping redundant deploy",
-                        app_name
-                    );
-                    return Ok(());
+                    acquired = true;
+                    break;
                 }
             }
-            anyhow::bail!(
-                "Timed out waiting for in-progress deployment of {}",
-                app_name
-            );
+            if !acquired {
+                anyhow::bail!("Timed out waiting for deployment of {}", app_name);
+            }
         }
         // Ensure we unmark on any exit path
         let dm = self.deployment_manager.clone();
@@ -1047,27 +1036,12 @@ impl AppManager {
         let pid = self.deployment_manager.start_instance(&app, slot).await?;
         tracing::info!("Instance started, PID: {}", pid);
 
-        // 2. Get the old slot name and mark its PID as stopping so the
-        //    exit monitor won't trigger a competing failover if it dies
-        //    during the deploy (e.g. killed by external deploy scripts).
-        let (old_slot_name, old_slot_pid) = {
+        // 2. Get the old slot name before updating
+        let old_slot_name = {
             let apps = self.apps.lock().await;
-            if let Some(a) = apps.get(app_name) {
-                let old_slot = a.current_slot.clone();
-                let old_pid = if old_slot == "blue" {
-                    a.blue.pid
-                } else if old_slot == "green" {
-                    a.green.pid
-                } else {
-                    None
-                };
-                if let Some(pid) = old_pid {
-                    self.deployment_manager.mark_stopping(pid);
-                }
-                (old_slot, old_pid)
-            } else {
-                ("unknown".to_string(), None)
-            }
+            apps.get(app_name)
+                .map(|a| a.current_slot.clone())
+                .unwrap_or_else(|| "unknown".to_string())
         };
 
         // 3. Record PID on the new slot (but do NOT switch traffic yet —
@@ -1114,10 +1088,6 @@ impl AppManager {
                     instance.status = InstanceStatus::Failed;
                     instance.pid = None;
                 }
-            }
-            // Deploy failed — restore exit monitor protection for old slot
-            if let Some(old_pid) = old_slot_pid {
-                self.deployment_manager.unmark_stopping(old_pid);
             }
             anyhow::bail!("Health check failed for {} slot {}", app_name, slot);
         }
