@@ -1106,17 +1106,6 @@ impl AppManager {
 
         // 5b. Stop the old slot if it was running on a different slot
         if old_slot_name != "unknown" && old_slot_name != slot {
-            // Drain delay: give in-flight requests time to complete on the old slot
-            let drain_delay = app.config.drain_delay as u64;
-            if drain_delay > 0 {
-                tracing::info!(
-                    "Waiting {}s drain delay for {} before stopping old slot {}",
-                    drain_delay,
-                    app_name,
-                    old_slot_name
-                );
-                tokio::time::sleep(std::time::Duration::from_secs(drain_delay)).await;
-            }
             let old_app = {
                 let apps = self.apps.lock().await;
                 apps.get(app_name).cloned()
