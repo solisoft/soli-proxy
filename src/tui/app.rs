@@ -828,6 +828,7 @@ impl TuiApp {
                 area,
                 &self.ctx,
                 self.selected_index,
+                self.scroll_offset,
                 &self.app_stats,
                 &self.app_history,
             ),

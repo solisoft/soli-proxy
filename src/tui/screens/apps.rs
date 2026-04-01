@@ -16,6 +16,7 @@ pub fn render(
     area: Rect,
     ctx: &TuiContext,
     selected_index: usize,
+    scroll_offset: usize,
     app_stats: &HashMap<String, AppStats>,
     app_history: &HashMap<String, AppHistory>,
 ) {
@@ -50,7 +51,14 @@ pub fn render(
         })
         .split(area);
 
-    render_app_table(f, chunks[0], &apps, selected_index, app_stats);
+    render_app_table(
+        f,
+        chunks[0],
+        &apps,
+        selected_index,
+        scroll_offset,
+        app_stats,
+    );
 
     if has_detail {
         let app = &apps[selected_index];
@@ -65,6 +73,7 @@ fn render_app_table(
     area: Rect,
     apps: &[crate::app::AppInfo],
     selected_index: usize,
+    scroll_offset: usize,
     app_stats: &HashMap<String, AppStats>,
 ) {
     let block = Block::default()
@@ -79,11 +88,16 @@ fn render_app_table(
     ])
     .style(Style::default().fg(Color::Green).bold());
 
+    let max_rows = inner.height.saturating_sub(1) as usize;
+
     let rows: Vec<Row> = apps
         .iter()
+        .skip(scroll_offset)
+        .take(max_rows)
         .enumerate()
         .map(|(idx, app)| {
-            let is_selected = idx == selected_index;
+            let visual_idx = scroll_offset + idx;
+            let is_selected = visual_idx == selected_index;
             let inst = if app.current_slot == "blue" {
                 &app.blue
             } else {
