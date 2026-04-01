@@ -1117,6 +1117,17 @@ impl AppManager {
                     old_app.green.pid
                 };
                 if let Some(pid) = old_pid {
+                    // Drain delay: let in-flight requests finish before killing old slot
+                    let drain = old_app.config.drain_delay as u64;
+                    if drain > 0 {
+                        tracing::info!(
+                            "Draining old slot {} for {}s before SIGTERM (PID: {})",
+                            old_slot_name,
+                            drain,
+                            pid
+                        );
+                        tokio::time::sleep(std::time::Duration::from_secs(drain)).await;
+                    }
                     tracing::info!("Stopping old slot {} (PID: {})", old_slot_name, pid);
                     self.deployment_manager
                         .stop_instance(&old_app, &old_slot_name)

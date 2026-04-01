@@ -639,20 +639,6 @@ impl DeploymentManager {
         if let Some(pid) = pid {
             // Mark as intentional stop so the exit monitor ignores it
             self.stopping_pids.lock().unwrap().insert(pid);
-
-            // Drain delay: let in-flight requests finish before sending SIGTERM
-            let drain = app.config.drain_delay as u64;
-            if drain > 0 {
-                tracing::info!(
-                    "Draining {} slot {} for {}s before SIGTERM (PID: {})",
-                    app.config.name,
-                    slot,
-                    drain,
-                    pid
-                );
-                sleep(Duration::from_secs(drain)).await;
-            }
-
             tracing::info!("Stopping {} slot {} (PID: {})", app.config.name, slot, pid);
 
             #[cfg(unix)]
