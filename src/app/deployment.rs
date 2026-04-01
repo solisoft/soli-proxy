@@ -437,6 +437,10 @@ impl DeploymentManager {
                     .output()
                     .await;
 
+                // Wait for port to be free AND process to fully exit.
+                // Just waiting for the port is not enough — the orphan's
+                // shutdown sequence may still be running and could kill the
+                // replacement process (e.g. via a shared PID/lock file).
                 for _ in 0..20 {
                     sleep(Duration::from_millis(100)).await;
                     if !self.check_port_in_use(port).await {
@@ -451,7 +455,23 @@ impl DeploymentManager {
                         .arg(&pgid)
                         .output()
                         .await;
+                }
+
+                // Wait for the orphan process to fully exit, not just
+                // release the port. Its shutdown handler could interfere
+                // with the new process if still running.
+                for _ in 0..20 {
                     sleep(Duration::from_millis(100)).await;
+                    let alive = tokio::process::Command::new("kill")
+                        .arg("-0")
+                        .arg(orphan_pid.to_string())
+                        .output()
+                        .await
+                        .map(|o| o.status.success())
+                        .unwrap_or(false);
+                    if !alive {
+                        break;
+                    }
                 }
             }
 
