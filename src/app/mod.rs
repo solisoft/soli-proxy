@@ -701,8 +701,43 @@ impl AppManager {
     }
 
     /// Synchronize proxy routes with discovered apps.
+    ///
+    /// Removes stale static rules from proxy.conf for domains now managed by
+    /// the AppManager (which handles blue-green routing dynamically).
     async fn sync_routes(&self) {
         let app_domains = self.get_running_app_domains().await;
+
+        // Remove static proxy.conf rules for app-managed domains so they
+        // don't shadow the dynamic blue-green routing.
+        let cfg = self.config_manager.get_config();
+        let original_len = cfg.rules.len();
+        let rules: Vec<_> = cfg
+            .rules
+            .iter()
+            .filter(|rule| {
+                let domain = match &rule.matcher {
+                    super::config::RuleMatcher::Domain(d) => Some(d.as_str()),
+                    super::config::RuleMatcher::DomainPath(d, _) => Some(d.as_str()),
+                    _ => None,
+                };
+                if let Some(d) = domain {
+                    if app_domains.contains_key(d) {
+                        tracing::info!("Removing stale static rule for app-managed domain: {}", d);
+                        return false;
+                    }
+                }
+                true
+            })
+            .cloned()
+            .collect();
+        if rules.len() < original_len {
+            if let Err(e) = self
+                .config_manager
+                .update_rules(rules, cfg.global_scripts.clone())
+            {
+                tracing::error!("Failed to clean up stale proxy.conf rules: {}", e);
+            }
+        }
 
         let acme_eligible: Vec<String> = app_domains
             .keys()

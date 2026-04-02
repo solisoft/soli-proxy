@@ -980,6 +980,16 @@ async fn handle_regular_request(
         config.rules.len()
     );
 
+    // When a static domain rule matches but AppManager manages this domain,
+    // prefer dynamic app routing so blue-green deployment works correctly.
+    let override_with_app = match (&route, &host, &app_manager) {
+        (Some(matched), Some(h), Some(manager)) if matched.from_domain_rule => {
+            manager.resolve_app_target(h).await.is_some()
+        }
+        _ => false,
+    };
+    let route = if override_with_app { None } else { route };
+
     match route {
         #[allow(unused_mut, unused_variables)]
         Some(matched_route) => {
