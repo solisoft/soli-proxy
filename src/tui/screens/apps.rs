@@ -42,7 +42,7 @@ pub fn render(f: &mut Frame, area: Rect, ctx: &TuiContext, view: &AppsView) {
     }
 
     let total_count = all_apps.len();
-    let apps: Vec<_> = if view.search_query.is_empty() {
+    let mut apps: Vec<_> = if view.search_query.is_empty() {
         all_apps
     } else {
         let search_lower = view.search_query.to_lowercase();
@@ -54,6 +54,12 @@ pub fn render(f: &mut Frame, area: Rect, ctx: &TuiContext, view: &AppsView) {
             })
             .collect()
     };
+    apps.sort_by(|a, b| {
+        a.config
+            .name
+            .to_lowercase()
+            .cmp(&b.config.name.to_lowercase())
+    });
 
     if apps.is_empty() && total_count > 0 {
         let block = Block::default()
