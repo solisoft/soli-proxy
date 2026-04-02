@@ -484,7 +484,6 @@ impl AppManager {
     }
 
     pub async fn resolve_app_target(&self, host: &str) -> Option<super::config::Target> {
-        self.load_app_state();
         let app_domains = self.get_running_app_domains().await;
         tracing::debug!(
             "resolve_app_target: host={}, available_domains={:?}",
@@ -1073,15 +1072,29 @@ impl AppManager {
         }
         tracing::info!("Health check passed for {} slot {}", app.config.name, slot);
 
-        // Switch traffic
+        // Switch traffic AND persist atomically
         {
             let mut apps = self.apps.lock().await;
             apps.get_mut(app_name).unwrap().current_slot = slot.to_string();
+
+            // Persist while still holding the lock to prevent load_app_state()
+            // from reverting the switch with stale disk data
+            let state_file = PathBuf::from("./run/app_state.json");
+            if let Some(parent) = state_file.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let mut map = serde_json::Map::new();
+            for (name, app) in apps.iter() {
+                map.insert(
+                    name.clone(),
+                    serde_json::Value::String(app.current_slot.clone()),
+                );
+            }
+            if let Ok(content) = serde_json::to_string_pretty(&serde_json::Value::Object(map)) {
+                let _ = std::fs::write(&state_file, content);
+            }
         }
         tracing::info!("Switched traffic from {} to {}", old_slot, slot);
-
-        // Persist state so TUI can see the change
-        self.save_app_state().await;
 
         self.sync_routes().await;
         let _ = self.config_manager.reload().await;
