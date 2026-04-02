@@ -1094,7 +1094,17 @@ impl AppManager {
                 let _ = std::fs::write(&state_file, content);
             }
         }
-        tracing::info!("Switched traffic from {} to {}", old_slot, slot);
+        // Verify the routing state after switch
+        {
+            let apps = self.apps.lock().await;
+            if let Some(a) = apps.get(app_name) {
+                tracing::info!(
+                    "Traffic switched {} → {}: domain={} current_slot={} blue(port={}, pid={:?}) green(port={}, pid={:?})",
+                    old_slot, slot, a.config.domain, a.current_slot,
+                    a.blue.port, a.blue.pid, a.green.port, a.green.pid
+                );
+            }
+        }
 
         self.sync_routes().await;
         let _ = self.config_manager.reload().await;
