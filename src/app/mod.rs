@@ -484,6 +484,7 @@ impl AppManager {
     }
 
     pub async fn resolve_app_target(&self, host: &str) -> Option<super::config::Target> {
+        self.load_app_state();
         let app_domains = self.get_running_app_domains().await;
         tracing::debug!(
             "resolve_app_target: host={}, available_domains={:?}",
