@@ -843,11 +843,13 @@ impl TuiApp {
                     f,
                     area,
                     &self.ctx,
-                    self.selected_index,
-                    self.scroll_offset,
-                    &self.search_query,
-                    &self.app_stats,
-                    &self.app_history,
+                    &screens::apps::AppsView {
+                        selected_index: self.selected_index,
+                        scroll_offset: self.scroll_offset,
+                        search_query: &self.search_query,
+                        app_stats: &self.app_stats,
+                        app_history: &self.app_history,
+                    },
                 )
             }
             Screen::Circuits => screens::circuits::render(f, area, &self.ctx, self.selected_index),

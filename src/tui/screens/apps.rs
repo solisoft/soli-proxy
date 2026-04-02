@@ -11,16 +11,15 @@ use ratatui::{
 use crate::tui::app::{AppHistory, AppStats};
 use crate::tui::TuiContext;
 
-pub fn render(
-    f: &mut Frame,
-    area: Rect,
-    ctx: &TuiContext,
-    selected_index: usize,
-    scroll_offset: usize,
-    search_query: &str,
-    app_stats: &HashMap<String, AppStats>,
-    app_history: &HashMap<String, AppHistory>,
-) {
+pub struct AppsView<'a> {
+    pub selected_index: usize,
+    pub scroll_offset: usize,
+    pub search_query: &'a str,
+    pub app_stats: &'a HashMap<String, AppStats>,
+    pub app_history: &'a HashMap<String, AppHistory>,
+}
+
+pub fn render(f: &mut Frame, area: Rect, ctx: &TuiContext, view: &AppsView) {
     let all_apps = if let Some(ref mgr) = ctx.app_manager {
         mgr.list_apps_sync()
     } else {
@@ -43,10 +42,10 @@ pub fn render(
     }
 
     let total_count = all_apps.len();
-    let apps: Vec<_> = if search_query.is_empty() {
+    let apps: Vec<_> = if view.search_query.is_empty() {
         all_apps
     } else {
-        let search_lower = search_query.to_lowercase();
+        let search_lower = view.search_query.to_lowercase();
         all_apps
             .into_iter()
             .filter(|app| {
@@ -58,7 +57,10 @@ pub fn render(
 
     if apps.is_empty() && total_count > 0 {
         let block = Block::default()
-            .title(format!(" Applications (no match for '{}') ", search_query))
+            .title(format!(
+                " Applications (no match for '{}') ",
+                view.search_query
+            ))
             .borders(Borders::ALL);
         f.render_widget(block, area);
         let inner = Rect::new(area.x + 1, area.y + 1, area.width - 2, area.height - 2);
@@ -66,7 +68,7 @@ pub fn render(
         return;
     }
 
-    let has_detail = selected_index < apps.len();
+    let has_detail = view.selected_index < apps.len();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(if has_detail {
@@ -80,15 +82,15 @@ pub fn render(
         f,
         chunks[0],
         &apps,
-        selected_index,
-        scroll_offset,
-        app_stats,
+        view.selected_index,
+        view.scroll_offset,
+        view.app_stats,
     );
 
     if has_detail {
-        let app = &apps[selected_index];
-        let stats = app_stats.get(&app.config.name);
-        let history = app_history.get(&app.config.name);
+        let app = &apps[view.selected_index];
+        let stats = view.app_stats.get(&app.config.name);
+        let history = view.app_history.get(&app.config.name);
         render_app_detail(f, chunks[1], app, stats, history);
     }
 }
