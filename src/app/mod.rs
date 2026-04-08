@@ -1356,10 +1356,46 @@ impl AppManager {
             if self.deployment_manager.is_deploying(&app_name) {
                 continue;
             }
-            let url = format!("http://localhost:{}{}", port, health_path);
-            match http_client.get(&url).send().await {
+            let url_health = format!("http://localhost:{}{}", port, health_path);
+            let url_root = format!("http://localhost:{}/", port);
+            let healthy = match http_client.get(&url_health).send().await {
                 Ok(resp) if resp.status().is_success() => {
                     tracing::debug!("Health check OK for {} on port {}", app_name, port);
+                    true
+                }
+                Ok(resp) if resp.status() == 404 => {
+                    tracing::debug!(
+                        "Health check returned 404 for {} on port {}, trying fallback /",
+                        app_name,
+                        port
+                    );
+                    match http_client.get(&url_root).send().await {
+                        Ok(resp) if resp.status().is_success() => {
+                            tracing::debug!(
+                                "Health check fallback OK for {} on port {}",
+                                app_name,
+                                port
+                            );
+                            true
+                        }
+                        Ok(_) => {
+                            tracing::debug!(
+                                "Health check fallback returned non-2xx for {} on port {}",
+                                app_name,
+                                port
+                            );
+                            false
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Health check fallback failed for {} on port {}: {}",
+                                app_name,
+                                port,
+                                e
+                            );
+                            false
+                        }
+                    }
                 }
                 Ok(_) => {
                     tracing::debug!(
@@ -1367,6 +1403,7 @@ impl AppManager {
                         app_name,
                         port
                     );
+                    false
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -1378,6 +1415,12 @@ impl AppManager {
                     if let Err(e) = self.failover(&app_name).await {
                         tracing::error!("Failed to failover {}: {}", app_name, e);
                     }
+                    continue;
+                }
+            };
+            if !healthy {
+                if let Err(e) = self.failover(&app_name).await {
+                    tracing::error!("Failed to failover {}: {}", app_name, e);
                 }
             }
         }
@@ -1729,5 +1772,32 @@ port_range_end = 9999
         assert_eq!(app_info.config.name, "emptyapp.example.com");
         assert!(app_info.config.start_script.is_none());
         assert_eq!(app_info.config.health_check, Some("/health".to_string()));
+    }
+
+    #[test]
+    fn test_health_check_default_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let app_path = temp_dir.path().join("myapp.example.com");
+        std::fs::create_dir_all(&app_path).unwrap();
+
+        let app_info = AppInfo::from_path(&app_path, false).unwrap();
+        assert_eq!(app_info.config.health_check, Some("/health".to_string()));
+    }
+
+    #[test]
+    fn test_health_check_custom_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let app_path = temp_dir.path().join("myapp.example.com");
+        std::fs::create_dir_all(&app_path).unwrap();
+
+        let app_infos = r#"
+name = "myapp.example.com"
+domain = "myapp.example.com"
+health_check = "/status"
+"#;
+        std::fs::write(app_path.join("app.infos"), app_infos).unwrap();
+
+        let app_info = AppInfo::from_path(&app_path, false).unwrap();
+        assert_eq!(app_info.config.health_check, Some("/status".to_string()));
     }
 }
