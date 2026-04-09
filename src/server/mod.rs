@@ -772,17 +772,56 @@ async fn handle_websocket_request(
     config: &crate::config::Config,
     metrics: &SharedMetrics,
     _start_time: std::time::Instant,
-    _app_manager: Option<Arc<AppManager>>,
+    app_manager: Option<Arc<AppManager>>,
 ) -> Result<Response<BoxBody>, hyper::Error> {
-    let target_result = find_target(&req, &config.rules);
+    let host = req
+        .uri()
+        .host()
+        .or(req.headers().get("host").and_then(|h| h.to_str().ok()))
+        .map(|h| h.split(':').next().unwrap_or(h).to_string());
 
-    if target_result.is_none() {
-        metrics.inc_errors();
-        let body = http_body_util::Full::new(Bytes::from("Misdirected Request")).boxed();
-        return Ok(Response::builder().status(421).body(body).unwrap());
-    }
+    let route = find_matching_rule(&req, &config.rules);
+    let override_with_app = match (&route, &host, &app_manager) {
+        (Some(matched), Some(h), Some(manager)) if matched.from_domain_rule => {
+            manager.resolve_app_target(h).await.is_some()
+        }
+        _ => false,
+    };
+    let target_result = if override_with_app {
+        None
+    } else {
+        find_target(&req, &config.rules)
+    };
 
-    let (target_url, _, _, _) = target_result.unwrap();
+    let target_url = match target_result {
+        Some((url, _, _, _)) => url,
+        None => {
+            if let (Some(ref manager), Some(ref h)) = (app_manager, host) {
+                if let Some(target) = manager.resolve_app_target(h).await {
+                    let path = req.uri().path();
+                    let query = req
+                        .uri()
+                        .query()
+                        .map(|q| format!("?{}", q))
+                        .unwrap_or_default();
+                    if target.url.as_str().ends_with('/') {
+                        format!("{}{}{}", target.url, &path[1..], query)
+                    } else {
+                        format!("{}{}{}", target.url, path, query)
+                    }
+                } else {
+                    metrics.inc_errors();
+                    let body =
+                        http_body_util::Full::new(Bytes::from("Misdirected Request")).boxed();
+                    return Ok(Response::builder().status(421).body(body).unwrap());
+                }
+            } else {
+                metrics.inc_errors();
+                let body = http_body_util::Full::new(Bytes::from("Misdirected Request")).boxed();
+                return Ok(Response::builder().status(421).body(body).unwrap());
+            }
+        }
+    };
 
     // Extract host:port from target URL (e.g. "http://127.0.0.1:3000/path" -> "127.0.0.1:3000")
     let backend_addr = match url::Url::parse(&target_url) {

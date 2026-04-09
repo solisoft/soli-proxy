@@ -868,6 +868,9 @@ impl TuiApp {
                         })
                         .count()
                 };
+                if self.selected_index >= filtered_count && filtered_count > 0 {
+                    self.selected_index = filtered_count - 1;
+                }
                 self.filtered_apps_count = filtered_count;
                 screens::apps::render(
                     f,
