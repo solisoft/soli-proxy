@@ -725,8 +725,8 @@ async fn handle_request(
 
 fn is_websocket_request(req: &Request<Incoming>) -> bool {
     if let Some(upgrade) = req.headers().get("upgrade") {
-        if upgrade == "websocket" {
-            return true;
+        if let Ok(s) = upgrade.to_str() {
+            return s.eq_ignore_ascii_case("websocket");
         }
     }
     false
@@ -844,29 +844,30 @@ async fn handle_websocket_request(
         .map(|q| format!("?{}", q))
         .unwrap_or_default();
 
-    let ws_key = req
-        .headers()
-        .get("sec-websocket-key")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    let ws_version = req
-        .headers()
-        .get("sec-websocket-version")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("13")
-        .to_string();
-    let ws_protocol = req
-        .headers()
-        .get("sec-websocket-protocol")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
     let host_header = req
         .headers()
         .get("host")
         .and_then(|v| v.to_str().ok())
         .unwrap_or(&backend_addr)
         .to_string();
+
+    // Collect all request headers to forward to the backend.
+    // This preserves Cookie, Origin, Sec-WebSocket-Extensions, and any
+    // custom headers the client sent — backends may need them for session
+    // management, CORS validation, or compression negotiation.
+    let mut extra_headers = String::new();
+    for (name, value) in req.headers() {
+        let name_str = name.as_str();
+        // Skip hop-by-hop and headers we set explicitly in the handshake
+        match name_str {
+            "host" | "upgrade" | "connection" | "sec-websocket-key"
+            | "sec-websocket-version" | "sec-websocket-protocol" => continue,
+            _ => {}
+        }
+        if let Ok(v) = value.to_str() {
+            extra_headers.push_str(&format!("{}: {}\r\n", name_str, v));
+        }
+    }
 
     tracing::info!(
         "WebSocket upgrade request to {}{}{}",
@@ -886,7 +887,25 @@ async fn handle_websocket_request(
         }
     };
 
-    // Send the upgrade request to the backend
+    // Build the upgrade request forwarding all relevant headers
+    let ws_key = req
+        .headers()
+        .get("sec-websocket-key")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let ws_version = req
+        .headers()
+        .get("sec-websocket-version")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("13")
+        .to_string();
+    let ws_protocol = req
+        .headers()
+        .get("sec-websocket-protocol")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
     let mut handshake = format!(
         "GET {}{} HTTP/1.1\r\n\
          Host: {}\r\n\
@@ -899,6 +918,7 @@ async fn handle_websocket_request(
     if let Some(proto) = &ws_protocol {
         handshake.push_str(&format!("Sec-WebSocket-Protocol: {}\r\n", proto));
     }
+    handshake.push_str(&extra_headers);
     handshake.push_str("\r\n");
 
     let (mut backend_read, mut backend_write) = backend.into_split();
@@ -956,6 +976,22 @@ async fn handle_websocket_request(
         }
     }
 
+    // Check for trailing data after the HTTP response headers.
+    // The backend may send WebSocket frames immediately after the 101
+    // response; if they arrive in the same TCP segment as the response
+    // headers they would be in our buffer and must be forwarded.
+    let trailing_data = response_buf[..n]
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .and_then(|pos| {
+            let body_start = pos + 4;
+            if body_start < n {
+                Some(response_buf[body_start..n].to_vec())
+            } else {
+                None
+            }
+        });
+
     // Use hyper::upgrade::on to get the client-side stream after we return 101
     let client_upgrade = hyper::upgrade::on(req);
 
@@ -969,6 +1005,17 @@ async fn handle_websocket_request(
                 let mut client_stream = TokioIo::new(upgraded);
                 let (mut br, mut bw) = tokio::io::split(backend_stream);
                 let (mut cr, mut cw) = tokio::io::split(&mut client_stream);
+
+                // Forward any trailing WebSocket data captured in the 101 read
+                if let Some(data) = trailing_data {
+                    if tokio::io::AsyncWriteExt::write_all(&mut cw, &data)
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+
                 let _ = tokio::join!(
                     tokio::io::copy(&mut br, &mut cw),
                     tokio::io::copy(&mut cr, &mut bw),
@@ -979,6 +1026,8 @@ async fn handle_websocket_request(
             }
         }
     });
+
+    metrics.dec_in_flight();
 
     // Return 101 Switching Protocols to the client
     let mut resp = Response::builder()
