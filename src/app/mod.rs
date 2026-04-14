@@ -46,8 +46,8 @@ impl Default for AppConfig {
             health_check: Some("/health".to_string()),
             graceful_timeout: 30,
             drain_delay: 5,
-            port_range_start: 9000,
-            port_range_end: 9999,
+            port_range_start: 20000,
+            port_range_end: 30000,
             workers: 1,
             user: None,
             group: None,
@@ -1628,8 +1628,8 @@ start_script = "./start.sh"
 stop_script = "./stop.sh"
 health_check = "/health"
 graceful_timeout = 30
-port_range_start = 9000
-port_range_end = 9999
+port_range_start = 20000
+port_range_end = 30000
 "#;
         std::fs::write(app_path.join("app.infos"), app_infos).unwrap();
 
@@ -1721,8 +1721,8 @@ port_range_end = 9999
 name = "myapp.example.com"
 domain = "custom.example.com"
 graceful_timeout = 30
-port_range_start = 9000
-port_range_end = 9999
+port_range_start = 20000
+port_range_end = 30000
 "#;
         std::fs::write(app_path.join("app.infos"), app_infos).unwrap();
 
@@ -1749,8 +1749,8 @@ domain = "myapp.example.com"
 start_script = "./custom-start.sh"
 health_check = "/health"
 graceful_timeout = 30
-port_range_start = 9000
-port_range_end = 9999
+port_range_start = 20000
+port_range_end = 30000
 "#;
         std::fs::write(app_path.join("app.infos"), app_infos).unwrap();
 
