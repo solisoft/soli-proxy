@@ -368,8 +368,12 @@ async fn proxy_websocket_to_admin_app(
     for (name, value) in req.headers() {
         let name_str = name.as_str();
         match name_str {
-            "host" | "upgrade" | "connection" | "sec-websocket-key"
-            | "sec-websocket-version" | "sec-websocket-protocol" => continue,
+            "host"
+            | "upgrade"
+            | "connection"
+            | "sec-websocket-key"
+            | "sec-websocket-version"
+            | "sec-websocket-protocol" => continue,
             _ => {}
         }
         if let Ok(v) = value.to_str() {

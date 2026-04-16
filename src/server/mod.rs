@@ -860,8 +860,12 @@ async fn handle_websocket_request(
         let name_str = name.as_str();
         // Skip hop-by-hop and headers we set explicitly in the handshake
         match name_str {
-            "host" | "upgrade" | "connection" | "sec-websocket-key"
-            | "sec-websocket-version" | "sec-websocket-protocol" => continue,
+            "host"
+            | "upgrade"
+            | "connection"
+            | "sec-websocket-key"
+            | "sec-websocket-version"
+            | "sec-websocket-protocol" => continue,
             _ => {}
         }
         if let Ok(v) = value.to_str() {

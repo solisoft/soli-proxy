@@ -1334,7 +1334,7 @@ mod admin_tests {
 
 #[test]
 fn test_cli_deploy_command_args() {
-    let args = vec!["soli-proxy", "deploy", "myapp"];
+    let args = ["soli-proxy", "deploy", "myapp"];
     let cli = clap::Command::new("soli-proxy")
         .subcommand(
             clap::Command::new("deploy")
@@ -1359,7 +1359,7 @@ fn test_cli_deploy_command_args() {
 
 #[test]
 fn test_cli_restart_command_args() {
-    let args = vec!["soli-proxy", "restart", "-c", "/path/to/conf", "myapp"];
+    let args = ["soli-proxy", "restart", "-c", "/path/to/conf", "myapp"];
     let cli = clap::Command::new("soli-proxy")
         .subcommand(
             clap::Command::new("restart")
@@ -1384,7 +1384,7 @@ fn test_cli_restart_command_args() {
 
 #[test]
 fn test_cli_stop_command_args() {
-    let args = vec!["soli-proxy", "stop", "myapp"];
+    let args = ["soli-proxy", "stop", "myapp"];
     let cli = clap::Command::new("soli-proxy")
         .subcommand(
             clap::Command::new("stop")
@@ -1408,7 +1408,7 @@ fn test_cli_stop_command_args() {
 
 #[test]
 fn test_cli_logs_command_args() {
-    let args = vec!["soli-proxy", "logs", "-c", "/custom/conf", "myapp"];
+    let args = ["soli-proxy", "logs", "-c", "/custom/conf", "myapp"];
     let cli = clap::Command::new("soli-proxy")
         .subcommand(
             clap::Command::new("logs")
@@ -1433,7 +1433,7 @@ fn test_cli_logs_command_args() {
 
 #[test]
 fn test_cli_update_command_with_reinstall() {
-    let args = vec!["soli-proxy", "update", "--reinstall"];
+    let args = ["soli-proxy", "update", "--reinstall"];
     let cli = clap::Command::new("soli-proxy")
         .subcommand(
             clap::Command::new("update").arg(
