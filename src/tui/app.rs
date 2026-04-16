@@ -734,42 +734,30 @@ impl TuiApp {
     fn handle_enter(&mut self) {
         if let Screen::Apps = self.current_screen {
             if let Some(ref mgr) = self.ctx.app_manager {
-                let apps = mgr.list_apps_sync();
-                if let Some(idx) = self.resolve_app_index() {
-                    if idx < apps.len() {
-                        let app_name = apps[idx].config.name.clone();
-                        self.modal = Modal::AppActionMenu(app_name, 0);
-                    }
+                let all_apps = mgr.list_apps_sync();
+                let mut apps: Vec<_> = if self.search_query.is_empty() {
+                    all_apps
+                } else {
+                    let search_lower = self.search_query.to_lowercase();
+                    all_apps
+                        .into_iter()
+                        .filter(|app| {
+                            app.config.name.to_lowercase().contains(&search_lower)
+                                || app.config.domain.to_lowercase().contains(&search_lower)
+                        })
+                        .collect()
+                };
+                apps.sort_by(|a, b| {
+                    a.config
+                        .name
+                        .to_lowercase()
+                        .cmp(&b.config.name.to_lowercase())
+                });
+                if self.selected_index < apps.len() {
+                    let app_name = apps[self.selected_index].config.name.clone();
+                    self.modal = Modal::AppActionMenu(app_name, 0);
                 }
             }
-        }
-    }
-
-    fn resolve_app_index(&self) -> Option<usize> {
-        let all_apps = if let Some(ref mgr) = self.ctx.app_manager {
-            mgr.list_apps_sync()
-        } else {
-            return None;
-        };
-        if self.search_query.is_empty() {
-            if self.selected_index < all_apps.len() {
-                Some(self.selected_index)
-            } else {
-                None
-            }
-        } else {
-            let search_lower = self.search_query.to_lowercase();
-            let filtered: Vec<usize> = all_apps
-                .iter()
-                .enumerate()
-                .filter(|(idx, app)| {
-                    app.config.name.to_lowercase().contains(&search_lower)
-                        || app.config.domain.to_lowercase().contains(&search_lower)
-                        || idx.to_string() == search_lower
-                })
-                .map(|(idx, _)| idx)
-                .collect();
-            filtered.get(self.selected_index).copied()
         }
     }
 
