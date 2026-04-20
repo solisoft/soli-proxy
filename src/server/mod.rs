@@ -1094,10 +1094,16 @@ async fn handle_regular_request(
                 return Ok((create_auth_required_response(), String::new(), vec![]));
             }
             let route_scripts = matched_route.route_scripts.clone();
+            let query = req.uri().query().map(|q| q.to_string());
 
             // Select an available target via circuit breaker
-            let target_selection =
-                select_target(&matched_route, &path, circuit_breaker, &load_balancer);
+            let target_selection = select_target(
+                &matched_route,
+                &path,
+                query.as_deref(),
+                circuit_breaker,
+                &load_balancer,
+            );
             let (mut target_url, base_url) = match target_selection {
                 Some((url, base)) => (url, base),
                 None => {
@@ -1440,10 +1446,15 @@ async fn handle_regular_request(
                 if let Some(target) = manager.resolve_app_target(h).await {
                     let base_url = target.url.to_string();
                     let path = req.uri().path();
+                    let query = req
+                        .uri()
+                        .query()
+                        .map(|q| format!("?{}", q))
+                        .unwrap_or_default();
                     let target_url = if target.url.as_str().ends_with('/') {
-                        format!("{}{}", target.url, &path[1..])
+                        format!("{}{}{}", target.url, &path[1..], query)
                     } else {
-                        format!("{}{}", target.url, path)
+                        format!("{}{}{}", target.url, path, query)
                     };
                     let forwarded_host = h.clone();
 
@@ -1567,15 +1578,20 @@ impl<'a> MatchedRoute<'a> {
 fn resolve_target_url(
     target: &crate::config::Target,
     path: &str,
+    query: Option<&str>,
     resolution: &UrlResolution,
 ) -> String {
     let target_str = target.url.as_str();
+    let qs = match query {
+        Some(q) if !q.is_empty() => format!("?{}", q),
+        _ => String::new(),
+    };
     match resolution {
         UrlResolution::AppendPath => {
             if target_str.ends_with('/') {
-                format!("{}{}", target_str, &path[1..])
+                format!("{}{}{}", target_str, &path[1..], qs)
             } else {
-                format!("{}{}", target_str, path)
+                format!("{}{}{}", target_str, path, qs)
             }
         }
         UrlResolution::StripPrefix(prefix) => {
@@ -1584,9 +1600,15 @@ fn resolve_target_url(
             } else {
                 ""
             };
-            format!("{}{}", target_str, suffix)
+            format!("{}{}{}", target_str, suffix, qs)
         }
-        UrlResolution::Identity => target_str.to_owned(),
+        UrlResolution::Identity => {
+            if qs.is_empty() {
+                target_str.to_owned()
+            } else {
+                format!("{}{}", target_str, qs)
+            }
+        }
     }
 }
 
@@ -1716,6 +1738,7 @@ fn find_matching_rule<'a>(
 fn select_target(
     route: &MatchedRoute<'_>,
     path: &str,
+    query: Option<&str>,
     circuit_breaker: &crate::circuit_breaker::CircuitBreaker,
     load_balancer: &LoadBalancerState,
 ) -> Option<(String, String)> {
@@ -1730,7 +1753,7 @@ fn select_target(
             for target in targets {
                 let base_url = target.url.as_str().to_owned();
                 if circuit_breaker.is_available(&base_url) {
-                    let resolved = resolve_target_url(target, path, &route.resolution);
+                    let resolved = resolve_target_url(target, path, query, &route.resolution);
                     return Some((resolved, base_url));
                 }
             }
@@ -1750,7 +1773,7 @@ fn select_target(
                 let base_url = target.url.as_str().to_owned();
                 if circuit_breaker.is_available(&base_url) {
                     load_balancer.counters[0].fetch_add(1, Ordering::Relaxed);
-                    let resolved = resolve_target_url(target, path, &route.resolution);
+                    let resolved = resolve_target_url(target, path, query, &route.resolution);
                     return Some((resolved, base_url));
                 }
             }
@@ -1760,7 +1783,13 @@ fn select_target(
             // Weighted: use weights to determine distribution, skip unhealthy
             let total_weight: u32 = targets.iter().map(|t| t.weight as u32).sum();
             if total_weight == 0 {
-                return select_target(route, path, circuit_breaker, &LoadBalancerState::new(1));
+                return select_target(
+                    route,
+                    path,
+                    query,
+                    circuit_breaker,
+                    &LoadBalancerState::new(1),
+                );
             }
 
             let start_idx =
@@ -1772,7 +1801,7 @@ fn select_target(
                 let base_url = target.url.as_str().to_owned();
                 if cumulative > start_idx && circuit_breaker.is_available(&base_url) {
                     load_balancer.counters[0].fetch_add(1, Ordering::Relaxed);
-                    let resolved = resolve_target_url(target, path, &route.resolution);
+                    let resolved = resolve_target_url(target, path, query, &route.resolution);
                     return Some((resolved, base_url));
                 }
             }
@@ -1781,7 +1810,7 @@ fn select_target(
             for target in targets {
                 let base_url = target.url.as_str().to_owned();
                 if circuit_breaker.is_available(&base_url) {
-                    let resolved = resolve_target_url(target, path, &route.resolution);
+                    let resolved = resolve_target_url(target, path, query, &route.resolution);
                     return Some((resolved, base_url));
                 }
             }
@@ -1797,8 +1826,9 @@ fn find_target(
 ) -> Option<(String, bool, Option<String>, Vec<String>)> {
     let route = find_matching_rule(req, rules)?;
     let path = req.uri().path();
+    let query = req.uri().query();
     let target = route.targets.first()?;
-    let resolved = resolve_target_url(target, path, &route.resolution);
+    let resolved = resolve_target_url(target, path, query, &route.resolution);
     let matched_prefix = route.matched_prefix(false);
     Some((
         resolved,

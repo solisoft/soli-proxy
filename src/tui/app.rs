@@ -68,6 +68,8 @@ pub struct TuiApp {
     pub app_history: HashMap<String, AppHistory>,
     pending_action: Option<tokio::task::JoinHandle<Result<String, String>>>,
     filtered_apps_count: usize,
+    log_viewer_page: usize,
+    log_viewer_max_offset: usize,
 }
 
 impl TuiApp {
@@ -86,6 +88,8 @@ impl TuiApp {
             app_history: HashMap::new(),
             pending_action: None,
             filtered_apps_count: 0,
+            log_viewer_page: 1,
+            log_viewer_max_offset: 0,
         };
         app.collect_stats();
         app
@@ -223,7 +227,11 @@ impl TuiApp {
                 self.render_app_action_progress(f, app_name, action)
             }
             Modal::AppActionResult(msg) => self.render_app_action_result(f, msg),
-            Modal::LogViewer(app_name, slot) => self.render_log_viewer(f, app_name, slot),
+            Modal::LogViewer(app_name, slot) => {
+                let app_name = app_name.clone();
+                let slot = slot.clone();
+                self.render_log_viewer(f, &app_name, &slot);
+            }
             Modal::None => {}
         }
     }
@@ -626,21 +634,29 @@ impl TuiApp {
 
     fn handle_log_viewer_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
         use crossterm::event::KeyCode;
+        let page = self.log_viewer_page.max(1);
+        let max = self.log_viewer_max_offset;
         match key.code {
             KeyCode::Esc => {
                 self.modal = Modal::None;
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                self.scroll_offset += 1;
+                self.scroll_offset = (self.scroll_offset + 1).min(max);
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.scroll_offset = self.scroll_offset.saturating_sub(1);
             }
-            KeyCode::Char('g') => {
+            KeyCode::PageDown | KeyCode::Char(' ') => {
+                self.scroll_offset = (self.scroll_offset + page).min(max);
+            }
+            KeyCode::PageUp => {
+                self.scroll_offset = self.scroll_offset.saturating_sub(page);
+            }
+            KeyCode::Char('g') | KeyCode::Home => {
                 self.scroll_offset = 0;
             }
-            KeyCode::Char('G') => {
-                self.scroll_to_bottom();
+            KeyCode::Char('G') | KeyCode::End => {
+                self.scroll_offset = max;
             }
             _ => {}
         }
@@ -1290,12 +1306,12 @@ impl TuiApp {
         f.render_widget(text, modal_area);
     }
 
-    fn render_log_viewer(&self, f: &mut Frame, app_name: &str, slot: &str) {
+    fn render_log_viewer(&mut self, f: &mut Frame, app_name: &str, slot: &str) {
         let log_path = format!("./run/logs/{}/{}.log", app_name, slot);
         let log_content =
             std::fs::read_to_string(&log_path).unwrap_or_else(|_| "No log file found.".to_string());
 
-        let lines: Vec<&str> = log_content.lines().collect();
+        let lines: Vec<&str> = log_content.lines().rev().collect();
         let total_lines = lines.len();
 
         let area = f.area();
@@ -1308,18 +1324,28 @@ impl TuiApp {
         f.render_widget(Clear, modal_area);
 
         let visible_height = h.saturating_sub(2) as usize;
-        let start = self.scroll_offset.min(total_lines.saturating_sub(1));
+        let max_offset = total_lines.saturating_sub(visible_height);
+        self.log_viewer_page = visible_height.max(1);
+        self.log_viewer_max_offset = max_offset;
+        if self.scroll_offset > max_offset {
+            self.scroll_offset = max_offset;
+        }
+
+        let start = self.scroll_offset;
         let end = (start + visible_height).min(total_lines);
         let visible_lines: Vec<String> = lines[start..end].iter().map(|s| s.to_string()).collect();
         let display_text = visible_lines.join("\n");
 
+        let shown_first = if total_lines == 0 {
+            0
+        } else {
+            total_lines - start
+        };
+        let shown_last = total_lines.saturating_sub(end) + 1;
         let block = Block::default()
             .title(format!(
-                " Logs: {} ({}) [{}/{}] [j/k:scroll, Esc:close] ",
-                app_name,
-                slot,
-                start + 1,
-                total_lines
+                " Logs: {} ({}) [newest→oldest {}..{}/{}] [j/k PgUp/PgDn g/G, Esc:close] ",
+                app_name, slot, shown_first, shown_last, total_lines
             ))
             .borders(Borders::ALL)
             .style(Style::default().fg(Color::Cyan));
