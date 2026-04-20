@@ -317,28 +317,21 @@ impl TuiApp {
             KeyCode::Enter => {
                 self.handle_enter();
             }
-            KeyCode::Char('a') => {
-                if self.current_screen == Screen::Routes {
-                    self.route_form = Some(RouteForm::new_empty());
-                    self.modal = Modal::RouteForm;
+            KeyCode::Char('a') if self.current_screen == Screen::Routes => {
+                self.route_form = Some(RouteForm::new_empty());
+                self.modal = Modal::RouteForm;
+            }
+            KeyCode::Char('d') if self.current_screen == Screen::Routes => {
+                if let Some(rule_idx) = self.resolve_route_index() {
+                    self.modal = Modal::DeleteConfirm(rule_idx);
                 }
             }
-            KeyCode::Char('d') => {
-                if self.current_screen == Screen::Routes {
-                    if let Some(rule_idx) = self.resolve_route_index() {
-                        self.modal = Modal::DeleteConfirm(rule_idx);
-                    }
-                }
-            }
-            KeyCode::Char('e') => {
-                if self.current_screen == Screen::Routes {
-                    if let Some(rule_idx) = self.resolve_route_index() {
-                        let rules = &self.ctx.config_manager.get_config().rules;
-                        if rule_idx < rules.len() {
-                            self.route_form =
-                                Some(RouteForm::from_rule(&rules[rule_idx], rule_idx));
-                            self.modal = Modal::RouteForm;
-                        }
+            KeyCode::Char('e') if self.current_screen == Screen::Routes => {
+                if let Some(rule_idx) = self.resolve_route_index() {
+                    let rules = &self.ctx.config_manager.get_config().rules;
+                    if rule_idx < rules.len() {
+                        self.route_form = Some(RouteForm::from_rule(&rules[rule_idx], rule_idx));
+                        self.modal = Modal::RouteForm;
                     }
                 }
             }
@@ -372,11 +365,9 @@ impl TuiApp {
                         form.auth_confirm_add();
                     }
                 }
-                KeyCode::BackTab => {
-                    if form.auth_mode == super::route_form::AuthMode::AddPassword {
-                        form.auth_mode = super::route_form::AuthMode::AddUsername;
-                        form.cursor_pos = form.auth_new_username.len();
-                    }
+                KeyCode::BackTab if form.auth_mode == super::route_form::AuthMode::AddPassword => {
+                    form.auth_mode = super::route_form::AuthMode::AddUsername;
+                    form.cursor_pos = form.auth_new_username.len();
                 }
                 KeyCode::Char(c) => form.insert_char(c),
                 KeyCode::Backspace => form.delete_char(),
@@ -427,15 +418,11 @@ impl TuiApp {
                     form.move_cursor_right();
                 }
             }
-            KeyCode::Char(c) => {
-                if !form.is_select_field() {
-                    form.insert_char(c);
-                }
+            KeyCode::Char(c) if !form.is_select_field() => {
+                form.insert_char(c);
             }
-            KeyCode::Backspace => {
-                if !form.is_select_field() {
-                    form.delete_char();
-                }
+            KeyCode::Backspace if !form.is_select_field() => {
+                form.delete_char();
             }
             KeyCode::Enter => self.save_route_form(),
             _ => {}

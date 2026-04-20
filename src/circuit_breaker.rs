@@ -230,8 +230,7 @@ impl CircuitBreaker {
                     }
                 }
             }
-            STATE_HALF_OPEN => {
-                // Probe failed, go back to Open
+            STATE_HALF_OPEN
                 if state
                     .state
                     .compare_exchange(
@@ -240,17 +239,17 @@ impl CircuitBreaker {
                         Ordering::AcqRel,
                         Ordering::Acquire,
                     )
-                    .is_ok()
-                {
-                    state
-                        .opened_at_nanos
-                        .store(self.now_nanos(), Ordering::Release);
-                    state.consecutive_successes.store(0, Ordering::Release);
-                    tracing::warn!(
-                        "Circuit breaker re-OPENED for {} (probe failed)",
-                        target_url
-                    );
-                }
+                    .is_ok() =>
+            {
+                // Probe failed, go back to Open
+                state
+                    .opened_at_nanos
+                    .store(self.now_nanos(), Ordering::Release);
+                state.consecutive_successes.store(0, Ordering::Release);
+                tracing::warn!(
+                    "Circuit breaker re-OPENED for {} (probe failed)",
+                    target_url
+                );
             }
             _ => {}
         }

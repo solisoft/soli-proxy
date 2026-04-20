@@ -1627,35 +1627,34 @@ fn find_matching_rule<'a>(
 
     for rule in rules {
         match &rule.matcher {
-            crate::config::RuleMatcher::Domain(domain) => {
-                if domain == host && !rule.targets.is_empty() {
+            crate::config::RuleMatcher::Domain(domain)
+                if domain == host && !rule.targets.is_empty() =>
+            {
+                return Some(MatchedRoute {
+                    targets: &rule.targets,
+                    from_domain_rule: true,
+                    resolution: UrlResolution::AppendPath,
+                    route_scripts: rule.scripts.clone(),
+                    auth: rule.auth.clone(),
+                    load_balancing: &rule.load_balancing,
+                    host: domain.clone(),
+                });
+            }
+            crate::config::RuleMatcher::DomainPath(domain, path_prefix)
+                if domain == host && !rule.targets.is_empty() =>
+            {
+                let matches = path.starts_with(path_prefix)
+                    || (path_prefix.ends_with('/') && path == path_prefix.trim_end_matches('/'));
+                if matches {
                     return Some(MatchedRoute {
                         targets: &rule.targets,
                         from_domain_rule: true,
-                        resolution: UrlResolution::AppendPath,
+                        resolution: UrlResolution::StripPrefix(path_prefix.clone()),
                         route_scripts: rule.scripts.clone(),
                         auth: rule.auth.clone(),
                         load_balancing: &rule.load_balancing,
                         host: domain.clone(),
                     });
-                }
-            }
-            crate::config::RuleMatcher::DomainPath(domain, path_prefix) => {
-                if domain == host && !rule.targets.is_empty() {
-                    let matches = path.starts_with(path_prefix)
-                        || (path_prefix.ends_with('/')
-                            && path == path_prefix.trim_end_matches('/'));
-                    if matches {
-                        return Some(MatchedRoute {
-                            targets: &rule.targets,
-                            from_domain_rule: true,
-                            resolution: UrlResolution::StripPrefix(path_prefix.clone()),
-                            route_scripts: rule.scripts.clone(),
-                            auth: rule.auth.clone(),
-                            load_balancing: &rule.load_balancing,
-                            host: domain.clone(),
-                        });
-                    }
                 }
             }
             _ => {}
@@ -1665,12 +1664,28 @@ fn find_matching_rule<'a>(
     // Check specific rules (Exact, Prefix, Regex) before Default
     for rule in rules {
         match &rule.matcher {
-            crate::config::RuleMatcher::Exact(exact) => {
-                if path == exact && !rule.targets.is_empty() {
+            crate::config::RuleMatcher::Exact(exact)
+                if path == exact && !rule.targets.is_empty() =>
+            {
+                return Some(MatchedRoute {
+                    targets: &rule.targets,
+                    from_domain_rule: false,
+                    resolution: UrlResolution::Identity,
+                    route_scripts: rule.scripts.clone(),
+                    auth: rule.auth.clone(),
+                    load_balancing: &rule.load_balancing,
+                    host: host.to_string(),
+                });
+            }
+            crate::config::RuleMatcher::Prefix(prefix) if !rule.targets.is_empty() => {
+                // Match /db against prefix /db/ (path without trailing slash)
+                let matches = path.starts_with(prefix)
+                    || (prefix.ends_with('/') && path == prefix.trim_end_matches('/'));
+                if matches {
                     return Some(MatchedRoute {
                         targets: &rule.targets,
                         from_domain_rule: false,
-                        resolution: UrlResolution::Identity,
+                        resolution: UrlResolution::StripPrefix(prefix.clone()),
                         route_scripts: rule.scripts.clone(),
                         auth: rule.auth.clone(),
                         load_balancing: &rule.load_balancing,
@@ -1678,36 +1693,18 @@ fn find_matching_rule<'a>(
                     });
                 }
             }
-            crate::config::RuleMatcher::Prefix(prefix) => {
-                if !rule.targets.is_empty() {
-                    // Match /db against prefix /db/ (path without trailing slash)
-                    let matches = path.starts_with(prefix)
-                        || (prefix.ends_with('/') && path == prefix.trim_end_matches('/'));
-                    if matches {
-                        return Some(MatchedRoute {
-                            targets: &rule.targets,
-                            from_domain_rule: false,
-                            resolution: UrlResolution::StripPrefix(prefix.clone()),
-                            route_scripts: rule.scripts.clone(),
-                            auth: rule.auth.clone(),
-                            load_balancing: &rule.load_balancing,
-                            host: host.to_string(),
-                        });
-                    }
-                }
-            }
-            crate::config::RuleMatcher::Regex(ref rm) => {
-                if rm.is_match(path) && !rule.targets.is_empty() {
-                    return Some(MatchedRoute {
-                        targets: &rule.targets,
-                        from_domain_rule: false,
-                        resolution: UrlResolution::Identity,
-                        route_scripts: rule.scripts.clone(),
-                        auth: rule.auth.clone(),
-                        load_balancing: &rule.load_balancing,
-                        host: host.to_string(),
-                    });
-                }
+            crate::config::RuleMatcher::Regex(ref rm)
+                if rm.is_match(path) && !rule.targets.is_empty() =>
+            {
+                return Some(MatchedRoute {
+                    targets: &rule.targets,
+                    from_domain_rule: false,
+                    resolution: UrlResolution::Identity,
+                    route_scripts: rule.scripts.clone(),
+                    auth: rule.auth.clone(),
+                    load_balancing: &rule.load_balancing,
+                    host: host.to_string(),
+                });
             }
             _ => {}
         }
