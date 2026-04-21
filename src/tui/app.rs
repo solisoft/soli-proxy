@@ -70,6 +70,7 @@ pub struct TuiApp {
     filtered_apps_count: usize,
     log_viewer_page: usize,
     log_viewer_max_offset: usize,
+    log_auto_follow: bool,
 }
 
 impl TuiApp {
@@ -90,6 +91,7 @@ impl TuiApp {
             filtered_apps_count: 0,
             log_viewer_page: 1,
             log_viewer_max_offset: 0,
+            log_auto_follow: true,
         };
         app.collect_stats();
         app
@@ -530,6 +532,7 @@ impl TuiApp {
                 let apps = mgr.list_apps_sync();
                 if let Some(app) = apps.iter().find(|a| a.config.name == app_name) {
                     self.scroll_offset = 0;
+                    self.log_auto_follow = true;
                     self.modal =
                         Modal::LogViewer(app.config.name.clone(), app.current_slot.clone());
                     return;
@@ -625,25 +628,32 @@ impl TuiApp {
         let max = self.log_viewer_max_offset;
         match key.code {
             KeyCode::Esc => {
+                self.log_auto_follow = true;
                 self.modal = Modal::None;
             }
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.scroll_offset = (self.scroll_offset + 1).min(max);
+            KeyCode::Char('k') | KeyCode::Up | KeyCode::PageUp => {
+                self.log_auto_follow = false;
+                if key.code == KeyCode::PageUp {
+                    self.scroll_offset = self.scroll_offset.saturating_sub(page);
+                } else {
+                    self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                }
             }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.scroll_offset = self.scroll_offset.saturating_sub(1);
-            }
-            KeyCode::PageDown | KeyCode::Char(' ') => {
-                self.scroll_offset = (self.scroll_offset + page).min(max);
-            }
-            KeyCode::PageUp => {
-                self.scroll_offset = self.scroll_offset.saturating_sub(page);
+            KeyCode::Char('j') | KeyCode::Down | KeyCode::PageDown | KeyCode::Char(' ') => {
+                self.log_auto_follow = false;
+                if key.code == KeyCode::PageDown || key.code == KeyCode::Char(' ') {
+                    self.scroll_offset = (self.scroll_offset + page).min(max);
+                } else {
+                    self.scroll_offset = (self.scroll_offset + 1).min(max);
+                }
             }
             KeyCode::Char('g') | KeyCode::Home => {
-                self.scroll_offset = 0;
+                self.scroll_offset = max;
+                self.log_auto_follow = false;
             }
             KeyCode::Char('G') | KeyCode::End => {
-                self.scroll_offset = max;
+                self.scroll_offset = 0;
+                self.log_auto_follow = true;
             }
             _ => {}
         }
@@ -1298,7 +1308,7 @@ impl TuiApp {
         let log_content =
             std::fs::read_to_string(&log_path).unwrap_or_else(|_| "No log file found.".to_string());
 
-        let lines: Vec<&str> = log_content.lines().rev().collect();
+        let lines: Vec<&str> = log_content.lines().collect();
         let total_lines = lines.len();
 
         let area = f.area();
@@ -1314,25 +1324,33 @@ impl TuiApp {
         let max_offset = total_lines.saturating_sub(visible_height);
         self.log_viewer_page = visible_height.max(1);
         self.log_viewer_max_offset = max_offset;
-        if self.scroll_offset > max_offset {
+
+        if self.log_auto_follow {
+            self.scroll_offset = 0;
+        } else if self.scroll_offset > max_offset {
             self.scroll_offset = max_offset;
         }
 
-        let start = self.scroll_offset;
-        let end = (start + visible_height).min(total_lines);
+        let start = total_lines.saturating_sub(self.scroll_offset + visible_height);
+        let end = total_lines.saturating_sub(self.scroll_offset);
+        let start = start.min(total_lines);
+        let end = end.min(total_lines);
         let visible_lines: Vec<String> = lines[start..end].iter().map(|s| s.to_string()).collect();
         let display_text = visible_lines.join("\n");
 
-        let shown_first = if total_lines == 0 {
-            0
+        let follow_label = if self.log_auto_follow {
+            "[FOLLOW]".to_string()
         } else {
-            total_lines - start
+            "[PAUSED - G to resume]".to_string()
         };
-        let shown_last = total_lines.saturating_sub(end) + 1;
         let block = Block::default()
             .title(format!(
-                " Logs: {} ({}) [newest→oldest {}..{}/{}] [j/k PgUp/PgDn g/G, Esc:close] ",
-                app_name, slot, shown_first, shown_last, total_lines
+                " Logs: {} ({}) {} {}/{} [j/k PgUp/PgDn g/G, Esc:close] ",
+                app_name,
+                slot,
+                follow_label,
+                start + 1,
+                total_lines
             ))
             .borders(Borders::ALL)
             .style(Style::default().fg(Color::Cyan));
