@@ -654,12 +654,20 @@ impl AppManager {
             apps.retain(|name, _| seen_names.contains(name));
         }
 
-        // Auto-start discovered apps in parallel (locks are per-app)
-        // sync_routes is called after deploys complete so that .test domains
-        // are available for TLS cert generation in main.rs
+        // Auto-start discovered apps in parallel (locks are per-app) and
+        // return WITHOUT awaiting the deploy task. The caller (main.rs) then
+        // proceeds to bind the HTTP/HTTPS listeners immediately, so a single
+        // broken app that hits its 30s wait_for_health timeout cannot hold
+        // every other app's domain offline.
+        //
+        // Each app becomes reachable through the proxy as soon as its own
+        // deploy finishes; failing apps retry/timeout in the background.
+        // `sync_routes` runs inside the background task so stale static
+        // rules and `.test`-domain TLS SANs are refreshed once all apps
+        // settle, without blocking startup.
         if auto_start {
             let manager = self.clone();
-            let deploy_task = tokio::spawn(async move {
+            tokio::spawn(async move {
                 let mut handles = Vec::new();
                 for app_name in apps_to_start {
                     let mgr = manager.clone();
@@ -695,7 +703,6 @@ impl AppManager {
                 }
                 manager.sync_routes().await;
             });
-            deploy_task.await.ok();
         }
         Ok(())
     }
@@ -1087,10 +1094,11 @@ impl AppManager {
             instance.last_started = Some(chrono::Utc::now().to_rfc3339());
         }
 
-        // Wait for health check
-        let healthy = self.deployment_manager.wait_for_health(&app, slot).await?;
-        if !healthy {
-            tracing::error!("Health check failed for {} slot {}", app_name, slot);
+        // Wait for health check. wait_for_health returns a descriptive error
+        // (with the app's last health-response error and a pointer to the log
+        // file) so we just propagate it.
+        if let Err(e) = self.deployment_manager.wait_for_health(&app, slot, pid).await {
+            tracing::error!("{}", e);
             self.deployment_manager.mark_stopping(pid);
             kill_process_group(pid).await;
             {
@@ -1103,7 +1111,7 @@ impl AppManager {
                 instance.pid = None;
                 instance.status = InstanceStatus::Failed;
             }
-            anyhow::bail!("Health check failed for {} slot {}", app_name, slot);
+            return Err(e);
         }
         tracing::info!("Health check passed for {} slot {}", app.config.name, slot);
 

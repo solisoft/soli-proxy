@@ -1,5 +1,5 @@
 use anyhow::Result;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -101,6 +101,10 @@ pub struct DeploymentManager {
     deploying_apps: Arc<Mutex<HashSet<String>>>,
     /// PIDs that are being intentionally stopped (not unexpected exits)
     stopping_pids: Arc<Mutex<HashSet<u32>>>,
+    /// PIDs that exited unexpectedly, mapped to a human-readable reason.
+    /// Read by `wait_for_health` so it can bail out as soon as the process it
+    /// is waiting on dies, instead of polling a dead port for 30s.
+    exited_pids: Arc<Mutex<HashMap<u32, String>>>,
     /// Channel to notify AppManager of unexpected process exits
     process_exit_tx: mpsc::UnboundedSender<ProcessExit>,
     dev_mode: bool,
@@ -124,6 +128,7 @@ impl DeploymentManager {
         Self {
             deploying_apps: Arc::new(Mutex::new(HashSet::new())),
             stopping_pids: Arc::new(Mutex::new(HashSet::new())),
+            exited_pids: Arc::new(Mutex::new(HashMap::new())),
             process_exit_tx,
             dev_mode,
             http_client,
@@ -187,11 +192,9 @@ impl DeploymentManager {
 
         let pid = self.start_instance(app, slot).await?;
 
-        let healthy = self.wait_for_health(app, slot).await?;
-
-        if !healthy {
+        if let Err(e) = self.wait_for_health(app, slot, pid).await {
             self.stop_instance(app, slot).await?;
-            anyhow::bail!("Health check failed for {} slot", slot);
+            return Err(e);
         }
 
         tracing::info!("Health check passed for {} slot {}", app.config.name, slot);
@@ -328,9 +331,10 @@ impl DeploymentManager {
         let slot_name = slot.to_string();
         let container_id_for_monitoring = container_id.clone();
         let stopping_pids = self.stopping_pids.clone();
+        let exited_pids = self.exited_pids.clone();
         let exit_tx = self.process_exit_tx.clone();
         tokio::spawn(async move {
-            loop {
+            let reason = loop {
                 sleep(Duration::from_secs(5)).await;
                 let status = tokio::process::Command::new("docker")
                     .args([
@@ -346,30 +350,35 @@ impl DeploymentManager {
                     Ok(output) if output.status.success() => {
                         let status_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
                         if status_str == "exited" || status_str == "dead" {
+                            let reason = format!("container {}", status_str);
                             tracing::warn!(
-                                "Container {} ({} slot {}) exited",
+                                "Container {} ({} slot {}) {}",
                                 container_id_for_monitoring,
                                 app_name,
-                                slot_name
+                                slot_name,
+                                reason
                             );
-                            break;
+                            break reason;
                         }
                     }
                     Ok(_) | Err(_) => {
+                        let reason = "container no longer exists".to_string();
                         tracing::warn!(
-                            "Container {} ({} slot {}) no longer exists",
+                            "Container {} ({} slot {}) {}",
                             container_id_for_monitoring,
                             app_name,
-                            slot_name
+                            slot_name,
+                            reason
                         );
-                        break;
+                        break reason;
                     }
                 }
-            }
+            };
             // If intentional stop, skip notification
             if stopping_pids.lock().unwrap().remove(&pid) {
                 return;
             }
+            exited_pids.lock().unwrap().insert(pid, reason);
             let _ = exit_tx.send(ProcessExit {
                 app_name,
                 slot: slot_name,
@@ -565,55 +574,47 @@ impl DeploymentManager {
         let app_name = app.config.name.clone();
         let slot_name = slot.to_string();
         let stopping_pids = self.stopping_pids.clone();
+        let exited_pids = self.exited_pids.clone();
         let exit_tx = self.process_exit_tx.clone();
         tokio::spawn(async move {
-            match child.wait().await {
+            let reason = match child.wait().await {
                 Ok(status) => {
                     #[cfg(unix)]
                     {
                         use std::os::unix::process::ExitStatusExt;
                         if let Some(signal) = status.signal() {
-                            tracing::warn!(
-                                "Process {} ({} slot {}) killed by signal {}",
-                                pid,
-                                app_name,
-                                slot_name,
-                                signal
-                            );
+                            format!("killed by signal {}", signal)
+                        } else if let Some(code) = status.code() {
+                            format!("exited with status {}", code)
                         } else {
-                            tracing::warn!(
-                                "Process {} ({} slot {}) exited with status {}",
-                                pid,
-                                app_name,
-                                slot_name,
-                                status
-                            );
+                            format!("exited ({})", status)
                         }
                     }
                     #[cfg(not(unix))]
-                    tracing::warn!(
-                        "Process {} ({} slot {}) exited with status {}",
-                        pid,
-                        app_name,
-                        slot_name,
-                        status
-                    );
+                    {
+                        if let Some(code) = status.code() {
+                            format!("exited with status {}", code)
+                        } else {
+                            format!("exited ({})", status)
+                        }
+                    }
                 }
-                Err(e) => {
-                    tracing::error!(
-                        "Failed to wait for process {} ({} slot {}): {}",
-                        pid,
-                        app_name,
-                        slot_name,
-                        e
-                    );
-                }
-            }
+                Err(e) => format!("wait failed: {}", e),
+            };
+            tracing::warn!(
+                "Process {} ({} slot {}) {}",
+                pid,
+                app_name,
+                slot_name,
+                reason
+            );
             // If this was an intentional stop, just clean up the marker
             if stopping_pids.lock().unwrap().remove(&pid) {
                 return;
             }
-            // Unexpected exit — notify AppManager for immediate failover
+            // Unexpected exit — record reason so wait_for_health can surface
+            // it, then notify AppManager for immediate failover
+            exited_pids.lock().unwrap().insert(pid, reason);
             let _ = exit_tx.send(ProcessExit {
                 app_name,
                 slot: slot_name,
@@ -683,7 +684,7 @@ impl DeploymentManager {
         Ok(())
     }
 
-    pub async fn wait_for_health(&self, app: &AppInfo, slot: &str) -> Result<bool> {
+    pub async fn wait_for_health(&self, app: &AppInfo, slot: &str, pid: u32) -> Result<()> {
         let port = if slot == "blue" {
             app.blue.port
         } else {
@@ -692,12 +693,28 @@ impl DeploymentManager {
         let health_path = app.config.health_check.as_deref().unwrap_or("/health");
 
         let url = format!("http://localhost:{}{}", port, health_path);
+        let log_path = format!("run/logs/{}/{}.log", app.config.name, slot);
         let timeout_secs = 30;
+        let mut last_err: Option<String> = None;
 
         for i in 0..timeout_secs {
             // Sleep between retries, but try immediately on the first attempt
             if i > 0 {
                 sleep(Duration::from_secs(1)).await;
+            }
+
+            // Bail early if the process already died — no point polling a dead
+            // port for the full 30s.
+            if let Some(reason) = self.exited_pids.lock().unwrap().get(&pid).cloned() {
+                anyhow::bail!(
+                    "{} slot {} (PID {}) {} before becoming healthy on {} (see {} for app output)",
+                    app.config.name,
+                    slot,
+                    pid,
+                    reason,
+                    url,
+                    log_path,
+                );
             }
 
             match self.http_client.get(&url).send().await {
@@ -708,15 +725,18 @@ impl DeploymentManager {
                         slot,
                         i
                     );
-                    return Ok(true);
+                    return Ok(());
                 }
-                Ok(_) => {
+                Ok(resp) => {
+                    let status = resp.status();
                     tracing::debug!(
-                        "Health check response for {} slot {}: attempt {}",
+                        "Health check response for {} slot {}: HTTP {} (attempt {})",
                         app.config.name,
                         slot,
+                        status,
                         i + 1
                     );
+                    last_err = Some(format!("HTTP {}", status));
                 }
                 Err(e) => {
                     tracing::debug!(
@@ -726,11 +746,20 @@ impl DeploymentManager {
                         e,
                         i + 1
                     );
+                    last_err = Some(e.to_string());
                 }
             }
         }
 
-        Ok(false)
+        anyhow::bail!(
+            "{} slot {} did not become healthy on {} within {}s (last error: {}; see {} for app output)",
+            app.config.name,
+            slot,
+            url,
+            timeout_secs,
+            last_err.as_deref().unwrap_or("none"),
+            log_path,
+        );
     }
 
     pub async fn switch_traffic(&self, app: &AppInfo, new_slot: &str) -> Result<()> {

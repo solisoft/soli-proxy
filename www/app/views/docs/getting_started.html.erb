@@ -274,7 +274,7 @@ cargo build --release</code></pre>
                     </div>
 
                     <p class="text-gray-400 leading-relaxed mb-6">
-                        The <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">soli-proxy</code> binary accepts flags for daemon mode, dev mode, and a custom configuration path. By default it reads <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">./proxy.conf</code> from the current directory.
+                        The <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">soli-proxy</code> binary accepts flags for daemon mode, dev mode, and a custom configuration path, plus subcommands for managing apps. By default it reads <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">./proxy.conf</code> from the current directory.
                     </p>
 
                     <!-- Code: CLI examples -->
@@ -298,11 +298,11 @@ soli-proxy <span class="tk">--daemon</span>
 <span class="tc"># Dev mode (apps started with --dev flag)</span>
 soli-proxy <span class="tk">--dev</span>
 
-<span class="tc"># Custom config path</span>
-soli-proxy <span class="ts">/etc/soli-proxy/proxy.conf</span>
+<span class="tc"># Custom config path and sites directory</span>
+soli-proxy <span class="tk">-c</span> <span class="ts">/etc/soli-proxy/proxy.conf</span> <span class="tk">--sites-dir</span> <span class="ts">/var/sites</span>
 
 <span class="tc"># Combine flags</span>
-soli-proxy <span class="tk">-d</span> <span class="tk">--dev</span> <span class="ts">/etc/soli-proxy/proxy.conf</span></code></pre>
+soli-proxy <span class="tk">-d</span> <span class="tk">--dev</span> <span class="tk">-c</span> <span class="ts">/etc/soli-proxy/proxy.conf</span></code></pre>
                     </div>
 
                     <!-- CLI reference table -->
@@ -316,16 +316,68 @@ soli-proxy <span class="tk">-d</span> <span class="tk">--dev</span> <span class=
                             </thead>
                             <tbody class="divide-y divide-white/5">
                                 <tr>
+                                    <td class="px-5 py-3"><code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">-c</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">--conf &lt;PATH&gt;</code></td>
+                                    <td class="px-5 py-3 text-gray-400">Path to <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 py-0.5 rounded">proxy.conf</code>. Defaults to <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 py-0.5 rounded">./proxy.conf</code>.</td>
+                                </tr>
+                                <tr>
                                     <td class="px-5 py-3"><code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">-d</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">--daemon</code></td>
                                     <td class="px-5 py-3 text-gray-400">Run as a background daemon. Forks the process and writes a PID file.</td>
                                 </tr>
                                 <tr>
                                     <td class="px-5 py-3"><code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">--dev</code></td>
-                                    <td class="px-5 py-3 text-gray-400">Enable dev mode. Apps in <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 py-0.5 rounded">sites/</code> are started with the <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 py-0.5 rounded">--dev</code> flag.</td>
+                                    <td class="px-5 py-3 text-gray-400">Enable dev mode. Apps in <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 py-0.5 rounded">sites/</code> are started with the <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 py-0.5 rounded">--dev</code> flag, and <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 py-0.5 rounded">.test</code> domains are added to the self-signed fallback cert.</td>
                                 </tr>
                                 <tr>
-                                    <td class="px-5 py-3"><code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">&lt;path&gt;</code></td>
-                                    <td class="px-5 py-3 text-gray-400">Custom path to <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 py-0.5 rounded">proxy.conf</code>. Defaults to <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 py-0.5 rounded">./proxy.conf</code> in the working directory.</td>
+                                    <td class="px-5 py-3"><code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">--watch &lt;BOOL&gt;</code></td>
+                                    <td class="px-5 py-3 text-gray-400">Watch <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 py-0.5 rounded">proxy.conf</code> and the sites directory for changes and hot-reload. Defaults to <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 py-0.5 rounded">true</code>.</td>
+                                </tr>
+                                <tr>
+                                    <td class="px-5 py-3"><code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">--sites-dir &lt;PATH&gt;</code></td>
+                                    <td class="px-5 py-3 text-gray-400">Directory holding managed apps. Defaults to <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 py-0.5 rounded">./sites</code>.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- Subcommands -->
+                    <h3 class="text-lg font-semibold text-white mb-4 mt-10" id="subcommands">Subcommands</h3>
+
+                    <p class="text-gray-400 leading-relaxed mb-6">
+                        In addition to running the proxy, the binary exposes subcommands for managing apps and the binary itself. App lifecycle commands (<code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">deploy</code>, <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">restart</code>, <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">stop</code>, <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">logs</code>) can be run while the proxy is running &mdash; they share state via the <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">./run</code> directory. See <a href="/docs/apps#cli-commands" class="text-emerald-400 hover:text-emerald-300 underline underline-offset-2">Apps &rarr; CLI Commands</a> for details.
+                    </p>
+
+                    <div class="rounded-2xl bg-gray-950 ring-1 ring-white/10 overflow-hidden mb-6">
+                        <table class="w-full text-sm">
+                            <thead>
+                                <tr class="border-b border-white/10">
+                                    <th class="text-left px-5 py-3 text-gray-400 font-semibold">Subcommand</th>
+                                    <th class="text-left px-5 py-3 text-gray-400 font-semibold">Description</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-white/5">
+                                <tr>
+                                    <td class="px-5 py-3"><code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">deploy &lt;app&gt;</code></td>
+                                    <td class="px-5 py-3 text-gray-400">Blue-green deploy: build and start the app on the inactive slot, health-check it, then switch traffic.</td>
+                                </tr>
+                                <tr>
+                                    <td class="px-5 py-3"><code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">restart &lt;app&gt;</code></td>
+                                    <td class="px-5 py-3 text-gray-400">Restart the currently active slot of the app.</td>
+                                </tr>
+                                <tr>
+                                    <td class="px-5 py-3"><code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">stop &lt;app&gt;</code></td>
+                                    <td class="px-5 py-3 text-gray-400">Stop the app and remove its routes.</td>
+                                </tr>
+                                <tr>
+                                    <td class="px-5 py-3"><code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">logs &lt;app&gt;</code></td>
+                                    <td class="px-5 py-3 text-gray-400">Print deployment logs for both blue and green slots of the app.</td>
+                                </tr>
+                                <tr>
+                                    <td class="px-5 py-3"><code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">tui</code></td>
+                                    <td class="px-5 py-3 text-gray-400">Interactive terminal UI: browse apps, watch logs, trigger deploys.</td>
+                                </tr>
+                                <tr>
+                                    <td class="px-5 py-3"><code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">update [--reinstall]</code></td>
+                                    <td class="px-5 py-3 text-gray-400">Self-update from the latest GitHub release. Use <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 py-0.5 rounded">--reinstall</code> to overwrite the current version.</td>
                                 </tr>
                             </tbody>
                         </table>

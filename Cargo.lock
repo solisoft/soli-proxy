@@ -2593,7 +2593,7 @@ dependencies = [
 
 [[package]]
 name = "soli-proxy"
-version = "0.24.4"
+version = "0.25.2"
 dependencies = [
  "anyhow",
  "arc-swap",

@@ -46,15 +46,35 @@ cargo build --release
 ### CLI Options
 
 ```
-soli-proxy [OPTIONS]
+soli-proxy [OPTIONS] [COMMAND]
 
 Options:
   -c, --conf <CONF>            Config file [default: ./proxy.conf]
   -d, --daemon                 Run as daemon
       --dev                    Development mode
+      --watch <WATCH>          Watch config & sites for changes [default: true]
       --sites-dir <SITES_DIR>  Sites directory [default: ./sites]
   -h, --help                   Print help
   -V, --version                Print version
+```
+
+### Subcommands
+
+App lifecycle commands operate on apps discovered in `--sites-dir` and can be
+run while the proxy is running (they read shared state from `./run`):
+
+```
+soli-proxy deploy  [-c <conf>] <app_name>   # Blue-green deploy: build & switch to the other slot
+soli-proxy restart [-c <conf>] <app_name>   # Restart the currently active slot
+soli-proxy stop    [-c <conf>] <app_name>   # Stop the app
+soli-proxy logs    [-c <conf>] <app_name>   # Print deployment logs for both slots
+```
+
+Other subcommands:
+
+```
+soli-proxy tui [-c <conf>] [--sites-dir <DIR>] [--dev]   # Interactive terminal UI
+soli-proxy update [--reinstall]                          # Self-update from GitHub releases
 ```
 
 ## Configuration

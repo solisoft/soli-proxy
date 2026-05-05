@@ -488,6 +488,7 @@ async fn run_server(
     }
 
     let shutdown = ShutdownCoordinator::new();
+    let shutdown_for_signal = shutdown.clone();
     let config_ref = Arc::new(config_manager);
     let metrics = new_metrics();
     let challenge_store = new_challenge_store();
@@ -860,7 +861,18 @@ async fn run_server(
             _ = sigterm.recv() => {},
             _ = sigint.recv() => {},
         }
-        tracing::info!("Received shutdown signal, stopping all apps...");
+        tracing::info!("Received shutdown signal, draining connections...");
+
+        // Tell the HTTP/HTTPS servers to stop accepting new connections and
+        // send GOAWAY / Connection: close on the in-flight ones. Without this,
+        // browsers keep the dead HTTP/2 socket cached for ~30s before noticing.
+        shutdown_for_signal.initiate();
+
+        // Give the in-flight connections a moment to flush GOAWAY frames and
+        // any in-progress response bodies.
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        tracing::info!("Stopping all managed apps...");
         if let Some(manager) = app_manager_for_signal {
             manager.stop_all().await;
         }
