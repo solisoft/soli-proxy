@@ -108,7 +108,7 @@
 
                     <div class="mt-4 flex items-start gap-3 p-4 rounded-xl bg-yellow-500/5 border border-yellow-500/10">
                         <svg class="w-5 h-5 text-yellow-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"/></svg>
-                        <p class="text-sm text-yellow-200/80">If <code class="text-yellow-300 text-xs">api_key</code> is omitted or empty, the admin API is accessible without authentication. Only bind to <code class="text-yellow-300 text-xs">127.0.0.1</code> in that case.</p>
+                        <p class="text-sm text-yellow-200/80">If <code class="text-yellow-300 text-xs">api_key</code> (or <code class="text-yellow-300 text-xs">username</code> + <code class="text-yellow-300 text-xs">password_hash</code>) is not set, the admin API is accessible without authentication and may only be bound to <code class="text-yellow-300 text-xs">127.0.0.1</code>. The proxy refuses to start the admin API on any non-loopback address unless authentication is configured.</p>
                     </div>
                 </div>
 

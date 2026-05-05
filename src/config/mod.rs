@@ -510,9 +510,12 @@ success_threshold = 2
 failure_status_codes = [502, 503, 504]
 
 # Admin REST API Configuration
+# Default binds to loopback only. Exposing on a non-loopback address
+# requires api_key or username+password_hash — the proxy refuses to
+# start the admin API otherwise.
 [admin]
 enabled = true
-bind = "0.0.0.0:9090"
+bind = "127.0.0.1:9090"
 
 # Lua Scripting Configuration
 [scripting]

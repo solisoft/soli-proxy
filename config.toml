@@ -66,9 +66,12 @@ success_threshold = 2               # successful probes to close breaker
 failure_status_codes = [502, 503, 504]  # HTTP codes that count as failures
 
 # Admin REST API Configuration
+# Default binds to loopback only. Exposing on a non-loopback address
+# requires `api_key` or `username`+`password_hash` — the proxy refuses
+# to start the admin API otherwise.
 [admin]
 enabled = true
-bind = "0.0.0.0:9090"
+bind = "127.0.0.1:9090"
 # api_key = "your-secret-key"
 
 # Lua Scripting Configuration

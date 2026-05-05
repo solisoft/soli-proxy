@@ -535,9 +535,45 @@ async fn read_body(req: Request<Incoming>) -> String {
     }
 }
 
+/// True when at least one credential is configured (non-empty key or
+/// both username + password_hash). Empty strings count as unset.
+fn admin_auth_configured(
+    api_key: &Option<String>,
+    username: &Option<String>,
+    password_hash: &Option<String>,
+) -> bool {
+    if api_key.as_deref().is_some_and(|k| !k.is_empty()) {
+        return true;
+    }
+    matches!(
+        (username.as_deref(), password_hash.as_deref()),
+        (Some(u), Some(h)) if !u.is_empty() && !h.is_empty()
+    )
+}
+
 pub async fn run_admin_server(state: Arc<AdminState>) -> Result<()> {
-    let bind = state.config_manager.get_config().admin.bind.clone();
+    let admin_cfg = state.config_manager.get_config().admin.clone();
+    let bind = admin_cfg.bind.clone();
     let addr: std::net::SocketAddr = bind.parse()?;
+
+    // Fail closed: refuse to expose the admin API on a non-loopback address
+    // unless an api_key or username+password_hash is configured. Without auth,
+    // any host that can reach the bind address gets full read/write access to
+    // routes, config, and app deploys.
+    if !addr.ip().is_loopback()
+        && !admin_auth_configured(
+            &admin_cfg.api_key,
+            &admin_cfg.username,
+            &admin_cfg.password_hash,
+        )
+    {
+        anyhow::bail!(
+            "refusing to start admin API on non-loopback address {} without authentication; \
+             set [admin].api_key or [admin].username + password_hash, or bind to 127.0.0.1",
+            addr
+        );
+    }
+
     let listener = TcpListener::bind(addr).await?;
 
     tracing::info!("Admin API listening on {}", addr);
@@ -565,5 +601,44 @@ pub async fn run_admin_server(state: Arc<AdminState>) -> Result<()> {
                 tracing::error!("Admin accept error: {}", e);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auth_configured_recognizes_api_key() {
+        assert!(admin_auth_configured(
+            &Some("secret".into()),
+            &None,
+            &None,
+        ));
+    }
+
+    #[test]
+    fn auth_configured_treats_empty_api_key_as_unset() {
+        assert!(!admin_auth_configured(&Some("".into()), &None, &None));
+    }
+
+    #[test]
+    fn auth_configured_requires_both_user_and_hash() {
+        assert!(!admin_auth_configured(&None, &Some("admin".into()), &None));
+        assert!(!admin_auth_configured(
+            &None,
+            &None,
+            &Some("$2b$12$abc".into()),
+        ));
+        assert!(admin_auth_configured(
+            &None,
+            &Some("admin".into()),
+            &Some("$2b$12$abc".into()),
+        ));
+    }
+
+    #[test]
+    fn auth_configured_returns_false_when_all_unset() {
+        assert!(!admin_auth_configured(&None, &None, &None));
     }
 }
