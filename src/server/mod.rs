@@ -27,6 +27,7 @@ use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
+use tokio::time::timeout;
 
 #[cfg(feature = "scripting")]
 use crate::scripting::{LuaEngine, LuaRequest, RequestHookResult, RouteHookResult};
@@ -325,36 +326,37 @@ async fn run_http_server(
 ) -> Result<()> {
     let listener = create_listener(addr)?;
     let client = ConnectionPool::new().client();
+    let mut shutdown_rx = shutdown.subscribe();
 
     loop {
-        if shutdown.is_shutting_down() {
-            break;
-        }
-
-        match listener.accept().await {
-            Ok((stream, _)) => {
-                let _ = stream.set_nodelay(true);
-                let client = client.clone();
-                let config = config.clone();
-                let metrics = metrics.clone();
-                let cs = challenge_store.clone();
-                let lua = lua_engine.clone();
-                let cb = circuit_breaker.clone();
-                let am = app_manager.clone();
-                let lb = load_balancer.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = handle_http11_connection(
-                        stream, client, config, metrics, cs, lua, cb, am, lb,
-                    )
-                    .await
-                    {
-                        tracing::debug!("HTTP/1.1 connection error: {}", e);
-                    }
-                });
-            }
-            Err(e) => {
-                tracing::error!("HTTP/1.1 accept error: {}", e);
-            }
+        tokio::select! {
+            _ = shutdown_rx.recv() => break,
+            accept_result = listener.accept() => match accept_result {
+                Ok((stream, _)) => {
+                    let _ = stream.set_nodelay(true);
+                    let client = client.clone();
+                    let config = config.clone();
+                    let metrics = metrics.clone();
+                    let cs = challenge_store.clone();
+                    let lua = lua_engine.clone();
+                    let cb = circuit_breaker.clone();
+                    let am = app_manager.clone();
+                    let lb = load_balancer.clone();
+                    let sd = shutdown.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = handle_http11_connection(
+                            stream, client, config, metrics, cs, lua, cb, am, lb, sd,
+                        )
+                        .await
+                        {
+                            tracing::debug!("HTTP/1.1 connection error: {}", e);
+                        }
+                    });
+                }
+                Err(e) => {
+                    tracing::error!("HTTP/1.1 accept error: {}", e);
+                }
+            },
         }
     }
 
@@ -376,45 +378,46 @@ async fn run_https_server(
 ) -> Result<()> {
     let listener = create_listener(addr)?;
     let client = ConnectionPool::new().client();
+    let mut shutdown_rx = shutdown.subscribe();
 
     loop {
-        if shutdown.is_shutting_down() {
-            break;
-        }
-
-        match listener.accept().await {
-            Ok((stream, _)) => {
-                let _ = stream.set_nodelay(true);
-                let client = client.clone();
-                let config = config.clone();
-                let acceptor = acceptor.clone();
-                let metrics = metrics.clone();
-                let cs = challenge_store.clone();
-                let lua = lua_engine.clone();
-                let cb = circuit_breaker.clone();
-                let am = app_manager.clone();
-                let lb = load_balancer.clone();
-                tokio::spawn(async move {
-                    match acceptor.accept(stream).await {
-                        Ok(tls_stream) => {
-                            metrics.inc_tls_connections();
-                            if let Err(e) = handle_https2_connection(
-                                tls_stream, client, config, metrics, cs, lua, cb, am, lb,
-                            )
-                            .await
-                            {
-                                tracing::debug!("HTTPS/2 connection error: {}", e);
+        tokio::select! {
+            _ = shutdown_rx.recv() => break,
+            accept_result = listener.accept() => match accept_result {
+                Ok((stream, _)) => {
+                    let _ = stream.set_nodelay(true);
+                    let client = client.clone();
+                    let config = config.clone();
+                    let acceptor = acceptor.clone();
+                    let metrics = metrics.clone();
+                    let cs = challenge_store.clone();
+                    let lua = lua_engine.clone();
+                    let cb = circuit_breaker.clone();
+                    let am = app_manager.clone();
+                    let lb = load_balancer.clone();
+                    let sd = shutdown.clone();
+                    tokio::spawn(async move {
+                        match acceptor.accept(stream).await {
+                            Ok(tls_stream) => {
+                                metrics.inc_tls_connections();
+                                if let Err(e) = handle_https2_connection(
+                                    tls_stream, client, config, metrics, cs, lua, cb, am, lb, sd,
+                                )
+                                .await
+                                {
+                                    tracing::debug!("HTTPS/2 connection error: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                tracing::debug!("TLS accept error (client incompatible): {}", e);
                             }
                         }
-                        Err(e) => {
-                            tracing::debug!("TLS accept error (client incompatible): {}", e);
-                        }
-                    }
-                });
-            }
-            Err(e) => {
-                tracing::error!("HTTPS/2 accept error: {}", e);
-            }
+                    });
+                }
+                Err(e) => {
+                    tracing::error!("HTTPS/2 accept error: {}", e);
+                }
+            },
         }
     }
 
@@ -432,8 +435,14 @@ async fn handle_http11_connection(
     circuit_breaker: SharedCircuitBreaker,
     app_manager: Option<Arc<AppManager>>,
     load_balancer: Arc<LoadBalancerState>,
+    shutdown: ShutdownCoordinator,
 ) -> Result<()> {
     let io = TokioIo::new(stream);
+    let config_inner = config.get_config();
+    let header_timeout = config_inner
+        .limits
+        .keep_alive_timeout
+        .map(Duration::from_secs);
     let svc = service_fn(move |req| {
         handle_request(
             req,
@@ -449,14 +458,37 @@ async fn handle_http11_connection(
         )
     });
 
-    let conn = hyper::server::conn::http1::Builder::new()
-        .keep_alive(true)
-        .pipeline_flush(true)
-        .serve_connection(io, svc)
-        .with_upgrades();
+    let conn = match header_timeout {
+        Some(timeout) => hyper::server::conn::http1::Builder::new()
+            .keep_alive(true)
+            .pipeline_flush(true)
+            .header_read_timeout(timeout)
+            .serve_connection(io, svc)
+            .with_upgrades(),
+        None => hyper::server::conn::http1::Builder::new()
+            .keep_alive(true)
+            .pipeline_flush(true)
+            .serve_connection(io, svc)
+            .with_upgrades(),
+    };
+    let mut conn = std::pin::pin!(conn);
+    let mut shutdown_rx = shutdown.subscribe();
 
-    if let Err(e) = conn.await {
-        tracing::debug!("HTTP/1.1 connection error: {}", e);
+    tokio::select! {
+        res = conn.as_mut() => {
+            if let Err(e) = res {
+                tracing::debug!("HTTP/1.1 connection error: {}", e);
+            }
+        }
+        _ = shutdown_rx.recv() => {
+            // Send Connection: close after the in-flight request completes
+            // so the Mac's browser knows to drop its keep-alive socket instead
+            // of detecting a dead peer on the next request (saves ~30s).
+            conn.as_mut().graceful_shutdown();
+            if let Err(e) = conn.await {
+                tracing::debug!("HTTP/1.1 graceful shutdown error: {}", e);
+            }
+        }
     }
 
     Ok(())
@@ -473,10 +505,12 @@ async fn handle_https2_connection(
     circuit_breaker: SharedCircuitBreaker,
     app_manager: Option<Arc<AppManager>>,
     load_balancer: Arc<LoadBalancerState>,
+    shutdown: ShutdownCoordinator,
 ) -> Result<()> {
     let is_h2 = stream.get_ref().1.alpn_protocol() == Some(b"h2");
 
     let io = TokioIo::new(stream);
+    let mut shutdown_rx = shutdown.subscribe();
 
     if is_h2 {
         let exec = TokioExecutor::new();
@@ -499,10 +533,30 @@ async fn handle_https2_connection(
             .initial_connection_window_size(2 * 1024 * 1024)
             .max_concurrent_streams(250)
             .serve_connection(io, svc);
-        if let Err(e) = conn.await {
-            tracing::debug!("HTTPS/2 connection error: {}", e);
+        let mut conn = std::pin::pin!(conn);
+
+        tokio::select! {
+            res = conn.as_mut() => {
+                if let Err(e) = res {
+                    tracing::debug!("HTTPS/2 connection error: {}", e);
+                }
+            }
+            _ = shutdown_rx.recv() => {
+                // Emit HTTP/2 GOAWAY so the browser closes its multiplexed
+                // connection promptly. Without this, Chrome waits ~30s on
+                // its HTTP/2 PING timeout before retrying on a fresh conn.
+                conn.as_mut().graceful_shutdown();
+                if let Err(e) = conn.await {
+                    tracing::debug!("HTTPS/2 graceful shutdown error: {}", e);
+                }
+            }
         }
     } else {
+        let config_inner = config.get_config();
+        let header_timeout = config_inner
+            .limits
+            .keep_alive_timeout
+            .map(Duration::from_secs);
         let svc = service_fn(move |req| {
             handle_request(
                 req,
@@ -517,13 +571,33 @@ async fn handle_https2_connection(
                 true,
             )
         });
-        let conn = hyper::server::conn::http1::Builder::new()
-            .keep_alive(true)
-            .pipeline_flush(true)
-            .serve_connection(io, svc)
-            .with_upgrades();
-        if let Err(e) = conn.await {
-            tracing::debug!("HTTPS/1.1 connection error: {}", e);
+        let conn = match header_timeout {
+            Some(timeout) => hyper::server::conn::http1::Builder::new()
+                .keep_alive(true)
+                .pipeline_flush(true)
+                .header_read_timeout(timeout)
+                .serve_connection(io, svc)
+                .with_upgrades(),
+            None => hyper::server::conn::http1::Builder::new()
+                .keep_alive(true)
+                .pipeline_flush(true)
+                .serve_connection(io, svc)
+                .with_upgrades(),
+        };
+        let mut conn = std::pin::pin!(conn);
+
+        tokio::select! {
+            res = conn.as_mut() => {
+                if let Err(e) = res {
+                    tracing::debug!("HTTPS/1.1 connection error: {}", e);
+                }
+            }
+            _ = shutdown_rx.recv() => {
+                conn.as_mut().graceful_shutdown();
+                if let Err(e) = conn.await {
+                    tracing::debug!("HTTPS/1.1 graceful shutdown error: {}", e);
+                }
+            }
         }
     }
 
@@ -609,6 +683,27 @@ async fn handle_request(
         return Ok(response);
     }
 
+    // Body size limit check
+    if let Some(max_size) = config.limits.max_request_size {
+        let content_length = req
+            .headers()
+            .get("content-length")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        if content_length > max_size {
+            metrics.dec_in_flight();
+            let duration = start_time.elapsed();
+            metrics.record_request(0, 0, 413, duration);
+            let body = http_body_util::Full::new(Bytes::from("Payload Too Large")).boxed();
+            return Ok(Response::builder()
+                .status(413)
+                .header("Content-Type", "text/plain")
+                .body(body)
+                .unwrap());
+        }
+    }
+
     if is_metrics_request(&req) {
         let duration = start_time.elapsed();
         metrics.dec_in_flight();
@@ -661,17 +756,50 @@ async fn handle_request(
         .await;
     }
 
-    let result = handle_regular_request(
-        req,
-        client,
-        &config,
-        &lua_engine,
-        &circuit_breaker,
-        app_manager.clone(),
-        load_balancer.clone(),
-        is_tls,
-    )
-    .await;
+    let timeout_duration = config
+        .limits
+        .request_timeout
+        .map(Duration::from_secs);
+
+    let result = if let Some(timeout_sec) = timeout_duration {
+        let handle_fut = handle_regular_request(
+            req,
+            client,
+            &config,
+            &lua_engine,
+            &circuit_breaker,
+            app_manager.clone(),
+            load_balancer.clone(),
+            is_tls,
+        );
+        match timeout(timeout_sec, handle_fut).await {
+            Ok(res) => res,
+            Err(_) => {
+                metrics.dec_in_flight();
+                let duration = start_time.elapsed();
+                metrics.record_request(0, 0, 504, duration);
+                let body =
+                    http_body_util::Full::new(Bytes::from("Gateway Timeout")).boxed();
+                return Ok(Response::builder()
+                    .status(504)
+                    .header("Content-Type", "text/plain")
+                    .body(body)
+                    .unwrap());
+            }
+        }
+    } else {
+        handle_regular_request(
+            req,
+            client,
+            &config,
+            &lua_engine,
+            &circuit_breaker,
+            app_manager.clone(),
+            load_balancer.clone(),
+            is_tls,
+        )
+        .await
+    };
     let duration = start_time.elapsed();
 
     metrics.dec_in_flight();

@@ -37,6 +37,8 @@ pub struct TomlConfig {
     pub circuit_breaker: Option<CircuitBreakerTomlConfig>,
     #[serde(default)]
     pub apps: Option<AppsTomlConfig>,
+    #[serde(default)]
+    pub limits: Option<LimitsTomlConfig>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -51,6 +53,29 @@ pub struct CircuitBreakerTomlConfig {
 pub struct AppsTomlConfig {
     pub default_user: Option<String>,
     pub default_group: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
+pub struct LimitsTomlConfig {
+    pub max_connections: Option<u64>,
+    pub max_request_size: Option<String>,
+    pub keep_alive_timeout: Option<u64>,
+    pub request_timeout: Option<u64>,
+}
+
+pub fn parse_size(value: &str) -> Option<usize> {
+    let value = value.trim().to_uppercase();
+    let (num_str, multiplier) = if value.ends_with("GB") {
+        (&value[..value.len() - 2], 1024 * 1024 * 1024)
+    } else if value.ends_with("MB") {
+        ((&value[..value.len() - 2]), 1024 * 1024)
+    } else if value.ends_with("KB") {
+        ((&value[..value.len() - 2]), 1024)
+    } else {
+        (&value[..], 1)
+    };
+
+    num_str.trim().parse::<usize>().ok()?.checked_mul(multiplier)
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -130,6 +155,15 @@ pub struct Config {
     pub apps: AppsTomlConfig,
     pub rules: Vec<ProxyRule>,
     pub global_scripts: Vec<String>,
+    pub limits: LimitsConfig,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct LimitsConfig {
+    pub max_connections: Option<u64>,
+    pub max_request_size: Option<usize>,
+    pub keep_alive_timeout: Option<u64>,
+    pub request_timeout: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
@@ -467,6 +501,16 @@ realm = "Restricted"
             apps: toml_config.apps.unwrap_or_default(),
             rules,
             global_scripts,
+            limits: LimitsConfig {
+                max_connections: toml_config.limits.as_ref().and_then(|l| l.max_connections),
+                max_request_size: toml_config
+                    .limits
+                    .as_ref()
+                    .and_then(|l| l.max_request_size.as_ref())
+                    .and_then(|s| parse_size(s)),
+                keep_alive_timeout: toml_config.limits.as_ref().and_then(|l| l.keep_alive_timeout),
+                request_timeout: toml_config.limits.as_ref().and_then(|l| l.request_timeout),
+            },
         })
     }
 
