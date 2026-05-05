@@ -553,6 +553,128 @@
                                 </div>
                             </div>
                         </div>
+
+                        <div class="rounded-xl border border-white/10 bg-gray-900/60 p-6">
+                            <h3 class="text-white font-semibold mb-3">Removing the Server Header</h3>
+                            <p class="text-gray-400 text-sm mb-4">By default, Soli Proxy does not add a <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">Server</code> header to responses. This hides your proxy software version from clients, preventing attackers from targeting known vulnerabilities in specific versions. Use Lua scripting to remove additional headers:</p>
+                            <div class="code-window rounded-lg border border-white/10 bg-black/30 overflow-hidden">
+                                <div class="flex items-center justify-between px-4 py-2 bg-black/30 border-b border-white/5">
+                                    <span class="text-xs text-gray-500">on_response.lua</span>
+                                    <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors px-2 py-1">Copy</button>
+                                </div>
+                                <pre class="p-4 text-sm leading-relaxed overflow-x-auto"><code><span class="tc">-- Remove sensitive headers from responses</span>
+<span class="tk">function</span> <span class="fn">on_response</span>(mods)
+    mods.remove_headers = {<span class="ts">"Server"</span>, <span class="ts">"X-Powered-By"</span>, <span class="ts">"X-AspNet-Version"</span>}
+<span class="tk">end</span></code></pre>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ============================================================ -->
+                <!-- SECURITY HARDENING -->
+                <!-- ============================================================ -->
+                <div class="mb-16 ">
+                    <h2 class="text-xl font-bold text-white mb-2 flex items-center gap-2">
+                        <span class="text-emerald-400">#</span> Security Hardening
+                    </h2>
+                    <p class="text-gray-400 mb-6">Soli Proxy includes several built-in protections against common attacks. These are configurable via config.toml.</p>
+
+                    <div class="space-y-6">
+                        <!-- Slowloris Protection -->
+                        <div class="rounded-xl border border-white/10 bg-gray-900/60 p-6">
+                            <h3 class="text-white font-semibold mb-3 flex items-center gap-2">
+                                <svg class="w-4 h-4 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                                Slowloris Protection
+                            </h3>
+                            <p class="text-gray-400 text-sm mb-4">The <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">keep_alive_timeout</code> setting limits how long a client can take to send headers. This prevents slowloris attacks where clients hold connections open indefinitely by sending headers one byte at a time.</p>
+                            <div class="code-window rounded-lg border border-white/10 bg-black/30 overflow-hidden">
+                                <div class="flex items-center justify-between px-4 py-2 bg-black/30 border-b border-white/5">
+                                    <span class="text-xs text-gray-500">config.toml</span>
+                                    <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors px-2 py-1">Copy</button>
+                                </div>
+                                <pre class="p-4 text-sm leading-relaxed overflow-x-auto"><code>[<span class="tk">limits</span>]
+<span class="tf">keep_alive_timeout</span> = <span class="tn">30</span>   <span class="tc"># seconds to complete header transmission</span></code></pre>
+                            </div>
+                        </div>
+
+                        <!-- Request Size Limits -->
+                        <div class="rounded-xl border border-white/10 bg-gray-900/60 p-6">
+                            <h3 class="text-white font-semibold mb-3 flex items-center gap-2">
+                                <svg class="w-4 h-4 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/></svg>
+                                Request Size Limits
+                            </h3>
+                            <p class="text-gray-400 text-sm mb-4">The <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">max_request_size</code> setting rejects requests whose <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">Content-Length</code> header exceeds the configured limit, protecting against large-payload DoS and memory exhaustion. Note: enforcement relies on the declared <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">Content-Length</code>; chunked transfer-encoding is not yet bounded by this setting.</p>
+                            <div class="code-window rounded-lg border border-white/10 bg-black/30 overflow-hidden">
+                                <div class="flex items-center justify-between px-4 py-2 bg-black/30 border-b border-white/5">
+                                    <span class="text-xs text-gray-500">config.toml</span>
+                                    <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors px-2 py-1">Copy</button>
+                                </div>
+                                <pre class="p-4 text-sm leading-relaxed overflow-x-auto"><code>[<span class="tk">limits</span>]
+<span class="tf">max_request_size</span> = <span class="ts">"10MB"</span>   <span class="tc"># reject requests with Content-Length exceeding this</span></code></pre>
+                            </div>
+                        </div>
+
+                        <!-- Request Timeout -->
+                        <div class="rounded-xl border border-white/10 bg-gray-900/60 p-6">
+                            <h3 class="text-white font-semibold mb-3 flex items-center gap-2">
+                                <svg class="w-4 h-4 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+                                Backend Request Timeout
+                            </h3>
+                            <p class="text-gray-400 text-sm mb-4">The <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">request_timeout</code> setting limits how long a backend request can take before being terminated. This prevents hanging connections and ensures resources are freed for waiting clients.</p>
+                            <div class="code-window rounded-lg border border-white/10 bg-black/30 overflow-hidden">
+                                <div class="flex items-center justify-between px-4 py-2 bg-black/30 border-b border-white/5">
+                                    <span class="text-xs text-gray-500">config.toml</span>
+                                    <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors px-2 py-1">Copy</button>
+                                </div>
+                                <pre class="p-4 text-sm leading-relaxed overflow-x-auto"><code>[<span class="tk">limits</span>]
+<span class="tf">request_timeout</span> = <span class="tn">60</span>   <span class="tc"># seconds before backend request is terminated</span></code></pre>
+                            </div>
+                        </div>
+
+                        <!-- Rate Limiting (Lua recipe) -->
+                        <div class="rounded-xl border border-white/10 bg-gray-900/60 p-6">
+                            <h3 class="text-white font-semibold mb-3 flex items-center gap-2">
+                                <svg class="w-4 h-4 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                                Rate Limiting (via Lua)
+                            </h3>
+                            <p class="text-gray-400 text-sm mb-4">Soli Proxy does not ship a built-in rate limiter, but the Lua scripting API exposes everything needed to implement one: process-shared atomic counters (<code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">shared.incr</code>), a millisecond clock (<code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">time.now_ms</code>), header access, and early denial via <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">req:deny</code>. The fixed-window per-IP limiter below allows 100 requests per minute per client.</p>
+                            <div class="code-window rounded-lg border border-white/10 bg-black/30 overflow-hidden">
+                                <div class="flex items-center justify-between px-4 py-2 bg-black/30 border-b border-white/5">
+                                    <span class="text-xs text-gray-500">rate_limit.lua</span>
+                                    <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors px-2 py-1">Copy</button>
+                                </div>
+                                <pre class="p-4 text-sm leading-relaxed overflow-x-auto"><code><span class="tc">-- Fixed-window per-IP rate limiter: 100 requests per minute</span>
+<span class="tk">function</span> <span class="fn">on_request</span>(req)
+    <span class="tk">local</span> ip = req:header(<span class="ts">"x-forwarded-for"</span>) <span class="tk">or</span> <span class="ts">"unknown"</span>
+    <span class="tk">local</span> window = math.floor(time.now_ms() / <span class="tn">1000</span> / <span class="tn">60</span>)
+    <span class="tk">local</span> key = <span class="ts">"rl:"</span> .. ip .. <span class="ts">":"</span> .. window
+    <span class="tk">local</span> count = shared.incr(key)
+    <span class="tk">if</span> count &gt; <span class="tn">100</span> <span class="tk">then</span>
+        <span class="tk">return</span> req:deny(<span class="tn">429</span>, <span class="ts">"rate limit exceeded"</span>)
+    <span class="tk">end</span>
+<span class="tk">end</span></code></pre>
+                            </div>
+                            <div class="mt-4 rounded-lg bg-amber-500/5 border border-amber-500/20 p-4">
+                                <p class="text-sm text-amber-200 font-semibold mb-2">Limitations to be aware of</p>
+                                <ul class="text-sm text-gray-400 space-y-1 list-disc list-inside">
+                                    <li><code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">shared</code> state is in-memory and per-process — counters are not synchronized across multiple proxy instances.</li>
+                                    <li>Shared keys have no automatic TTL. Bucketing by time window (as above) prevents unbounded growth in practice, but stale buckets are not reaped.</li>
+                                    <li><code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">X-Forwarded-For</code> is only trustworthy behind a proxy you control; otherwise clients can spoof the header to evade limits.</li>
+                                </ul>
+                            </div>
+                        </div>
+
+                        <!-- Connection Security Note -->
+                        <div class="rounded-xl bg-red-500/5 border border-red-500/20 p-5">
+                            <div class="flex items-start gap-3">
+                                <svg class="w-5 h-5 text-red-400 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+                                <div>
+                                    <p class="text-sm text-red-200 font-semibold mb-1">Always use TLS in production</p>
+                                    <p class="text-sm text-gray-400">Without TLS, all traffic including authentication tokens and session cookies are transmitted in plaintext. Configure Let's Encrypt for automatic certificates.</p>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
