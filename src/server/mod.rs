@@ -704,12 +704,24 @@ async fn handle_request(
         }
     }
 
-    if is_metrics_request(&req) {
+    if is_metrics_request(&req, config.metrics.endpoint.as_deref().unwrap_or("/metrics")) {
         let duration = start_time.elapsed();
         metrics.dec_in_flight();
         let metrics_output = metrics.format_metrics();
         metrics.record_request(0, metrics_output.len() as u64, 200, duration);
         let body = http_body_util::Full::new(Bytes::from(metrics_output)).boxed();
+        return Ok(Response::builder()
+            .status(200)
+            .header("Content-Type", "text/plain")
+            .body(body)
+            .unwrap());
+    }
+
+    if is_health_request(&req, &config.health) {
+        let duration = start_time.elapsed();
+        metrics.dec_in_flight();
+        metrics.record_request(0, 0, 200, duration);
+        let body = http_body_util::Full::new(Bytes::from("OK")).boxed();
         return Ok(Response::builder()
             .status(200)
             .header("Content-Type", "text/plain")
@@ -860,8 +872,18 @@ fn is_websocket_request(req: &Request<Incoming>) -> bool {
     false
 }
 
-fn is_metrics_request(req: &Request<Incoming>) -> bool {
-    req.uri().path() == "/metrics"
+fn is_metrics_request(req: &Request<Incoming>, endpoint: &str) -> bool {
+    req.uri().path() == endpoint
+}
+
+fn is_health_request(req: &Request<Incoming>, health_config: &crate::config::HealthConfig) -> bool {
+    if health_config.enabled == Some(false) {
+        return false;
+    }
+    let path = req.uri().path();
+    let liveness_path = health_config.liveness_path.as_deref().unwrap_or("/health/live");
+    let readiness_path = health_config.readiness_path.as_deref().unwrap_or("/health/ready");
+    path == liveness_path || path == readiness_path
 }
 
 fn handle_acme_challenge(

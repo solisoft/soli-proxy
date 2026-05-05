@@ -39,6 +39,14 @@ pub struct TomlConfig {
     pub apps: Option<AppsTomlConfig>,
     #[serde(default)]
     pub limits: Option<LimitsTomlConfig>,
+    #[serde(default)]
+    pub health: Option<HealthConfig>,
+    #[serde(default)]
+    pub metrics: Option<MetricsConfig>,
+    #[serde(default)]
+    pub logging: Option<LoggingConfig>,
+    #[serde(default)]
+    pub rate_limiting: Option<RateLimitingConfig>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -156,6 +164,10 @@ pub struct Config {
     pub rules: Vec<ProxyRule>,
     pub global_scripts: Vec<String>,
     pub limits: LimitsConfig,
+    pub health: HealthConfig,
+    pub metrics: MetricsConfig,
+    pub logging: LoggingConfig,
+    pub rate_limiting: RateLimitingConfig,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
@@ -164,6 +176,37 @@ pub struct LimitsConfig {
     pub max_request_size: Option<usize>,
     pub keep_alive_timeout: Option<u64>,
     pub request_timeout: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct HealthConfig {
+    pub enabled: Option<bool>,
+    pub liveness_path: Option<String>,
+    pub readiness_path: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct MetricsConfig {
+    pub enabled: Option<bool>,
+    pub endpoint: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct LoggingConfig {
+    pub level: Option<String>,
+    pub format: Option<String>,
+    pub output: Option<String>,
+    pub include_request_body: Option<bool>,
+    pub include_response_body: Option<bool>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct RateLimitingConfig {
+    pub enabled: Option<bool>,
+    pub strategy: Option<String>,
+    pub requests_per_second: Option<u64>,
+    pub burst_size: Option<u64>,
+    pub redis_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
@@ -511,6 +554,10 @@ realm = "Restricted"
                 keep_alive_timeout: toml_config.limits.as_ref().and_then(|l| l.keep_alive_timeout),
                 request_timeout: toml_config.limits.as_ref().and_then(|l| l.request_timeout),
             },
+            health: toml_config.health.unwrap_or_default(),
+            metrics: toml_config.metrics.unwrap_or_default(),
+            logging: toml_config.logging.unwrap_or_default(),
+            rate_limiting: toml_config.rate_limiting.unwrap_or_default(),
         })
     }
 
