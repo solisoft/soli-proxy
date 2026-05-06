@@ -712,6 +712,32 @@ async fn handle_request(
         return Ok(response);
     }
 
+    // HTTP to HTTPS redirect when TLS is off and force_https is enabled
+    if !is_tls && config.tls.force_https {
+        let host = req
+            .uri()
+            .host()
+            .or(req.headers().get("host").and_then(|v| v.to_str().ok()))
+            .unwrap_or("localhost");
+        let path = req.uri().path();
+        let query = req
+            .uri()
+            .query()
+            .map(|q| format!("?{}", q))
+            .unwrap_or_default();
+        let location = format!("https://{}{}{}", host, path, query);
+        metrics.dec_in_flight();
+        return Ok(Response::builder()
+            .status(308)
+            .header("Location", &location)
+            .header(
+                "Strict-Transport-Security",
+                "max-age=63072000; includeSubDomains",
+            )
+            .body(http_body_util::Full::new(Bytes::new()).boxed())
+            .unwrap());
+    }
+
     // Body size limit check
     if let Some(max_size) = config.limits.max_request_size {
         let content_length = req

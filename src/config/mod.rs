@@ -169,6 +169,12 @@ impl Default for ServerConfig {
 pub struct TlsConfig {
     pub mode: String,
     pub cache_dir: String,
+    #[serde(default = "default_force_https")]
+    pub force_https: bool,
+}
+
+fn default_force_https() -> bool {
+    true
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
