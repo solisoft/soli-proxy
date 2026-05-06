@@ -296,6 +296,12 @@ async fn proxy_to_admin_app(req: Request<Incoming>, state: &Arc<AdminState>) -> 
         Err(_) => return error_response(500, "Failed to build proxy URI"),
     };
 
+    // Strip auth credentials before forwarding to admin app — they were already
+    // validated by check_auth and do not need to propagate to the backend.
+    parts.headers.remove("authorization");
+    parts.headers.remove("proxy-authorization");
+    parts.headers.remove("x-api-key");
+
     let proxy_req = Request::from_parts(parts, body);
 
     let mut connector = HttpConnector::new();
@@ -368,7 +374,10 @@ async fn proxy_websocket_to_admin_app(
             | "connection"
             | "sec-websocket-key"
             | "sec-websocket-version"
-            | "sec-websocket-protocol" => continue,
+            | "sec-websocket-protocol"
+            | "authorization"
+            | "proxy-authorization"
+            | "x-api-key" => continue,
             _ => {}
         }
         if let Ok(v) = value.to_str() {
