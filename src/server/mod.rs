@@ -833,6 +833,12 @@ async fn handle_request(
     let is_websocket = is_websocket_request(&req);
 
     if is_websocket {
+        if let Some(matched) = find_matching_rule(&req, &config.rules) {
+            if !matched.auth.is_empty() && !verify_basic_auth(&req, &matched.auth) {
+                metrics.dec_in_flight();
+                return Ok(create_auth_required_response());
+            }
+        }
         return handle_websocket_request(
             req,
             client,
