@@ -245,7 +245,7 @@ pub fn get_route(state: &Arc<AdminState>, index: usize) -> Response<BoxBody> {
 pub fn get_metrics(state: &Arc<AdminState>) -> Response<BoxBody> {
     let metrics_text = state.metrics.format_metrics();
     let bytes = bytes::Bytes::from(metrics_text);
-    super::cors_headers(Response::builder())
+    Response::builder()
         .status(200)
         .header("Content-Type", "text/plain")
         .body(http_body_util::Full::new(bytes).boxed())
@@ -438,7 +438,6 @@ pub async fn sse_app_events(state: Arc<AdminState>) -> Response<BoxBody> {
         .header("Content-Type", "text/event-stream")
         .header("Cache-Control", "no-cache")
         .header("Connection", "keep-alive")
-        .header("Access-Control-Allow-Origin", "*")
         .body(body.boxed())
         .unwrap()
 }

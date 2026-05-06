@@ -28,21 +28,9 @@ pub struct AdminState {
     pub app_manager: Option<Arc<AppManager>>,
 }
 
-pub(crate) fn cors_headers(
-    builder: hyper::http::response::Builder,
-) -> hyper::http::response::Builder {
-    builder
-        .header("Access-Control-Allow-Origin", "*")
-        .header(
-            "Access-Control-Allow-Methods",
-            "GET, POST, PUT, DELETE, OPTIONS",
-        )
-        .header("Access-Control-Allow-Headers", "Content-Type, X-Api-Key")
-}
-
 fn json_response(status: u16, body: serde_json::Value) -> Response<BoxBody> {
     let bytes = Bytes::from(serde_json::to_string(&body).unwrap());
-    cors_headers(Response::builder())
+    Response::builder()
         .status(status)
         .header("Content-Type", "application/json")
         .body(http_body_util::Full::new(bytes).boxed())
@@ -58,16 +46,8 @@ fn created_response(data: serde_json::Value) -> Response<BoxBody> {
 }
 
 fn no_content_response() -> Response<BoxBody> {
-    cors_headers(Response::builder())
+    Response::builder()
         .status(204)
-        .body(http_body_util::Full::new(Bytes::new()).boxed())
-        .unwrap()
-}
-
-fn preflight_response() -> Response<BoxBody> {
-    cors_headers(Response::builder())
-        .status(204)
-        .header("Access-Control-Max-Age", "86400")
         .body(http_body_util::Full::new(Bytes::new()).boxed())
         .unwrap()
 }
@@ -153,12 +133,13 @@ async fn handle_admin_request(
     let method = req.method().clone();
     let path = req.uri().path().to_string();
 
-    // Handle CORS preflight
-    if method == Method::OPTIONS {
-        return Ok(preflight_response());
-    }
-
     let response = match (method.clone(), path.as_str()) {
+        // CORS is intentionally not enabled on the admin API. Browsers send
+        // OPTIONS as a preflight; without `Access-Control-Allow-Origin` they
+        // will fail the cross-origin request. Returning 405 directly avoids
+        // proxying the preflight to the bundled _admin app.
+        (Method::OPTIONS, _) => error_response(405, "Method not allowed"),
+
         // Phase 1: Read-only endpoints
         (Method::GET, "/api/v1/status") => handlers::get_status(&state).await,
         (Method::GET, "/api/v1/config") => handlers::get_config(&state),
@@ -610,11 +591,7 @@ mod tests {
 
     #[test]
     fn auth_configured_recognizes_api_key() {
-        assert!(admin_auth_configured(
-            &Some("secret".into()),
-            &None,
-            &None,
-        ));
+        assert!(admin_auth_configured(&Some("secret".into()), &None, &None,));
     }
 
     #[test]
