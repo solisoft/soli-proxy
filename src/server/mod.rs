@@ -79,10 +79,6 @@ async fn record_app_metrics(
     }
 }
 
-/// Pre-parsed header value for X-Forwarded-For to avoid parsing on every request
-static X_FORWARDED_FOR_VALUE: std::sync::LazyLock<HeaderValue> =
-    std::sync::LazyLock::new(|| HeaderValue::from_static("127.0.0.1"));
-
 static X_FORWARDED_PROTO_HTTPS: std::sync::LazyLock<HeaderValue> =
     std::sync::LazyLock::new(|| HeaderValue::from_static("https"));
 static X_FORWARDED_PROTO_HTTP: std::sync::LazyLock<HeaderValue> =
@@ -1758,9 +1754,14 @@ async fn handle_regular_request(
                     parts.extensions = http::Extensions::new();
 
                     let mut request = Request::from_parts(parts, body);
-                    request
-                        .headers_mut()
-                        .insert("X-Forwarded-For", X_FORWARDED_FOR_VALUE.clone());
+                    request.headers_mut().insert(
+                        "X-Forwarded-For",
+                        peer_addr
+                            .map(|addr| addr.ip().to_string())
+                            .unwrap_or_default()
+                            .parse()
+                            .unwrap_or_else(|_| HeaderValue::from_static("")),
+                    );
                     request.headers_mut().insert(
                         "X-Forwarded-Proto",
                         if is_tls {
