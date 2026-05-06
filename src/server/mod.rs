@@ -752,7 +752,7 @@ async fn handle_request(
             .and_then(|v| v.to_str().ok())
             .map(|v| v.to_lowercase().contains("chunked"))
             .unwrap_or(false);
-        if content_length > max_size || (content_length == 0 && !is_chunked) {
+        if content_length > max_size || is_chunked {
             metrics.dec_in_flight();
             let duration = start_time.elapsed();
             metrics.record_request(0, 0, 413, duration);
