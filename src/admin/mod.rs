@@ -4,6 +4,7 @@ use crate::app::AppManager;
 use crate::circuit_breaker::SharedCircuitBreaker;
 use crate::config::ConfigManager;
 use crate::metrics::SharedMetrics;
+use crate::server::IpRateLimiter;
 use anyhow::Result;
 use bytes::Bytes;
 use http_body_util::BodyExt;
@@ -13,6 +14,7 @@ use hyper::{Method, Request, Response};
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -26,6 +28,10 @@ pub struct AdminState {
     pub start_time: Instant,
     pub circuit_breaker: SharedCircuitBreaker,
     pub app_manager: Option<Arc<AppManager>>,
+    /// Shared per-IP rate limiter (same `Arc` as the proxy's, so the
+    /// configured budget is global across both surfaces). `None` when
+    /// `[rate_limiting].enabled` is unset/false.
+    pub rate_limiter: Option<Arc<IpRateLimiter>>,
 }
 
 fn json_response(status: u16, body: serde_json::Value) -> Response<BoxBody> {
@@ -136,7 +142,23 @@ fn extract_route_index(path: &str) -> Option<usize> {
 async fn handle_admin_request(
     req: Request<Incoming>,
     state: Arc<AdminState>,
+    peer_addr: Option<SocketAddr>,
 ) -> Result<Response<BoxBody>, std::convert::Infallible> {
+    // Per-IP rate limit applied BEFORE auth so a rejected client can't
+    // burn bcrypt rounds by replaying a wrong password under the limit.
+    if let (Some(limiter), Some(peer)) = (state.rate_limiter.as_ref(), peer_addr) {
+        if limiter.check_key(&peer.ip()).is_err() {
+            let body =
+                http_body_util::Full::new(Bytes::from_static(b"Rate limit exceeded")).boxed();
+            return Ok(Response::builder()
+                .status(429)
+                .header("Retry-After", "1")
+                .header("Content-Type", "text/plain")
+                .body(body)
+                .unwrap());
+        }
+    }
+
     let admin_config = &state.config_manager.get_config().admin;
     let api_key = admin_config.api_key.clone();
     let username = admin_config.username.clone();
@@ -616,11 +638,12 @@ pub async fn run_admin_server(state: Arc<AdminState>) -> Result<()> {
         match listener.accept().await {
             Ok((stream, _)) => {
                 let state = state.clone();
+                let peer_addr = stream.peer_addr().ok();
                 tokio::spawn(async move {
                     let io = TokioIo::new(stream);
                     let svc = service_fn(move |req| {
                         let state = state.clone();
-                        async move { handle_admin_request(req, state).await }
+                        async move { handle_admin_request(req, state, peer_addr).await }
                     });
                     if let Err(e) = hyper::server::conn::http1::Builder::new()
                         .serve_connection(io, svc)

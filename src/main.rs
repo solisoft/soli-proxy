@@ -702,6 +702,12 @@ async fn run_server(
     let admin_metrics = metrics.clone();
     let server_app_manager = app_manager.clone();
 
+    // Build the per-IP rate limiter once so the proxy and admin API share
+    // a single token bucket — the configured RPS budget is global, not
+    // per-listener.
+    let rate_limiter = soli_proxy::build_rate_limiter(&config_ref);
+    let admin_rate_limiter = rate_limiter.clone();
+
     let server = match tls_manager.server_config() {
         Some(config) => {
             let https_addr: SocketAddr = format!("0.0.0.0:{}", cfg.server.https_port).parse()?;
@@ -717,6 +723,7 @@ async fn run_server(
                 lua_engine,
                 circuit_breaker.clone(),
                 server_app_manager,
+                rate_limiter,
             )?
         }
         None => {
@@ -729,6 +736,7 @@ async fn run_server(
                 lua_engine,
                 circuit_breaker.clone(),
                 server_app_manager,
+                rate_limiter,
             )?
         }
     };
@@ -920,6 +928,7 @@ async fn run_server(
             start_time: Instant::now(),
             circuit_breaker: circuit_breaker.clone(),
             app_manager: app_manager.clone(),
+            rate_limiter: admin_rate_limiter,
         });
         tokio::spawn(async move {
             if let Err(e) = soli_proxy::run_admin_server(admin_state).await {

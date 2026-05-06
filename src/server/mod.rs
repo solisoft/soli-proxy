@@ -32,8 +32,11 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::timeout;
 use tokio_rustls::TlsAcceptor;
 
-/// Per-IP token-bucket rate limiter shared across the whole proxy.
-type IpRateLimiter = GovernorRateLimiter<
+/// Per-IP token-bucket rate limiter shared across the whole proxy AND
+/// the admin API. Re-exported from `crate::lib` so `main.rs` (which owns
+/// the construction site) can plumb a single Arc to both surfaces — that
+/// way the configured RPS budget is global, not per-listener.
+pub type IpRateLimiter = GovernorRateLimiter<
     IpAddr,
     governor::state::keyed::DefaultKeyedStateStore<IpAddr>,
     governor::clock::DefaultClock,
@@ -205,7 +208,7 @@ fn build_connection_limit(config: &ConfigManager) -> Option<Arc<Semaphore>> {
 /// non-positive (the resulting limiter would be useless or panic at quota
 /// construction). The same limiter is then shared across every accept loop
 /// so the cap is per-process, not per-listener.
-fn build_rate_limiter(config: &ConfigManager) -> Option<Arc<IpRateLimiter>> {
+pub fn build_rate_limiter(config: &ConfigManager) -> Option<Arc<IpRateLimiter>> {
     let cfg = config.get_config();
     let rl = &cfg.rate_limiting;
     if rl.enabled != Some(true) {
@@ -220,6 +223,7 @@ fn build_rate_limiter(config: &ConfigManager) -> Option<Arc<IpRateLimiter>> {
 }
 
 impl ProxyServer {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: Arc<ConfigManager>,
         shutdown: ShutdownCoordinator,
@@ -228,10 +232,10 @@ impl ProxyServer {
         lua_engine: OptionalLuaEngine,
         circuit_breaker: SharedCircuitBreaker,
         app_manager: Option<Arc<AppManager>>,
+        rate_limiter: Option<Arc<IpRateLimiter>>,
     ) -> Result<Self> {
         let num_rules = config.get_config().rules.len();
         let connection_limit = build_connection_limit(&config);
-        let rate_limiter = build_rate_limiter(&config);
         Ok(Self {
             config,
             shutdown,
@@ -259,10 +263,10 @@ impl ProxyServer {
         lua_engine: OptionalLuaEngine,
         circuit_breaker: SharedCircuitBreaker,
         app_manager: Option<Arc<AppManager>>,
+        rate_limiter: Option<Arc<IpRateLimiter>>,
     ) -> Result<Self> {
         let num_rules = config.get_config().rules.len();
         let connection_limit = build_connection_limit(&config);
-        let rate_limiter = build_rate_limiter(&config);
         Ok(Self {
             config,
             shutdown,

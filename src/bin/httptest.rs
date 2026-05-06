@@ -218,6 +218,7 @@ async fn main() {
         lua_engine,
         cb.clone(),
         None,
+        None,
     )
     .expect("failed to create proxy server");
 
@@ -233,6 +234,7 @@ async fn main() {
         start_time: Instant::now(),
         circuit_breaker: cb,
         app_manager: None,
+        rate_limiter: None,
     });
     tokio::spawn(async move {
         if let Err(e) = run_admin_server(admin_state).await {
