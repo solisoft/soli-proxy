@@ -2,6 +2,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
+use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -20,6 +21,9 @@ pub struct PortAllocator {
     app_slots: HashMap<(String, String), u16>,
 }
 
+const DEFAULT_PORT_RANGE_START: u16 = 30000;
+const DEFAULT_PORT_RANGE_END: u16 = 40000;
+
 impl PortAllocator {
     pub fn new() -> Self {
         Self {
@@ -29,7 +33,12 @@ impl PortAllocator {
     }
 
     pub fn allocate(&mut self, app_name: &str, slot: &str) -> Result<u16> {
-        self.allocate_with_range(app_name, slot, 1, 65535)
+        self.allocate_with_range(
+            app_name,
+            slot,
+            DEFAULT_PORT_RANGE_START,
+            DEFAULT_PORT_RANGE_END,
+        )
     }
 
     pub fn allocate_with_range(
@@ -66,9 +75,13 @@ impl PortAllocator {
         port_range_end: u16,
     ) -> Result<u16> {
         for port in port_range_start..=port_range_end {
-            if !self.used_ports.contains_key(&port) {
-                return Ok(port);
+            if self.used_ports.contains_key(&port) {
+                continue;
             }
+            if TcpListener::bind(("127.0.0.1", port)).is_err() {
+                continue;
+            }
+            return Ok(port);
         }
         anyhow::bail!(
             "No available ports found in range {}-{}",
@@ -112,7 +125,13 @@ impl PortManager {
     }
 
     pub async fn allocate(&self, app_name: &str, slot: &str) -> Result<u16> {
-        self.allocate_with_range(app_name, slot, 1, 65535).await
+        self.allocate_with_range(
+            app_name,
+            slot,
+            DEFAULT_PORT_RANGE_START,
+            DEFAULT_PORT_RANGE_END,
+        )
+        .await
     }
 
     pub async fn allocate_with_range(
