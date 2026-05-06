@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fmt;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -332,14 +333,18 @@ pub fn save_certificate(
     let cert_path = safe_cert_path(cache_dir, domain, ".cert.pem").context("invalid domain")?;
     let key_path = safe_cert_path(cache_dir, domain, ".key.pem").context("invalid domain")?;
 
-    std::fs::write(&cert_path, cert_pem)?;
-    std::fs::write(&key_path, key_pem)?;
-
+    let mut key_file = tempfile::NamedTempFile::new_in(cache_dir)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))?;
+        std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(0o600))?;
     }
+    key_file.write_all(key_pem.as_bytes())?;
+    key_file
+        .persist_noclobber(&key_path)
+        .context("Failed to persist private key")?;
+
+    std::fs::write(&cert_path, cert_pem)?;
 
     tracing::info!(
         "Saved certificate for {} to {}",

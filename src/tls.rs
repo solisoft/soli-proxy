@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use rcgen::{Certificate, CertificateParams};
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_rustls::rustls::ServerConfig;
@@ -53,15 +54,20 @@ impl TlsManager {
         let (cert_pem, key_pem) = generate_self_signed_cert(extra_sans)?;
 
         std::fs::create_dir_all(&self.cache_dir)?;
-        std::fs::write(&cert_path, &cert_pem).context("Failed to write self-signed certificate")?;
-        std::fs::write(&key_path, &key_pem).context("Failed to write self-signed key")?;
 
+        let mut key_file = tempfile::NamedTempFile::new_in(&self.cache_dir)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
+            std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(0o600))
                 .context("Failed to set restrictive permissions on private key")?;
         }
+        key_file.as_file_mut().write_all(key_pem.as_bytes())?;
+        key_file
+            .persist_noclobber(&key_path)
+            .context("Failed to persist private key")?;
+
+        std::fs::write(&cert_path, &cert_pem).context("Failed to write self-signed certificate")?;
 
         let ck = certified_key_from_pem(cert_pem.as_bytes(), key_pem.as_bytes())?;
         self.resolver.set_fallback(Arc::new(ck));

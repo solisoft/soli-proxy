@@ -65,6 +65,7 @@ clap = { version = "4", features = ["derive"] }
 ratatui = { version = "0.28", features = ["serde"] }
 crossterm = { version = "0.28", features = ["serde"] }
 rpassword = "7"
+tempfile = "3"
 
 [features]
 default = ["scripting"]
