@@ -213,7 +213,22 @@ pub async fn issue_certificate(
         .map_err(|e| anyhow::anyhow!("Failed to create ACME order: {:?}", e))?;
 
     // Collect challenge tokens to clean up later
-    let mut challenge_tokens: Vec<String> = Vec::new();
+    struct CleanupGuard {
+        store: ChallengeStore,
+        tokens: Vec<String>,
+    }
+    impl Drop for CleanupGuard {
+        fn drop(&mut self) {
+            let mut store = self.store.write().unwrap();
+            for token in self.tokens.drain(..) {
+                store.remove(&token);
+            }
+        }
+    }
+    let mut guard = CleanupGuard {
+        store: challenge_store.clone(),
+        tokens: Vec::new(),
+    };
 
     // Process authorizations using the stream-like API
     {
@@ -242,7 +257,7 @@ pub async fn issue_certificate(
                 store.insert(token.clone(), key_auth_str);
             }
 
-            challenge_tokens.push(token.clone());
+            guard.tokens.push(token.clone());
             tracing::info!("ACME challenge set for token: {}", token);
 
             // Signal that we're ready for validation
@@ -275,16 +290,6 @@ pub async fn issue_certificate(
         .await
         .map_err(|e| anyhow::anyhow!("Failed to retrieve certificate: {:?}", e))?
         .ok_or_else(|| anyhow::anyhow!("No certificate returned"))?;
-
-    // Clean up challenge tokens
-    {
-        let mut store = challenge_store
-            .write()
-            .map_err(|_| anyhow::anyhow!("Challenge store poisoned"))?;
-        for token in &challenge_tokens {
-            store.remove(token);
-        }
-    }
 
     Ok((cert_chain_pem, private_key_pem))
 }
