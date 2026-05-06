@@ -181,6 +181,12 @@ enum Commands {
     Update {
         #[arg(long)]
         reinstall: bool,
+
+        /// Skip SHA-256 verification of the downloaded release artifact.
+        /// Only use for releases predating checksum emission. The standard
+        /// path requires a `.sha256` sibling file in the GitHub release.
+        #[arg(long)]
+        allow_unverified: bool,
     },
     Deploy {
         #[arg(short, long, default_value = "./proxy.conf")]
@@ -220,8 +226,12 @@ fn main() -> Result<()> {
         return soli_proxy::tui::run_tui_with_config(&conf, &sites_dir, dev);
     }
 
-    if let Some(Commands::Update { reinstall }) = cli.command {
-        return run_update(reinstall);
+    if let Some(Commands::Update {
+        reinstall,
+        allow_unverified,
+    }) = cli.command
+    {
+        return run_update(reinstall, allow_unverified);
     }
 
     if let Some(Commands::Deploy { conf, app_name }) = cli.command {
@@ -260,7 +270,32 @@ fn main() -> Result<()> {
     })
 }
 
-fn run_update(reinstall: bool) -> Result<()> {
+/// Compute the SHA-256 digest of a file as lowercase hex.
+fn sha256_hex(path: &std::path::Path) -> Result<String> {
+    use sha2::Digest;
+    let bytes = std::fs::read(path)?;
+    let digest = sha2::Sha256::digest(&bytes);
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for b in digest {
+        hex.push_str(&format!("{:02x}", b));
+    }
+    Ok(hex)
+}
+
+/// Parse the leading 64-char lowercase-hex digest from a `.sha256` file body.
+/// Accepts both `<digest>` and `<digest>  <filename>` shasum-format lines.
+fn parse_sha256_file(content: &str) -> Result<String> {
+    let token = content
+        .split_whitespace()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("empty .sha256 file"))?;
+    if token.len() != 64 || !token.chars().all(|c| c.is_ascii_hexdigit()) {
+        anyhow::bail!("malformed .sha256 file: expected 64-char hex digest");
+    }
+    Ok(token.to_ascii_lowercase())
+}
+
+fn run_update(reinstall: bool, allow_unverified: bool) -> Result<()> {
     let repo = "solisoft/soli-proxy";
     let current_version = env!("CARGO_PKG_VERSION");
 
@@ -314,18 +349,16 @@ fn run_update(reinstall: bool) -> Result<()> {
         "https://github.com/{}/releases/download/{}/{}",
         repo, tag, tarball
     );
+    let sha256_url = format!("{}.sha256", download_url);
 
     let tmp_dir = Command::new("mktemp").arg("-d").output()?;
     let tmp_dir = String::from_utf8_lossy(&tmp_dir.stdout).trim().to_string();
+    let tarball_path = format!("{}/{}", tmp_dir, tarball);
+    let sha256_path = format!("{}.sha256", tarball_path);
 
     println!("Downloading {}...", download_url);
     let dl = Command::new("curl")
-        .args([
-            "-fsSL",
-            "-o",
-            &format!("{}/{}", tmp_dir, tarball),
-            &download_url,
-        ])
+        .args(["-fsSL", "-o", &tarball_path, &download_url])
         .output()?;
     if !dl.status.success() {
         let _ = fs::remove_dir_all(&tmp_dir);
@@ -335,9 +368,56 @@ fn run_update(reinstall: bool) -> Result<()> {
         );
     }
 
+    // Verify SHA-256. The release pipeline emits a sibling `.sha256` file for
+    // each tarball. If it is missing or does not match, refuse to install
+    // unless --allow-unverified is set. TLS to github.com is not enough
+    // protection against a compromised release artifact.
+    println!("Verifying SHA-256...");
+    let sha_dl = Command::new("curl")
+        .args(["-fsSL", "-o", &sha256_path, &sha256_url])
+        .output()?;
+
+    if sha_dl.status.success() {
+        let sha_content = std::fs::read_to_string(&sha256_path).unwrap_or_default();
+        let expected = parse_sha256_file(&sha_content).map_err(|e| {
+            let _ = fs::remove_dir_all(&tmp_dir);
+            anyhow::anyhow!("Could not parse {}: {}", sha256_url, e)
+        })?;
+        let actual = sha256_hex(std::path::Path::new(&tarball_path)).map_err(|e| {
+            let _ = fs::remove_dir_all(&tmp_dir);
+            anyhow::anyhow!("Failed to hash downloaded tarball: {}", e)
+        })?;
+        if expected != actual {
+            let _ = fs::remove_dir_all(&tmp_dir);
+            anyhow::bail!(
+                "SHA-256 mismatch for {}\n  expected: {}\n  actual:   {}\n\
+                 Refusing to install. The release artifact may have been tampered with.",
+                tarball,
+                expected,
+                actual
+            );
+        }
+        println!("SHA-256 OK ({}).", actual);
+    } else if allow_unverified {
+        eprintln!(
+            "WARNING: no .sha256 sibling found at {}. \
+             Proceeding without verification because --allow-unverified was passed. \
+             A compromised release would install silently.",
+            sha256_url
+        );
+    } else {
+        let _ = fs::remove_dir_all(&tmp_dir);
+        anyhow::bail!(
+            "No .sha256 file found at {}. Refusing to install unverified binary.\n\
+             If you trust this release (e.g. it predates checksum emission), \
+             re-run with `--allow-unverified`.",
+            sha256_url
+        );
+    }
+
     println!("Extracting...");
     let tar = Command::new("tar")
-        .args(["xzf", &format!("{}/{}", tmp_dir, tarball), "-C", &tmp_dir])
+        .args(["xzf", &tarball_path, "-C", &tmp_dir])
         .output()?;
     if !tar.status.success() {
         let _ = fs::remove_dir_all(&tmp_dir);
@@ -373,15 +453,17 @@ fn run_update(reinstall: bool) -> Result<()> {
             .output()?;
 
         if !result.status.success() {
-            // Retry with sudo if permission denied
-            println!("Retrying with sudo...");
-            let result = Command::new("sudo")
-                .args(["install", "-m", "755", &new_binary, &*install_path_str])
-                .output()?;
-            if !result.status.success() {
-                let _ = fs::remove_dir_all(&tmp_dir);
-                anyhow::bail!("Failed to install binary to {}", install_path.display());
-            }
+            // We do NOT auto-escalate to sudo — silently invoking sudo from a
+            // background command is a sharp edge. Tell the user what to run.
+            let _ = fs::remove_dir_all(&tmp_dir);
+            anyhow::bail!(
+                "Failed to install binary to {}.\n\
+                 If this is a permission error, re-run as root or run:\n  \
+                 sudo install -m 755 {} {}",
+                install_path.display(),
+                new_binary,
+                install_path.display()
+            );
         }
 
         let _ = fs::remove_dir_all(&tmp_dir);
@@ -890,4 +972,60 @@ async fn run_server(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_sha256_file_accepts_bare_digest() {
+        let d = "abcd1234".repeat(8);
+        assert_eq!(parse_sha256_file(&d).unwrap(), d);
+    }
+
+    #[test]
+    fn parse_sha256_file_accepts_shasum_format() {
+        let d = "abcd1234".repeat(8);
+        let body = format!("{}  soli-proxy-linux-amd64.tar.gz\n", d);
+        assert_eq!(parse_sha256_file(&body).unwrap(), d);
+    }
+
+    #[test]
+    fn parse_sha256_file_normalizes_to_lowercase() {
+        let upper = "ABCD1234".repeat(8);
+        let lower = "abcd1234".repeat(8);
+        assert_eq!(parse_sha256_file(&upper).unwrap(), lower);
+    }
+
+    #[test]
+    fn parse_sha256_file_rejects_short_digest() {
+        assert!(parse_sha256_file("abcd1234").is_err());
+    }
+
+    #[test]
+    fn parse_sha256_file_rejects_non_hex() {
+        let bad = format!("{}xyzZ", "a".repeat(60));
+        assert!(parse_sha256_file(&bad).is_err());
+    }
+
+    #[test]
+    fn parse_sha256_file_rejects_empty() {
+        assert!(parse_sha256_file("").is_err());
+        assert!(parse_sha256_file("   \n").is_err());
+    }
+
+    #[test]
+    fn sha256_hex_matches_known_vector() {
+        // SHA-256("abc") = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("soli_proxy_sha256_test_{}.bin", std::process::id()));
+        std::fs::write(&path, b"abc").unwrap();
+        let hex = sha256_hex(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            hex,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
 }

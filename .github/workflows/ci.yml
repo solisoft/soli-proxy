@@ -171,11 +171,14 @@ jobs:
         run: |
           ls -la target/${{ matrix.target }}/release/soli-proxy
           tar -czf ${{ matrix.artifact }}.tar.gz -C target/${{ matrix.target }}/release soli-proxy
+          sha256sum ${{ matrix.artifact }}.tar.gz | awk '{print $1}' > ${{ matrix.artifact }}.tar.gz.sha256
 
       - name: Upload to release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload --clobber ${{ github.ref_name }} ${{ matrix.artifact }}.tar.gz
+        run: |
+          gh release upload --clobber ${{ github.ref_name }} ${{ matrix.artifact }}.tar.gz
+          gh release upload --clobber ${{ github.ref_name }} ${{ matrix.artifact }}.tar.gz.sha256
 
   publish-release:
     needs: [build-binaries]
