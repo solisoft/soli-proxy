@@ -88,6 +88,8 @@ static X_FORWARDED_PROTO_HTTPS: std::sync::LazyLock<HeaderValue> =
 static X_FORWARDED_PROTO_HTTP: std::sync::LazyLock<HeaderValue> =
     std::sync::LazyLock::new(|| HeaderValue::from_static("http"));
 
+const MAX_HTML_REWRITE_SIZE: usize = 10 * 1024 * 1024;
+
 /// Verify Basic Auth credentials against stored hashes
 /// Returns true if credentials are valid, false otherwise
 fn verify_basic_auth(req: &Request<Incoming>, auth_entries: &[crate::auth::BasicAuth]) -> bool {
@@ -697,7 +699,13 @@ async fn handle_request(
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
-        if content_length > max_size {
+        let is_chunked = req
+            .headers()
+            .get("transfer-encoding")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.to_lowercase().contains("chunked"))
+            .unwrap_or(false);
+        if content_length > max_size || (content_length == 0 && !is_chunked) {
             metrics.dec_in_flight();
             let duration = start_time.elapsed();
             metrics.record_request(0, 0, 413, duration);
@@ -1541,56 +1549,67 @@ async fn handle_regular_request(
                                 .map(|collected| collected.to_bytes())
                                 .unwrap_or_default();
 
-                            // Decompress gzip/deflate body before rewriting
-                            let is_gzip = parts
-                                .headers
-                                .get("content-encoding")
-                                .and_then(|v| v.to_str().ok())
-                                .map(|v| v.contains("gzip"))
-                                .unwrap_or(false);
-                            let is_deflate = parts
-                                .headers
-                                .get("content-encoding")
-                                .and_then(|v| v.to_str().ok())
-                                .map(|v| v.contains("deflate"))
-                                .unwrap_or(false);
+                            if body_bytes.len() <= MAX_HTML_REWRITE_SIZE {
+                                let is_gzip = parts
+                                    .headers
+                                    .get("content-encoding")
+                                    .and_then(|v| v.to_str().ok())
+                                    .map(|v| v.contains("gzip"))
+                                    .unwrap_or(false);
+                                let is_deflate = parts
+                                    .headers
+                                    .get("content-encoding")
+                                    .and_then(|v| v.to_str().ok())
+                                    .map(|v| v.contains("deflate"))
+                                    .unwrap_or(false);
 
-                            let raw_bytes = if is_gzip {
-                                use std::io::Read;
-                                let mut decoder = flate2::read::GzDecoder::new(&body_bytes[..]);
-                                let mut decoded = Vec::new();
-                                decoder.read_to_end(&mut decoded).unwrap_or_default();
-                                Bytes::from(decoded)
-                            } else if is_deflate {
-                                use std::io::Read;
-                                let mut decoder =
-                                    flate2::read::DeflateDecoder::new(&body_bytes[..]);
-                                let mut decoded = Vec::new();
-                                decoder.read_to_end(&mut decoded).unwrap_or_default();
-                                Bytes::from(decoded)
+                                let raw_bytes = if is_gzip {
+                                    use std::io::Read;
+                                    let mut decoder =
+                                        flate2::read::GzDecoder::new(&body_bytes[..]);
+                                    let mut decoded = Vec::new();
+                                    decoder.read_to_end(&mut decoded).unwrap_or_default();
+                                    Bytes::from(decoded)
+                                } else if is_deflate {
+                                    use std::io::Read;
+                                    let mut decoder =
+                                        flate2::read::DeflateDecoder::new(&body_bytes[..]);
+                                    let mut decoded = Vec::new();
+                                    decoder.read_to_end(&mut decoded).unwrap_or_default();
+                                    Bytes::from(decoded)
+                                } else {
+                                    body_bytes.clone()
+                                };
+
+                                let html = String::from_utf8_lossy(&raw_bytes);
+                                let rewritten = html
+                                    .replace("href=\"/", &format!("href=\"{}/", prefix))
+                                    .replace("src=\"/", &format!("src=\"{}/", prefix))
+                                    .replace("action=\"/", &format!("action=\"{}/", prefix));
+                                let rewritten_bytes = Bytes::from(rewritten);
+                                let mut parts = parts;
+                                parts.headers.remove("content-encoding");
+                                parts.headers.remove("content-length");
+                                parts.headers.insert(
+                                    "content-length",
+                                    rewritten_bytes.len().to_string().parse().unwrap(),
+                                );
+                                let boxed =
+                                    http_body_util::Full::new(rewritten_bytes).boxed();
+                                return Ok((
+                                    Response::from_parts(parts, boxed),
+                                    target_url,
+                                    route_scripts.clone(),
+                                ));
                             } else {
-                                body_bytes
-                            };
-
-                            let html = String::from_utf8_lossy(&raw_bytes);
-                            let rewritten = html
-                                .replace("href=\"/", &format!("href=\"{}/", prefix))
-                                .replace("src=\"/", &format!("src=\"{}/", prefix))
-                                .replace("action=\"/", &format!("action=\"{}/", prefix));
-                            let rewritten_bytes = Bytes::from(rewritten);
-                            let mut parts = parts;
-                            parts.headers.remove("content-encoding");
-                            parts.headers.remove("content-length");
-                            parts.headers.insert(
-                                "content-length",
-                                rewritten_bytes.len().to_string().parse().unwrap(),
-                            );
-                            let boxed = http_body_util::Full::new(rewritten_bytes).boxed();
-                            return Ok((
-                                Response::from_parts(parts, boxed),
-                                target_url,
-                                route_scripts.clone(),
-                            ));
+                                let body =
+                                    http_body_util::Full::new(body_bytes).boxed();
+                                return Ok((
+                                    Response::from_parts(parts, body),
+                                    target_url,
+                                    route_scripts.clone(),
+                                ));
+                            }
                         }
                     }
 
