@@ -113,14 +113,29 @@ fn verify_basic_auth(req: &Request<Incoming>, auth_entries: &[crate::auth::Basic
     let creds = String::from_utf8_lossy(&decoded);
 
     if let Some((username, password)) = creds.split_once(':') {
+        let username_bytes = username.as_bytes();
         for entry in auth_entries {
-            if entry.username == username && auth::verify_password(password, &entry.hash) {
+            if constant_time_eq(entry.username.as_bytes(), username_bytes)
+                && auth::verify_password(password, &entry.hash)
+            {
                 return true;
             }
         }
     }
 
     false
+}
+
+/// Constant-time byte comparison to prevent timing attacks on username comparison.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 /// Create 401 Unauthorized response with WWW-Authenticate header
