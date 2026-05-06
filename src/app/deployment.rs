@@ -16,7 +16,36 @@ pub struct ProcessExit {
     pub pid: u32,
 }
 
-/// Validate that a name is safe for use in filesystem paths.
+/// Validate that docker_options does not contain dangerous flags.
+/// Rejects options that could escape the container namespace.
+fn validate_docker_options(options: &str) -> Result<()> {
+    let dangerous = [
+        "--privileged",
+        "--pid=host",
+        "--pid=host ",
+        "--network=host",
+        "--network=host ",
+        "--userns=host",
+        "--userns=host ",
+        "--security-opt=seccomp=unconfined",
+        "--security-opt=seccomp=unconfined ",
+        "-v=/:/host",
+        "-v=/:/host ",
+        "--device=/dev/kmsg",
+        "--device=/dev/kmsg ",
+        "--cap-add",
+        "--cap-add=",
+        "--cap-drop",
+        "--cap-drop=",
+    ];
+    let opts_lower = options.to_lowercase();
+    for d in &dangerous {
+        if opts_lower.contains(d) {
+            anyhow::bail!("docker_options contains disallowed flag: {}", d);
+        }
+    }
+    Ok(())
+}
 /// Rejects empty strings, path separators, "..", and control characters.
 fn validate_path_component(name: &str, label: &str) -> Result<()> {
     if name.is_empty() {
@@ -266,6 +295,7 @@ impl DeploymentManager {
         ];
 
         if let Some(ref options) = app.config.docker_options {
+            validate_docker_options(options)?;
             docker_args.push(options.clone());
         }
 
