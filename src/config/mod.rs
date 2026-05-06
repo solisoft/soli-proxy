@@ -69,6 +69,9 @@ pub struct LimitsTomlConfig {
     pub max_request_size: Option<String>,
     pub keep_alive_timeout: Option<u64>,
     pub request_timeout: Option<u64>,
+    pub websocket_idle_timeout_secs: Option<u64>,
+    pub websocket_max_lifetime_secs: Option<u64>,
+    pub websocket_max_bytes_per_direction: Option<u64>,
 }
 
 pub fn parse_size(value: &str) -> Option<usize> {
@@ -208,6 +211,14 @@ pub struct LimitsConfig {
     pub max_request_size: Option<usize>,
     pub keep_alive_timeout: Option<u64>,
     pub request_timeout: Option<u64>,
+    /// Drop a forwarded WebSocket if either direction is silent for longer
+    /// than this many seconds. Default 300.
+    pub websocket_idle_timeout_secs: Option<u64>,
+    /// Absolute lifetime cap on a forwarded WebSocket. Default 3600 (1h).
+    pub websocket_max_lifetime_secs: Option<u64>,
+    /// Per-direction byte cap; closes the connection once exceeded.
+    /// Default 1_073_741_824 (1 GiB).
+    pub websocket_max_bytes_per_direction: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
@@ -610,6 +621,18 @@ realm = "Restricted"
                     .as_ref()
                     .and_then(|l| l.keep_alive_timeout),
                 request_timeout: toml_config.limits.as_ref().and_then(|l| l.request_timeout),
+                websocket_idle_timeout_secs: toml_config
+                    .limits
+                    .as_ref()
+                    .and_then(|l| l.websocket_idle_timeout_secs),
+                websocket_max_lifetime_secs: toml_config
+                    .limits
+                    .as_ref()
+                    .and_then(|l| l.websocket_max_lifetime_secs),
+                websocket_max_bytes_per_direction: toml_config
+                    .limits
+                    .as_ref()
+                    .and_then(|l| l.websocket_max_bytes_per_direction),
             },
             health: toml_config.health.unwrap_or_default(),
             metrics: toml_config.metrics.unwrap_or_default(),

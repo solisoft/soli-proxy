@@ -203,6 +203,48 @@ fn build_connection_limit(config: &ConfigManager) -> Option<Arc<Semaphore>> {
         .map(|n| Arc::new(Semaphore::new(n as usize)))
 }
 
+/// Forward one half of a bidirectional WebSocket connection (reader→writer)
+/// with three DoS guards: idle-read timeout, absolute lifetime deadline,
+/// and a per-direction byte cap. Returns when any guard trips, when EOF
+/// is observed, or when the writer errors. Used by both the proxy and the
+/// admin app passthrough.
+pub(crate) async fn forward_ws_half<R, W>(
+    mut reader: R,
+    mut writer: W,
+    idle_timeout: Duration,
+    deadline: std::time::Instant,
+    max_bytes: u64,
+) -> tokio::io::Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut buf = [0u8; 16 * 1024];
+    let mut total: u64 = 0;
+    loop {
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return Ok(());
+        }
+        let until_deadline = deadline.saturating_duration_since(now);
+        let next_timeout = std::cmp::min(idle_timeout, until_deadline);
+
+        let n = match tokio::time::timeout(next_timeout, reader.read(&mut buf)).await {
+            Ok(Ok(0)) => return Ok(()),
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => return Err(e),
+            Err(_) => return Ok(()),
+        };
+        let new_total = total.saturating_add(n as u64);
+        if new_total > max_bytes {
+            return Ok(());
+        }
+        total = new_total;
+        writer.write_all(&buf[..n]).await?;
+    }
+}
+
 /// Build a per-IP token-bucket rate limiter from the [rate_limiting] config
 /// section. Returns `None` when disabled or when the configured quota is
 /// non-positive (the resulting limiter would be useless or panic at quota
@@ -1400,13 +1442,24 @@ async fn handle_websocket_request(
     // Reunite the backend halves
     let backend_stream = backend_read.reunite(backend_write).unwrap();
 
+    // Snapshot WS limits while we still have access to `config` (the spawned
+    // task captures only what's needed by-value).
+    let ws_idle = Duration::from_secs(config.limits.websocket_idle_timeout_secs.unwrap_or(300));
+    let ws_lifetime =
+        Duration::from_secs(config.limits.websocket_max_lifetime_secs.unwrap_or(3600));
+    let ws_max_bytes = config
+        .limits
+        .websocket_max_bytes_per_direction
+        .unwrap_or(1_073_741_824);
+    let ws_deadline = std::time::Instant::now() + ws_lifetime;
+
     // Spawn the bidirectional copy task
     tokio::spawn(async move {
         match client_upgrade.await {
             Ok(upgraded) => {
                 let mut client_stream = TokioIo::new(upgraded);
-                let (mut br, mut bw) = tokio::io::split(backend_stream);
-                let (mut cr, mut cw) = tokio::io::split(&mut client_stream);
+                let (br, bw) = tokio::io::split(backend_stream);
+                let (cr, mut cw) = tokio::io::split(&mut client_stream);
 
                 // Forward any trailing WebSocket data captured in the 101 read
                 if let Some(data) = trailing_data {
@@ -1418,10 +1471,15 @@ async fn handle_websocket_request(
                     }
                 }
 
-                let _ = tokio::join!(
-                    tokio::io::copy(&mut br, &mut cw),
-                    tokio::io::copy(&mut cr, &mut bw),
-                );
+                // Run both halves with the configured idle-timeout, lifetime
+                // deadline, and byte cap. select! ensures that as soon as
+                // either direction terminates (EOF, timeout, byte cap, or
+                // error), the other half is dropped — a half-closed forwarder
+                // is useless and would otherwise hold both ends open.
+                tokio::select! {
+                    _ = forward_ws_half(br, cw, ws_idle, ws_deadline, ws_max_bytes) => {},
+                    _ = forward_ws_half(cr, bw, ws_idle, ws_deadline, ws_max_bytes) => {},
+                }
             }
             Err(e) => {
                 tracing::error!("WebSocket client upgrade failed: {}", e);

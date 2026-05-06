@@ -526,13 +526,24 @@ async fn proxy_websocket_to_admin_app(
     // Reunite the backend halves
     let backend_stream = backend_read.reunite(backend_write).unwrap();
 
+    // Snapshot WS limits from the shared config — same defaults as the proxy
+    // path so a single [limits] section governs both.
+    let limits = &state.config_manager.get_config().limits;
+    let ws_idle = std::time::Duration::from_secs(limits.websocket_idle_timeout_secs.unwrap_or(300));
+    let ws_lifetime =
+        std::time::Duration::from_secs(limits.websocket_max_lifetime_secs.unwrap_or(3600));
+    let ws_max_bytes = limits
+        .websocket_max_bytes_per_direction
+        .unwrap_or(1_073_741_824);
+    let ws_deadline = std::time::Instant::now() + ws_lifetime;
+
     // Spawn the bidirectional copy task
     tokio::spawn(async move {
         match client_upgrade.await {
             Ok(upgraded) => {
                 let mut client_stream = TokioIo::new(upgraded);
-                let (mut br, mut bw) = tokio::io::split(backend_stream);
-                let (mut cr, mut cw) = tokio::io::split(&mut client_stream);
+                let (br, bw) = tokio::io::split(backend_stream);
+                let (cr, mut cw) = tokio::io::split(&mut client_stream);
 
                 // Forward any trailing WebSocket data captured in the 101 read
                 if let Some(data) = trailing_data {
@@ -544,10 +555,10 @@ async fn proxy_websocket_to_admin_app(
                     }
                 }
 
-                let _ = tokio::join!(
-                    tokio::io::copy(&mut br, &mut cw),
-                    tokio::io::copy(&mut cr, &mut bw),
-                );
+                tokio::select! {
+                    _ = crate::server::forward_ws_half(br, cw, ws_idle, ws_deadline, ws_max_bytes) => {},
+                    _ = crate::server::forward_ws_half(cr, bw, ws_idle, ws_deadline, ws_max_bytes) => {},
+                }
             }
             Err(e) => {
                 tracing::error!("WebSocket client upgrade failed: {}", e);
