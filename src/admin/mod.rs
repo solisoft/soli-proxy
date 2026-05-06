@@ -67,6 +67,20 @@ fn unauthorized_response(use_basic_auth: bool) -> Response<BoxBody> {
     builder.body(body).unwrap()
 }
 
+/// Byte-equal in time independent of where (or whether) the inputs differ.
+/// `==` short-circuits on the first mismatching byte, which leaks key
+/// prefix information through response timing on a network-reachable port.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 fn check_auth(
     req: &Request<Incoming>,
     api_key: &Option<String>,
@@ -83,7 +97,7 @@ fn check_auth(
                 .headers()
                 .get("X-Api-Key")
                 .and_then(|v| v.to_str().ok())
-                .is_some_and(|v| v == key)
+                .is_some_and(|v| constant_time_eq(v.as_bytes(), key.as_bytes()))
         {
             return true;
         }
@@ -588,6 +602,26 @@ pub async fn run_admin_server(state: Arc<AdminState>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn constant_time_eq_matches_equal_inputs() {
+        assert!(constant_time_eq(b"abcdef", b"abcdef"));
+        assert!(constant_time_eq(b"", b""));
+    }
+
+    #[test]
+    fn constant_time_eq_rejects_different_inputs() {
+        assert!(!constant_time_eq(b"abcdef", b"abcdeg"));
+        assert!(!constant_time_eq(b"abcdef", b"Abcdef"));
+        assert!(!constant_time_eq(b"abcdef", b"zbcdef"));
+    }
+
+    #[test]
+    fn constant_time_eq_rejects_different_lengths() {
+        assert!(!constant_time_eq(b"abc", b"abcd"));
+        assert!(!constant_time_eq(b"abcd", b"abc"));
+        assert!(!constant_time_eq(b"", b"a"));
+    }
 
     #[test]
     fn auth_configured_recognizes_api_key() {
