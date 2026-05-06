@@ -551,6 +551,17 @@ pub async fn run_admin_server(state: Arc<AdminState>) -> Result<()> {
     let bind = admin_cfg.bind.clone();
     let addr: std::net::SocketAddr = bind.parse()?;
 
+    // Warn when admin API is exposed on non-loopback without TLS.
+    // Credentials (Basic-auth password or API key) transit in cleartext over HTTP.
+    if !addr.ip().is_loopback() {
+        tracing::warn!(
+            "Admin API is listening on a non-loopback address {} — \
+             HTTP Basic-auth passwords and API keys transit unencrypted. \
+             Bind to 127.0.0.1 or use a TLS-terminating proxy (e.g. ssh -L, nginx, haproxy).",
+            addr
+        );
+    }
+
     // Fail closed: refuse to expose the admin API on a non-loopback address
     // unless an api_key or username+password_hash is configured. Without auth,
     // any host that can reach the bind address gets full read/write access to
