@@ -1,5 +1,4 @@
 use soli_proxy::auth::generate_hash;
-use std::io::{self, Write};
 
 fn main() {
     println!("Soli Proxy - Password Hasher");
@@ -38,33 +37,30 @@ fn main() {
 
 fn parse_password(args: &[String]) -> Option<String> {
     if args.len() < 2 {
-        // No args - prompt interactively
-        print!("Enter password: ");
-        io::stdout().flush().unwrap();
-        let mut input = String::new();
-        io::stdin().read_line(&mut input).unwrap();
-        return Some(input.trim().to_string());
+        // No args - prompt interactively using no-echo input
+        let password = rpassword::read_password().expect("Failed to read password");
+        return Some(password);
     }
 
     match args[1].as_str() {
         "--help" | "-h" => None,
-        arg if arg.starts_with("--password=") => {
-            // --password=VALUE
-            Some(arg.strip_prefix("--password=")?.to_string())
-        }
-        "--password" => {
-            // --password VALUE (requires next arg)
+        "--unsafe-cli-password" => {
+            // Explicitly allow CLI password (warns about argv/syslog exposure)
             if args.len() >= 3 {
+                eprintln!("WARNING: Passing passwords via command line exposes them in argv, shell history, and process listings.");
+                eprintln!(
+                    "WARNING: Use interactive mode (no arguments) for safer password entry.\n"
+                );
                 Some(args[2].clone())
             } else {
-                eprintln!("Error: --password requires a value\n");
+                eprintln!("Error: --unsafe-cli-password requires a password argument\n");
                 None
             }
         }
-        // Positional argument (password directly)
-        p if !p.starts_with('-') => Some(p.to_string()),
         _ => {
-            eprintln!("Error: Unknown argument: {}\n", args[1]);
+            eprintln!("Error: Passing passwords via command line arguments is not supported.");
+            eprintln!("Run without arguments to use secure interactive prompt, or");
+            eprintln!("pass --unsafe-cli-password PASSWORD to explicitly acknowledge the risk.\n");
             None
         }
     }
@@ -72,18 +68,14 @@ fn parse_password(args: &[String]) -> Option<String> {
 
 fn print_help() {
     println!("Usage:");
-    println!("  soli-proxy hash-password [PASSWORD]");
-    println!("  soli-proxy hash-password --password=PASSWORD");
+    println!("  soli-proxy hash-password");
     println!();
     println!("Options:");
-    println!("  PASSWORD          Password to hash (prompts if not provided)");
-    println!("  --password=VALUE  Password via flag (equals syntax)");
-    println!("  --password VALUE  Password via flag (space syntax)");
-    println!("  --help, -h        Show this help message");
+    println!("  (no arguments)     Secure interactive prompt (recommended)");
+    println!("  --unsafe-cli-password PASSWORD  Pass password via CLI (NOT recommended)");
+    println!("  --help, -h                        Show this help message");
     println!();
     println!("Examples:");
     println!("  soli-proxy hash-password");
-    println!("  soli-proxy hash-password mysecret123");
-    println!("  soli-proxy hash-password --password=mysecret123");
-    println!("  soli-proxy hash-password --password mysecret123");
+    println!("  soli-proxy hash-password --unsafe-cli-password mysecret123");
 }
