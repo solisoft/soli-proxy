@@ -284,7 +284,14 @@ impl LuaEngine {
         shared_state: &SharedState,
         exposed_env: &[String],
     ) -> anyhow::Result<Lua> {
-        let lua = Lua::new();
+        let lua = Lua::new_with(
+            mlua::StdLib::TABLE
+                | mlua::StdLib::STRING
+                | mlua::StdLib::MATH
+                | mlua::StdLib::UTF8
+                | mlua::StdLib::COROUTINE,
+            mlua::LuaOptions::default(),
+        )?;
 
         // Set instruction count hook for timeout protection
         let timeout_ms = hook_timeout.as_millis() as u32;
@@ -316,6 +323,21 @@ impl LuaEngine {
                 .set_name(name)
                 .exec()
                 .map_err(|e| anyhow::anyhow!("Error loading Lua script '{}': {}", name, e))?;
+        }
+
+        // Belt-and-braces: remove dangerous globals that shouldn't be accessible
+        let globals = lua.globals();
+        for dangerous in &[
+            "os",
+            "io",
+            "package",
+            "dofile",
+            "loadfile",
+            "load",
+            "loadstring",
+            "require",
+        ] {
+            let _ = globals.set(*dangerous, mlua::Value::Nil);
         }
 
         Ok(lua)
