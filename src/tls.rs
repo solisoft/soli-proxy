@@ -22,6 +22,16 @@ impl TlsManager {
         let cache_dir = PathBuf::from(&tls_config.cache_dir);
         std::fs::create_dir_all(&cache_dir).ok();
 
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(metadata) = std::fs::metadata(&cache_dir) {
+                let mut perms = metadata.permissions();
+                perms.set_mode(0o700);
+                std::fs::set_permissions(&cache_dir, perms).ok();
+            }
+        }
+
         let resolver = Arc::new(AcmeCertResolver::new());
 
         Ok(Self {

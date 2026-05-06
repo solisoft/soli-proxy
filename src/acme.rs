@@ -14,6 +14,7 @@ use std::sync::RwLock;
 use tokio_rustls::rustls::server::ResolvesServerCert;
 use tokio_rustls::rustls::sign::CertifiedKey;
 use tokio_rustls::rustls::ServerConfig;
+use x509_parser::prelude::GeneralName;
 
 use crate::config::{ConfigManagerTrait, LetsEncryptConfig};
 
@@ -371,6 +372,14 @@ pub fn load_certificate(cache_dir: &Path, domain: &str) -> Result<Option<Arc<Cer
 
     let ck = certified_key_from_pem(&std::fs::read(&cert_path)?, &std::fs::read(&key_path)?)?;
 
+    if !cert_contains_domain(&std::fs::read(&cert_path).unwrap_or_default(), domain) {
+        tracing::warn!(
+            "Certificate for {} does not contain domain in its SANs, skipping",
+            domain
+        );
+        return Ok(None);
+    }
+
     Ok(Some(Arc::new(ck)))
 }
 
@@ -391,6 +400,42 @@ pub fn certified_key_from_pem(cert_pem: &[u8], key_pem: &[u8]) -> Result<Certifi
         .map_err(|e| anyhow::anyhow!("Failed to build CertifiedKey: {:?}", e))?;
 
     Ok(certified_key)
+}
+
+/// Check if the certificate's SANs contain the expected domain.
+fn cert_contains_domain(cert_pem: &[u8], domain: &str) -> bool {
+    let certs: Vec<CertificateDer<'static>> =
+        match rustls_pemfile::certs(&mut &*cert_pem).collect::<std::result::Result<Vec<_>, _>>() {
+            Ok(c) if !c.is_empty() => c,
+            _ => return false,
+        };
+    match x509_parser::parse_x509_certificate(&certs[0]) {
+        Ok((_, cert)) => {
+            if let Ok(Some(sans)) = cert.subject_alternative_name() {
+                for san_value in &sans.value.general_names {
+                    match san_value {
+                        GeneralName::DNSName(dns) => {
+                            if let Ok(dns_str) = std::str::from_utf8(dns.as_ref()) {
+                                if dns_str == domain {
+                                    return true;
+                                }
+                            }
+                        }
+                        GeneralName::IPAddress(ip) => {
+                            if let Ok(ip_str) = std::str::from_utf8(ip) {
+                                if domain == ip_str || "127.0.0.1" == domain {
+                                    return true;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            false
+        }
+        Err(_) => false,
+    }
 }
 
 /// Check if a certificate for the given domain expires within 30 days.
