@@ -107,11 +107,31 @@ fn default_admin_enabled() -> Option<bool> {
     Some(true)
 }
 
+fn looks_like_bcrypt_hash(s: &str) -> bool {
+    s.starts_with("$2a$") || s.starts_with("$2b$") || s.starts_with("$2y$")
+}
+
 impl Default for AdminConfig {
     fn default() -> Self {
-        let _ = dotenv::dotenv();
+        let dotenv_loaded = dotenv::dotenv().is_ok();
         let username = std::env::var("ADMIN_USER").ok();
         let password_hash = std::env::var("ADMIN_PASSWORD").ok();
+
+        if dotenv_loaded {
+            tracing::debug!("Loaded environment from .env file");
+        }
+
+        if let Some(ref hash) = password_hash {
+            if !looks_like_bcrypt_hash(hash) {
+                tracing::warn!(
+                    "ADMIN_PASSWORD does not look like a valid bcrypt hash (expected $2a$/$2b$/$2y$ prefix). \
+                    The value was stored as-is and login attempts will fail. \
+                    Set ADMIN_PASSWORD_HASH instead, or use ADMIN_PASSWORD to supply a plaintext password \
+                    that will be hashed at startup."
+                );
+            }
+        }
+
         Self {
             enabled: Some(true),
             bind: "127.0.0.1:9090".to_string(),
