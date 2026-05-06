@@ -367,6 +367,10 @@ pub fn post_hash_password(_state: &Arc<AdminState>, body: &str) -> Response<BoxB
         return error_response(400, "Password cannot be empty");
     }
 
+    if req.password.len() > 1024 {
+        return error_response(400, "Password too long (max 1024 bytes)");
+    }
+
     let hash = auth::generate_hash(&req.password);
     ok_response(serde_json::json!({
         "hash": hash,

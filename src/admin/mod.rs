@@ -224,11 +224,17 @@ async fn handle_admin_request(
 
         // Phase 2: Mutation endpoints
         (Method::POST, "/api/v1/routes") => {
-            let body = read_body(req).await;
+            let body = match read_body(req).await {
+                Ok(b) => b,
+                Err(e) => return Ok(error_response(413, e)),
+            };
             handlers::post_route(&state, &body)
         }
         (Method::PUT, "/api/v1/config") => {
-            let body = read_body(req).await;
+            let body = match read_body(req).await {
+                Ok(b) => b,
+                Err(e) => return Ok(error_response(413, e)),
+            };
             handlers::put_config(&state, &body)
         }
 
@@ -239,7 +245,10 @@ async fn handle_admin_request(
         },
         (Method::PUT, p) if p.starts_with("/api/v1/routes/") => match extract_route_index(p) {
             Some(idx) => {
-                let body = read_body(req).await;
+                let body = match read_body(req).await {
+                    Ok(b) => b,
+                    Err(e) => return Ok(error_response(413, e)),
+                };
                 handlers::put_route(&state, idx, &body)
             }
             None => error_response(400, "Invalid route index"),
@@ -255,7 +264,10 @@ async fn handle_admin_request(
 
         // Utility endpoints
         (Method::POST, "/api/v1/hash-password") => {
-            let body = read_body(req).await;
+            let body = match read_body(req).await {
+                Ok(b) => b,
+                Err(e) => return Ok(error_response(413, e)),
+            };
             handlers::post_hash_password(&state, &body)
         }
 
@@ -534,10 +546,15 @@ async fn proxy_websocket_to_admin_app(
         .unwrap()
 }
 
-async fn read_body(req: Request<Incoming>) -> String {
-    match req.into_body().collect().await {
-        Ok(collected) => String::from_utf8_lossy(&collected.to_bytes()).to_string(),
-        Err(_) => String::new(),
+const MAX_ADMIN_REQUEST_BODY_SIZE: usize = 1024 * 1024; // 1MB
+
+async fn read_body(req: Request<Incoming>) -> Result<String, &'static str> {
+    let body = req.into_body();
+    let limited = http_body_util::Limited::new(body, MAX_ADMIN_REQUEST_BODY_SIZE);
+    match limited.collect().await {
+        Ok(collected) => Ok(String::from_utf8_lossy(&collected.to_bytes()).to_string()),
+        Err(e) if e.to_string().contains("body size limit") => Err("413 Payload Too Large"),
+        Err(_) => Ok(String::new()),
     }
 }
 
