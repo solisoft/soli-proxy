@@ -56,6 +56,13 @@ impl TlsManager {
         std::fs::write(&cert_path, &cert_pem).context("Failed to write self-signed certificate")?;
         std::fs::write(&key_path, &key_pem).context("Failed to write self-signed key")?;
 
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
+                .context("Failed to set restrictive permissions on private key")?;
+        }
+
         let ck = certified_key_from_pem(cert_pem.as_bytes(), key_pem.as_bytes())?;
         self.resolver.set_fallback(Arc::new(ck));
 
