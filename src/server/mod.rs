@@ -362,6 +362,29 @@ impl ProxyServer {
             }
         }
 
+        // Periodic GC for the rate-limiter dashmap when enabled. Without this,
+        // governor's keyed state store grows by one entry per unique IP that
+        // has ever hit the proxy and never shrinks. retain_recent evicts
+        // entries whose token state has been at full capacity for longer than
+        // the longest reasonable backoff (i.e. IPs that have gone silent).
+        if let Some(limiter) = self.rate_limiter.clone() {
+            let mut shutdown_rx = self.shutdown.subscribe();
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(Duration::from_secs(60));
+                // interval() fires immediately on first poll — skip that
+                // tick so we don't sweep the just-built (empty) map.
+                tick.tick().await;
+                loop {
+                    tokio::select! {
+                        _ = shutdown_rx.recv() => break,
+                        _ = tick.tick() => {
+                            limiter.retain_recent();
+                        }
+                    }
+                }
+            });
+        }
+
         tracing::info!(
             "HTTP/1.1 server listening on {} ({} accept loops)",
             http_addr,
