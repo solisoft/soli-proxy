@@ -1360,7 +1360,22 @@ async fn handle_regular_request(
             let (mut parts, body) = req.into_parts();
 
             // Move headers directly instead of cloning one by one
-            let uri: hyper::Uri = target_url.parse().expect("valid URI");
+            let uri = match target_url.parse::<hyper::Uri>() {
+                Ok(uri) => uri,
+                Err(e) => {
+                    tracing::warn!(
+                        "Invalid URI from Lua hook or target URL: {}: {}",
+                        target_url,
+                        e
+                    );
+                    let body = http_body_util::Full::new(Bytes::from("Bad Gateway")).boxed();
+                    return Ok((
+                        Response::builder().status(502).body(body).unwrap(),
+                        target_url,
+                        route_scripts,
+                    ));
+                }
+            };
             parts.uri = uri;
             parts.version = http::Version::HTTP_11;
             parts.extensions = http::Extensions::new();
@@ -1670,7 +1685,23 @@ async fn handle_regular_request(
                     let forwarded_host = h.clone();
 
                     let (mut parts, body) = req.into_parts();
-                    let uri: hyper::Uri = target_url.parse().expect("valid URI");
+                    let uri = match target_url.parse::<hyper::Uri>() {
+                        Ok(uri) => uri,
+                        Err(e) => {
+                            tracing::warn!(
+                                "Invalid URI in app-managed path: {}: {}",
+                                target_url,
+                                e
+                            );
+                            let body =
+                                http_body_util::Full::new(Bytes::from("Bad Gateway")).boxed();
+                            return Ok((
+                                Response::builder().status(502).body(body).unwrap(),
+                                target_url,
+                                vec![],
+                            ));
+                        }
+                    };
                     parts.uri = uri;
                     parts.version = http::Version::HTTP_11;
                     parts.extensions = http::Extensions::new();
