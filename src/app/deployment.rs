@@ -568,6 +568,18 @@ impl DeploymentManager {
         let user = app.config.user.as_ref().or(self.default_user.as_ref());
         let group = app.config.group.as_ref().or(self.default_group.as_ref());
 
+        #[cfg(unix)]
+        let proxy_is_root = unsafe { libc::geteuid() } == 0;
+
+        #[cfg(unix)]
+        if proxy_is_root && user.is_none() {
+            anyhow::bail!(
+                "Refusing to spawn {} as root: no user/group configured. \
+                 Set `user` in app.infos or default_user in [deployment], or run the proxy as non-root.",
+                app.config.name
+            );
+        }
+
         if let (Some(user), Some(group)) = (user, group) {
             let uid = resolve_user(user)?;
             let gid = resolve_group(group)?;
@@ -595,6 +607,8 @@ impl DeploymentManager {
         let mut child = unsafe {
             cmd.pre_exec(|| {
                 libc::setsid();
+                #[cfg(unix)]
+                libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
                 Ok(())
             })
             .spawn()?
