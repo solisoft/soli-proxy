@@ -112,7 +112,9 @@ fn check_auth(
                     {
                         let creds = String::from_utf8_lossy(&decoded);
                         if let Some((u, p)) = creds.split_once(':') {
-                            if u == user && crate::auth::verify_password(p, hash) {
+                            if constant_time_eq(u.as_bytes(), user.as_bytes())
+                                && crate::auth::verify_password(p, hash)
+                            {
                                 return true;
                             }
                         }
