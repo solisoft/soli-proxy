@@ -1155,7 +1155,12 @@ async fn handle_websocket_request(
     };
 
     let response_str = String::from_utf8_lossy(&response_buf[..n]);
-    if !response_str.contains("101") {
+    let status_ok = response_str
+        .lines()
+        .next()
+        .map(|l| l.starts_with("HTTP/1.1 101") || l.starts_with("HTTP/1.0 101"))
+        .unwrap_or(false);
+    if !status_ok {
         tracing::error!(
             "Backend rejected WebSocket upgrade: {}",
             response_str.lines().next().unwrap_or("")
