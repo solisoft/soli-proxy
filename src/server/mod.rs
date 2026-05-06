@@ -1582,6 +1582,22 @@ async fn handle_regular_request(
                                 };
 
                                 let html = String::from_utf8_lossy(&raw_bytes);
+                                if html.contains("<script")
+                                    && (html.contains("integrity=")
+                                        || html.contains("nonce="))
+                                {
+                                    tracing::warn!(
+                                        "Skipping HTML rewrite for prefix {} due to SRI/nonce attributes",
+                                        prefix
+                                    );
+                                    let body =
+                                        http_body_util::Full::new(raw_bytes).boxed();
+                                    return Ok((
+                                        Response::from_parts(parts, body),
+                                        target_url,
+                                        route_scripts.clone(),
+                                    ));
+                                }
                                 let rewritten = html
                                     .replace("href=\"/", &format!("href=\"{}/", prefix))
                                     .replace("src=\"/", &format!("src=\"{}/", prefix))
