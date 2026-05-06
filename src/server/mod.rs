@@ -11,6 +11,7 @@ use crate::pool::{ConnectionPool, ProxyClient};
 use crate::shutdown::ShutdownCoordinator;
 use anyhow::Result;
 use bytes::Bytes;
+use governor::{Quota, RateLimiter as GovernorRateLimiter};
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use hyper::header::HeaderValue;
@@ -20,7 +21,8 @@ use hyper::Response;
 use hyper_util::rt::TokioExecutor;
 use hyper_util::rt::TokioIo;
 use socket2::{Domain, Protocol, Socket, Type};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
+use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,6 +31,13 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::timeout;
 use tokio_rustls::TlsAcceptor;
+
+/// Per-IP token-bucket rate limiter shared across the whole proxy.
+type IpRateLimiter = GovernorRateLimiter<
+    IpAddr,
+    governor::state::keyed::DefaultKeyedStateStore<IpAddr>,
+    governor::clock::DefaultClock,
+>;
 
 #[cfg(feature = "scripting")]
 use crate::scripting::{LuaEngine, LuaRequest, RequestHookResult, RouteHookResult};
@@ -177,6 +186,9 @@ pub struct ProxyServer {
     /// semaphore therefore caps total simultaneous connections per process.
     /// `None` disables the cap (matches the prior behaviour).
     connection_limit: Option<Arc<Semaphore>>,
+    /// Per-IP rate limiter consulted at the top of every request. `None`
+    /// when `[rate_limiting].enabled` is unset/false.
+    rate_limiter: Option<Arc<IpRateLimiter>>,
 }
 
 fn build_connection_limit(config: &ConfigManager) -> Option<Arc<Semaphore>> {
@@ -186,6 +198,25 @@ fn build_connection_limit(config: &ConfigManager) -> Option<Arc<Semaphore>> {
         .max_connections
         .filter(|&n| n > 0)
         .map(|n| Arc::new(Semaphore::new(n as usize)))
+}
+
+/// Build a per-IP token-bucket rate limiter from the [rate_limiting] config
+/// section. Returns `None` when disabled or when the configured quota is
+/// non-positive (the resulting limiter would be useless or panic at quota
+/// construction). The same limiter is then shared across every accept loop
+/// so the cap is per-process, not per-listener.
+fn build_rate_limiter(config: &ConfigManager) -> Option<Arc<IpRateLimiter>> {
+    let cfg = config.get_config();
+    let rl = &cfg.rate_limiting;
+    if rl.enabled != Some(true) {
+        return None;
+    }
+    let rps = rl.requests_per_second?;
+    let burst = rl.burst_size.unwrap_or(rps);
+    let rps_nz = NonZeroU32::new(rps.min(u32::MAX as u64) as u32)?;
+    let burst_nz = NonZeroU32::new(burst.min(u32::MAX as u64).max(1) as u32)?;
+    let quota = Quota::per_second(rps_nz).allow_burst(burst_nz);
+    Some(Arc::new(GovernorRateLimiter::keyed(quota)))
 }
 
 impl ProxyServer {
@@ -200,6 +231,7 @@ impl ProxyServer {
     ) -> Result<Self> {
         let num_rules = config.get_config().rules.len();
         let connection_limit = build_connection_limit(&config);
+        let rate_limiter = build_rate_limiter(&config);
         Ok(Self {
             config,
             shutdown,
@@ -212,6 +244,7 @@ impl ProxyServer {
             app_manager,
             load_balancer: Arc::new(LoadBalancerState::new(num_rules)),
             connection_limit,
+            rate_limiter,
         })
     }
 
@@ -229,6 +262,7 @@ impl ProxyServer {
     ) -> Result<Self> {
         let num_rules = config.get_config().rules.len();
         let connection_limit = build_connection_limit(&config);
+        let rate_limiter = build_rate_limiter(&config);
         Ok(Self {
             config,
             shutdown,
@@ -241,6 +275,7 @@ impl ProxyServer {
             app_manager,
             load_balancer: Arc::new(LoadBalancerState::new(num_rules)),
             connection_limit,
+            rate_limiter,
         })
     }
 
@@ -267,6 +302,7 @@ impl ProxyServer {
             let am_clone = app_manager.clone();
             let lb_clone = self.load_balancer.clone();
             let cl_clone = self.connection_limit.clone();
+            let rl_clone = self.rate_limiter.clone();
 
             tokio::spawn(async move {
                 if let Err(e) = run_http_server(
@@ -280,6 +316,7 @@ impl ProxyServer {
                     am_clone,
                     lb_clone,
                     cl_clone,
+                    rl_clone,
                 )
                 .await
                 {
@@ -300,6 +337,7 @@ impl ProxyServer {
                 let am_clone = app_manager.clone();
                 let lb_clone = self.load_balancer.clone();
                 let cl_clone = self.connection_limit.clone();
+                let rl_clone = self.rate_limiter.clone();
 
                 tokio::spawn(async move {
                     if let Err(e) = run_https_server(
@@ -314,6 +352,7 @@ impl ProxyServer {
                         am_clone,
                         lb_clone,
                         cl_clone,
+                        rl_clone,
                     )
                     .await
                     {
@@ -360,6 +399,7 @@ async fn run_http_server(
     app_manager: Option<Arc<AppManager>>,
     load_balancer: Arc<LoadBalancerState>,
     connection_limit: Option<Arc<Semaphore>>,
+    rate_limiter: Option<Arc<IpRateLimiter>>,
 ) -> Result<()> {
     let listener = create_listener(addr)?;
     let client = ConnectionPool::new().client();
@@ -394,10 +434,11 @@ async fn run_http_server(
                     let am = app_manager.clone();
                     let lb = load_balancer.clone();
                     let sd = shutdown.clone();
+                    let rl = rate_limiter.clone();
                     tokio::spawn(async move {
                         let _permit = permit; // released when this task ends
                         if let Err(e) = handle_http11_connection(
-                            stream, client, config, metrics, cs, lua, cb, am, lb, sd,
+                            stream, client, config, metrics, cs, lua, cb, am, lb, sd, rl,
                         )
                         .await
                         {
@@ -429,6 +470,7 @@ async fn run_https_server(
     app_manager: Option<Arc<AppManager>>,
     load_balancer: Arc<LoadBalancerState>,
     connection_limit: Option<Arc<Semaphore>>,
+    rate_limiter: Option<Arc<IpRateLimiter>>,
 ) -> Result<()> {
     let listener = create_listener(addr)?;
     let client = ConnectionPool::new().client();
@@ -464,6 +506,7 @@ async fn run_https_server(
                     let am = app_manager.clone();
                     let lb = load_balancer.clone();
                     let sd = shutdown.clone();
+                    let rl = rate_limiter.clone();
                     tokio::spawn(async move {
                         let _permit = permit; // released when this task ends
                         const TLS_HANDSHAKE_TIMEOUT: tokio::time::Duration =
@@ -478,6 +521,7 @@ async fn run_https_server(
                                 metrics.inc_tls_connections();
                                 if let Err(e) = handle_https2_connection(
                                     tls_stream, client, config, metrics, cs, lua, cb, am, lb, sd,
+                                    rl,
                                 )
                                 .await
                                 {
@@ -515,6 +559,7 @@ async fn handle_http11_connection(
     app_manager: Option<Arc<AppManager>>,
     load_balancer: Arc<LoadBalancerState>,
     shutdown: ShutdownCoordinator,
+    rate_limiter: Option<Arc<IpRateLimiter>>,
 ) -> Result<()> {
     let peer_addr = stream.peer_addr().ok();
     let io = TokioIo::new(stream);
@@ -536,6 +581,7 @@ async fn handle_http11_connection(
             load_balancer.clone(),
             false,
             peer_addr,
+            rate_limiter.clone(),
         )
     });
 
@@ -587,6 +633,7 @@ async fn handle_https2_connection(
     app_manager: Option<Arc<AppManager>>,
     load_balancer: Arc<LoadBalancerState>,
     shutdown: ShutdownCoordinator,
+    rate_limiter: Option<Arc<IpRateLimiter>>,
 ) -> Result<()> {
     let is_h2 = stream.get_ref().1.alpn_protocol() == Some(b"h2");
 
@@ -609,6 +656,7 @@ async fn handle_https2_connection(
                 load_balancer.clone(),
                 true,
                 peer_addr,
+                rate_limiter.clone(),
             )
         });
         let conn = hyper::server::conn::http2::Builder::new(exec)
@@ -653,6 +701,7 @@ async fn handle_https2_connection(
                 load_balancer.clone(),
                 true,
                 peer_addr,
+                rate_limiter.clone(),
             )
         });
         let conn = match header_timeout {
@@ -758,15 +807,38 @@ async fn handle_request(
     load_balancer: Arc<LoadBalancerState>,
     is_tls: bool,
     peer_addr: Option<SocketAddr>,
+    rate_limiter: Option<Arc<IpRateLimiter>>,
 ) -> Result<Response<BoxBody>, hyper::Error> {
     let start_time = std::time::Instant::now();
     metrics.inc_in_flight();
     let config = config_manager.get_config();
 
-    // ACME challenge check — must come before all other routing
+    // ACME challenge check — must come before all other routing.
+    // ACME challenges originate from Let's Encrypt validators and are
+    // intentionally exempt from per-IP rate limits.
     if let Some(response) = handle_acme_challenge(&req, &challenge_store) {
         metrics.dec_in_flight();
         return Ok(response);
+    }
+
+    // Per-IP rate limiting. Applied after ACME so issuance can't be denied
+    // by a noisy neighbour, and before all routing so denied requests
+    // never touch upstream connection pools or Lua hooks. Requests with
+    // no observable peer (UNIX socket, error path) skip the check.
+    if let (Some(limiter), Some(peer)) = (rate_limiter.as_ref(), peer_addr) {
+        if limiter.check_key(&peer.ip()).is_err() {
+            metrics.dec_in_flight();
+            let duration = start_time.elapsed();
+            metrics.record_request(0, 0, 429, duration);
+            let body =
+                http_body_util::Full::new(Bytes::from_static(b"Rate limit exceeded")).boxed();
+            return Ok(Response::builder()
+                .status(429)
+                .header("Retry-After", "1")
+                .header("Content-Type", "text/plain")
+                .body(body)
+                .unwrap());
+        }
     }
 
     // HTTP to HTTPS redirect when TLS is off and force_https is enabled
