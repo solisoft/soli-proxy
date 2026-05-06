@@ -714,6 +714,20 @@ async fn handle_request(
         &req,
         config.metrics.endpoint.as_deref().unwrap_or("/metrics"),
     ) {
+        let is_loopback = peer_addr
+            .map(|a| a.ip().is_loopback())
+            .unwrap_or(false);
+        if !is_loopback {
+            let duration = start_time.elapsed();
+            metrics.dec_in_flight();
+            metrics.record_request(0, 0, 403, duration);
+            let body = http_body_util::Full::new(Bytes::from("Forbidden")).boxed();
+            return Ok(Response::builder()
+                .status(403)
+                .header("Content-Type", "text/plain")
+                .body(body)
+                .unwrap());
+        }
         let duration = start_time.elapsed();
         metrics.dec_in_flight();
         let metrics_output = metrics.format_metrics();
