@@ -569,11 +569,12 @@ impl LuaEngine {
         let idx = self.get_state_index();
         let lua = self.inner.states[idx].lock().unwrap();
 
-        match self.do_on_request(&lua, req) {
+        let result = self.do_on_request(&lua, req);
+        Self::cleanup_lua_state(&lua);
+        match result {
             Ok(result) => result,
             Err(e) => {
                 tracing::error!("Lua on_request error: {}", e);
-                // On error, continue with unmodified request
                 RequestHookResult::Continue(req.clone())
             }
         }
@@ -596,11 +597,43 @@ impl LuaEngine {
             return RequestHookResult::Continue(req.clone());
         }
 
-        match self.do_on_request(&lua, req) {
+        let result = self.do_on_request(&lua, req);
+        Self::cleanup_lua_state(&lua);
+        match result {
             Ok(result) => result,
             Err(e) => {
                 tracing::error!("Lua on_request error in {}: {}", script_name, e);
                 RequestHookResult::Continue(req.clone())
+            }
+        }
+    }
+
+    /// Remove script-defined globals after each hook call to prevent cross-request leakage.
+    /// Preserves built-in modules (log, base64, crypto, env, time, shared) and hook functions.
+    fn cleanup_lua_state(lua: &Lua) {
+        let globals = lua.globals();
+        let preserved: &[&str] = &[
+            "log",
+            "base64",
+            "crypto",
+            "env",
+            "time",
+            "shared",
+            "on_request",
+            "on_route",
+            "on_response",
+            "on_request_end",
+        ];
+        if let Ok(keys) = globals
+            .pairs::<mlua::Value, mlua::Value>()
+            .collect::<Result<Vec<_>, _>>()
+        {
+            for (key, _) in keys {
+                if let Ok(key_str) = key.to_string() {
+                    if !preserved.contains(&key_str.as_str()) {
+                        let _ = globals.set(key_str.as_str(), mlua::Value::Nil);
+                    }
+                }
             }
         }
     }
@@ -673,7 +706,10 @@ impl LuaEngine {
         }
 
         match self.do_on_route(&lua, req, matched_target) {
-            Ok(result) => result,
+            Ok(result) => {
+                Self::cleanup_lua_state(&lua);
+                result
+            }
             Err(e) => {
                 tracing::error!("Lua on_route error in {}: {}", script_name, e);
                 RouteHookResult::Default
@@ -713,7 +749,10 @@ impl LuaEngine {
         let lua = self.inner.states[idx].lock().unwrap();
 
         match self.do_on_response(&lua, req, status, headers) {
-            Ok(result) => result,
+            Ok(result) => {
+                Self::cleanup_lua_state(&lua);
+                result
+            }
             Err(e) => {
                 tracing::error!("Lua on_response error: {}", e);
                 ResponseMod::default()
@@ -741,7 +780,10 @@ impl LuaEngine {
         }
 
         match self.do_on_response(&lua, req, status, headers) {
-            Ok(result) => result,
+            Ok(result) => {
+                Self::cleanup_lua_state(&lua);
+                result
+            }
             Err(e) => {
                 tracing::error!("Lua on_response error in {}: {}", script_name, e);
                 ResponseMod::default()
