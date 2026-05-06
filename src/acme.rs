@@ -82,6 +82,7 @@ impl ResolvesServerCert for AcmeCertResolver {
                     return Some(key.clone());
                 }
             }
+            return None;
         }
 
         if let Ok(fallback) = self.fallback.read() {
