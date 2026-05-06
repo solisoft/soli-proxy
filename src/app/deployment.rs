@@ -134,6 +134,9 @@ pub struct DeploymentManager {
     /// Read by `wait_for_health` so it can bail out as soon as the process it
     /// is waiting on dies, instead of polling a dead port for 30s.
     exited_pids: Arc<Mutex<HashMap<u32, String>>>,
+    /// Ports currently mapped to PIDs that we spawned (port -> pid).
+    /// Used to verify we only kill processes we spawned, not unrelated listeners.
+    spawned_pids: Arc<Mutex<HashMap<u16, u32>>>,
     /// Channel to notify AppManager of unexpected process exits
     process_exit_tx: mpsc::UnboundedSender<ProcessExit>,
     dev_mode: bool,
@@ -158,6 +161,7 @@ impl DeploymentManager {
             deploying_apps: Arc::new(Mutex::new(HashSet::new())),
             stopping_pids: Arc::new(Mutex::new(HashSet::new())),
             exited_pids: Arc::new(Mutex::new(HashMap::new())),
+            spawned_pids: Arc::new(Mutex::new(HashMap::new())),
             process_exit_tx,
             dev_mode,
             http_client,
@@ -464,59 +468,68 @@ impl DeploymentManager {
     async fn start_native_instance(&self, app: &AppInfo, slot: &str, port: u16) -> Result<u32> {
         if self.check_port_in_use(port).await {
             if let Some(orphan_pid) = super::find_pid_by_port(port) {
-                tracing::warn!(
-                    "Killing orphaned process {} on port {} before starting {} slot {}",
-                    orphan_pid,
-                    port,
-                    app.config.name,
-                    slot
-                );
-                // Mark as intentional stop so the process exit monitor
-                // doesn't trigger a spurious failover when the orphan dies.
-                self.stopping_pids.lock().unwrap().insert(orphan_pid);
-                let pgid = format!("-{}", orphan_pid);
-                let _ = tokio::process::Command::new("kill")
-                    .arg("-TERM")
-                    .arg("--")
-                    .arg(&pgid)
-                    .output()
-                    .await;
-
-                // Wait for port to be free AND process to fully exit.
-                // Just waiting for the port is not enough — the orphan's
-                // shutdown sequence may still be running and could kill the
-                // replacement process (e.g. via a shared PID/lock file).
-                for _ in 0..20 {
-                    sleep(Duration::from_millis(100)).await;
-                    if !self.check_port_in_use(port).await {
-                        break;
-                    }
-                }
-
-                // Always SIGKILL the orphan group after port is free —
-                // the main process may have released the port but worker
-                // children can still be alive running shutdown handlers
-                // that interfere with the replacement process.
-                let _ = tokio::process::Command::new("kill")
-                    .arg("-9")
-                    .arg("--")
-                    .arg(&pgid)
-                    .output()
-                    .await;
-
-                // Wait for the entire process group to be gone
-                for _ in 0..20 {
-                    sleep(Duration::from_millis(100)).await;
-                    let alive = tokio::process::Command::new("kill")
-                        .arg("-0")
+                let spawned_pid = self.spawned_pids.lock().unwrap().get(&port).copied();
+                if orphan_pid <= 1 {
+                    tracing::warn!(
+                        "Rejecting unsafe PID {} on port {} for {} slot {}",
+                        orphan_pid,
+                        port,
+                        app.config.name,
+                        slot
+                    );
+                } else if orphan_pid != spawned_pid.unwrap_or(0) {
+                    tracing::warn!(
+                        "Port {} is in use by PID {} which was not spawned by the proxy. \
+                         Refusing to kill it for {} slot {}",
+                        port,
+                        orphan_pid,
+                        app.config.name,
+                        slot
+                    );
+                } else {
+                    tracing::warn!(
+                        "Killing orphaned process {} on port {} before starting {} slot {}",
+                        orphan_pid,
+                        port,
+                        app.config.name,
+                        slot
+                    );
+                    self.stopping_pids.lock().unwrap().insert(orphan_pid);
+                    let pgid = format!("-{}", orphan_pid);
+                    let _ = tokio::process::Command::new("kill")
+                        .arg("-TERM")
                         .arg("--")
                         .arg(&pgid)
                         .output()
-                        .await
-                        .map(|o| o.status.success())
-                        .unwrap_or(false);
-                    if !alive {
-                        break;
+                        .await;
+
+                    for _ in 0..20 {
+                        sleep(Duration::from_millis(100)).await;
+                        if !self.check_port_in_use(port).await {
+                            break;
+                        }
+                    }
+
+                    let _ = tokio::process::Command::new("kill")
+                        .arg("-9")
+                        .arg("--")
+                        .arg(&pgid)
+                        .output()
+                        .await;
+
+                    for _ in 0..20 {
+                        sleep(Duration::from_millis(100)).await;
+                        let alive = tokio::process::Command::new("kill")
+                            .arg("-0")
+                            .arg("--")
+                            .arg(&pgid)
+                            .output()
+                            .await
+                            .map(|o| o.status.success())
+                            .unwrap_or(false);
+                        if !alive {
+                            break;
+                        }
                     }
                 }
             }
@@ -625,6 +638,10 @@ impl DeploymentManager {
         );
         tracing::info!("Full start command: {} {}", program, args.join(" "));
 
+        if pid > 0 {
+            self.spawned_pids.lock().unwrap().insert(port, pid);
+        }
+
         let app_name = app.config.name.clone();
         let slot_name = slot.to_string();
         let stopping_pids = self.stopping_pids.clone();
@@ -694,6 +711,11 @@ impl DeploymentManager {
         if let Some(pid) = pid {
             // Mark as intentional stop so the exit monitor ignores it
             self.stopping_pids.lock().unwrap().insert(pid);
+            if slot == "blue" {
+                self.spawned_pids.lock().unwrap().remove(&app.blue.port);
+            } else {
+                self.spawned_pids.lock().unwrap().remove(&app.green.port);
+            }
             tracing::info!("Stopping {} slot {} (PID: {})", app.config.name, slot, pid);
 
             #[cfg(unix)]
