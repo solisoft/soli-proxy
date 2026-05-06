@@ -286,6 +286,40 @@ pub async fn issue_certificate(
     Ok((cert_chain_pem, private_key_pem))
 }
 
+fn is_valid_domain(domain: &str) -> bool {
+    if domain.is_empty() || domain.len() > 253 {
+        return false;
+    }
+    if domain.starts_with('.') || domain.ends_with('.') {
+        return false;
+    }
+    if domain.contains("..") {
+        return false;
+    }
+    if domain.contains('/') || domain.contains('\\') || domain.contains('\0') {
+        return false;
+    }
+    domain
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.')
+}
+
+fn safe_cert_path(cache_dir: &Path, domain: &str, suffix: &str) -> Option<PathBuf> {
+    if !is_valid_domain(domain) {
+        tracing::warn!("Invalid domain name rejected: {}", domain);
+        return None;
+    }
+    let path = cache_dir.join(format!("{}{}", domain, suffix));
+    let canonical_path = path.canonicalize().ok()?;
+    let canonical_dir = cache_dir.canonicalize().ok()?;
+    if canonical_path.starts_with(&canonical_dir) {
+        Some(path)
+    } else {
+        tracing::warn!("Certificate path escapes cache_dir: {}", path.display());
+        None
+    }
+}
+
 /// Save certificate and key PEM files to disk.
 pub fn save_certificate(
     cache_dir: &Path,
@@ -295,8 +329,8 @@ pub fn save_certificate(
 ) -> Result<()> {
     std::fs::create_dir_all(cache_dir)?;
 
-    let cert_path = cache_dir.join(format!("{}.cert.pem", domain));
-    let key_path = cache_dir.join(format!("{}.key.pem", domain));
+    let cert_path = safe_cert_path(cache_dir, domain, ".cert.pem").context("invalid domain")?;
+    let key_path = safe_cert_path(cache_dir, domain, ".key.pem").context("invalid domain")?;
 
     std::fs::write(&cert_path, cert_pem)?;
     std::fs::write(&key_path, key_pem)?;
@@ -317,8 +351,14 @@ pub fn save_certificate(
 
 /// Load certificate and key from PEM files on disk.
 pub fn load_certificate(cache_dir: &Path, domain: &str) -> Result<Option<Arc<CertifiedKey>>> {
-    let cert_path = cache_dir.join(format!("{}.cert.pem", domain));
-    let key_path = cache_dir.join(format!("{}.key.pem", domain));
+    let cert_path = match safe_cert_path(cache_dir, domain, ".cert.pem") {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+    let key_path = match safe_cert_path(cache_dir, domain, ".key.pem") {
+        Some(p) => p,
+        None => return Ok(None),
+    };
 
     if !cert_path.exists() || !key_path.exists() {
         return Ok(None);
@@ -350,7 +390,10 @@ pub fn certified_key_from_pem(cert_pem: &[u8], key_pem: &[u8]) -> Result<Certifi
 
 /// Check if a certificate for the given domain expires within 30 days.
 pub fn cert_expires_soon(cache_dir: &Path, domain: &str) -> bool {
-    let cert_path = cache_dir.join(format!("{}.cert.pem", domain));
+    let cert_path = match safe_cert_path(cache_dir, domain, ".cert.pem") {
+        Some(p) => p,
+        None => return true,
+    };
 
     if !cert_path.exists() {
         return true;
