@@ -329,7 +329,13 @@ impl DeploymentManager {
         let output_text = tokio::process::Command::new("docker")
             .args(&docker_args)
             .current_dir(&app.path)
+            .env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", std::env::var("HOME").unwrap_or_default())
+            .env("LANG", std::env::var("LANG").unwrap_or_default())
+            .env("TZ", std::env::var("TZ").unwrap_or_default())
+            .env("PORT", port.to_string())
+            .env("WORKERS", app.config.workers.to_string())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::from(output))
             .output()
@@ -547,11 +553,15 @@ impl DeploymentManager {
         let (program, args) = parse_start_command(&script, port, app.config.workers)?;
 
         let mut cmd = tokio::process::Command::new(&program);
-        cmd.args(&args)
-            .current_dir(&app.path)
+        cmd.env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", std::env::var("HOME").unwrap_or_default())
+            .env("LANG", std::env::var("LANG").unwrap_or_default())
+            .env("TZ", std::env::var("TZ").unwrap_or_default())
             .env("PORT", port.to_string())
             .env("WORKERS", app.config.workers.to_string())
+            .args(&args)
+            .current_dir(&app.path)
             .stdout(std::process::Stdio::from(output.try_clone()?))
             .stderr(std::process::Stdio::from(output));
 
