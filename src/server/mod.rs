@@ -26,6 +26,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::timeout;
 use tokio_rustls::TlsAcceptor;
 
@@ -171,6 +172,20 @@ pub struct ProxyServer {
     circuit_breaker: SharedCircuitBreaker,
     app_manager: Option<Arc<AppManager>>,
     load_balancer: Arc<LoadBalancerState>,
+    /// Single permit pool shared across every HTTP and HTTPS accept loop. Each
+    /// accepted connection holds one permit until its handler task ends; the
+    /// semaphore therefore caps total simultaneous connections per process.
+    /// `None` disables the cap (matches the prior behaviour).
+    connection_limit: Option<Arc<Semaphore>>,
+}
+
+fn build_connection_limit(config: &ConfigManager) -> Option<Arc<Semaphore>> {
+    config
+        .get_config()
+        .limits
+        .max_connections
+        .filter(|&n| n > 0)
+        .map(|n| Arc::new(Semaphore::new(n as usize)))
 }
 
 impl ProxyServer {
@@ -184,6 +199,7 @@ impl ProxyServer {
         app_manager: Option<Arc<AppManager>>,
     ) -> Result<Self> {
         let num_rules = config.get_config().rules.len();
+        let connection_limit = build_connection_limit(&config);
         Ok(Self {
             config,
             shutdown,
@@ -195,6 +211,7 @@ impl ProxyServer {
             circuit_breaker,
             app_manager,
             load_balancer: Arc::new(LoadBalancerState::new(num_rules)),
+            connection_limit,
         })
     }
 
@@ -211,6 +228,7 @@ impl ProxyServer {
         app_manager: Option<Arc<AppManager>>,
     ) -> Result<Self> {
         let num_rules = config.get_config().rules.len();
+        let connection_limit = build_connection_limit(&config);
         Ok(Self {
             config,
             shutdown,
@@ -222,6 +240,7 @@ impl ProxyServer {
             circuit_breaker,
             app_manager,
             load_balancer: Arc::new(LoadBalancerState::new(num_rules)),
+            connection_limit,
         })
     }
 
@@ -247,6 +266,7 @@ impl ProxyServer {
             let cb_clone = self.circuit_breaker.clone();
             let am_clone = app_manager.clone();
             let lb_clone = self.load_balancer.clone();
+            let cl_clone = self.connection_limit.clone();
 
             tokio::spawn(async move {
                 if let Err(e) = run_http_server(
@@ -259,6 +279,7 @@ impl ProxyServer {
                     cb_clone,
                     am_clone,
                     lb_clone,
+                    cl_clone,
                 )
                 .await
                 {
@@ -278,6 +299,7 @@ impl ProxyServer {
                 let cb_clone = self.circuit_breaker.clone();
                 let am_clone = app_manager.clone();
                 let lb_clone = self.load_balancer.clone();
+                let cl_clone = self.connection_limit.clone();
 
                 tokio::spawn(async move {
                     if let Err(e) = run_https_server(
@@ -291,6 +313,7 @@ impl ProxyServer {
                         cb_clone,
                         am_clone,
                         lb_clone,
+                        cl_clone,
                     )
                     .await
                     {
@@ -336,12 +359,27 @@ async fn run_http_server(
     circuit_breaker: SharedCircuitBreaker,
     app_manager: Option<Arc<AppManager>>,
     load_balancer: Arc<LoadBalancerState>,
+    connection_limit: Option<Arc<Semaphore>>,
 ) -> Result<()> {
     let listener = create_listener(addr)?;
     let client = ConnectionPool::new().client();
     let mut shutdown_rx = shutdown.subscribe();
 
     loop {
+        // Wait for a connection permit before accepting. This applies
+        // backpressure at the OS level (the listen() backlog absorbs the
+        // overflow) instead of draining the accept queue and queuing tasks.
+        let permit: Option<OwnedSemaphorePermit> = match connection_limit.as_ref() {
+            Some(s) => tokio::select! {
+                _ = shutdown_rx.recv() => break,
+                p = s.clone().acquire_owned() => match p {
+                    Ok(p) => Some(p),
+                    Err(_) => break, // semaphore closed
+                },
+            },
+            None => None,
+        };
+
         tokio::select! {
             _ = shutdown_rx.recv() => break,
             accept_result = listener.accept() => match accept_result {
@@ -357,6 +395,7 @@ async fn run_http_server(
                     let lb = load_balancer.clone();
                     let sd = shutdown.clone();
                     tokio::spawn(async move {
+                        let _permit = permit; // released when this task ends
                         if let Err(e) = handle_http11_connection(
                             stream, client, config, metrics, cs, lua, cb, am, lb, sd,
                         )
@@ -368,6 +407,7 @@ async fn run_http_server(
                 }
                 Err(e) => {
                     tracing::error!("HTTP/1.1 accept error: {}", e);
+                    // permit drops here, returning the slot to the pool
                 }
             },
         }
@@ -388,12 +428,27 @@ async fn run_https_server(
     circuit_breaker: SharedCircuitBreaker,
     app_manager: Option<Arc<AppManager>>,
     load_balancer: Arc<LoadBalancerState>,
+    connection_limit: Option<Arc<Semaphore>>,
 ) -> Result<()> {
     let listener = create_listener(addr)?;
     let client = ConnectionPool::new().client();
     let mut shutdown_rx = shutdown.subscribe();
 
     loop {
+        // Same permit-then-accept pattern as run_http_server. The permit
+        // covers the TLS handshake too, so a flood of bogus ClientHellos
+        // can't bypass the cap by stalling in handshake.
+        let permit: Option<OwnedSemaphorePermit> = match connection_limit.as_ref() {
+            Some(s) => tokio::select! {
+                _ = shutdown_rx.recv() => break,
+                p = s.clone().acquire_owned() => match p {
+                    Ok(p) => Some(p),
+                    Err(_) => break,
+                },
+            },
+            None => None,
+        };
+
         tokio::select! {
             _ = shutdown_rx.recv() => break,
             accept_result = listener.accept() => match accept_result {
@@ -410,6 +465,7 @@ async fn run_https_server(
                     let lb = load_balancer.clone();
                     let sd = shutdown.clone();
                     tokio::spawn(async move {
+                        let _permit = permit; // released when this task ends
                         const TLS_HANDSHAKE_TIMEOUT: tokio::time::Duration =
                             tokio::time::Duration::from_secs(10);
                         match tokio::time::timeout(
