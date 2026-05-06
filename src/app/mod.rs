@@ -1087,10 +1087,17 @@ impl AppManager {
         // Update state with new PID
         {
             let mut apps = self.apps.lock().await;
+            let app_entry = match apps.get_mut(app_name) {
+                Some(a) => a,
+                None => {
+                    tracing::error!("App {} removed during deploy, aborting", app_name);
+                    return Err(anyhow::anyhow!("App {} no longer exists", app_name));
+                }
+            };
             let instance = if slot == "blue" {
-                &mut apps.get_mut(app_name).unwrap().blue
+                &mut app_entry.blue
             } else {
-                &mut apps.get_mut(app_name).unwrap().green
+                &mut app_entry.green
             };
             instance.pid = Some(pid);
             instance.status = InstanceStatus::Running;
@@ -1110,13 +1117,15 @@ impl AppManager {
             kill_process_group(pid).await;
             {
                 let mut apps = self.apps.lock().await;
-                let instance = if slot == "blue" {
-                    &mut apps.get_mut(app_name).unwrap().blue
-                } else {
-                    &mut apps.get_mut(app_name).unwrap().green
-                };
-                instance.pid = None;
-                instance.status = InstanceStatus::Failed;
+                if let Some(app_entry) = apps.get_mut(app_name) {
+                    let instance = if slot == "blue" {
+                        &mut app_entry.blue
+                    } else {
+                        &mut app_entry.green
+                    };
+                    instance.pid = None;
+                    instance.status = InstanceStatus::Failed;
+                }
             }
             return Err(e);
         }
@@ -1125,7 +1134,9 @@ impl AppManager {
         // Switch traffic AND persist atomically
         {
             let mut apps = self.apps.lock().await;
-            apps.get_mut(app_name).unwrap().current_slot = slot.to_string();
+            if let Some(app_entry) = apps.get_mut(app_name) {
+                app_entry.current_slot = slot.to_string();
+            }
 
             // Persist while still holding the lock to prevent load_app_state()
             // from reverting the switch with stale disk data
@@ -1173,11 +1184,13 @@ impl AppManager {
         if old_slot != slot && old_slot != "unknown" {
             let old_pid = {
                 let apps = self.apps.lock().await;
-                let a = apps.get(app_name).unwrap();
-                if old_slot == "blue" {
-                    a.blue.pid
-                } else {
-                    a.green.pid
+                match apps.get(app_name) {
+                    Some(a) if old_slot == "blue" => a.blue.pid,
+                    Some(a) => a.green.pid,
+                    None => {
+                        tracing::warn!("App {} removed during deploy drain phase", app_name);
+                        None
+                    }
                 }
             };
             if let Some(pid) = old_pid {
@@ -1190,13 +1203,15 @@ impl AppManager {
                 kill_process_group(pid).await;
                 {
                     let mut apps = self.apps.lock().await;
-                    let instance = if old_slot == "blue" {
-                        &mut apps.get_mut(app_name).unwrap().blue
-                    } else {
-                        &mut apps.get_mut(app_name).unwrap().green
-                    };
-                    instance.pid = None;
-                    instance.status = InstanceStatus::Stopped;
+                    if let Some(app_entry) = apps.get_mut(app_name) {
+                        let instance = if old_slot == "blue" {
+                            &mut app_entry.blue
+                        } else {
+                            &mut app_entry.green
+                        };
+                        instance.pid = None;
+                        instance.status = InstanceStatus::Stopped;
+                    }
                 }
                 tracing::info!("Stopped old slot {}", old_slot);
             }
