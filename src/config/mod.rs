@@ -558,10 +558,20 @@ realm = "Restricted"
             std::fs::write(&config_toml_path, default_config).ok();
             Some(default_config.to_string())
         };
-        let toml_config: TomlConfig = toml_content
-            .as_ref()
-            .and_then(|c| toml::from_str(c).ok())
-            .unwrap_or_default();
+        let toml_config: TomlConfig =
+            match toml_content.as_ref().and_then(|c| toml::from_str(c).ok()) {
+                Some(cfg) => cfg,
+                None => {
+                    if config_toml_path.exists() {
+                        tracing::error!(
+                            "Failed to parse config.toml at {} — check for TOML syntax errors. \
+                        Starting with defaults; your edits are being ignored.",
+                            config_toml_path.display()
+                        );
+                    }
+                    TomlConfig::default()
+                }
+            };
 
         Ok(Config {
             server: toml_config.server,
