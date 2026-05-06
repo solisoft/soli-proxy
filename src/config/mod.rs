@@ -578,7 +578,16 @@ realm = "Restricted"
             tls: toml_config.tls,
             letsencrypt: toml_config.letsencrypt,
             scripting: toml_config.scripting.unwrap_or_default(),
-            admin: toml_config.admin.unwrap_or_default(),
+            admin: {
+                let mut admin = toml_config.admin.unwrap_or_default();
+                if admin.username.is_none() {
+                    admin.username = std::env::var("ADMIN_USER").ok();
+                }
+                if admin.password_hash.is_none() {
+                    admin.password_hash = std::env::var("ADMIN_PASSWORD").ok();
+                }
+                admin
+            },
             circuit_breaker: toml_config.circuit_breaker,
             apps: toml_config.apps.unwrap_or_default(),
             rules,
