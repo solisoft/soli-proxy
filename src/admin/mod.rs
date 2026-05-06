@@ -180,35 +180,35 @@ async fn handle_admin_request(
                 } else {
                     handlers::get_app_metrics(&state, name).await
                 }
-            } else if app_name.ends_with("/deploy") {
+            } else if method == Method::POST && app_name.ends_with("/deploy") {
                 let name = app_name.strip_suffix("/deploy").unwrap_or("");
                 if name.is_empty() {
                     error_response(400, "Invalid app name")
                 } else {
                     handlers::post_app_deploy(&state, name).await
                 }
-            } else if app_name.ends_with("/restart") {
+            } else if method == Method::POST && app_name.ends_with("/restart") {
                 let name = app_name.strip_suffix("/restart").unwrap_or("");
                 if name.is_empty() {
                     error_response(400, "Invalid app name")
                 } else {
                     handlers::post_app_restart(&state, name).await
                 }
-            } else if app_name.ends_with("/rollback") {
+            } else if method == Method::POST && app_name.ends_with("/rollback") {
                 let name = app_name.strip_suffix("/rollback").unwrap_or("");
                 if name.is_empty() {
                     error_response(400, "Invalid app name")
                 } else {
                     handlers::post_app_rollback(&state, name).await
                 }
-            } else if app_name.ends_with("/stop") {
+            } else if method == Method::POST && app_name.ends_with("/stop") {
                 let name = app_name.strip_suffix("/stop").unwrap_or("");
                 if name.is_empty() {
                     error_response(400, "Invalid app name")
                 } else {
                     handlers::post_app_stop(&state, name).await
                 }
-            } else if app_name.ends_with("/logs") {
+            } else if method == Method::GET && app_name.ends_with("/logs") {
                 let name = app_name.strip_suffix("/logs").unwrap_or("");
                 if name.is_empty() {
                     error_response(400, "Invalid app name")
