@@ -722,9 +722,7 @@ async fn handle_request(
         &req,
         config.metrics.endpoint.as_deref().unwrap_or("/metrics"),
     ) {
-        let is_loopback = peer_addr
-            .map(|a| a.ip().is_loopback())
-            .unwrap_or(false);
+        let is_loopback = peer_addr.map(|a| a.ip().is_loopback()).unwrap_or(false);
         if !is_loopback {
             let duration = start_time.elapsed();
             metrics.dec_in_flight();
@@ -1565,8 +1563,7 @@ async fn handle_regular_request(
 
                                 let raw_bytes = if is_gzip {
                                     use std::io::Read;
-                                    let mut decoder =
-                                        flate2::read::GzDecoder::new(&body_bytes[..]);
+                                    let mut decoder = flate2::read::GzDecoder::new(&body_bytes[..]);
                                     let mut decoded = Vec::new();
                                     decoder.read_to_end(&mut decoded).unwrap_or_default();
                                     Bytes::from(decoded)
@@ -1583,15 +1580,13 @@ async fn handle_regular_request(
 
                                 let html = String::from_utf8_lossy(&raw_bytes);
                                 if html.contains("<script")
-                                    && (html.contains("integrity=")
-                                        || html.contains("nonce="))
+                                    && (html.contains("integrity=") || html.contains("nonce="))
                                 {
                                     tracing::warn!(
                                         "Skipping HTML rewrite for prefix {} due to SRI/nonce attributes",
                                         prefix
                                     );
-                                    let body =
-                                        http_body_util::Full::new(raw_bytes).boxed();
+                                    let body = http_body_util::Full::new(raw_bytes).boxed();
                                     return Ok((
                                         Response::from_parts(parts, body),
                                         target_url,
@@ -1610,16 +1605,14 @@ async fn handle_regular_request(
                                     "content-length",
                                     rewritten_bytes.len().to_string().parse().unwrap(),
                                 );
-                                let boxed =
-                                    http_body_util::Full::new(rewritten_bytes).boxed();
+                                let boxed = http_body_util::Full::new(rewritten_bytes).boxed();
                                 return Ok((
                                     Response::from_parts(parts, boxed),
                                     target_url,
                                     route_scripts.clone(),
                                 ));
                             } else {
-                                let body =
-                                    http_body_util::Full::new(body_bytes).boxed();
+                                let body = http_body_util::Full::new(body_bytes).boxed();
                                 return Ok((
                                     Response::from_parts(parts, body),
                                     target_url,

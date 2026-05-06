@@ -758,17 +758,31 @@ impl ConfigManagerTrait for ConfigManager {
     }
 }
 
+/// Validate a script name: must end in .lua, no path traversal chars, no null bytes.
+fn validate_script_name(name: &str) -> Option<String> {
+    if name.contains('\0') {
+        return None;
+    }
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        return None;
+    }
+    if !name.ends_with(".lua") {
+        return None;
+    }
+    Some(name.to_string())
+}
+
 /// Extract `@script:a.lua,b.lua` from a string, returning (remaining_str, scripts_vec).
 fn extract_scripts(s: &str) -> (&str, Vec<String>) {
     if let Some(idx) = s.find("@script:") {
         let before = s[..idx].trim();
         let after = &s[idx + "@script:".len()..];
-        // Scripts are comma-separated, ending at whitespace or end-of-string
         let script_part = after.split_whitespace().next().unwrap_or(after);
         let scripts: Vec<String> = script_part
             .split(',')
-            .map(|s| s.trim().to_string())
+            .map(|s| s.trim())
             .filter(|s| !s.is_empty())
+            .filter_map(validate_script_name)
             .collect();
         (before, scripts)
     } else {

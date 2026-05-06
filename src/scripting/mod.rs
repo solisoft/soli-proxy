@@ -107,7 +107,8 @@ impl LuaEngine {
         }
 
         // Create the first Lua state to probe which hooks exist
-        let probe_lua = Self::create_lua_state(&script_sources, hook_timeout, &shared_state, exposed_env)?;
+        let probe_lua =
+            Self::create_lua_state(&script_sources, hook_timeout, &shared_state, exposed_env)?;
         let has_on_request = probe_lua.globals().get::<Function>("on_request").is_ok();
         let has_on_route = probe_lua.globals().get::<Function>("on_route").is_ok();
         let has_on_response = probe_lua.globals().get::<Function>("on_response").is_ok();
@@ -128,7 +129,8 @@ impl LuaEngine {
         let mut states = Vec::with_capacity(num_states);
         states.push(std::sync::Mutex::new(probe_lua));
         for _ in 1..num_states {
-            let lua = Self::create_lua_state(&script_sources, hook_timeout, &shared_state, exposed_env)?;
+            let lua =
+                Self::create_lua_state(&script_sources, hook_timeout, &shared_state, exposed_env)?;
             states.push(std::sync::Mutex::new(lua));
         }
 
@@ -176,7 +178,8 @@ impl LuaEngine {
         }
 
         // Probe global hooks
-        let probe_lua = Self::create_lua_state(&global_sources, hook_timeout, &shared_state, exposed_env)?;
+        let probe_lua =
+            Self::create_lua_state(&global_sources, hook_timeout, &shared_state, exposed_env)?;
         let has_on_request = probe_lua.globals().get::<Function>("on_request").is_ok();
         let has_on_route = probe_lua.globals().get::<Function>("on_route").is_ok();
         let has_on_response = probe_lua.globals().get::<Function>("on_response").is_ok();
@@ -197,18 +200,49 @@ impl LuaEngine {
         let mut states = Vec::with_capacity(num_states);
         states.push(std::sync::Mutex::new(probe_lua));
         for _ in 1..num_states {
-            let lua = Self::create_lua_state(&global_sources, hook_timeout, &shared_state, exposed_env)?;
+            let lua =
+                Self::create_lua_state(&global_sources, hook_timeout, &shared_state, exposed_env)?;
             states.push(std::sync::Mutex::new(lua));
         }
 
         // Build per-route-script pools
         let mut route_scripts: HashMap<String, Vec<std::sync::Mutex<Lua>>> = HashMap::new();
         for name in route_script_names {
-            // Skip if it's already a global script (would run twice)
             if global_scripts.contains(name) {
                 continue;
             }
             let path = scripts_dir.join(name);
+
+            let canonical_path = match path.canonicalize() {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(
+                        "Route Lua script path could not be canonicalized: {}: {}",
+                        path.display(),
+                        e
+                    );
+                    continue;
+                }
+            };
+            let canonical_scripts_dir = match scripts_dir.canonicalize() {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(
+                        "scripts_dir could not be canonicalized: {}: {}",
+                        scripts_dir.display(),
+                        e
+                    );
+                    continue;
+                }
+            };
+            if !canonical_path.starts_with(&canonical_scripts_dir) {
+                tracing::warn!(
+                    "Route Lua script path escapes scripts_dir: {}",
+                    path.display()
+                );
+                continue;
+            }
+
             if !path.exists() {
                 tracing::warn!("Route Lua script not found: {}", path.display());
                 continue;
@@ -219,7 +253,12 @@ impl LuaEngine {
 
             let mut script_states = Vec::with_capacity(num_states);
             for _ in 0..num_states {
-                let lua = Self::create_lua_state(&script_sources, hook_timeout, &shared_state, exposed_env)?;
+                let lua = Self::create_lua_state(
+                    &script_sources,
+                    hook_timeout,
+                    &shared_state,
+                    exposed_env,
+                )?;
                 script_states.push(std::sync::Mutex::new(lua));
             }
             route_scripts.insert(name.clone(), script_states);
