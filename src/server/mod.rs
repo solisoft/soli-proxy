@@ -399,8 +399,15 @@ async fn run_https_server(
                     let lb = load_balancer.clone();
                     let sd = shutdown.clone();
                     tokio::spawn(async move {
-                        match acceptor.accept(stream).await {
-                            Ok(tls_stream) => {
+                        const TLS_HANDSHAKE_TIMEOUT: tokio::time::Duration =
+                            tokio::time::Duration::from_secs(10);
+                        match tokio::time::timeout(
+                            TLS_HANDSHAKE_TIMEOUT,
+                            acceptor.accept(stream),
+                        )
+                        .await
+                        {
+                            Ok(Ok(tls_stream)) => {
                                 metrics.inc_tls_connections();
                                 if let Err(e) = handle_https2_connection(
                                     tls_stream, client, config, metrics, cs, lua, cb, am, lb, sd,
@@ -410,8 +417,11 @@ async fn run_https_server(
                                     tracing::debug!("HTTPS/2 connection error: {}", e);
                                 }
                             }
-                            Err(e) => {
+                            Ok(Err(e)) => {
                                 tracing::debug!("TLS accept error (client incompatible): {}", e);
+                            }
+                            Err(_) => {
+                                tracing::debug!("TLS handshake timed out after {:?}s", TLS_HANDSHAKE_TIMEOUT);
                             }
                         }
                     });
