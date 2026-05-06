@@ -258,6 +258,9 @@ async fn is_port_in_use(port: u16) -> bool {
 
 /// Kill a process group (SIGTERM, wait, then SIGKILL if needed).
 async fn kill_process_group(pid: u32) {
+    if pid < 2 {
+        return;
+    }
     let pgid = format!("-{}", pid);
     let _ = tokio::process::Command::new("kill")
         .arg("-TERM")
@@ -1566,7 +1569,11 @@ fn find_pid_by_ss(port: u16) -> Option<u32> {
         if let Some(pid_start) = line.find("pid=") {
             let rest = &line[pid_start + 4..];
             let pid_str: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-            return pid_str.parse().ok();
+            let pid: u32 = pid_str.parse().ok()?;
+            if pid < 2 {
+                return None;
+            }
+            return Some(pid);
         }
     }
     None
@@ -1613,7 +1620,11 @@ fn find_pid_by_proc_net(port: u16) -> Option<u32> {
             for fd in fds.flatten() {
                 if let Ok(link) = std::fs::read_link(fd.path()) {
                     if link.to_string_lossy() == expected {
-                        return name_str.parse().ok();
+                        let pid: u32 = name_str.parse().ok()?;
+                        if pid < 2 {
+                            return None;
+                        }
+                        return Some(pid);
                     }
                 }
             }
