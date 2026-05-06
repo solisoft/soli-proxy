@@ -650,11 +650,12 @@ fn extract_headers(req: &Request<Incoming>) -> std::collections::HashMap<String,
 #[cfg(feature = "scripting")]
 fn build_lua_request(req: &Request<Incoming>) -> LuaRequest {
     let host = req
-        .uri()
-        .host()
-        .or(req.headers().get("host").and_then(|h| h.to_str().ok()))
-        .unwrap_or("")
-        .to_string();
+        .headers()
+        .get("host")
+        .and_then(|h| h.to_str().ok())
+        .map(|h| h.split(':').next().unwrap_or(h).to_string())
+        .or_else(|| req.uri().host().map(|h| h.to_string()))
+        .unwrap_or_default();
 
     let content_length = req
         .headers()
@@ -1011,10 +1012,11 @@ async fn handle_websocket_request(
     app_manager: Option<Arc<AppManager>>,
 ) -> Result<Response<BoxBody>, hyper::Error> {
     let host = req
-        .uri()
-        .host()
-        .or(req.headers().get("host").and_then(|h| h.to_str().ok()))
-        .map(|h| h.split(':').next().unwrap_or(h).to_string());
+        .headers()
+        .get("host")
+        .and_then(|h| h.to_str().ok())
+        .map(|h| h.split(':').next().unwrap_or(h).to_string())
+        .or_else(|| req.uri().host().map(|h| h.to_string()));
 
     let route = find_matching_rule(&req, &config.rules);
     let override_with_app = match (&route, &host, &app_manager) {
@@ -1746,10 +1748,11 @@ async fn handle_regular_request(
         }
         None => {
             let host = req
-                .uri()
-                .host()
-                .or(req.headers().get("host").and_then(|h| h.to_str().ok()))
-                .map(|h| h.split(':').next().unwrap_or(h).to_string());
+                .headers()
+                .get("host")
+                .and_then(|h| h.to_str().ok())
+                .map(|h| h.split(':').next().unwrap_or(h).to_string())
+                .or_else(|| req.uri().host().map(|h| h.to_string()));
             let app_manager_available = app_manager.is_some();
 
             if let (Some(ref manager), Some(ref h)) = (app_manager, host) {
@@ -1949,17 +1952,18 @@ fn find_matching_rule<'a>(
     rules: &'a [crate::config::ProxyRule],
 ) -> Option<MatchedRoute<'a>> {
     let host = req
-        .uri()
-        .host()
-        .or(req.headers().get("host").and_then(|h| h.to_str().ok()))
-        .map(|h| h.split(':').next().unwrap_or(h))?;
+        .headers()
+        .get("host")
+        .and_then(|h| h.to_str().ok())
+        .map(|h| h.split(':').next().unwrap_or(h).to_string())
+        .or_else(|| req.uri().host().map(|h| h.to_string()))?;
 
     let path = req.uri().path();
 
     for rule in rules {
         match &rule.matcher {
             crate::config::RuleMatcher::Domain(domain)
-                if domain == host && !rule.targets.is_empty() =>
+                if domain.as_str() == host.as_str() && !rule.targets.is_empty() =>
             {
                 return Some(MatchedRoute {
                     targets: &rule.targets,
@@ -1972,7 +1976,7 @@ fn find_matching_rule<'a>(
                 });
             }
             crate::config::RuleMatcher::DomainPath(domain, path_prefix)
-                if domain == host && !rule.targets.is_empty() =>
+                if domain.as_str() == host.as_str() && !rule.targets.is_empty() =>
             {
                 let matches = path.starts_with(path_prefix)
                     || (path_prefix.ends_with('/') && path == path_prefix.trim_end_matches('/'));
