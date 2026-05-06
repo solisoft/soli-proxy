@@ -1390,6 +1390,32 @@ async fn handle_regular_request(
             parts.version = http::Version::HTTP_11;
             parts.extensions = http::Extensions::new();
 
+            // Strip hop-by-hop headers that shouldn't be forwarded to upstream
+            const HOP_BY_HOP: &[&str] = &[
+                "connection",
+                "keep-alive",
+                "proxy-authenticate",
+                "proxy-authorization",
+                "te",
+                "trailer",
+                "transfer-encoding",
+                "upgrade",
+            ];
+            for h in HOP_BY_HOP {
+                parts.headers.remove(*h);
+            }
+            // Also strip any header listed in the Connection header
+            let conn_header = parts
+                .headers
+                .get("connection")
+                .and_then(|v| v.to_str().ok().map(String::from));
+            parts.headers.remove("connection");
+            if let Some(conn) = conn_header {
+                for name in conn.split(',').map(str::trim) {
+                    parts.headers.remove(name);
+                }
+            }
+
             let mut request = Request::from_parts(parts, body);
 
             request.headers_mut().insert(
