@@ -319,7 +319,11 @@ impl LuaEngine {
 
         // Load all scripts in order
         for (name, source) in scripts {
-            lua.load(source)
+            if source.starts_with('\x1B') {
+                anyhow::bail!("Lua bytecode loading is disabled");
+            }
+            lua.load(source.as_str())
+                .set_mode(mlua::ChunkMode::Text)
                 .set_name(name)
                 .exec()
                 .map_err(|e| anyhow::anyhow!("Error loading Lua script '{}': {}", name, e))?;
