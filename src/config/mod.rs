@@ -127,6 +127,7 @@ pub struct ScriptingTomlConfig {
     pub enabled: bool,
     pub scripts_dir: Option<String>,
     pub hook_timeout_ms: Option<u64>,
+    pub exposed_env: Vec<String>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]

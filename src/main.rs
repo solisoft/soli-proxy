@@ -621,9 +621,15 @@ async fn run_server(
                     hook_timeout,
                     &cfg.global_scripts,
                     &route_script_names,
+                    &cfg.scripting.exposed_env,
                 )
             } else {
-                soli_proxy::LuaEngine::new(&scripts_dir, num_states, hook_timeout)
+                soli_proxy::LuaEngine::new(
+                    &scripts_dir,
+                    num_states,
+                    hook_timeout,
+                    &cfg.scripting.exposed_env,
+                )
             };
 
             match result {

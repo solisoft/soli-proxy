@@ -69,10 +69,12 @@ impl LuaEngine {
     ///
     /// `num_states` should match the number of worker threads.
     /// `hook_timeout` is the max execution time per hook call.
+    /// `exposed_env` is an allowlist of environment variable names that Lua scripts can access via `env.get()`.
     pub fn new(
         scripts_dir: &Path,
         num_states: usize,
         hook_timeout: Duration,
+        exposed_env: &[String],
     ) -> anyhow::Result<Self> {
         let num_states = num_states.max(1);
         let shared_state: SharedState = Arc::new(std::sync::RwLock::new(HashMap::new()));
@@ -105,7 +107,7 @@ impl LuaEngine {
         }
 
         // Create the first Lua state to probe which hooks exist
-        let probe_lua = Self::create_lua_state(&script_sources, hook_timeout, &shared_state)?;
+        let probe_lua = Self::create_lua_state(&script_sources, hook_timeout, &shared_state, exposed_env)?;
         let has_on_request = probe_lua.globals().get::<Function>("on_request").is_ok();
         let has_on_route = probe_lua.globals().get::<Function>("on_route").is_ok();
         let has_on_response = probe_lua.globals().get::<Function>("on_response").is_ok();
@@ -126,7 +128,7 @@ impl LuaEngine {
         let mut states = Vec::with_capacity(num_states);
         states.push(std::sync::Mutex::new(probe_lua));
         for _ in 1..num_states {
-            let lua = Self::create_lua_state(&script_sources, hook_timeout, &shared_state)?;
+            let lua = Self::create_lua_state(&script_sources, hook_timeout, &shared_state, exposed_env)?;
             states.push(std::sync::Mutex::new(lua));
         }
 
@@ -148,12 +150,14 @@ impl LuaEngine {
     ///
     /// `global_scripts` — filenames loaded into the global pool (run on every request)
     /// `route_script_names` — unique filenames that need their own per-worker pools
+    /// `exposed_env` is an allowlist of environment variable names that Lua scripts can access via `env.get()`.
     pub fn with_route_scripts(
         scripts_dir: &Path,
         num_states: usize,
         hook_timeout: Duration,
         global_scripts: &[String],
         route_script_names: &[String],
+        exposed_env: &[String],
     ) -> anyhow::Result<Self> {
         let num_states = num_states.max(1);
         let shared_state: SharedState = Arc::new(std::sync::RwLock::new(HashMap::new()));
@@ -172,7 +176,7 @@ impl LuaEngine {
         }
 
         // Probe global hooks
-        let probe_lua = Self::create_lua_state(&global_sources, hook_timeout, &shared_state)?;
+        let probe_lua = Self::create_lua_state(&global_sources, hook_timeout, &shared_state, exposed_env)?;
         let has_on_request = probe_lua.globals().get::<Function>("on_request").is_ok();
         let has_on_route = probe_lua.globals().get::<Function>("on_route").is_ok();
         let has_on_response = probe_lua.globals().get::<Function>("on_response").is_ok();
@@ -193,7 +197,7 @@ impl LuaEngine {
         let mut states = Vec::with_capacity(num_states);
         states.push(std::sync::Mutex::new(probe_lua));
         for _ in 1..num_states {
-            let lua = Self::create_lua_state(&global_sources, hook_timeout, &shared_state)?;
+            let lua = Self::create_lua_state(&global_sources, hook_timeout, &shared_state, exposed_env)?;
             states.push(std::sync::Mutex::new(lua));
         }
 
@@ -215,7 +219,7 @@ impl LuaEngine {
 
             let mut script_states = Vec::with_capacity(num_states);
             for _ in 0..num_states {
-                let lua = Self::create_lua_state(&script_sources, hook_timeout, &shared_state)?;
+                let lua = Self::create_lua_state(&script_sources, hook_timeout, &shared_state, exposed_env)?;
                 script_states.push(std::sync::Mutex::new(lua));
             }
             route_scripts.insert(name.clone(), script_states);
@@ -239,6 +243,7 @@ impl LuaEngine {
         scripts: &[(String, String)],
         hook_timeout: Duration,
         shared_state: &SharedState,
+        exposed_env: &[String],
     ) -> anyhow::Result<Lua> {
         let lua = Lua::new();
 
@@ -262,7 +267,7 @@ impl LuaEngine {
         Self::register_log_module(&lua)?;
         Self::register_base64_module(&lua)?;
         Self::register_crypto_module(&lua)?;
-        Self::register_env_module(&lua)?;
+        Self::register_env_module(&lua, exposed_env)?;
         Self::register_time_module(&lua)?;
         Self::register_shared_module(&lua, shared_state)?;
 
@@ -378,14 +383,20 @@ impl LuaEngine {
         Ok(())
     }
 
-    fn register_env_module(lua: &Lua) -> LuaResult<()> {
+    fn register_env_module(lua: &Lua, exposed_env: &[String]) -> LuaResult<()> {
         let table = lua.create_table()?;
+        let exposed_env = exposed_env.to_vec();
 
         table.set(
             "get",
-            lua.create_function(|lua, name: String| match std::env::var(&name) {
-                Ok(val) => Ok(Value::String(lua.create_string(&val)?)),
-                Err(_) => Ok(Value::Nil),
+            lua.create_function(move |_lua, name: String| {
+                if !exposed_env.contains(&name) {
+                    return Ok(Value::Nil);
+                }
+                match std::env::var(&name) {
+                    Ok(val) => Ok(Value::String(_lua.create_string(&val)?)),
+                    Err(_) => Ok(Value::Nil),
+                }
             })?,
         )?;
 
