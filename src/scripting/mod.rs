@@ -284,14 +284,23 @@ impl LuaEngine {
         shared_state: &SharedState,
         exposed_env: &[String],
     ) -> anyhow::Result<Lua> {
+        // COROUTINE is intentionally excluded: mlua's set_hook does not
+        // propagate to coroutine threads, so a script could escape the
+        // execution-timeout guard via `coroutine.wrap(function() while
+        // true do end end)()`. Nothing in the registered hook surface
+        // needs coroutines, so the simplest fix is to never load the
+        // stdlib in the first place.
         let lua = Lua::new_with(
-            mlua::StdLib::TABLE
-                | mlua::StdLib::STRING
-                | mlua::StdLib::MATH
-                | mlua::StdLib::UTF8
-                | mlua::StdLib::COROUTINE,
+            mlua::StdLib::TABLE | mlua::StdLib::STRING | mlua::StdLib::MATH | mlua::StdLib::UTF8,
             mlua::LuaOptions::default(),
         )?;
+
+        // Cap per-VM memory at 64 MiB. Without this, a hook can OOM the
+        // host via long-running C calls that don't trip the per-instruction
+        // hook (e.g. `string.rep("a", 1<<30)`, `table.concat` on a giant
+        // table). The cap is generous for typical hooks but bounded.
+        const LUA_MEMORY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
+        let _ = lua.set_memory_limit(LUA_MEMORY_LIMIT_BYTES);
 
         // Set instruction count hook for timeout protection
         let timeout_ms = hook_timeout.as_millis() as u32;
