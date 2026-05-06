@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Represents a request as seen by Lua scripts.
 #[derive(Clone, Debug)]
@@ -244,18 +244,15 @@ impl LuaEngine {
 
         // Set instruction count hook for timeout protection
         let timeout_ms = hook_timeout.as_millis() as u32;
-        // ~1M instructions per ms is a rough estimate; we check every 10000 instructions
-        let max_instructions = (timeout_ms as u64) * 1000;
+        let deadline = Instant::now() + hook_timeout;
         lua.set_hook(
             mlua::HookTriggers::new().every_nth_instruction(10000),
             move |_lua, _debug| {
-                // This is a simplified timeout: we count instruction batches.
-                // For a more accurate timeout, we'd track wall-clock time.
-                static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-                let count = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if count > 0 && count.is_multiple_of(max_instructions) {
-                    // Reset for next call
-                    COUNTER.store(0, std::sync::atomic::Ordering::Relaxed);
+                if Instant::now() >= deadline {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "script execution timeout after {}ms",
+                        timeout_ms
+                    )));
                 }
                 Ok(mlua::VmState::Continue)
             },

@@ -83,7 +83,11 @@ pub fn parse_size(value: &str) -> Option<usize> {
         (&value[..], 1)
     };
 
-    num_str.trim().parse::<usize>().ok()?.checked_mul(multiplier)
+    num_str
+        .trim()
+        .parse::<usize>()
+        .ok()?
+        .checked_mul(multiplier)
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -554,7 +558,10 @@ realm = "Restricted"
                     .as_ref()
                     .and_then(|l| l.max_request_size.as_ref())
                     .and_then(|s| parse_size(s)),
-                keep_alive_timeout: toml_config.limits.as_ref().and_then(|l| l.keep_alive_timeout),
+                keep_alive_timeout: toml_config
+                    .limits
+                    .as_ref()
+                    .and_then(|l| l.keep_alive_timeout),
                 request_timeout: toml_config.limits.as_ref().and_then(|l| l.request_timeout),
             },
             health: toml_config.health.unwrap_or_default(),

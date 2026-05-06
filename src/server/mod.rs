@@ -26,8 +26,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
-use tokio_rustls::TlsAcceptor;
 use tokio::time::timeout;
+use tokio_rustls::TlsAcceptor;
 
 #[cfg(feature = "scripting")]
 use crate::scripting::{LuaEngine, LuaRequest, RequestHookResult, RouteHookResult};
@@ -437,6 +437,7 @@ async fn handle_http11_connection(
     load_balancer: Arc<LoadBalancerState>,
     shutdown: ShutdownCoordinator,
 ) -> Result<()> {
+    let peer_addr = stream.peer_addr().ok();
     let io = TokioIo::new(stream);
     let config_inner = config.get_config();
     let header_timeout = config_inner
@@ -455,6 +456,7 @@ async fn handle_http11_connection(
             app_manager.clone(),
             load_balancer.clone(),
             false,
+            peer_addr,
         )
     });
 
@@ -509,6 +511,7 @@ async fn handle_https2_connection(
 ) -> Result<()> {
     let is_h2 = stream.get_ref().1.alpn_protocol() == Some(b"h2");
 
+    let peer_addr = stream.get_ref().0.peer_addr().ok();
     let io = TokioIo::new(stream);
     let mut shutdown_rx = shutdown.subscribe();
 
@@ -526,6 +529,7 @@ async fn handle_https2_connection(
                 app_manager.clone(),
                 load_balancer.clone(),
                 true,
+                peer_addr,
             )
         });
         let conn = hyper::server::conn::http2::Builder::new(exec)
@@ -569,6 +573,7 @@ async fn handle_https2_connection(
                 app_manager.clone(),
                 load_balancer.clone(),
                 true,
+                peer_addr,
             )
         });
         let conn = match header_timeout {
@@ -672,6 +677,7 @@ async fn handle_request(
     app_manager: Option<Arc<AppManager>>,
     load_balancer: Arc<LoadBalancerState>,
     is_tls: bool,
+    peer_addr: Option<SocketAddr>,
 ) -> Result<Response<BoxBody>, hyper::Error> {
     let start_time = std::time::Instant::now();
     metrics.inc_in_flight();
@@ -704,7 +710,10 @@ async fn handle_request(
         }
     }
 
-    if is_metrics_request(&req, config.metrics.endpoint.as_deref().unwrap_or("/metrics")) {
+    if is_metrics_request(
+        &req,
+        config.metrics.endpoint.as_deref().unwrap_or("/metrics"),
+    ) {
         let duration = start_time.elapsed();
         metrics.dec_in_flight();
         let metrics_output = metrics.format_metrics();
@@ -768,10 +777,7 @@ async fn handle_request(
         .await;
     }
 
-    let timeout_duration = config
-        .limits
-        .request_timeout
-        .map(Duration::from_secs);
+    let timeout_duration = config.limits.request_timeout.map(Duration::from_secs);
 
     let result = if let Some(timeout_sec) = timeout_duration {
         let handle_fut = handle_regular_request(
@@ -783,6 +789,7 @@ async fn handle_request(
             app_manager.clone(),
             load_balancer.clone(),
             is_tls,
+            peer_addr,
         );
         match timeout(timeout_sec, handle_fut).await {
             Ok(res) => res,
@@ -790,8 +797,7 @@ async fn handle_request(
                 metrics.dec_in_flight();
                 let duration = start_time.elapsed();
                 metrics.record_request(0, 0, 504, duration);
-                let body =
-                    http_body_util::Full::new(Bytes::from("Gateway Timeout")).boxed();
+                let body = http_body_util::Full::new(Bytes::from("Gateway Timeout")).boxed();
                 return Ok(Response::builder()
                     .status(504)
                     .header("Content-Type", "text/plain")
@@ -809,6 +815,7 @@ async fn handle_request(
             app_manager.clone(),
             load_balancer.clone(),
             is_tls,
+            peer_addr,
         )
         .await
     };
@@ -881,8 +888,14 @@ fn is_health_request(req: &Request<Incoming>, health_config: &crate::config::Hea
         return false;
     }
     let path = req.uri().path();
-    let liveness_path = health_config.liveness_path.as_deref().unwrap_or("/health/live");
-    let readiness_path = health_config.readiness_path.as_deref().unwrap_or("/health/ready");
+    let liveness_path = health_config
+        .liveness_path
+        .as_deref()
+        .unwrap_or("/health/live");
+    let readiness_path = health_config
+        .readiness_path
+        .as_deref()
+        .unwrap_or("/health/ready");
     path == liveness_path || path == readiness_path
 }
 
@@ -1208,6 +1221,7 @@ async fn handle_regular_request(
     app_manager: Option<Arc<AppManager>>,
     load_balancer: Arc<LoadBalancerState>,
     is_tls: bool,
+    peer_addr: Option<SocketAddr>,
 ) -> Result<(Response<BoxBody>, String, Vec<String>), hyper::Error> {
     let route = find_matching_rule(&req, &config.rules);
     let host = req
@@ -1333,9 +1347,14 @@ async fn handle_regular_request(
 
             let mut request = Request::from_parts(parts, body);
 
-            request
-                .headers_mut()
-                .insert("X-Forwarded-For", X_FORWARDED_FOR_VALUE.clone());
+            request.headers_mut().insert(
+                "X-Forwarded-For",
+                peer_addr
+                    .map(|addr| addr.ip().to_string())
+                    .unwrap_or_default()
+                    .parse()
+                    .unwrap_or_else(|_| HeaderValue::from_static("")),
+            );
             request.headers_mut().insert(
                 "X-Forwarded-Proto",
                 if is_tls {

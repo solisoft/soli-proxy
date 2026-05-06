@@ -1097,7 +1097,11 @@ impl AppManager {
         // Wait for health check. wait_for_health returns a descriptive error
         // (with the app's last health-response error and a pointer to the log
         // file) so we just propagate it.
-        if let Err(e) = self.deployment_manager.wait_for_health(&app, slot, pid).await {
+        if let Err(e) = self
+            .deployment_manager
+            .wait_for_health(&app, slot, pid)
+            .await
+        {
             tracing::error!("{}", e);
             self.deployment_manager.mark_stopping(pid);
             kill_process_group(pid).await;
