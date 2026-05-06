@@ -95,10 +95,11 @@ pub struct AdminConfig {
     #[serde(default = "default_admin_enabled")]
     pub enabled: Option<bool>,
     pub bind: String,
+    #[serde(skip)]
     pub api_key: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip)]
     pub username: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip)]
     pub password_hash: Option<String>,
 }
 

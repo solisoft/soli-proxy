@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BasicAuth {
     pub username: String,
+    #[serde(skip)]
     pub hash: String,
 }
 
