@@ -174,6 +174,16 @@ pub struct TlsConfig {
     pub cache_dir: String,
     #[serde(default = "default_force_https")]
     pub force_https: bool,
+    /// HSTS `max-age` in seconds. Set to 0 (or omit and rely on the default)
+    /// to disable. When unset, defaults to 63072000 (2 years), the value
+    /// recommended by the IETF and required for HSTS preload submission.
+    #[serde(default)]
+    pub hsts_max_age_seconds: Option<u64>,
+    /// Whether to append `; includeSubDomains` to the HSTS header. Operators
+    /// on shared parent domains (e.g. apex `example.com` serves multiple
+    /// independent subdomains) need to opt out. Defaults to `true`.
+    #[serde(default)]
+    pub hsts_include_subdomains: Option<bool>,
 }
 
 fn default_force_https() -> bool {

@@ -9,6 +9,11 @@ worker_threads = "auto"
 [tls]
 mode = "auto"  # "auto" for self-signed dev, "letsencrypt" for production
 cache_dir = "./certs"
+# HSTS (HTTP Strict-Transport-Security) is sent on every HTTPS response.
+# max-age in seconds; default 63072000 (2 years). Set to 0 to disable.
+# hsts_max_age_seconds = 63072000
+# Set to false on shared parent domains where independent subdomains exist.
+# hsts_include_subdomains = true
 
 # Let's Encrypt (for production)
 [letsencrypt]

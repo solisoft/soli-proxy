@@ -99,6 +99,27 @@ static X_FORWARDED_PROTO_HTTP: std::sync::LazyLock<HeaderValue> =
 
 const MAX_HTML_REWRITE_SIZE: usize = 10 * 1024 * 1024;
 
+/// Default HSTS max-age (2 years) used when `tls.hsts_max_age_seconds` is
+/// unset. Matches the IETF recommendation and the value required by
+/// hstspreload.org for browser preload submission.
+const HSTS_DEFAULT_MAX_AGE: u64 = 63072000;
+
+/// Build the `Strict-Transport-Security` header value from `tls`. Returns
+/// `None` when `hsts_max_age_seconds` is explicitly set to 0 — the operator
+/// has opted out. RFC 6797 §7.2 forbids browsers from honouring the header
+/// over plaintext HTTP, so callers MUST gate this on `is_tls`.
+fn hsts_header_value(tls: &crate::config::TlsConfig) -> Option<HeaderValue> {
+    let max_age = tls.hsts_max_age_seconds.unwrap_or(HSTS_DEFAULT_MAX_AGE);
+    if max_age == 0 {
+        return None;
+    }
+    let mut value = format!("max-age={}", max_age);
+    if tls.hsts_include_subdomains.unwrap_or(true) {
+        value.push_str("; includeSubDomains");
+    }
+    HeaderValue::from_str(&value).ok()
+}
+
 /// Verify Basic Auth credentials against stored hashes
 /// Returns true if credentials are valid, false otherwise
 fn verify_basic_auth(req: &Request<Incoming>, auth_entries: &[crate::auth::BasicAuth]) -> bool {
@@ -778,7 +799,8 @@ async fn handle_https2_connection(
     if is_h2 {
         let exec = TokioExecutor::new();
         let svc = service_fn(move |req| {
-            handle_request(
+            let cfg = config.clone();
+            let fut = handle_request(
                 req,
                 client.clone(),
                 config.clone(),
@@ -791,7 +813,14 @@ async fn handle_https2_connection(
                 true,
                 peer_addr,
                 rate_limiter.clone(),
-            )
+            );
+            async move {
+                let mut resp = fut.await?;
+                if let Some(v) = hsts_header_value(&cfg.get_config().tls) {
+                    resp.headers_mut().insert("Strict-Transport-Security", v);
+                }
+                Ok::<_, hyper::Error>(resp)
+            }
         });
         let conn = hyper::server::conn::http2::Builder::new(exec)
             .initial_stream_window_size(1024 * 1024)
@@ -823,7 +852,8 @@ async fn handle_https2_connection(
             .keep_alive_timeout
             .map(Duration::from_secs);
         let svc = service_fn(move |req| {
-            handle_request(
+            let cfg = config.clone();
+            let fut = handle_request(
                 req,
                 client.clone(),
                 config.clone(),
@@ -836,7 +866,14 @@ async fn handle_https2_connection(
                 true,
                 peer_addr,
                 rate_limiter.clone(),
-            )
+            );
+            async move {
+                let mut resp = fut.await?;
+                if let Some(v) = hsts_header_value(&cfg.get_config().tls) {
+                    resp.headers_mut().insert("Strict-Transport-Security", v);
+                }
+                Ok::<_, hyper::Error>(resp)
+            }
         });
         let conn = match header_timeout {
             Some(timeout) => hyper::server::conn::http1::Builder::new()
@@ -990,13 +1027,17 @@ async fn handle_request(
             .unwrap_or_default();
         let location = format!("https://{}{}{}", host, path, query);
         metrics.dec_in_flight();
-        return Ok(Response::builder()
+        // RFC 6797 §7.2: HSTS over plaintext is ignored by browsers, so this
+        // header on the 308 is non-load-bearing — the canonical home is the
+        // HTTPS path, set by the TLS service wrapper. Kept here for consistency
+        // with the configured policy in case any non-browser client honours it.
+        let mut builder = Response::builder()
             .status(308)
-            .header("Location", &location)
-            .header(
-                "Strict-Transport-Security",
-                "max-age=63072000; includeSubDomains",
-            )
+            .header("Location", &location);
+        if let Some(v) = hsts_header_value(&config.tls) {
+            builder = builder.header("Strict-Transport-Security", v);
+        }
+        return Ok(builder
             .body(http_body_util::Full::new(Bytes::new()).boxed())
             .unwrap());
     }
@@ -2528,6 +2569,41 @@ mod tests {
         assert!(header_value(&out, "Sec-WebSocket-Key").is_none());
         assert!(header_value(&out, "Sec-WebSocket-Version").is_none());
         assert!(header_value(&out, "Sec-WebSocket-Protocol").is_none());
+    }
+
+    fn tls_cfg(max_age: Option<u64>, include_subdomains: Option<bool>) -> crate::config::TlsConfig {
+        crate::config::TlsConfig {
+            mode: "auto".into(),
+            cache_dir: "./certs".into(),
+            force_https: true,
+            hsts_max_age_seconds: max_age,
+            hsts_include_subdomains: include_subdomains,
+        }
+    }
+
+    #[test]
+    fn hsts_default_is_two_years_with_include_subdomains() {
+        let v = hsts_header_value(&tls_cfg(None, None)).unwrap();
+        assert_eq!(v.to_str().unwrap(), "max-age=63072000; includeSubDomains");
+    }
+
+    #[test]
+    fn hsts_respects_configured_max_age() {
+        let v = hsts_header_value(&tls_cfg(Some(86400), None)).unwrap();
+        assert_eq!(v.to_str().unwrap(), "max-age=86400; includeSubDomains");
+    }
+
+    #[test]
+    fn hsts_drops_include_subdomains_when_opted_out() {
+        let v = hsts_header_value(&tls_cfg(None, Some(false))).unwrap();
+        assert_eq!(v.to_str().unwrap(), "max-age=63072000");
+    }
+
+    #[test]
+    fn hsts_disabled_when_max_age_zero() {
+        assert!(hsts_header_value(&tls_cfg(Some(0), None)).is_none());
+        // Even with includeSubDomains=true, max-age=0 disables the header.
+        assert!(hsts_header_value(&tls_cfg(Some(0), Some(true))).is_none());
     }
 
     #[test]
