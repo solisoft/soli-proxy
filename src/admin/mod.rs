@@ -139,6 +139,93 @@ fn extract_route_index(path: &str) -> Option<usize> {
         .and_then(|s| s.parse::<usize>().ok())
 }
 
+/// Headers that must never cross the proxy/upstream boundary, per RFC 7230 §6.1.
+/// `connection` is captured separately because we need to read its value (to
+/// strip Connection-listed headers) before removing the header itself.
+const ADMIN_HOP_BY_HOP: &[&str] = &[
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+];
+
+/// Strip hop-by-hop headers and any header whose name is listed in the
+/// `Connection:` header, before forwarding to the bundled `_admin` Rails
+/// backend. Mirrors the proxy's main-path behaviour so the admin
+/// passthrough doesn't silently leak hop-by-hop framing data upstream.
+fn strip_hop_by_hop(headers: &mut hyper::HeaderMap) {
+    // Capture Connection BEFORE removing — otherwise the Connection-listed
+    // strip below becomes a no-op.
+    let conn_header = headers
+        .get("connection")
+        .and_then(|v| v.to_str().ok().map(String::from));
+    for h in ADMIN_HOP_BY_HOP {
+        headers.remove(*h);
+    }
+    headers.remove("connection");
+    if let Some(conn) = conn_header {
+        for name in conn.split(',').map(str::trim) {
+            if !name.is_empty() {
+                headers.remove(name);
+            }
+        }
+    }
+}
+
+/// Inject `X-Forwarded-{For,Proto,Host}` so the bundled `_admin` Rails app
+/// sees the real client IP and can render correct URLs. Always sets
+/// `X-Forwarded-Proto: http` because the admin server itself is plaintext;
+/// operators who terminate TLS in front of it can rewrite at the terminator.
+fn inject_forwarding_headers(headers: &mut hyper::HeaderMap, peer: Option<SocketAddr>) {
+    use hyper::header::HeaderValue;
+    let xff = peer.map(|a| a.ip().to_string()).unwrap_or_default();
+    if let Ok(v) = HeaderValue::from_str(&xff) {
+        headers.insert("X-Forwarded-For", v);
+    }
+    headers.insert("X-Forwarded-Proto", HeaderValue::from_static("http"));
+    if let Some(host) = headers.get("host").cloned() {
+        headers.insert("X-Forwarded-Host", host);
+    }
+}
+
+/// Reject oversized or chunked-encoded requests before we forward them to
+/// the bundled `_admin` Rails backend. `_admin` is internal but not
+/// hardened against memory blow-ups, so we cap the same way the public
+/// proxy does — gated on `[limits].max_request_size` being configured.
+/// Returns `Some(response)` to short-circuit, `None` to continue.
+fn enforce_admin_body_size_limit(
+    req: &Request<Incoming>,
+    max_size: Option<usize>,
+) -> Option<Response<BoxBody>> {
+    let max = max_size?;
+    let content_length = req
+        .headers()
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(0);
+    let is_chunked = req
+        .headers()
+        .get("transfer-encoding")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_lowercase().contains("chunked"))
+        .unwrap_or(false);
+    if content_length > max || is_chunked {
+        let body = http_body_util::Full::new(Bytes::from("Payload Too Large")).boxed();
+        return Some(
+            Response::builder()
+                .status(413)
+                .header("Content-Type", "text/plain")
+                .body(body)
+                .unwrap(),
+        );
+    }
+    None
+}
+
 async fn handle_admin_request(
     req: Request<Incoming>,
     state: Arc<AdminState>,
@@ -301,9 +388,9 @@ async fn handle_admin_request(
                 .and_then(|v| v.to_str().ok())
                 .is_some_and(|v| v.eq_ignore_ascii_case("websocket"));
             if is_ws {
-                proxy_websocket_to_admin_app(req, &state).await
+                proxy_websocket_to_admin_app(req, &state, peer_addr).await
             } else {
-                proxy_to_admin_app(req, &state).await
+                proxy_to_admin_app(req, &state, peer_addr).await
             }
         }
         _ => error_response(404, "Not found"),
@@ -312,7 +399,16 @@ async fn handle_admin_request(
     Ok(response)
 }
 
-async fn proxy_to_admin_app(req: Request<Incoming>, state: &Arc<AdminState>) -> Response<BoxBody> {
+async fn proxy_to_admin_app(
+    req: Request<Incoming>,
+    state: &Arc<AdminState>,
+    peer_addr: Option<SocketAddr>,
+) -> Response<BoxBody> {
+    let max_request_size = state.config_manager.get_config().limits.max_request_size;
+    if let Some(resp) = enforce_admin_body_size_limit(&req, max_request_size) {
+        return resp;
+    }
+
     let port = match resolve_admin_port(state).await {
         Ok(p) => p,
         Err(resp) => return resp,
@@ -337,6 +433,11 @@ async fn proxy_to_admin_app(req: Request<Incoming>, state: &Arc<AdminState>) -> 
     parts.headers.remove("authorization");
     parts.headers.remove("proxy-authorization");
     parts.headers.remove("x-api-key");
+
+    // Strip hop-by-hop framing headers and inject forwarding identity, the
+    // same shape the public proxy applies on outbound requests.
+    strip_hop_by_hop(&mut parts.headers);
+    inject_forwarding_headers(&mut parts.headers, peer_addr);
 
     let proxy_req = Request::from_parts(parts, body);
 
@@ -387,6 +488,7 @@ async fn resolve_admin_port(state: &Arc<AdminState>) -> Result<u16, Response<Box
 async fn proxy_websocket_to_admin_app(
     req: Request<Incoming>,
     state: &Arc<AdminState>,
+    peer_addr: Option<SocketAddr>,
 ) -> Response<BoxBody> {
     let port = match resolve_admin_port(state).await {
         Ok(p) => p,
@@ -400,7 +502,22 @@ async fn proxy_websocket_to_admin_app(
         .map(|q| format!("?{}", q))
         .unwrap_or_default();
 
-    // Collect extra headers to forward to the backend
+    // Capture Connection-listed headers BEFORE iterating so the skip-set is
+    // built before we look at the headers themselves.
+    let connection_listed: Vec<String> = req
+        .headers()
+        .get("connection")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| {
+            s.split(',')
+                .map(|n| n.trim().to_ascii_lowercase())
+                .filter(|n| !n.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Collect extra headers to forward to the backend, skipping hop-by-hop
+    // and credential headers. The hop-by-hop set mirrors RFC 7230 §6.1.
     let mut extra_headers = String::new();
     for (name, value) in req.headers() {
         let name_str = name.as_str();
@@ -408,17 +525,34 @@ async fn proxy_websocket_to_admin_app(
             "host"
             | "upgrade"
             | "connection"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
             | "sec-websocket-key"
             | "sec-websocket-version"
             | "sec-websocket-protocol"
             | "authorization"
-            | "proxy-authorization"
             | "x-api-key" => continue,
             _ => {}
+        }
+        if connection_listed.iter().any(|n| n == name_str) {
+            continue;
         }
         if let Ok(v) = value.to_str() {
             extra_headers.push_str(&format!("{}: {}\r\n", name_str, v));
         }
+    }
+
+    // Inject forwarding identity for the bundled _admin Rails app.
+    if let Some(peer) = peer_addr {
+        extra_headers.push_str(&format!("X-Forwarded-For: {}\r\n", peer.ip()));
+    }
+    extra_headers.push_str("X-Forwarded-Proto: http\r\n");
+    if let Some(host) = req.headers().get("host").and_then(|v| v.to_str().ok()) {
+        extra_headers.push_str(&format!("X-Forwarded-Host: {}\r\n", host));
     }
 
     // Connect to the backend
