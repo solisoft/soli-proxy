@@ -1567,13 +1567,18 @@ async fn handle_regular_request(
     peer_addr: Option<SocketAddr>,
 ) -> Result<(Response<BoxBody>, String, Vec<String>), hyper::Error> {
     let route = find_matching_rule(&req, &config.rules);
+    // Prefer the Host header over the URI authority. An HTTP/1.1 absolute-form
+    // request can carry an attacker-controlled authority that would otherwise
+    // bypass per-host routing rules. Mirrors the shape applied in
+    // find_matching_rule and handle_websocket_request.
     let host = req
-        .uri()
-        .host()
-        .or(req.headers().get("host").and_then(|h| h.to_str().ok()))
-        .map(|h| h.split(':').next().unwrap_or(h).to_string());
+        .headers()
+        .get("host")
+        .and_then(|h| h.to_str().ok())
+        .map(|h| h.split(':').next().unwrap_or(h).to_string())
+        .or_else(|| req.uri().host().map(|h| h.to_string()));
     tracing::debug!(
-        "handle_regular_request: uri.host={:?}, header.host={:?}, rules.len={}",
+        "handle_regular_request: uri.host={:?}, selected.host={:?}, rules.len={}",
         req.uri().host(),
         host,
         config.rules.len()
@@ -1670,12 +1675,15 @@ async fn handle_regular_request(
                 }
             }
 
-            // Only extract host_header when needed (domain rules only)
+            // Only extract host_header when needed (domain rules only). Prefer
+            // the Host header over URI authority so an absolute-form request
+            // cannot inject an arbitrary X-Forwarded-Host into the backend.
             let host_header = if from_domain_rule {
-                req.uri()
-                    .host()
-                    .or(req.headers().get("host").and_then(|h| h.to_str().ok()))
-                    .map(|s| s.to_string())
+                req.headers()
+                    .get("host")
+                    .and_then(|h| h.to_str().ok())
+                    .map(|h| h.to_string())
+                    .or_else(|| req.uri().host().map(|h| h.to_string()))
             } else {
                 None
             };
@@ -1726,9 +1734,9 @@ async fn handle_regular_request(
 
             if from_domain_rule {
                 if let Some(host) = host_header {
-                    request
-                        .headers_mut()
-                        .insert("X-Forwarded-Host", host.parse().unwrap());
+                    if let Ok(v) = HeaderValue::from_str(&host) {
+                        request.headers_mut().insert("X-Forwarded-Host", v);
+                    }
                 }
             }
 
@@ -2049,9 +2057,9 @@ async fn handle_regular_request(
                             X_FORWARDED_PROTO_HTTP.clone()
                         },
                     );
-                    request
-                        .headers_mut()
-                        .insert("X-Forwarded-Host", forwarded_host.parse().unwrap());
+                    if let Ok(v) = HeaderValue::from_str(&forwarded_host) {
+                        request.headers_mut().insert("X-Forwarded-Host", v);
+                    }
 
                     match client.request(request).await {
                         Ok(response) => {
