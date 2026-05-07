@@ -150,6 +150,12 @@ pub struct ScriptingTomlConfig {
     pub enabled: bool,
     pub scripts_dir: Option<String>,
     pub hook_timeout_ms: Option<u64>,
+    /// Environment variables exposed to Lua scripts. Defaults to empty so a
+    /// pre-existing config.toml without this field still parses — without the
+    /// default, the entire TOML deserialize fails, the proxy silently falls
+    /// back to ServerConfig::default() (bind = 0.0.0.0:8080), and port 80 is
+    /// no longer bound.
+    #[serde(default)]
     pub exposed_env: Vec<String>,
 }
 
@@ -1038,6 +1044,36 @@ fn parse_proxy_config(content: &str) -> Result<(Vec<ProxyRule>, Vec<String>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scripting_config_parses_without_exposed_env_field() {
+        // Regression: when ScriptingTomlConfig.exposed_env had no #[serde(default)],
+        // any pre-existing config.toml omitting the field caused the entire
+        // TomlConfig deserialize to fail. The error was swallowed at the
+        // load_config call site and the proxy fell back to ServerConfig::default()
+        // (bind = 0.0.0.0:8080), silently un-binding port 80.
+        let toml_src = r#"
+[server]
+bind = "0.0.0.0:80"
+https_port = 443
+
+[tls]
+mode = "auto"
+cache_dir = "./certs"
+
+[scripting]
+enabled = false
+scripts_dir = "./scripts/lua"
+hook_timeout_ms = 10
+"#;
+        let cfg: TomlConfig = toml::from_str(toml_src)
+            .expect("config without exposed_env must parse to keep operator's bind");
+        assert_eq!(cfg.server.bind, "0.0.0.0:80");
+        assert_eq!(cfg.server.https_port, 443);
+        let scripting = cfg.scripting.expect("scripting section present");
+        assert!(!scripting.enabled);
+        assert!(scripting.exposed_env.is_empty());
+    }
 
     #[test]
     fn test_backslash_continuation_joins_lines() {
