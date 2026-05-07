@@ -20,6 +20,7 @@ use hyper::Request;
 use hyper::Response;
 use hyper_util::rt::TokioExecutor;
 use hyper_util::rt::TokioIo;
+use hyper_util::rt::TokioTimer;
 use socket2::{Domain, Protocol, Socket, Type};
 use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroU32;
@@ -741,13 +742,18 @@ async fn handle_http11_connection(
     });
 
     let conn = match header_timeout {
+        // hyper 1.9 panics with "timeout `header_read_timeout` set, but no
+        // timer set" if `.timer(...)` isn't called when any time-based
+        // feature is enabled, so call it on both branches for symmetry.
         Some(timeout) => hyper::server::conn::http1::Builder::new()
+            .timer(TokioTimer::new())
             .keep_alive(true)
             .pipeline_flush(true)
             .header_read_timeout(timeout)
             .serve_connection(io, svc)
             .with_upgrades(),
         None => hyper::server::conn::http1::Builder::new()
+            .timer(TokioTimer::new())
             .keep_alive(true)
             .pipeline_flush(true)
             .serve_connection(io, svc)
@@ -877,12 +883,14 @@ async fn handle_https2_connection(
         });
         let conn = match header_timeout {
             Some(timeout) => hyper::server::conn::http1::Builder::new()
+                .timer(TokioTimer::new())
                 .keep_alive(true)
                 .pipeline_flush(true)
                 .header_read_timeout(timeout)
                 .serve_connection(io, svc)
                 .with_upgrades(),
             None => hyper::server::conn::http1::Builder::new()
+                .timer(TokioTimer::new())
                 .keep_alive(true)
                 .pipeline_flush(true)
                 .serve_connection(io, svc)
