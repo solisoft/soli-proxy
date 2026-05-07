@@ -4,6 +4,7 @@ use crate::app::AppManager;
 use crate::circuit_breaker::SharedCircuitBreaker;
 use crate::config::ConfigManager;
 use crate::metrics::SharedMetrics;
+use crate::proxy_headers::strip_hop_by_hop;
 use crate::server::IpRateLimiter;
 use anyhow::Result;
 use bytes::Bytes;
@@ -137,42 +138,6 @@ fn check_auth(
 fn extract_route_index(path: &str) -> Option<usize> {
     path.strip_prefix("/api/v1/routes/")
         .and_then(|s| s.parse::<usize>().ok())
-}
-
-/// Headers that must never cross the proxy/upstream boundary, per RFC 7230 §6.1.
-/// `connection` is captured separately because we need to read its value (to
-/// strip Connection-listed headers) before removing the header itself.
-const ADMIN_HOP_BY_HOP: &[&str] = &[
-    "keep-alive",
-    "proxy-authenticate",
-    "proxy-authorization",
-    "te",
-    "trailer",
-    "transfer-encoding",
-    "upgrade",
-];
-
-/// Strip hop-by-hop headers and any header whose name is listed in the
-/// `Connection:` header, before forwarding to the bundled `_admin` Rails
-/// backend. Mirrors the proxy's main-path behaviour so the admin
-/// passthrough doesn't silently leak hop-by-hop framing data upstream.
-fn strip_hop_by_hop(headers: &mut hyper::HeaderMap) {
-    // Capture Connection BEFORE removing — otherwise the Connection-listed
-    // strip below becomes a no-op.
-    let conn_header = headers
-        .get("connection")
-        .and_then(|v| v.to_str().ok().map(String::from));
-    for h in ADMIN_HOP_BY_HOP {
-        headers.remove(*h);
-    }
-    headers.remove("connection");
-    if let Some(conn) = conn_header {
-        for name in conn.split(',').map(str::trim) {
-            if !name.is_empty() {
-                headers.remove(name);
-            }
-        }
-    }
 }
 
 /// Inject `X-Forwarded-{For,Proto,Host}` so the bundled `_admin` Rails app

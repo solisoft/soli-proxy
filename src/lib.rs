@@ -6,6 +6,7 @@ pub mod circuit_breaker;
 pub mod config;
 pub mod metrics;
 pub mod pool;
+pub mod proxy_headers;
 #[cfg(feature = "scripting")]
 pub mod scripting;
 pub mod server;
