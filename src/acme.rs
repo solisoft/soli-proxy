@@ -351,8 +351,11 @@ pub fn save_certificate(
         std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(0o600))?;
     }
     key_file.write_all(key_pem.as_bytes())?;
+    // Use `persist` (not `persist_noclobber`) so renewal can replace the prior
+    // key file. The temp file is created in `cache_dir`, so the rename is
+    // atomic on the same filesystem.
     key_file
-        .persist_noclobber(&key_path)
+        .persist(&key_path)
         .context("Failed to persist private key")?;
 
     std::fs::write(&cert_path, cert_pem)?;
@@ -517,6 +520,23 @@ mod tests {
         assert!(cert_path.exists(), "cert file should be written");
         assert!(key_path.exists(), "key file should be written");
         assert_eq!(std::fs::read_to_string(&cert_path).unwrap(), CERT_PEM);
+    }
+
+    #[test]
+    fn save_certificate_overwrites_on_renewal() {
+        // Regression: persist_noclobber refused to overwrite, so ACME renewal
+        // silently failed and operators were stuck on a soon-to-expire cert.
+        // A second save with new contents must replace the old files.
+        let dir = tempfile::tempdir().unwrap();
+        save_certificate(dir.path(), "example.com", CERT_PEM, KEY_PEM).unwrap();
+        let renewed_cert = "-----BEGIN CERTIFICATE-----\nRENEWED-CERT\n-----END CERTIFICATE-----\n";
+        let renewed_key = "-----BEGIN PRIVATE KEY-----\nRENEWED-KEY\n-----END PRIVATE KEY-----\n";
+        save_certificate(dir.path(), "example.com", renewed_cert, renewed_key)
+            .expect("renewal save must overwrite the prior cert/key");
+        let cert_path = dir.path().join("example.com.cert.pem");
+        let key_path = dir.path().join("example.com.key.pem");
+        assert_eq!(std::fs::read_to_string(&cert_path).unwrap(), renewed_cert);
+        assert_eq!(std::fs::read_to_string(&key_path).unwrap(), renewed_key);
     }
 
     #[test]

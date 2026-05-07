@@ -73,8 +73,11 @@ impl TlsManager {
                 .context("Failed to set restrictive permissions on private key")?;
         }
         key_file.as_file_mut().write_all(key_pem.as_bytes())?;
+        // Use `persist` (not `persist_noclobber`) so regeneration can replace
+        // the prior key. The temp file lives in `cache_dir`, so the underlying
+        // rename is atomic on the same filesystem.
         key_file
-            .persist_noclobber(&key_path)
+            .persist(&key_path)
             .context("Failed to persist private key")?;
 
         std::fs::write(&cert_path, &cert_pem).context("Failed to write self-signed certificate")?;
