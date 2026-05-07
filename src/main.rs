@@ -663,14 +663,18 @@ async fn run_server(
     let domains = cfg.acme_domains();
 
     if is_letsencrypt {
-        // Load any cached ACME certs from disk
+        // Pre-warm the resolver from the proxy.conf domain list so any
+        // already-issued ACME certs are ready before the first handshake.
         if let Err(e) = tls_manager.load_cached_certs(&domains) {
             tracing::warn!("Failed to load cached ACME certs: {}", e);
         }
-        // Also load all cached certs to catch app domains not in proxy.conf
-        if let Err(e) = tls_manager.load_all_cached_certs() {
-            tracing::warn!("Failed to load all cached certs: {}", e);
-        }
+    }
+    // Always scan cache_dir for per-domain and wildcard certs the operator
+    // dropped in manually (mkcert in dev, externally-issued in prod). This
+    // is what makes `_wildcard.<parent>.cert.pem` files actually load — the
+    // letsencrypt-only gating used to silently swallow them in `auto` mode.
+    if let Err(e) = tls_manager.load_all_cached_certs() {
+        tracing::warn!("Failed to load all cached certs: {}", e);
     }
 
     // Build the TLS ServerConfig with the cert resolver
