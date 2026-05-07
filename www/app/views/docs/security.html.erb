@@ -190,16 +190,16 @@
                             <span class="text-xs text-gray-500 ml-2">certs/ directory layout</span>
                         </div>
                         <pre class="p-4 text-sm font-mono overflow-x-auto"><code><span class="tf">certs/</span>
-  <span class="tc">account_credentials.json</span>   <span class="tc"># ACME account keypair</span>
-  <span class="tf">example.com/</span>
-    <span class="ts">cert.pem</span>                  <span class="tc"># Full certificate chain</span>
-    <span class="ts">key.pem</span>                   <span class="tc"># Private key</span>
-  <span class="tf">api.example.com/</span>
-    <span class="ts">cert.pem</span>
-    <span class="ts">key.pem</span>
-  <span class="tf">myapp.example.com/</span>
-    <span class="ts">cert.pem</span>
-    <span class="ts">key.pem</span></code></pre>
+  <span class="tc">account_credentials.json</span>           <span class="tc"># ACME account keypair</span>
+  <span class="ts">self-signed.cert.pem</span>               <span class="tc"># Reserved fallback (auto-generated)</span>
+  <span class="ts">self-signed.key.pem</span>
+  <span class="ts">example.com.cert.pem</span>               <span class="tc"># Per-domain cert (exact-match SNI)</span>
+  <span class="ts">example.com.key.pem</span>
+  <span class="ts">api.example.com.cert.pem</span>
+  <span class="ts">api.example.com.key.pem</span>
+  <span class="ts">_wildcard.example.com.cert.pem</span>     <span class="tc"># Wildcard cert (covers *.example.com,</span>
+  <span class="ts">_wildcard.example.com.key.pem</span>      <span class="tc"># one label deep per RFC 6125)</span></code></pre>
+                        <p class="text-gray-400 text-sm mt-3">SNI resolution order: exact-match <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">&lt;sni&gt;.cert.pem</code> → wildcard <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">_wildcard.&lt;parent&gt;.cert.pem</code> → self-signed fallback. Each cert is validated against its expected SAN at load time; mismatches log a warning and are skipped.</p>
                     </div>
                 </div>
 

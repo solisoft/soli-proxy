@@ -113,6 +113,28 @@ requests_per_second = 1000
 burst_size = 2000
 ```
 
+### TLS Certificates
+
+The proxy stores certificates flat in `tls.cache_dir` (default `./certs`).
+
+| Filename pattern | What it is | Example |
+| --- | --- | --- |
+| `<domain>.cert.pem` + `<domain>.key.pem` | Per-domain cert. Matches SNI exactly. The cert MUST list `<domain>` in its SANs. | `crm.example.com.cert.pem` |
+| `_wildcard.<parent>.cert.pem` + `_wildcard.<parent>.key.pem` | Wildcard cert covering `*.<parent>`. Matches one label deep per RFC 6125. The cert MUST list `*.<parent>` in its SANs. | `_wildcard.example.com.cert.pem` covers `crm.example.com`, `api.example.com`, etc. |
+| `self-signed.cert.pem` + `self-signed.key.pem` | Reserved fallback name. Used when no per-domain or wildcard match. Don't use for a real domain. | (auto-generated) |
+
+Resolution order on a TLS handshake: exact-match `certs/<sni>.cert.pem` → wildcard `certs/_wildcard.<parent>.cert.pem` (one label deep) → self-signed fallback. Files are loaded once at startup and any time the proxy reloads.
+
+For local dev with [mkcert](https://github.com/FiloSottile/mkcert) — install the local CA on your machine (`mkcert -install`) and drop wildcard certs in:
+
+```bash
+mkcert "*.example.test"
+mv _wildcard.example.test.pem      ./certs/_wildcard.example.test.cert.pem
+mv _wildcard.example.test-key.pem  ./certs/_wildcard.example.test.key.pem
+```
+
+After restart, every `*.example.test` alias is served with a Mac/Linux-trusted cert (no browser warning).
+
 ### Proxy Rules (proxy.conf)
 
 ```proxy

@@ -27,18 +27,25 @@ pub fn new_challenge_store() -> ChallengeStore {
 }
 
 /// Dynamic certificate resolver that supports per-domain ACME certs
-/// with a self-signed fallback.
+/// with a self-signed fallback. Also supports wildcard certs keyed by
+/// parent domain (e.g. a cert with `*.solisoft.test` SAN registered under
+/// `"solisoft.test"` matches any single-label child like `crm.solisoft.test`).
 pub struct AcmeCertResolver {
     certs: RwLock<HashMap<String, Arc<CertifiedKey>>>,
+    /// Wildcard certs keyed by the parent domain. Only matches one label
+    /// deep, per RFC 6125.
+    wildcard_certs: RwLock<HashMap<String, Arc<CertifiedKey>>>,
     fallback: RwLock<Option<Arc<CertifiedKey>>>,
 }
 
 impl fmt::Debug for AcmeCertResolver {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let domain_count = self.certs.read().map(|c| c.len()).unwrap_or(0);
+        let wildcard_count = self.wildcard_certs.read().map(|c| c.len()).unwrap_or(0);
         let has_fallback = self.fallback.read().map(|f| f.is_some()).unwrap_or(false);
         f.debug_struct("AcmeCertResolver")
             .field("domains", &domain_count)
+            .field("wildcards", &wildcard_count)
             .field("has_fallback", &has_fallback)
             .finish()
     }
@@ -48,6 +55,7 @@ impl Default for AcmeCertResolver {
     fn default() -> Self {
         Self {
             certs: RwLock::new(HashMap::new()),
+            wildcard_certs: RwLock::new(HashMap::new()),
             fallback: RwLock::new(None),
         }
     }
@@ -69,6 +77,16 @@ impl AcmeCertResolver {
             certs.insert(domain.to_string(), key);
         }
     }
+
+    /// Register a wildcard cert under its parent domain (the part after `*.`).
+    /// Subsequent SNI lookups match `<anything>.<parent>` exactly one label
+    /// deep, e.g. `crm.solisoft.test` matches a wildcard registered under
+    /// `solisoft.test` but `a.b.solisoft.test` does not.
+    pub fn set_wildcard_cert(&self, parent: &str, key: Arc<CertifiedKey>) {
+        if let Ok(mut wildcards) = self.wildcard_certs.write() {
+            wildcards.insert(parent.to_string(), key);
+        }
+    }
 }
 
 impl ResolvesServerCert for AcmeCertResolver {
@@ -82,11 +100,25 @@ impl ResolvesServerCert for AcmeCertResolver {
                     return Some(key.clone());
                 }
             }
-            // No per-domain ACME cert for this SNI yet — fall through to the
-            // self-signed fallback. In dev mode the fallback's SAN list covers
-            // every `.test` alias; in prod the fallback at least lets the
-            // handshake complete so the operator gets a clear cert warning
-            // rather than an opaque `access_denied` TLS alert.
+            // RFC 6125 wildcard match: split off the leftmost label and look
+            // up the parent in the wildcard map. Only one label deep, so
+            // `crm.solisoft.test` → parent `solisoft.test` matches a cert
+            // registered with `*.solisoft.test`, but `a.b.solisoft.test`
+            // does not (we don't recurse).
+            if let Some(dot) = sni.find('.') {
+                let parent = &sni[dot + 1..];
+                if !parent.is_empty() {
+                    if let Ok(wildcards) = self.wildcard_certs.read() {
+                        if let Some(key) = wildcards.get(parent) {
+                            return Some(key.clone());
+                        }
+                    }
+                }
+            }
+            // No per-domain or wildcard match — fall through to the
+            // self-signed fallback so the handshake completes (producing a
+            // browser cert warning) rather than aborting with the opaque
+            // `access_denied` TLS alert.
         }
 
         if let Ok(fallback) = self.fallback.read() {
@@ -419,6 +451,85 @@ pub fn certified_key_from_pem(cert_pem: &[u8], key_pem: &[u8]) -> Result<Certifi
     Ok(certified_key)
 }
 
+/// Check if the certificate's SANs contain the wildcard `*.<parent>`.
+/// Used to validate a wildcard cert at load time before it's registered
+/// under the parent in the resolver's wildcard map.
+fn cert_contains_wildcard(cert_pem: &[u8], parent: &str) -> bool {
+    let want = format!("*.{}", parent);
+    let certs: Vec<CertificateDer<'static>> =
+        match rustls_pemfile::certs(&mut &*cert_pem).collect::<std::result::Result<Vec<_>, _>>() {
+            Ok(c) if !c.is_empty() => c,
+            _ => return false,
+        };
+    match x509_parser::parse_x509_certificate(&certs[0]) {
+        Ok((_, cert)) => {
+            if let Ok(Some(sans)) = cert.subject_alternative_name() {
+                for san_value in &sans.value.general_names {
+                    if let GeneralName::DNSName(dns) = san_value {
+                        if let Ok(dns_str) = std::str::from_utf8(dns.as_ref()) {
+                            if dns_str == want {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            false
+        }
+        Err(_) => false,
+    }
+}
+
+/// Build a safe path for a wildcard cert/key file in `cache_dir`. The leaf
+/// is `_wildcard.<parent>.<suffix>`. `parent` is validated as a normal
+/// domain (`is_valid_domain`) so it cannot escape `cache_dir`.
+fn safe_wildcard_path(cache_dir: &Path, parent: &str, suffix: &str) -> Option<PathBuf> {
+    if !is_valid_domain(parent) {
+        tracing::warn!("Invalid wildcard parent rejected: {}", parent);
+        return None;
+    }
+    let canonical_dir = cache_dir.canonicalize().ok()?;
+    let path = canonical_dir.join(format!("_wildcard.{}{}", parent, suffix));
+    if path.starts_with(&canonical_dir) {
+        Some(path)
+    } else {
+        tracing::warn!("Wildcard cert path escapes cache_dir: {}", path.display());
+        None
+    }
+}
+
+/// Load a wildcard cert/key pair for `*.<parent>` from `cache_dir`. Returns
+/// `Ok(None)` when the files are missing or the cert lacks the expected
+/// `*.<parent>` SAN — both are non-fatal, the caller logs and moves on.
+pub fn load_wildcard_certificate(
+    cache_dir: &Path,
+    parent: &str,
+) -> Result<Option<Arc<CertifiedKey>>> {
+    let cert_path = match safe_wildcard_path(cache_dir, parent, ".cert.pem") {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+    let key_path = match safe_wildcard_path(cache_dir, parent, ".key.pem") {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+    if !cert_path.exists() || !key_path.exists() {
+        return Ok(None);
+    }
+    let cert_bytes = std::fs::read(&cert_path)?;
+    let key_bytes = std::fs::read(&key_path)?;
+    if !cert_contains_wildcard(&cert_bytes, parent) {
+        tracing::warn!(
+            "Wildcard cert at {} does not contain *.{} in its SANs, skipping",
+            cert_path.display(),
+            parent
+        );
+        return Ok(None);
+    }
+    let ck = certified_key_from_pem(&cert_bytes, &key_bytes)?;
+    Ok(Some(Arc::new(ck)))
+}
+
 /// Check if the certificate's SANs contain the expected domain.
 fn cert_contains_domain(cert_pem: &[u8], domain: &str) -> bool {
     let certs: Vec<CertificateDer<'static>> =
@@ -564,6 +675,76 @@ mod tests {
         assert!(safe_cert_path(dir.path(), "", ".cert.pem").is_none());
         let too_long = "a".repeat(254);
         assert!(safe_cert_path(dir.path(), &too_long, ".cert.pem").is_none());
+    }
+
+    #[test]
+    fn safe_wildcard_path_resolves_for_nonexistent_leaf() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = safe_wildcard_path(dir.path(), "solisoft.test", ".cert.pem")
+            .expect("wildcard path must resolve when leaf does not exist yet");
+        assert!(p.starts_with(dir.path().canonicalize().unwrap()));
+        assert_eq!(
+            p.file_name().unwrap().to_str().unwrap(),
+            "_wildcard.solisoft.test.cert.pem"
+        );
+    }
+
+    #[test]
+    fn safe_wildcard_path_rejects_traversal_in_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(safe_wildcard_path(dir.path(), "../escape", ".cert.pem").is_none());
+        assert!(safe_wildcard_path(dir.path(), "a/b", ".cert.pem").is_none());
+        assert!(safe_wildcard_path(dir.path(), "evil\0.com", ".cert.pem").is_none());
+    }
+
+    #[test]
+    fn resolver_matches_one_label_wildcard() {
+        // Build a fake CertifiedKey via the existing helpers — we don't
+        // actually do TLS here, just exercise the lookup logic. Use the
+        // self-signed cert generated via tls::generate_self_signed_cert
+        // shape: any valid CertifiedKey will do.
+        // Easier: skip the full key construction and just test the lookup
+        // by calling set_wildcard_cert with a sentinel and asserting the
+        // resolver returns that same Arc for SNIs at the right depth.
+        //
+        // We can't call resolve() directly without a ClientHello, but the
+        // wildcard split logic is exposed through this in-line check that
+        // mirrors what resolve() does. The test asserts the split + lookup.
+        let resolver = AcmeCertResolver::new();
+        // Need a real CertifiedKey; reuse a tiny round-trip.
+        // Use rcgen here to keep the test self-contained.
+        let mut params = rcgen::CertificateParams::default();
+        params.subject_alt_names = vec![rcgen::SanType::DnsName("*.solisoft.test".to_string())];
+        let cert = rcgen::Certificate::from_params(params).unwrap();
+        let cert_pem = cert.serialize_pem().unwrap();
+        let key_pem = cert.serialize_private_key_pem();
+        let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
+        let ck = certified_key_from_pem(cert_pem.as_bytes(), key_pem.as_bytes()).unwrap();
+        let arc = Arc::new(ck);
+        resolver.set_wildcard_cert("solisoft.test", arc.clone());
+
+        // Replicate resolver's wildcard-lookup logic — one label deep only.
+        fn wildcard_lookup<'a>(
+            resolver: &'a AcmeCertResolver,
+            sni: &str,
+        ) -> Option<Arc<CertifiedKey>> {
+            let dot = sni.find('.')?;
+            let parent = &sni[dot + 1..];
+            if parent.is_empty() {
+                return None;
+            }
+            resolver.wildcard_certs.read().ok()?.get(parent).cloned()
+        }
+
+        assert!(wildcard_lookup(&resolver, "crm.solisoft.test").is_some());
+        assert!(wildcard_lookup(&resolver, "anything.solisoft.test").is_some());
+        // One label deep only — parent of `a.b.solisoft.test` is `b.solisoft.test`,
+        // which is NOT registered.
+        assert!(wildcard_lookup(&resolver, "a.b.solisoft.test").is_none());
+        // Wrong parent.
+        assert!(wildcard_lookup(&resolver, "crm.example.test").is_none());
+        // Bare label, no dot.
+        assert!(wildcard_lookup(&resolver, "solisoft").is_none());
     }
 
     #[cfg(unix)]

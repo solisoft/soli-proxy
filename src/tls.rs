@@ -6,7 +6,8 @@ use std::sync::Arc;
 use tokio_rustls::rustls::ServerConfig;
 
 use crate::acme::{
-    build_server_config, certified_key_from_pem, load_certificate, AcmeCertResolver,
+    build_server_config, certified_key_from_pem, load_certificate, load_wildcard_certificate,
+    AcmeCertResolver,
 };
 use crate::config::TlsConfig;
 
@@ -119,6 +120,8 @@ impl TlsManager {
 
     /// Load ALL cached ACME certs from disk by scanning the certs directory.
     /// This ensures certs for app domains are loaded even if not in proxy.conf.
+    /// Files named `_wildcard.<parent>.cert.pem` (paired with `_wildcard.<parent>.key.pem`)
+    /// are loaded as wildcard certs covering `*.<parent>` instead of an exact match.
     pub fn load_all_cached_certs(&self) -> Result<()> {
         let cert_dir = &self.cache_dir;
         if !cert_dir.exists() {
@@ -128,19 +131,34 @@ impl TlsManager {
             let entry = dir_entry?;
             let filename = entry.file_name();
             let name = filename.to_str().unwrap_or("");
-            if let Some(domain) = name.strip_suffix(".cert.pem") {
-                if domain == "self-signed" {
-                    continue;
-                }
-                match load_certificate(cert_dir, domain) {
+            let Some(stem) = name.strip_suffix(".cert.pem") else {
+                continue;
+            };
+            if stem == "self-signed" {
+                continue;
+            }
+            if let Some(parent) = stem.strip_prefix("_wildcard.") {
+                match load_wildcard_certificate(cert_dir, parent) {
                     Ok(Some(ck)) => {
-                        self.resolver.set_cert(domain, ck);
-                        tracing::info!("Loaded cached certificate for {}", domain);
+                        self.resolver.set_wildcard_cert(parent, ck);
+                        tracing::info!("Loaded wildcard certificate for *.{}", parent);
                     }
                     Ok(None) => {}
                     Err(e) => {
-                        tracing::warn!("Failed to load cached cert for {}: {}", domain, e);
+                        tracing::warn!("Failed to load wildcard cert for *.{}: {}", parent, e);
                     }
+                }
+                continue;
+            }
+            let domain = stem;
+            match load_certificate(cert_dir, domain) {
+                Ok(Some(ck)) => {
+                    self.resolver.set_cert(domain, ck);
+                    tracing::info!("Loaded cached certificate for {}", domain);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!("Failed to load cached cert for {}: {}", domain, e);
                 }
             }
         }

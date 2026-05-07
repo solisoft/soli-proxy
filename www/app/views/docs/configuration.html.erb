@@ -371,9 +371,12 @@
                                 <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
                             </div>
                             <pre class="p-4 text-sm overflow-x-auto"><code><span class="tk">[tls]</span>
-<span class="tf">mode</span> = <span class="ts">"auto"</span>                  <span class="tc"># "auto" = self-signed dev certs</span>
-                                <span class="tc"># "letsencrypt" = ACME production certs</span>
-<span class="tf">cache_dir</span> = <span class="ts">"./certs"</span>          <span class="tc"># Directory to store certificates</span></code></pre>
+<span class="tf">mode</span> = <span class="ts">"auto"</span>                       <span class="tc"># "auto" = self-signed dev certs</span>
+                                     <span class="tc"># "letsencrypt" = ACME production certs</span>
+<span class="tf">cache_dir</span> = <span class="ts">"./certs"</span>               <span class="tc"># Directory to store certificates</span>
+<span class="tf">force_https</span> = <span class="tn">true</span>                  <span class="tc"># Redirect HTTP→HTTPS with 308</span>
+<span class="tf">hsts_max_age_seconds</span> = <span class="tn">63072000</span>     <span class="tc"># HSTS max-age (default 2y, 0 disables)</span>
+<span class="tf">hsts_include_subdomains</span> = <span class="tn">true</span>      <span class="tc"># Append `; includeSubDomains` directive</span></code></pre>
                         </div>
                         <div class="mt-3 overflow-x-auto">
                             <table class="w-full text-sm text-left">
@@ -385,7 +388,10 @@
                                 </tr></thead>
                                 <tbody class="text-gray-300">
                                     <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">mode</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"auto"</td><td class="py-2">"auto" for self-signed, "letsencrypt" for ACME</td></tr>
-                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">cache_dir</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"./certs"</td><td class="py-2">Certificate storage directory</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">cache_dir</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"./certs"</td><td class="py-2">Certificate storage directory. Cert files: <code class="text-cyan-300 text-xs">&lt;domain&gt;.cert.pem</code>/<code class="text-cyan-300 text-xs">.key.pem</code>; wildcard: <code class="text-cyan-300 text-xs">_wildcard.&lt;parent&gt;.cert.pem</code>/<code class="text-cyan-300 text-xs">.key.pem</code>.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">force_https</td><td class="py-2 pr-4">bool</td><td class="py-2 pr-4 text-gray-500">true</td><td class="py-2">Send a 308 to <code class="text-cyan-300 text-xs">https://</code> for plaintext requests.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">hsts_max_age_seconds</td><td class="py-2 pr-4">u64</td><td class="py-2 pr-4 text-gray-500">63072000</td><td class="py-2">HSTS <code class="text-cyan-300 text-xs">max-age</code>. Set to 0 to omit the header entirely.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">hsts_include_subdomains</td><td class="py-2 pr-4">bool</td><td class="py-2 pr-4 text-gray-500">true</td><td class="py-2">Set to <code class="text-cyan-300 text-xs">false</code> on apex domains that serve independent subdomains.</td></tr>
                                 </tbody>
                             </table>
                         </div>
