@@ -535,7 +535,10 @@ async fn proxy_websocket_to_admin_app(
             | "sec-websocket-version"
             | "sec-websocket-protocol"
             | "authorization"
-            | "x-api-key" => continue,
+            | "x-api-key"
+            | "x-forwarded-for"
+            | "x-forwarded-proto"
+            | "x-forwarded-host" => continue,
             _ => {}
         }
         if connection_listed.iter().any(|n| n == name_str) {
