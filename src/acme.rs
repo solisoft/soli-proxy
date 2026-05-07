@@ -317,10 +317,14 @@ fn safe_cert_path(cache_dir: &Path, domain: &str, suffix: &str) -> Option<PathBu
         tracing::warn!("Invalid domain name rejected: {}", domain);
         return None;
     }
-    let path = cache_dir.join(format!("{}{}", domain, suffix));
-    let canonical_path = path.canonicalize().ok()?;
+    // Canonicalize the parent directory only — the leaf file may not exist yet
+    // on first issuance, and `Path::canonicalize` would error in that case.
+    // `is_valid_domain` already rejects `/`, `\`, `\0`, and `..`, so the join
+    // cannot escape `canonical_dir` by construction; the prefix check below
+    // is belt-and-braces.
     let canonical_dir = cache_dir.canonicalize().ok()?;
-    if canonical_path.starts_with(&canonical_dir) {
+    let path = canonical_dir.join(format!("{}{}", domain, suffix));
+    if path.starts_with(&canonical_dir) {
         Some(path)
     } else {
         tracing::warn!("Certificate path escapes cache_dir: {}", path.display());
@@ -477,6 +481,79 @@ pub fn cert_expires_soon(cache_dir: &Path, domain: &str) -> bool {
             not_after - now < thirty_days
         }
         Err(_) => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CERT_PEM: &str = "-----BEGIN CERTIFICATE-----\nMIIBhTCCASugAwIBAgIQAAAAAAAAAAAAAAAAAAAAATAKBggqhkjOPQQDAjAS\n-----END CERTIFICATE-----\n";
+    const KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg\n-----END PRIVATE KEY-----\n";
+
+    #[test]
+    fn safe_cert_path_resolves_for_nonexistent_leaf() {
+        // Regression: Path::canonicalize errors for non-existent paths, so the
+        // previous implementation rejected every brand-new domain. The leaf
+        // does not exist here; the function must still return a path.
+        let dir = tempfile::tempdir().unwrap();
+        let p = safe_cert_path(dir.path(), "example.com", ".cert.pem")
+            .expect("must resolve when leaf does not exist yet");
+        assert!(p.starts_with(dir.path().canonicalize().unwrap()));
+        assert!(p.file_name().unwrap().to_str().unwrap() == "example.com.cert.pem");
+    }
+
+    #[test]
+    fn save_certificate_round_trip() {
+        // Lock in the regression fix: a fresh save followed by a path-resolution
+        // attempt must succeed and produce both files on disk. (We can't go
+        // through load_certificate here without a real cert/key pair signed by
+        // a CA the system trusts, so we assert on the filesystem directly.)
+        let dir = tempfile::tempdir().unwrap();
+        save_certificate(dir.path(), "example.com", CERT_PEM, KEY_PEM)
+            .expect("save_certificate must succeed for a valid new domain");
+        let cert_path = dir.path().join("example.com.cert.pem");
+        let key_path = dir.path().join("example.com.key.pem");
+        assert!(cert_path.exists(), "cert file should be written");
+        assert!(key_path.exists(), "key file should be written");
+        assert_eq!(std::fs::read_to_string(&cert_path).unwrap(), CERT_PEM);
+    }
+
+    #[test]
+    fn safe_cert_path_rejects_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(safe_cert_path(dir.path(), "../escape", ".cert.pem").is_none());
+        assert!(safe_cert_path(dir.path(), "..", ".cert.pem").is_none());
+        assert!(safe_cert_path(dir.path(), "a/b", ".cert.pem").is_none());
+        assert!(safe_cert_path(dir.path(), "a\\b", ".cert.pem").is_none());
+    }
+
+    #[test]
+    fn safe_cert_path_rejects_nul_byte() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(safe_cert_path(dir.path(), "evil\0.com", ".cert.pem").is_none());
+    }
+
+    #[test]
+    fn safe_cert_path_rejects_empty_and_oversized() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(safe_cert_path(dir.path(), "", ".cert.pem").is_none());
+        let too_long = "a".repeat(254);
+        assert!(safe_cert_path(dir.path(), &too_long, ".cert.pem").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn safe_cert_path_resolves_through_symlink_dir() {
+        // Cache dir provided as a symlink should canonicalize to the real
+        // directory; the resolved leaf path must live inside the real dir.
+        let real = tempfile::tempdir().unwrap();
+        let link_parent = tempfile::tempdir().unwrap();
+        let link = link_parent.path().join("link");
+        std::os::unix::fs::symlink(real.path(), &link).unwrap();
+        let p = safe_cert_path(&link, "example.com", ".cert.pem")
+            .expect("must resolve when cache_dir is a symlink");
+        assert!(p.starts_with(real.path().canonicalize().unwrap()));
     }
 }
 
