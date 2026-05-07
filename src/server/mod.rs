@@ -264,6 +264,71 @@ pub fn build_rate_limiter(config: &ConfigManager) -> Option<Arc<IpRateLimiter>> 
     Some(Arc::new(GovernorRateLimiter::keyed(quota)))
 }
 
+/// Build the trailing header lines for a forwarded WebSocket upgrade. Drops
+/// hop-by-hop headers (RFC 7230 §6.1) and any header nominated by the
+/// client's `Connection:` value, then re-injects proxy-derived
+/// `X-Forwarded-{For,Proto,Host}` so a client cannot spoof source IP /
+/// proto / host on the upgrade. `Host`, `Upgrade`, `Connection`, and the
+/// `Sec-WebSocket-*` framing headers are also skipped because the caller
+/// emits them explicitly. Output ends with each line CRLF-terminated; the
+/// caller appends the final blank-line terminator.
+fn build_ws_extra_headers(
+    headers: &hyper::HeaderMap,
+    peer_addr: Option<SocketAddr>,
+    is_tls: bool,
+    host_header: &str,
+) -> String {
+    let connection_listed: Vec<String> = headers
+        .get("connection")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| {
+            s.split(',')
+                .map(|n| n.trim().to_ascii_lowercase())
+                .filter(|n| !n.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut out = String::new();
+    for (name, value) in headers {
+        let name_str = name.as_str();
+        match name_str {
+            "host"
+            | "upgrade"
+            | "connection"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "sec-websocket-key"
+            | "sec-websocket-version"
+            | "sec-websocket-protocol"
+            | "x-forwarded-for"
+            | "x-forwarded-proto"
+            | "x-forwarded-host" => continue,
+            _ => {}
+        }
+        if connection_listed.iter().any(|n| n == name_str) {
+            continue;
+        }
+        if let Ok(v) = value.to_str() {
+            out.push_str(&format!("{}: {}\r\n", name_str, v));
+        }
+    }
+
+    if let Some(peer) = peer_addr {
+        out.push_str(&format!("X-Forwarded-For: {}\r\n", peer.ip()));
+    }
+    out.push_str(&format!(
+        "X-Forwarded-Proto: {}\r\n",
+        if is_tls { "https" } else { "http" }
+    ));
+    out.push_str(&format!("X-Forwarded-Host: {}\r\n", host_header));
+    out
+}
+
 impl ProxyServer {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -1044,6 +1109,8 @@ async fn handle_request(
             &metrics,
             start_time,
             app_manager.clone(),
+            is_tls,
+            peer_addr,
         )
         .await;
     }
@@ -1200,6 +1267,7 @@ fn handle_acme_challenge(
     Some(Response::builder().status(404).body(body).unwrap())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_websocket_request(
     req: Request<Incoming>,
     _client: ProxyClient,
@@ -1207,6 +1275,8 @@ async fn handle_websocket_request(
     metrics: &SharedMetrics,
     _start_time: std::time::Instant,
     app_manager: Option<Arc<AppManager>>,
+    is_tls: bool,
+    peer_addr: Option<SocketAddr>,
 ) -> Result<Response<BoxBody>, hyper::Error> {
     let host = req
         .headers()
@@ -1286,27 +1356,7 @@ async fn handle_websocket_request(
         .unwrap_or(&backend_addr)
         .to_string();
 
-    // Collect all request headers to forward to the backend.
-    // This preserves Cookie, Origin, Sec-WebSocket-Extensions, and any
-    // custom headers the client sent — backends may need them for session
-    // management, CORS validation, or compression negotiation.
-    let mut extra_headers = String::new();
-    for (name, value) in req.headers() {
-        let name_str = name.as_str();
-        // Skip hop-by-hop and headers we set explicitly in the handshake
-        match name_str {
-            "host"
-            | "upgrade"
-            | "connection"
-            | "sec-websocket-key"
-            | "sec-websocket-version"
-            | "sec-websocket-protocol" => continue,
-            _ => {}
-        }
-        if let Ok(v) = value.to_str() {
-            extra_headers.push_str(&format!("{}: {}\r\n", name_str, v));
-        }
-    }
+    let extra_headers = build_ws_extra_headers(req.headers(), peer_addr, is_tls, &host_header);
 
     tracing::info!(
         "WebSocket upgrade request to {}{}{}",
@@ -2381,5 +2431,103 @@ mod tests {
     fn test_load_balancer_state_zero_targets() {
         let lb = LoadBalancerState::new(1);
         assert_eq!(lb.select_index(0, 0), 0);
+    }
+
+    fn xff_count(s: &str) -> usize {
+        s.lines()
+            .filter(|l| l.to_ascii_lowercase().starts_with("x-forwarded-for:"))
+            .count()
+    }
+
+    fn header_value<'a>(s: &'a str, name: &str) -> Option<&'a str> {
+        let want = format!("{}:", name.to_ascii_lowercase());
+        s.lines()
+            .find(|l| l.to_ascii_lowercase().starts_with(&want))
+            .and_then(|l| l.split_once(':').map(|(_, v)| v.trim()))
+    }
+
+    #[test]
+    fn ws_extra_headers_replaces_client_xff() {
+        let mut h = hyper::HeaderMap::new();
+        h.insert("x-forwarded-for", "1.2.3.4".parse().unwrap());
+        h.insert("x-forwarded-proto", "https".parse().unwrap());
+        h.insert("x-forwarded-host", "evil.example".parse().unwrap());
+        let peer: SocketAddr = "9.9.9.9:54321".parse().unwrap();
+        let out = build_ws_extra_headers(&h, Some(peer), false, "real.example");
+        assert_eq!(xff_count(&out), 1, "exactly one X-Forwarded-For line");
+        assert_eq!(header_value(&out, "X-Forwarded-For"), Some("9.9.9.9"));
+        assert_eq!(header_value(&out, "X-Forwarded-Proto"), Some("http"));
+        assert_eq!(header_value(&out, "X-Forwarded-Host"), Some("real.example"));
+    }
+
+    #[test]
+    fn ws_extra_headers_injects_when_client_sent_none() {
+        let h = hyper::HeaderMap::new();
+        let peer: SocketAddr = "10.0.0.1:1000".parse().unwrap();
+        let out = build_ws_extra_headers(&h, Some(peer), true, "api.example");
+        assert_eq!(header_value(&out, "X-Forwarded-For"), Some("10.0.0.1"));
+        assert_eq!(header_value(&out, "X-Forwarded-Proto"), Some("https"));
+        assert_eq!(header_value(&out, "X-Forwarded-Host"), Some("api.example"));
+    }
+
+    #[test]
+    fn ws_extra_headers_strips_hop_by_hop() {
+        let mut h = hyper::HeaderMap::new();
+        h.insert("transfer-encoding", "chunked".parse().unwrap());
+        h.insert("keep-alive", "timeout=5".parse().unwrap());
+        h.insert("te", "trailers".parse().unwrap());
+        h.insert("trailer", "Expires".parse().unwrap());
+        h.insert("proxy-authorization", "Basic ...".parse().unwrap());
+        h.insert("cookie", "sid=abc".parse().unwrap());
+        let out = build_ws_extra_headers(&h, None, false, "example");
+        assert!(header_value(&out, "Transfer-Encoding").is_none());
+        assert!(header_value(&out, "Keep-Alive").is_none());
+        assert!(header_value(&out, "TE").is_none());
+        assert!(header_value(&out, "Trailer").is_none());
+        assert!(header_value(&out, "Proxy-Authorization").is_none());
+        assert_eq!(header_value(&out, "Cookie"), Some("sid=abc"));
+    }
+
+    #[test]
+    fn ws_extra_headers_strips_connection_listed() {
+        let mut h = hyper::HeaderMap::new();
+        h.insert("connection", "X-Custom, X-Other".parse().unwrap());
+        h.insert("x-custom", "secret".parse().unwrap());
+        h.insert("x-other", "1".parse().unwrap());
+        h.insert("x-keep", "yes".parse().unwrap());
+        let out = build_ws_extra_headers(&h, None, false, "example");
+        assert!(
+            header_value(&out, "X-Custom").is_none(),
+            "Connection-listed header must be stripped"
+        );
+        assert!(header_value(&out, "X-Other").is_none());
+        assert_eq!(header_value(&out, "X-Keep"), Some("yes"));
+    }
+
+    #[test]
+    fn ws_extra_headers_skips_framing_headers() {
+        let mut h = hyper::HeaderMap::new();
+        h.insert("host", "example".parse().unwrap());
+        h.insert("upgrade", "websocket".parse().unwrap());
+        h.insert("connection", "Upgrade".parse().unwrap());
+        h.insert("sec-websocket-key", "abc".parse().unwrap());
+        h.insert("sec-websocket-version", "13".parse().unwrap());
+        h.insert("sec-websocket-protocol", "chat".parse().unwrap());
+        let out = build_ws_extra_headers(&h, None, false, "example");
+        assert!(header_value(&out, "Host").is_none());
+        assert!(header_value(&out, "Upgrade").is_none());
+        assert!(header_value(&out, "Connection").is_none());
+        assert!(header_value(&out, "Sec-WebSocket-Key").is_none());
+        assert!(header_value(&out, "Sec-WebSocket-Version").is_none());
+        assert!(header_value(&out, "Sec-WebSocket-Protocol").is_none());
+    }
+
+    #[test]
+    fn ws_extra_headers_omits_xff_when_peer_unknown() {
+        let h = hyper::HeaderMap::new();
+        let out = build_ws_extra_headers(&h, None, false, "example");
+        assert_eq!(xff_count(&out), 0);
+        assert_eq!(header_value(&out, "X-Forwarded-Proto"), Some("http"));
+        assert_eq!(header_value(&out, "X-Forwarded-Host"), Some("example"));
     }
 }
