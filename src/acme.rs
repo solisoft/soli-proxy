@@ -82,7 +82,11 @@ impl ResolvesServerCert for AcmeCertResolver {
                     return Some(key.clone());
                 }
             }
-            return None;
+            // No per-domain ACME cert for this SNI yet — fall through to the
+            // self-signed fallback. In dev mode the fallback's SAN list covers
+            // every `.test` alias; in prod the fallback at least lets the
+            // handshake complete so the operator gets a clear cert warning
+            // rather than an opaque `access_denied` TLS alert.
         }
 
         if let Ok(fallback) = self.fallback.read() {
