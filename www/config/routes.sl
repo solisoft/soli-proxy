@@ -5,6 +5,7 @@ get("/docs", "docs#getting_started");
 get("/docs/getting-started", "docs#getting_started");
 get("/docs/apps", "docs#apps");
 get("/docs/configuration", "docs#configuration");
+get("/docs/dev-https", "docs#dev_https");
 get("/docs/admin-api", "docs#admin_api");
 get("/docs/scripting", "docs#scripting");
 get("/docs/security", "docs#security");

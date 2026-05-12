@@ -17,6 +17,12 @@ class DocsController extends Controller {
         })
     }
 
+    fn dev_https(req) {
+        render("docs/dev_https", {
+            "title": "Dev HTTPS & .test"
+        })
+    }
+
     fn admin_api(req) {
         render("docs/admin_api", {
             "title": "Admin API"

@@ -123,7 +123,7 @@ The proxy stores certificates flat in `tls.cache_dir` (default `./certs`).
 | `_wildcard.<parent>.cert.pem` + `_wildcard.<parent>.key.pem` | Wildcard cert covering `*.<parent>`. Matches one label deep per RFC 6125. The cert MUST list `*.<parent>` in its SANs. | `_wildcard.example.com.cert.pem` covers `crm.example.com`, `api.example.com`, etc. |
 | `self-signed.cert.pem` + `self-signed.key.pem` | Reserved fallback name. Used when no per-domain or wildcard match. Don't use for a real domain. | (auto-generated) |
 
-Resolution order on a TLS handshake: exact-match `certs/<sni>.cert.pem` → wildcard `certs/_wildcard.<parent>.cert.pem` (one label deep) → self-signed fallback. Files are loaded once at startup and any time the proxy reloads.
+Resolution order on a TLS handshake: exact-match `certs/<sni>.cert.pem` → wildcard `certs/_wildcard.<parent>.cert.pem` (one label deep) → self-signed fallback. Cert files are scanned **once at startup** — `SIGUSR1` and the admin reload endpoint only refresh routing, so adding/replacing a cert file requires a full proxy restart.
 
 For local dev with [mkcert](https://github.com/FiloSottile/mkcert) — install the local CA on your machine (`mkcert -install`) and drop wildcard certs in:
 
@@ -134,6 +134,8 @@ mv _wildcard.example.test-key.pem  ./certs/_wildcard.example.test.key.pem
 ```
 
 After restart, every `*.example.test` alias is served with a Mac/Linux-trusted cert (no browser warning).
+
+See [`docs/tls-mkcert.md`](docs/tls-mkcert.md) for the full mkcert workflow, the CA-rotation pitfall (identical issuer string, different key → `bad signature`), and the `scripts/diag-mkcert-mac.sh` / `scripts/regen-mkcert-and-deploy.sh` helpers.
 
 ### Proxy Rules (proxy.conf)
 
