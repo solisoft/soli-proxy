@@ -128,6 +128,8 @@ pub struct ScriptingTomlConfig {
 pub struct ServerConfig {
     pub bind: String,
     pub https_port: u16,
+    #[serde(default)]
+    pub worker_threads: Option<WorkerThreads>,
 }
 
 impl Default for ServerConfig {
@@ -135,7 +137,99 @@ impl Default for ServerConfig {
         Self {
             bind: "0.0.0.0:8080".to_string(),
             https_port: 443,
+            worker_threads: None,
         }
+    }
+}
+
+/// Tokio worker-thread setting. Accepts either the literal string `"auto"` or
+/// a positive integer in `config.toml`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WorkerThreads {
+    Auto,
+    Count(u16),
+}
+
+impl Serialize for WorkerThreads {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            WorkerThreads::Auto => serializer.serialize_str("auto"),
+            WorkerThreads::Count(n) => serializer.serialize_u16(*n),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for WorkerThreads {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = WorkerThreads;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(f, "\"auto\" or a positive integer up to {}", u16::MAX)
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Self::Value, E> {
+                if v == 0 || v > u16::MAX as u64 {
+                    return Err(E::custom(format!(
+                        "worker_threads must be in 1..={}",
+                        u16::MAX
+                    )));
+                }
+                Ok(WorkerThreads::Count(v as u16))
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Self::Value, E> {
+                if v <= 0 || v > u16::MAX as i64 {
+                    return Err(E::custom(format!(
+                        "worker_threads must be in 1..={}",
+                        u16::MAX
+                    )));
+                }
+                Ok(WorkerThreads::Count(v as u16))
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                if v.eq_ignore_ascii_case("auto") {
+                    Ok(WorkerThreads::Auto)
+                } else {
+                    Err(E::custom(format!(
+                        "unknown worker_threads value: {:?} (expected \"auto\" or an integer)",
+                        v
+                    )))
+                }
+            }
+        }
+        deserializer.deserialize_any(V)
+    }
+}
+
+/// Read just the `worker_threads` setting from `config.toml` next to
+/// `config_path`. Returns `None` when the file is missing or the field is
+/// unset, letting the caller fall back to its own default.
+pub fn read_worker_threads(config_path: &str) -> Option<WorkerThreads> {
+    let path = PathBuf::from(config_path);
+    let toml_path = path.parent().unwrap_or(Path::new(".")).join("config.toml");
+    let content = std::fs::read_to_string(&toml_path).ok()?;
+    let toml_config: TomlConfig = toml::from_str(&content).ok()?;
+    toml_config.server.worker_threads
+}
+
+/// Decide how many Tokio worker threads to use given the `--dev` flag and the
+/// `worker_threads` setting from `config.toml`. Returns `Some(n)` for an
+/// explicit count, or `None` to let Tokio auto-detect (one worker per core).
+pub fn resolve_worker_threads(dev_mode: bool, config: Option<&WorkerThreads>) -> Option<usize> {
+    match config {
+        Some(WorkerThreads::Count(n)) => Some(*n as usize),
+        Some(WorkerThreads::Auto) => None,
+        None if dev_mode => Some(1),
+        None => None,
     }
 }
 
@@ -456,7 +550,7 @@ impl ConfigManager {
 [server]
 bind = "0.0.0.0:80"
 https_port = 443
-worker_threads = "auto"
+worker_threads = 1  # dev default; set to "auto" or omit for one worker per CPU (production)
 
 # TLS Configuration
 [tls]
@@ -1063,5 +1157,104 @@ secure.example.com -> http://localhost:9000/ @auth:admin:$2b$12$hash1 @auth:user
         let (rules, _) = parse_proxy_config(config).unwrap();
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].load_balancing, LoadBalancingStrategy::RoundRobin);
+    }
+
+    #[test]
+    fn test_resolve_worker_threads_dev_no_config() {
+        assert_eq!(resolve_worker_threads(true, None), Some(1));
+    }
+
+    #[test]
+    fn test_resolve_worker_threads_dev_explicit_count_overrides() {
+        assert_eq!(
+            resolve_worker_threads(true, Some(&WorkerThreads::Count(4))),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn test_resolve_worker_threads_dev_explicit_auto() {
+        assert_eq!(
+            resolve_worker_threads(true, Some(&WorkerThreads::Auto)),
+            None
+        );
+    }
+
+    #[test]
+    fn test_resolve_worker_threads_prod_no_config() {
+        assert_eq!(resolve_worker_threads(false, None), None);
+    }
+
+    #[test]
+    fn test_resolve_worker_threads_prod_explicit_count() {
+        assert_eq!(
+            resolve_worker_threads(false, Some(&WorkerThreads::Count(8))),
+            Some(8)
+        );
+    }
+
+    #[test]
+    fn test_worker_threads_deserialize_auto_string() {
+        let toml = r#"
+[server]
+bind = "0.0.0.0:80"
+https_port = 443
+worker_threads = "auto"
+"#;
+        let cfg: TomlConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.server.worker_threads, Some(WorkerThreads::Auto));
+    }
+
+    #[test]
+    fn test_worker_threads_deserialize_integer() {
+        let toml = r#"
+[server]
+bind = "0.0.0.0:80"
+https_port = 443
+worker_threads = 4
+"#;
+        let cfg: TomlConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.server.worker_threads, Some(WorkerThreads::Count(4)));
+    }
+
+    #[test]
+    fn test_worker_threads_deserialize_missing_is_none() {
+        let toml = r#"
+[server]
+bind = "0.0.0.0:80"
+https_port = 443
+"#;
+        let cfg: TomlConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.server.worker_threads, None);
+    }
+
+    #[test]
+    fn test_read_worker_threads_from_config_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let toml_path = dir.path().join("config.toml");
+        std::fs::write(
+            &toml_path,
+            r#"
+[server]
+bind = "0.0.0.0:80"
+https_port = 443
+worker_threads = 2
+"#,
+        )
+        .unwrap();
+        let proxy_conf = dir.path().join("proxy.conf");
+        std::fs::write(&proxy_conf, "").unwrap();
+
+        let got = read_worker_threads(proxy_conf.to_str().unwrap());
+        assert_eq!(got, Some(WorkerThreads::Count(2)));
+    }
+
+    #[test]
+    fn test_read_worker_threads_missing_file_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let proxy_conf = dir.path().join("proxy.conf");
+        std::fs::write(&proxy_conf, "").unwrap();
+        // No config.toml in dir.
+        assert_eq!(read_worker_threads(proxy_conf.to_str().unwrap()), None);
     }
 }
