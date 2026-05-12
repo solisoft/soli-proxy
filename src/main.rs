@@ -264,7 +264,16 @@ fn main() -> Result<()> {
         let _ = write_pid_file()?;
     }
 
-    let rt = tokio::runtime::Runtime::new()?;
+    let worker_threads_cfg = soli_proxy::config::read_worker_threads(&cli.conf);
+    let resolved_workers =
+        soli_proxy::config::resolve_worker_threads(cli.dev, worker_threads_cfg.as_ref());
+
+    let mut rt_builder = tokio::runtime::Builder::new_multi_thread();
+    rt_builder.enable_all();
+    if let Some(n) = resolved_workers {
+        rt_builder.worker_threads(n);
+    }
+    let rt = rt_builder.build()?;
     rt.block_on(async move {
         run_server(&cli.conf, cli.daemon, cli.dev, cli.watch, &cli.sites_dir).await
     })
