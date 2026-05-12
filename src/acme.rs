@@ -602,6 +602,65 @@ pub fn cert_expires_soon(cache_dir: &Path, domain: &str) -> bool {
     }
 }
 
+/// Spawn a background task that checks and renews certificates every 12 hours.
+/// Reads the current domain list from config each cycle to pick up dynamically added domains.
+pub fn spawn_renewal_task(
+    account: Arc<Account>,
+    config_manager: Arc<dyn ConfigManagerTrait + Send + Sync>,
+    cache_dir: PathBuf,
+    challenge_store: ChallengeStore,
+    resolver: Arc<AcmeCertResolver>,
+) {
+    tokio::spawn(async move {
+        let interval = tokio::time::Duration::from_secs(12 * 3600);
+
+        loop {
+            tokio::time::sleep(interval).await;
+
+            // Re-read domains from config each cycle to include dynamically added ones
+            let domains = config_manager.get_all_acme_domains();
+            tracing::info!("ACME renewal check: examining {} domain(s)", domains.len());
+
+            for domain in &domains {
+                if !cert_expires_soon(&cache_dir, domain) {
+                    tracing::debug!("Certificate for {} is still valid", domain);
+                    continue;
+                }
+
+                tracing::info!("Certificate for {} needs renewal, issuing...", domain);
+
+                match issue_certificate(&account, std::slice::from_ref(domain), &challenge_store)
+                    .await
+                {
+                    Ok((cert_pem, key_pem)) => {
+                        if let Err(e) = save_certificate(&cache_dir, domain, &cert_pem, &key_pem) {
+                            tracing::error!("Failed to save renewed cert for {}: {}", domain, e);
+                            continue;
+                        }
+
+                        match certified_key_from_pem(cert_pem.as_bytes(), key_pem.as_bytes()) {
+                            Ok(ck) => {
+                                resolver.set_cert(domain, Arc::new(ck));
+                                tracing::info!("Successfully renewed certificate for {}", domain);
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to parse renewed cert for {}: {}",
+                                    domain,
+                                    e
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to renew certificate for {}: {}", domain, e);
+                    }
+                }
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -724,10 +783,7 @@ mod tests {
         resolver.set_wildcard_cert("solisoft.test", arc.clone());
 
         // Replicate resolver's wildcard-lookup logic — one label deep only.
-        fn wildcard_lookup<'a>(
-            resolver: &'a AcmeCertResolver,
-            sni: &str,
-        ) -> Option<Arc<CertifiedKey>> {
+        fn wildcard_lookup(resolver: &AcmeCertResolver, sni: &str) -> Option<Arc<CertifiedKey>> {
             let dot = sni.find('.')?;
             let parent = &sni[dot + 1..];
             if parent.is_empty() {
@@ -760,63 +816,4 @@ mod tests {
             .expect("must resolve when cache_dir is a symlink");
         assert!(p.starts_with(real.path().canonicalize().unwrap()));
     }
-}
-
-/// Spawn a background task that checks and renews certificates every 12 hours.
-/// Reads the current domain list from config each cycle to pick up dynamically added domains.
-pub fn spawn_renewal_task(
-    account: Arc<Account>,
-    config_manager: Arc<dyn ConfigManagerTrait + Send + Sync>,
-    cache_dir: PathBuf,
-    challenge_store: ChallengeStore,
-    resolver: Arc<AcmeCertResolver>,
-) {
-    tokio::spawn(async move {
-        let interval = tokio::time::Duration::from_secs(12 * 3600);
-
-        loop {
-            tokio::time::sleep(interval).await;
-
-            // Re-read domains from config each cycle to include dynamically added ones
-            let domains = config_manager.get_all_acme_domains();
-            tracing::info!("ACME renewal check: examining {} domain(s)", domains.len());
-
-            for domain in &domains {
-                if !cert_expires_soon(&cache_dir, domain) {
-                    tracing::debug!("Certificate for {} is still valid", domain);
-                    continue;
-                }
-
-                tracing::info!("Certificate for {} needs renewal, issuing...", domain);
-
-                match issue_certificate(&account, std::slice::from_ref(domain), &challenge_store)
-                    .await
-                {
-                    Ok((cert_pem, key_pem)) => {
-                        if let Err(e) = save_certificate(&cache_dir, domain, &cert_pem, &key_pem) {
-                            tracing::error!("Failed to save renewed cert for {}: {}", domain, e);
-                            continue;
-                        }
-
-                        match certified_key_from_pem(cert_pem.as_bytes(), key_pem.as_bytes()) {
-                            Ok(ck) => {
-                                resolver.set_cert(domain, Arc::new(ck));
-                                tracing::info!("Successfully renewed certificate for {}", domain);
-                            }
-                            Err(e) => {
-                                tracing::error!(
-                                    "Failed to parse renewed cert for {}: {}",
-                                    domain,
-                                    e
-                                );
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to renew certificate for {}: {}", domain, e);
-                    }
-                }
-            }
-        }
-    });
 }

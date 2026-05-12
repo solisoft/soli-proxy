@@ -350,7 +350,7 @@ mod scripting_tests {
         )
         .unwrap();
 
-        let engine = LuaEngine::new(dir.path(), 1, Duration::from_millis(100)).unwrap();
+        let engine = LuaEngine::new(dir.path(), 1, Duration::from_millis(100), &[]).unwrap();
         let mut req = make_request("GET", "/test");
         let result = engine.call_on_request(&mut req);
 
@@ -384,7 +384,7 @@ mod scripting_tests {
         )
         .unwrap();
 
-        let engine = LuaEngine::new(dir.path(), 1, Duration::from_millis(100)).unwrap();
+        let engine = LuaEngine::new(dir.path(), 1, Duration::from_millis(100), &[]).unwrap();
         let mut req = make_request("GET", "/test");
         let result = engine.call_on_request(&mut req);
 
@@ -417,7 +417,7 @@ mod scripting_tests {
         )
         .unwrap();
 
-        let engine = LuaEngine::new(dir.path(), 1, Duration::from_millis(100)).unwrap();
+        let engine = LuaEngine::new(dir.path(), 1, Duration::from_millis(100), &[]).unwrap();
         let mut req = make_request("GET", "/test");
         let result = engine.call_on_request(&mut req);
 
@@ -460,7 +460,7 @@ mod scripting_tests {
         )
         .unwrap();
 
-        let engine = LuaEngine::new(dir.path(), 1, Duration::from_millis(100)).unwrap();
+        let engine = LuaEngine::new(dir.path(), 1, Duration::from_millis(100), &[]).unwrap();
         let mut req = make_request("GET", "/test");
         let result = engine.call_on_request(&mut req);
 
@@ -497,7 +497,7 @@ mod scripting_tests {
         )
         .unwrap();
 
-        let engine = LuaEngine::new(dir.path(), 1, Duration::from_millis(100)).unwrap();
+        let engine = LuaEngine::new(dir.path(), 1, Duration::from_millis(100), &[]).unwrap();
         let mut req = make_request("GET", "/test");
         let result = engine.call_on_request(&mut req);
 
@@ -555,7 +555,7 @@ mod scripting_tests {
         )
         .unwrap();
 
-        let engine = LuaEngine::new(dir.path(), 1, Duration::from_millis(100)).unwrap();
+        let engine = LuaEngine::new(dir.path(), 1, Duration::from_millis(100), &[]).unwrap();
         let mut req = make_request("GET", "/test");
         let result = engine.call_on_request(&mut req);
 
@@ -583,7 +583,7 @@ mod scripting_tests {
         )
         .unwrap();
 
-        let engine = LuaEngine::new(dir.path(), 1, Duration::from_millis(100)).unwrap();
+        let engine = LuaEngine::new(dir.path(), 1, Duration::from_millis(100), &[]).unwrap();
 
         // First call
         let mut req1 = make_request("GET", "/test");
@@ -630,6 +630,7 @@ mod scripting_tests {
             Duration::from_millis(100),
             &[],
             &["auth.lua".to_string()],
+            &[],
         )
         .unwrap();
 
@@ -658,7 +659,7 @@ mod scripting_tests {
         let dir = tempdir().unwrap();
 
         let engine =
-            LuaEngine::with_route_scripts(dir.path(), 1, Duration::from_millis(100), &[], &[])
+            LuaEngine::with_route_scripts(dir.path(), 1, Duration::from_millis(100), &[], &[], &[])
                 .unwrap();
 
         // Calling a non-existent route script should continue
@@ -688,6 +689,7 @@ mod scripting_tests {
             Duration::from_millis(100),
             &[],
             &["canary.lua".to_string()],
+            &[],
         )
         .unwrap();
 
@@ -727,6 +729,7 @@ mod scripting_tests {
             Duration::from_millis(100),
             &[],
             &["cors.lua".to_string()],
+            &[],
         )
         .unwrap();
 
@@ -783,6 +786,7 @@ mod scripting_tests {
             Duration::from_millis(100),
             &["global.lua".to_string()],
             &["route_auth.lua".to_string()],
+            &[],
         )
         .unwrap();
 
@@ -846,6 +850,7 @@ mod scripting_tests {
             Duration::from_millis(100),
             &["counter.lua".to_string()],
             &["reader.lua".to_string()],
+            &[],
         )
         .unwrap();
 
@@ -885,7 +890,7 @@ mod scripting_tests {
         )
         .unwrap();
 
-        let engine = LuaEngine::new(dir.path(), 1, Duration::from_millis(100)).unwrap();
+        let engine = LuaEngine::new(dir.path(), 1, Duration::from_millis(100), &[]).unwrap();
         let mut req = make_request("GET", "/test");
         let result = engine.call_on_request(&mut req);
 
@@ -918,6 +923,7 @@ mod scripting_tests {
             Duration::from_millis(100),
             &[],
             &["logger.lua".to_string()],
+            &[],
         )
         .unwrap();
 
@@ -930,7 +936,7 @@ mod scripting_tests {
     fn test_empty_scripts_dir() {
         let dir = tempdir().unwrap();
 
-        let engine = LuaEngine::new(dir.path(), 1, Duration::from_millis(100)).unwrap();
+        let engine = LuaEngine::new(dir.path(), 1, Duration::from_millis(100), &[]).unwrap();
 
         assert!(!engine.has_on_request());
         assert!(!engine.has_on_route());
@@ -953,7 +959,7 @@ mod scripting_tests {
         .unwrap();
 
         // Create with 4 states
-        let engine = LuaEngine::new(dir.path(), 4, Duration::from_millis(100)).unwrap();
+        let engine = LuaEngine::new(dir.path(), 4, Duration::from_millis(100), &[]).unwrap();
 
         for i in 1..=10 {
             let mut req = make_request("GET", "/test");
@@ -975,7 +981,7 @@ mod scripting_tests {
 
         // Should succeed with empty scripts
         let engine =
-            LuaEngine::with_route_scripts(&bad_path, 1, Duration::from_millis(100), &[], &[])
+            LuaEngine::with_route_scripts(&bad_path, 1, Duration::from_millis(100), &[], &[], &[])
                 .unwrap();
 
         assert!(!engine.has_on_request());
@@ -994,7 +1000,7 @@ mod scripting_tests {
         )
         .unwrap();
 
-        let engine = LuaEngine::new(dir.path(), 1, Duration::from_millis(100)).unwrap();
+        let engine = LuaEngine::new(dir.path(), 1, Duration::from_millis(100), &[]).unwrap();
         assert!(engine.has_on_request());
 
         // Script error should not crash, should continue
@@ -1037,6 +1043,7 @@ mod admin_tests {
             start_time: Instant::now(),
             circuit_breaker: Arc::new(CircuitBreaker::new(CircuitBreakerConfig::default())),
             app_manager: None,
+            rate_limiter: None,
         });
 
         tokio::spawn(async move {
@@ -1299,6 +1306,7 @@ mod admin_tests {
             start_time: Instant::now(),
             circuit_breaker: Arc::new(CircuitBreaker::new(CircuitBreakerConfig::default())),
             app_manager: None,
+            rate_limiter: None,
         });
         tokio::spawn(async move {
             let _ = run_admin_server(state).await;
