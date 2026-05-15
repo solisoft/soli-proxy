@@ -407,68 +407,94 @@ fn run_update(reinstall: bool) -> Result<()> {
 }
 
 fn run_app_command(config_path: &str, app_name: &str, action: &str) -> Result<()> {
+    if action == "logs" {
+        return run_app_logs(app_name);
+    }
+
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async move {
-        let config_manager = ConfigManager::new(config_path)?;
-        let config_ref = Arc::new(config_manager);
-        let port_manager = Arc::new(PortManager::new("./run").unwrap());
-        let _ = port_manager.load().await;
+    rt.block_on(async move { run_app_api_command(config_path, app_name, action).await })
+}
 
-        let app_manager =
-            AppManager::new("./sites", port_manager.clone(), config_ref.clone(), false)?;
-        let app_manager = Arc::new(app_manager);
-        app_manager.spawn_process_exit_monitor();
-
-        if let Err(e) = app_manager.discover_apps_readonly().await {
-            tracing::error!("Failed to discover apps: {}", e);
+fn run_app_logs(app_name: &str) -> Result<()> {
+    let read_slot = |slot: &str| -> String {
+        let log_path = std::path::PathBuf::from(format!("run/logs/{}/{}.log", app_name, slot));
+        if log_path.exists() {
+            fs::read_to_string(&log_path).unwrap_or_default()
+        } else {
+            String::new()
         }
+    };
+    println!("=== {} (blue) ===", app_name);
+    println!("{}", read_slot("blue"));
+    println!("=== {} (green) ===", app_name);
+    println!("{}", read_slot("green"));
+    Ok(())
+}
 
-        match action {
-            "deploy" => {
-                let target_slot =
-                    app_manager
-                        .get_app(app_name)
-                        .await
-                        .map_or("blue".to_string(), |app| {
-                            if app.current_slot == "blue" {
-                                "green".to_string()
-                            } else {
-                                "blue".to_string()
-                            }
-                        });
-                app_manager.deploy(app_name, &target_slot).await?;
-                println!("{} deployed successfully", app_name);
-            }
-            "restart" => {
-                app_manager.restart(app_name).await?;
-                println!("{} restarted successfully", app_name);
-            }
-            "stop" => {
-                app_manager.stop(app_name).await?;
-                println!("{} stopped successfully", app_name);
-            }
-            "logs" => {
-                let blue_log = app_manager
-                    .deployment_manager
-                    .get_deployment_log(app_name, "blue")
-                    .await
-                    .unwrap_or_default();
-                let green_log = app_manager
-                    .deployment_manager
-                    .get_deployment_log(app_name, "green")
-                    .await
-                    .unwrap_or_default();
-                println!("=== {} (blue) ===", app_name);
-                println!("{}", blue_log);
-                println!("=== {} (green) ===", app_name);
-                println!("{}", green_log);
-            }
-            _ => {
-                anyhow::bail!("Unknown action: {}", action);
-            }
-        }
+async fn run_app_api_command(config_path: &str, app_name: &str, action: &str) -> Result<()> {
+    let endpoint = match action {
+        "deploy" | "restart" | "stop" => action,
+        _ => anyhow::bail!("Unknown action: {}", action),
+    };
+
+    let config_manager = ConfigManager::new(config_path)?;
+    let cfg = config_manager.get_config();
+    if cfg.admin.enabled != Some(true) {
+        anyhow::bail!(
+            "Admin API is not enabled in {}. The CLI '{}' command requires \
+             [admin] enabled = true so it can talk to the running proxy daemon.",
+            config_path,
+            action
+        );
+    }
+
+    let admin_addr = cfg
+        .admin
+        .bind
+        .replace("0.0.0.0:", "127.0.0.1:")
+        .replace("[::]:", "127.0.0.1:");
+    let url = format!(
+        "http://{}/api/v1/apps/{}/{}",
+        admin_addr, app_name, endpoint
+    );
+
+    send_app_action_request(&url, cfg.admin.api_key.as_deref(), app_name, action).await
+}
+
+async fn send_app_action_request(
+    url: &str,
+    api_key: Option<&str>,
+    app_name: &str,
+    action: &str,
+) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()?;
+    let mut req = client.post(url);
+    if let Some(key) = api_key {
+        req = req.header("X-Api-Key", key);
+    }
+    let resp = req.send().await.map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to reach proxy admin API at {}: {}. Is the daemon running?",
+            url,
+            e
+        )
+    })?;
+    let status = resp.status();
+    if status.is_success() {
+        println!("{} {} succeeded", app_name, action);
         Ok(())
-    })
+    } else {
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!(
+            "Admin API returned HTTP {} for {} {}: {}",
+            status.as_u16(),
+            action,
+            app_name,
+            body
+        )
+    }
 }
 
 async fn run_server(
@@ -899,4 +925,144 @@ async fn run_server(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    async fn spawn_mock_admin(
+        response: &'static str,
+    ) -> (u16, tokio::sync::oneshot::Receiver<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let mut total = String::new();
+            // Read until we see end of headers
+            loop {
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                total.push_str(&String::from_utf8_lossy(&buf[..n]));
+                if total.contains("\r\n\r\n") {
+                    break;
+                }
+            }
+            let _ = sock.write_all(response.as_bytes()).await;
+            let _ = sock.shutdown().await;
+            let _ = tx.send(total);
+        });
+
+        (port, rx)
+    }
+
+    #[tokio::test]
+    async fn send_app_action_request_sends_correct_url_and_api_key() {
+        let (port, captured) =
+            spawn_mock_admin("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok").await;
+        let url = format!("http://127.0.0.1:{}/api/v1/apps/myapp/deploy", port);
+
+        let result = send_app_action_request(&url, Some("secret-key-123"), "myapp", "deploy").await;
+        assert!(result.is_ok(), "expected Ok, got {:?}", result);
+
+        let request = captured.await.unwrap();
+        let first_line = request.lines().next().unwrap_or("");
+        assert!(
+            first_line.starts_with("POST /api/v1/apps/myapp/deploy "),
+            "unexpected request line: {}",
+            first_line
+        );
+        assert!(
+            request
+                .lines()
+                .any(|l| l.eq_ignore_ascii_case("X-Api-Key: secret-key-123")),
+            "X-Api-Key header missing in request: {}",
+            request
+        );
+    }
+
+    #[tokio::test]
+    async fn send_app_action_request_omits_api_key_when_unset() {
+        let (port, captured) =
+            spawn_mock_admin("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok").await;
+        let url = format!("http://127.0.0.1:{}/api/v1/apps/myapp/restart", port);
+
+        let result = send_app_action_request(&url, None, "myapp", "restart").await;
+        assert!(result.is_ok());
+
+        let request = captured.await.unwrap();
+        assert!(
+            !request
+                .lines()
+                .any(|l| l.to_ascii_lowercase().starts_with("x-api-key:")),
+            "X-Api-Key header should not be sent when api_key is None: {}",
+            request
+        );
+    }
+
+    #[tokio::test]
+    async fn send_app_action_request_surfaces_http_error() {
+        let (port, _captured) =
+            spawn_mock_admin("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 10\r\n\r\nbad-deploy")
+                .await;
+        let url = format!("http://127.0.0.1:{}/api/v1/apps/myapp/deploy", port);
+
+        let err = send_app_action_request(&url, None, "myapp", "deploy")
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("502") && msg.contains("bad-deploy"),
+            "expected error to mention status and body, got: {}",
+            msg
+        );
+    }
+
+    #[tokio::test]
+    async fn send_app_action_request_errors_on_unreachable_daemon() {
+        // Bind a port, then drop the listener so the port is free again.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let url = format!("http://127.0.0.1:{}/api/v1/apps/myapp/deploy", port);
+        let err = send_app_action_request(&url, None, "myapp", "deploy")
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Failed to reach proxy admin API"),
+            "expected reachability error, got: {}",
+            msg
+        );
+    }
+
+    #[tokio::test]
+    async fn run_app_api_command_errors_when_admin_disabled() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let proxy_conf = temp_dir.path().join("proxy.conf");
+        let toml_conf = temp_dir.path().join("config.toml");
+        std::fs::write(&proxy_conf, "default -> http://localhost:3000\n").unwrap();
+        std::fs::write(
+            &toml_conf,
+            "[admin]\nenabled = false\nbind = \"127.0.0.1:9090\"\n",
+        )
+        .unwrap();
+
+        let err = run_app_api_command(proxy_conf.to_str().unwrap(), "myapp", "deploy")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("Admin API is not enabled"),
+            "got: {}",
+            err
+        );
+    }
 }
