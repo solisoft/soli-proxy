@@ -91,7 +91,8 @@
         <!-- app.infos Reference -->
         <div class="mb-16">
             <h2 class="text-xl font-bold text-white mb-4">app.infos Reference</h2>
-            <p class="text-gray-400 mb-6">Each app must have an <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">app.infos</code> file in its root directory. This is a TOML file with the following fields:</p>
+            <p class="text-gray-400 mb-4">Each app folder may contain an <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">app.infos</code> file (flat TOML). If it's missing or empty, defaults are used.</p>
+            <p class="text-gray-400 mb-6"><strong class="text-white">Folder name rule:</strong> each app folder must be named after a valid domain (must contain at least one dot, e.g. <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">myapp.example.com/</code>). The proxy rejects folders that don't look like a domain.</p>
 
             <div class="rounded-2xl bg-gray-950 ring-1 ring-white/10 overflow-hidden code-window mb-6">
                 <div class="flex items-center justify-between px-4 py-3 border-b border-white/5 bg-white/5">
@@ -109,12 +110,13 @@ stop_script = <span class="ts">""</span>                           <span class="
 workers = <span class="tn">2</span>                                <span class="tc"># worker processes (default: 1)</span>
 
 <span class="tc"># Health</span>
-health_check = <span class="ts">"/"</span>                       <span class="tc"># endpoint to probe (default: "/")</span>
+health_check = <span class="ts">"/"</span>                       <span class="tc"># endpoint to probe (default: "/health"; auto-set to "/" for soli/luaonbeans apps)</span>
 graceful_timeout = <span class="tn">30</span>                      <span class="tc"># seconds before SIGKILL (default: 30)</span>
+drain_delay = <span class="tn">5</span>                            <span class="tc"># seconds to drain before SIGTERM (default: 5; clamped &lt; graceful_timeout)</span>
 
 <span class="tc"># Ports</span>
-port_range_start = <span class="tn">20000</span>                   <span class="tc"># minimum port (optional)</span>
-port_range_end = <span class="tn">30000</span>                     <span class="tc"># maximum port (optional)</span>
+port_range_start = <span class="tn">20000</span>                   <span class="tc"># minimum port (default: 20000)</span>
+port_range_end = <span class="tn">30000</span>                     <span class="tc"># maximum port (default: 30000)</span>
 
 <span class="tc"># Docker (optional)</span>
 docker_image = <span class="ts">"myapp:latest"</span>               <span class="tc"># run app in Docker container</span>
@@ -139,12 +141,13 @@ docker_network = <span class="ts">"soli-apps"</span>               <span class="
                         <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">start_script</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Shell command to start the app. Receives <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">$PORT</code> and <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">$WORKERS</code> env vars.</td></tr>
                         <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">stop_script</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Custom stop command. If empty, sends SIGTERM then SIGKILL.</td></tr>
                         <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">workers</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Number of worker processes. Default: 1.</td></tr>
-                        <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">user</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Run workers as this user. If set, also sets the primary group. Default: inherit from proxy.</td></tr>
-                        <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">group</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Run workers with this primary group. Default: uses user's primary group.</td></tr>
-                        <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">health_check</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">HTTP path to probe after startup. Must return 2xx. Default: <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">/</code>.</td></tr>
+                        <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">user</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">OS user to drop privileges to. Falls back to <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">[apps].default_user</code> in <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">config.toml</code>. Required when the proxy runs as root.</td></tr>
+                        <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">group</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">OS group to drop privileges to. Falls back to <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">[apps].default_group</code> in <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">config.toml</code>.</td></tr>
+                        <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">health_check</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">HTTP path to probe after startup. Must return 2xx. Default: <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">/health</code> (auto-set to <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">/</code> for soli/luaonbeans apps).</td></tr>
                         <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">graceful_timeout</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Seconds to wait after SIGTERM before SIGKILL. Default: 30.</td></tr>
-                        <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">port_range_start</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Minimum port for allocation. Default: auto.</td></tr>
-                        <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">port_range_end</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Maximum port for allocation. Default: auto.</td></tr>
+                        <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">drain_delay</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Seconds the old slot keeps draining connections before SIGTERM. Default: 5. Clamped to <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">graceful_timeout / 2</code> if set <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">&gt;= graceful_timeout</code>.</td></tr>
+                        <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">port_range_start</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Minimum port for allocation. Default: 20000.</td></tr>
+                        <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">port_range_end</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Maximum port for allocation. Default: 30000.</td></tr>
                         <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">docker_image</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Docker image to use for this app. When set, app runs inside a Docker container instead of as a local process.</td></tr>
                         <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">docker_options</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Additional options to pass to <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">docker run</code>. Example: <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">--memory=512m --cpus=1</code></td></tr>
                         <tr><td class="px-4 py-3 font-mono text-xs text-cyan-300">docker_network</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Docker network to join. Apps on the same network can communicate by container name. Default: <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">soli-apps</code></td></tr>
@@ -153,10 +156,34 @@ docker_network = <span class="ts">"soli-apps"</span>               <span class="
             </div>
         </div>
 
+        <!-- start_script Auto-Detection -->
+        <div class="mb-16">
+            <h2 class="text-xl font-bold text-white mb-4">start_script Auto-Detection</h2>
+            <p class="text-gray-400 mb-4">If <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">start_script</code> is omitted, the proxy tries to infer one from the directory contents:</p>
+
+            <div class="space-y-4 mb-4">
+                <div class="rounded-xl bg-gray-900 border border-white/10 p-5">
+                    <h4 class="font-semibold text-white text-sm mb-2">Soli app</h4>
+                    <p class="text-sm text-gray-400 mb-2">When <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">app/</code> and <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">app/models/</code> exist:</p>
+                    <pre class="text-xs leading-relaxed overflow-x-auto"><code>start_script = <span class="ts">"soli serve . --port $PORT --workers $WORKERS"</span>   <span class="tc"># + --dev in dev mode</span>
+health_check = <span class="ts">"/"</span></code></pre>
+                </div>
+
+                <div class="rounded-xl bg-gray-900 border border-white/10 p-5">
+                    <h4 class="font-semibold text-white text-sm mb-2">LuaOnBeans app</h4>
+                    <p class="text-sm text-gray-400 mb-2">When a <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">luaonbeans.org</code> binary exists in the folder:</p>
+                    <pre class="text-xs leading-relaxed overflow-x-auto"><code>start_script = <span class="ts">"./luaonbeans.org -D . -p $PORT -s"</span>
+health_check = <span class="ts">"/"</span></code></pre>
+                </div>
+            </div>
+
+            <p class="text-sm text-gray-500">If no <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">start_script</code> is set and neither layout matches, deployment fails with <code class="text-red-300 text-xs bg-red-500/10 px-1 rounded">No start script configured</code>.</p>
+        </div>
+
         <!-- Environment Variables -->
         <div class="mb-16">
             <h2 class="text-xl font-bold text-white mb-4">Environment Variables</h2>
-            <p class="text-gray-400 mb-4">The following environment variables are set when running an app's <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">start_script</code>:</p>
+            <p class="text-gray-400 mb-4">The following environment variables are set when running an app's <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">start_script</code>. <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">$PORT</code> and <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">$WORKERS</code> are also substituted as literal placeholders inside the script. Note: the start command is parsed without a shell &mdash; no pipes, redirects, or globs.</p>
             <div class="space-y-3">
                 <div class="flex items-center justify-between p-4 rounded-xl bg-gray-900 border border-white/10">
                     <div><code class="text-sm text-cyan-300">$PORT</code><div class="text-xs text-gray-500 mt-1">The port number the app should listen on</div></div>
@@ -381,8 +408,8 @@ start_script = <span class="ts">"/start.sh"</span></code></pre>
                     <h4 class="font-semibold text-white text-sm mb-2">How it works</h4>
                     <ul class="text-sm text-gray-400 space-y-1">
                         <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-400 shrink-0 mt-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Proxy runs <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">docker run</code> with your image</li>
-                        <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-400 shrink-0 mt-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Container uses host networking (<code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">--network=host</code>)</li>
-                        <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-400 shrink-0 mt-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Environment variables <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">$PORT</code> and <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">$WORKERS</code> are passed to container</li>
+                        <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-400 shrink-0 mt-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Container joins the <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">docker_network</code> (default <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">soli-apps</code>, auto-created if missing)</li>
+                        <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-400 shrink-0 mt-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Environment variables <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">$PORT</code>, <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">$WORKERS</code>, and <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">$HEALTH_CHECK</code> are passed to the container</li>
                         <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-400 shrink-0 mt-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Blue-green deployments work the same — each slot is a separate container</li>
                     </ul>
                 </div>

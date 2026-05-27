@@ -284,24 +284,77 @@ Configuration changes are detected automatically:
 4. Existing connections continue with old config
 5. Graceful draining of old connections
 
-## App Health Monitoring
+## App Configuration (`app.infos`)
 
-When apps are managed by the proxy (via `./sites` directory), the proxy automatically:
-- Checks app health every 30 seconds via each app's configured health endpoint (default: `/`)
-- Auto-restarts any app that fails the health check (connection refused, timeout, etc.)
-- Only restarts on actual failures, not on non-2xx responses
+When apps are managed by the proxy (via the sites directory, e.g. `./www`), each app directory **must be named after its domain** (must contain at least one dot, e.g. `myapp.example.org/`) and may contain an `app.infos` file describing how to run it.
 
-### Health Check Configuration
+`app.infos` is a **flat TOML file** (no section headers — keys live at the top level). The file is optional; if missing or empty, defaults are used.
 
-Each app can configure its own health check path in `app.infos`:
+### Example
 
 ```toml
-[apps]
-[apps.myapp.example.org]
+# www/proxy.solisoft.net/app.infos
+name = "proxy.solisoft.net"
+domain = "proxy.solisoft.net"
+start_script = "soli serve . --port $PORT --workers $WORKERS"
+workers = 2
+stop_script = ""
 health_check = "/health"
+graceful_timeout = 30
+port_range_start = 20000
+port_range_end = 30000
 ```
 
-The global default health check path is `/`.
+### Fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `name` | string | directory name | Logical app name (used in logs, admin API). |
+| `domain` | string | directory name (when auto-detected) | Domain the app serves. Matched against the `Host` header. |
+| `start_script` | string | auto-detected (see below) | Command used to launch the app. Supports `$PORT` and `$WORKERS` substitution. Parsed without a shell — no pipes/redirects/globs. |
+| `stop_script` | string | _none_ | Optional command to run when stopping the app. |
+| `health_check` | string | `"/health"` (or `"/"` when auto-detected) | HTTP path the proxy polls every 30s to decide if the app is alive. |
+| `graceful_timeout` | int (seconds) | `30` | Time given to the old process to exit cleanly during a blue/green swap. |
+| `drain_delay` | int (seconds) | `5` | Time to keep the old process draining existing connections before shutdown. Clamped to `< graceful_timeout` (set to `graceful_timeout / 2` if too large). |
+| `port_range_start` | int | `20000` | Lower bound of the port range used to allocate blue/green slots. |
+| `port_range_end` | int | `30000` | Upper bound of the port range. |
+| `workers` | int | `1` | Number of worker processes the app should spawn. Exposed as `$WORKERS` in `start_script` and as the `WORKERS` env var. |
+| `user` | string | `[apps].default_user` from `config.toml` | OS user to drop privileges to (required when running the proxy as root). |
+| `group` | string | `[apps].default_group` from `config.toml` | OS group to drop privileges to. |
+| `docker_image` | string | _none_ | If set, the app runs inside Docker using this image instead of a host process. |
+| `docker_options` | string | _none_ | Extra flags appended to `docker run` (validated against an allowlist). |
+| `docker_network` | string | `"soli-apps"` | Docker network the container joins (created automatically if missing). |
+
+### Variable substitution
+
+`start_script` supports two placeholders, replaced before the process is launched:
+
+- `$PORT` — the slot port allocated by the proxy (from `port_range_start`..`port_range_end`).
+- `$WORKERS` — the value of the `workers` field.
+
+The same values are also exported as **environment variables** (`PORT`, `WORKERS`, and `HEALTH_CHECK` for Docker), so scripts that don't use `$VAR` substitution can still read them from the environment.
+
+### Auto-detection
+
+If `start_script` is omitted, the proxy tries to infer one from the app directory:
+
+- **Soli app** — when `app/` and `app/models/` exist:
+  - `start_script` → `soli serve . --port $PORT --workers $WORKERS` (with `--dev` appended in dev mode)
+  - `health_check` → `/`
+- **LuaOnBeans app** — when a `luaonbeans.org` binary exists in the directory:
+  - `start_script` → `./luaonbeans.org -D . -p $PORT -s`
+  - `health_check` → `/`
+
+If no `start_script` is set and neither layout is detected, deployment fails with `No start script configured`.
+
+## App Health Monitoring
+
+When apps are managed by the proxy, it automatically:
+- Polls each app's `health_check` path every 30 seconds
+- Auto-restarts any app that fails (connection refused, timeout, etc.)
+- Only restarts on actual failures, not on non-2xx responses
+
+See [App Configuration](#app-configuration-appinfos) above for how to set `health_check` per app.
 
 ## Systemd Service
 
