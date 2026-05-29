@@ -402,6 +402,7 @@ async fn proxy_to_admin_app(
     // Strip hop-by-hop framing headers and inject forwarding identity, the
     // same shape the public proxy applies on outbound requests.
     strip_hop_by_hop(&mut parts.headers);
+    crate::proxy_headers::coalesce_cookies(&mut parts.headers);
     inject_forwarding_headers(&mut parts.headers, peer_addr);
 
     let proxy_req = Request::from_parts(parts, body);

@@ -1761,6 +1761,10 @@ async fn handle_regular_request(
             parts.extensions = http::Extensions::new();
 
             crate::proxy_headers::strip_hop_by_hop(&mut parts.headers);
+            // HTTP/2 browsers split cookies across multiple `cookie` fields;
+            // join them before forwarding to the HTTP/1.1 upstream so servers
+            // that read only the first Cookie header (redbean) see them all.
+            crate::proxy_headers::coalesce_cookies(&mut parts.headers);
 
             let mut request = Request::from_parts(parts, body);
 
@@ -2088,6 +2092,13 @@ async fn handle_regular_request(
                     parts.uri = uri;
                     parts.version = http::Version::HTTP_11;
                     parts.extensions = http::Extensions::new();
+
+                    // HTTP/2 browsers split cookies across multiple `cookie`
+                    // fields; join them before forwarding to the HTTP/1.1
+                    // upstream so servers that read only the first Cookie header
+                    // (redbean) see them all. This app-managed path is what the
+                    // proxy-deployed redbean apps (e.g. db.solisoft.test) use.
+                    crate::proxy_headers::coalesce_cookies(&mut parts.headers);
 
                     let mut request = Request::from_parts(parts, body);
                     request.headers_mut().insert(
