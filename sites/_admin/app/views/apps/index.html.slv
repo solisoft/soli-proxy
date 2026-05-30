@@ -1,6 +1,6 @@
 <!-- Header -->
 <div class="flex items-center justify-between mb-6">
-    <p class="text-sm text-slate-400">Manage application deployments</p>
+    <p class="text-sm text-surface-400">Manage application deployments</p>
 </div>
 
 <!-- Error History -->
@@ -9,14 +9,14 @@
 <!-- Search -->
 <div class="mb-6">
     <input type="text" id="app-search" placeholder="Search apps..." 
-        class="w-full px-4 py-2 bg-slate-800 border border-white/10 rounded-lg text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+        class="w-full px-4 py-2 bg-surface-800 border border-white/10 rounded-lg text-sm text-white placeholder-surface-500 focus:outline-none focus:border-accent-500"
         oninput="AppManager.search(this.value)">
 </div>
 
 <!-- App Grid -->
 <div id="apps-grid" class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-    <div class="bg-slate-900/60 border border-white/5 rounded-xl p-8 text-center col-span-full">
-        <span class="text-slate-500">Loading applications...</span>
+    <div class="bg-surface-900/60 border border-white/5 rounded-xl p-8 text-center col-span-full">
+        <span class="text-surface-500">Loading applications...</span>
     </div>
 </div>
 
@@ -51,7 +51,7 @@ function renderErrorHistory() {
         return;
     }
     container.innerHTML = ErrorHistory.map(function(e) {
-        return '<div class="text-xs text-rose-400 py-1"><span class="text-slate-500">[' + e.time + ']</span> <span class="text-slate-400">' + e.source + ':</span> ' + e.message + '</div>';
+        return '<div class="text-xs text-rose-400 py-1"><span class="text-surface-500">[' + e.time + ']</span> <span class="text-surface-400">' + e.source + ':</span> ' + e.message + '</div>';
     }).join('');
 }
 
@@ -155,7 +155,7 @@ var AppManager = {
             addError('AppManager.load', err.message);
             AdminAPI.toast('Failed to load applications: ' + err.message, 'error');
             document.getElementById('apps-grid').innerHTML =
-                '<div class="bg-slate-900/60 border border-white/5 rounded-xl p-8 text-center col-span-full">' +
+                '<div class="bg-surface-900/60 border border-white/5 rounded-xl p-8 text-center col-span-full">' +
                 '<span class="text-rose-400">Failed to load applications</span></div>';
         });
     },
@@ -166,9 +166,9 @@ var AppManager = {
         var expandedDomains = AppManager.getExpandedDomains();
         
         if (!appsByDomain || Object.keys(appsByDomain).length === 0) {
-            grid.innerHTML = '<div class="bg-slate-900/60 border border-white/5 rounded-xl p-8 text-center col-span-full">' +
-                '<div class="text-slate-500 mb-2">No applications</div>' +
-                '<div class="text-xs text-slate-600">Applications are discovered from the sites/ directory</div></div>';
+            grid.innerHTML = '<div class="bg-surface-900/60 border border-white/5 rounded-xl p-8 text-center col-span-full">' +
+                '<div class="text-surface-500 mb-2">No applications</div>' +
+                '<div class="text-xs text-surface-600">Applications are discovered from the sites/ directory</div></div>';
             return;
         }
 
@@ -187,11 +187,11 @@ var AppManager = {
             }).join('');
 
             return '<div class="domain-group col-span-full border border-white/5 rounded-xl overflow-hidden mb-4">' +
-                '<button class="domain-header w-full px-5 py-4 bg-slate-800/50 flex items-center justify-between hover:bg-slate-800/70 transition-colors" onclick="AppManager.toggleDomain(\'' + domainId + '\', this)">' +
+                '<button class="domain-header w-full px-5 py-4 bg-surface-800/50 flex items-center justify-between hover:bg-surface-800/70 transition-colors" onclick="AppManager.toggleDomain(\'' + domainId + '\', this)">' +
                     '<div class="flex items-center gap-3">' +
-                        '<svg class="domain-chevron w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">' + chevronHtml + '</svg>' +
+                        '<svg class="domain-chevron w-4 h-4 text-surface-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">' + chevronHtml + '</svg>' +
                         '<span class="text-sm font-medium text-white">' + AdminAPI.esc(domain) + '</span>' +
-                        '<span class="text-xs text-slate-500 bg-slate-700 px-2 py-0.5 rounded-full">' + apps.length + '</span>' +
+                        '<span class="text-xs text-surface-500 bg-surface-700 px-2 py-0.5 rounded-full">' + apps.length + '</span>' +
                     '</div>' +
                 '</button>' +
                 '<div id="' + domainId + '" class="domain-content grid grid-cols-1 lg:grid-cols-2 gap-4 p-4 ' + isExpanded + '">' +
@@ -279,28 +279,28 @@ var AppManager = {
         var anyStarting = blueStatus.toLowerCase() === 'starting' || greenStatus.toLowerCase() === 'starting';
         var healthLabel, healthColor, healthBg, healthBorder, healthDot;
         if (anyRunning && errorRate < 5) {
-            healthLabel = 'Healthy'; healthColor = 'text-emerald-400'; healthBg = 'bg-emerald-500/10'; healthBorder = 'border-emerald-500/20'; healthDot = 'bg-emerald-400';
+            healthLabel = 'Healthy'; healthColor = 'text-accent-400'; healthBg = 'bg-accent-500/10'; healthBorder = 'border-accent-500/20'; healthDot = 'bg-accent-400';
         } else if (anyStarting) {
-            healthLabel = 'Starting'; healthColor = 'text-blue-400'; healthBg = 'bg-blue-500/10'; healthBorder = 'border-blue-500/20'; healthDot = 'bg-blue-400';
+            healthLabel = 'Starting'; healthColor = 'text-accent-400'; healthBg = 'bg-accent-500/10'; healthBorder = 'border-accent-500/20'; healthDot = 'bg-accent-400';
         } else if (anyRunning && errorRate >= 5) {
             healthLabel = 'Degraded'; healthColor = 'text-amber-400'; healthBg = 'bg-amber-500/10'; healthBorder = 'border-amber-500/20'; healthDot = 'bg-amber-400';
         } else {
-            healthLabel = 'Stopped'; healthColor = 'text-slate-500'; healthBg = 'bg-slate-500/10'; healthBorder = 'border-slate-500/20'; healthDot = 'bg-slate-500';
+            healthLabel = 'Stopped'; healthColor = 'text-surface-500'; healthBg = 'bg-surface-500/10'; healthBorder = 'border-surface-500/20'; healthDot = 'bg-surface-500';
         }
 
         function statusDot(status) {
             var s = status.toLowerCase();
-            if (s === 'running') return 'bg-emerald-400';
-            if (s === 'starting') return 'bg-blue-400';
-            if (s === 'stopped') return 'bg-slate-600';
+            if (s === 'running') return 'bg-accent-400';
+            if (s === 'starting') return 'bg-accent-400';
+            if (s === 'stopped') return 'bg-surface-600';
             return 'bg-amber-400';
         }
 
         function statusText(status) {
             var s = status.toLowerCase();
-            if (s === 'running') return 'text-emerald-400';
-            if (s === 'starting') return 'text-blue-400';
-            if (s === 'stopped') return 'text-slate-500';
+            if (s === 'running') return 'text-accent-400';
+            if (s === 'starting') return 'text-accent-400';
+            if (s === 'stopped') return 'text-surface-500';
             return 'text-amber-400';
         }
 
@@ -310,14 +310,14 @@ var AppManager = {
             return n.toString();
         }
 
-        return '<div class="bg-slate-900/60 border border-white/5 rounded-xl overflow-hidden">' +
+        return '<div class="bg-surface-900/60 border border-white/5 rounded-xl overflow-hidden">' +
             '<div class="px-5 pt-6 pb-4">' +
                 '<div class="flex items-center justify-between mb-3">' +
                     '<div class="min-w-0">' +
                         '<h3 class="text-sm font-semibold text-white truncate">' + AdminAPI.esc(name) + '</h3>' +
                         '<div class="flex items-center gap-2 mt-0.5 text-xs">' +
-                            (domain ? '<span class="text-slate-500 font-mono truncate">' + AdminAPI.esc(domain) + '</span>' : '') +
-                            (hasTestDomain ? '<a href="http://' + AdminAPI.esc(testDomain) + '" target="_blank" class="shrink-0 text-indigo-400 hover:text-indigo-300 transition-colors">dev</a>' : '') +
+                            (domain ? '<span class="text-surface-500 font-mono truncate">' + AdminAPI.esc(domain) + '</span>' : '') +
+                            (hasTestDomain ? '<a href="http://' + AdminAPI.esc(testDomain) + '" target="_blank" class="shrink-0 text-accent-400 hover:text-accent-300 transition-colors">dev</a>' : '') +
                         '</div>' +
                     '</div>' +
                     '<span class="shrink-0 flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ' + healthBg + ' ' + healthColor + ' ' + healthBorder + '">' +
@@ -325,51 +325,51 @@ var AppManager = {
                         healthLabel +
                     '</span>' +
                 '</div>' +
-                '<div class="flex items-center gap-3 bg-slate-800/30 rounded-lg px-3 py-2">' +
-                    '<div class="text-xs font-medium ' + (currentSlot === 'blue' ? 'text-blue-400' : 'text-emerald-400') + '" data-cpu-current-value data-app-name="' + AdminAPI.esc(name) + '" data-slot="' + currentSlot + '">-</div>' +
+                '<div class="flex items-center gap-3 bg-surface-800/30 rounded-lg px-3 py-2">' +
+                    '<div class="text-xs font-medium ' + (currentSlot === 'blue' ? 'text-accent-400' : 'text-accent-400') + '" data-cpu-current-value data-app-name="' + AdminAPI.esc(name) + '" data-slot="' + currentSlot + '">-</div>' +
                     '<div data-cpu-graph-current data-app-name="' + AdminAPI.esc(name) + '" data-current-slot="' + currentSlot + '" class="flex-1 h-8">' + renderCpuGraph(name, currentSlot) + '</div>' +
-                    '<div class="text-xs text-slate-400">' + (currentSlot === 'blue' ? (blueMem ? formatBytes(blueMem) : '-') : (greenMem ? formatBytes(greenMem) : '-')) + '</div>' +
+                    '<div class="text-xs text-surface-400">' + (currentSlot === 'blue' ? (blueMem ? formatBytes(blueMem) : '-') : (greenMem ? formatBytes(greenMem) : '-')) + '</div>' +
                 '</div>' +
             '</div>' +
             '<div class="px-5 pb-4">' +
                 '<div class="flex gap-3">' +
-                    '<div class="flex-1 bg-slate-800/50 rounded-lg p-3 text-center">' +
+                    '<div class="flex-1 bg-surface-800/50 rounded-lg p-3 text-center">' +
                         '<div class="text-lg font-bold text-white">' + formatNum(reqs) + '</div>' +
-                        '<div class="text-xs text-slate-500">Requests</div>' +
+                        '<div class="text-xs text-surface-500">Requests</div>' +
                     '</div>' +
-                    '<div class="flex-1 bg-slate-800/50 rounded-lg p-3 text-center">' +
-                        '<div class="text-lg font-bold ' + (avgTime < 100 ? 'text-emerald-400' : avgTime < 500 ? 'text-amber-400' : 'text-rose-400') + '">' + (avgTime > 0 && avgTime < 1 ? Math.round(avgTime * 1000) + '<span class="text-xs font-normal text-slate-500">µs</span>' : Math.round(avgTime) + '<span class="text-xs font-normal text-slate-500">ms</span>') + '</div>' +
-                        '<div class="text-xs text-slate-500">Avg Time</div>' +
+                    '<div class="flex-1 bg-surface-800/50 rounded-lg p-3 text-center">' +
+                        '<div class="text-lg font-bold ' + (avgTime < 100 ? 'text-accent-400' : avgTime < 500 ? 'text-amber-400' : 'text-rose-400') + '">' + (avgTime > 0 && avgTime < 1 ? Math.round(avgTime * 1000) + '<span class="text-xs font-normal text-surface-500">µs</span>' : Math.round(avgTime) + '<span class="text-xs font-normal text-surface-500">ms</span>') + '</div>' +
+                        '<div class="text-xs text-surface-500">Avg Time</div>' +
                     '</div>' +
-                    '<div class="flex-1 bg-slate-800/50 rounded-lg p-3 text-center">' +
-                        '<div class="text-lg font-bold ' + (errors > 0 ? 'text-rose-400' : 'text-slate-500') + '">' + formatNum(errors) + '</div>' +
-                        '<div class="text-xs text-slate-500">Errors</div>' +
+                    '<div class="flex-1 bg-surface-800/50 rounded-lg p-3 text-center">' +
+                        '<div class="text-lg font-bold ' + (errors > 0 ? 'text-rose-400' : 'text-surface-500') + '">' + formatNum(errors) + '</div>' +
+                        '<div class="text-xs text-surface-500">Errors</div>' +
                     '</div>' +
                 '</div>' +
             '</div>' +
             '<div class="px-5 py-4">' +
                 '<div class="grid grid-cols-2 gap-3">' +
-                    '<div class="flex items-center gap-2 px-3 py-3 rounded-lg ' + (currentSlot === 'blue' ? 'bg-blue-500/5 border border-blue-500/20' : 'bg-slate-800/30') + '">' +
+                    '<div class="flex items-center gap-2 px-3 py-3 rounded-lg ' + (currentSlot === 'blue' ? 'bg-accent-500/5 border border-accent-500/20' : 'bg-surface-800/30') + '">' +
                         '<span class="w-2 h-2 rounded-full ' + statusDot(blueStatus) + '"></span>' +
                         '<div class="min-w-0 flex-1">' +
-                            '<div class="text-xs font-medium ' + (currentSlot === 'blue' ? 'text-blue-400' : 'text-slate-400') + '">Blue' + (currentSlot === 'blue' ? ' <span class="text-blue-500/60">active</span>' : '') + '</div>' +
+                            '<div class="text-xs font-medium ' + (currentSlot === 'blue' ? 'text-accent-400' : 'text-surface-400') + '">Blue' + (currentSlot === 'blue' ? ' <span class="text-accent-500/60">active</span>' : '') + '</div>' +
                             '<div class="text-xs ' + statusText(blueStatus) + '">' + blueStatus + (bluePort ? ' :' + bluePort : '') + '</div>' +
                         '</div>' +
                     '</div>' +
-                    '<div class="flex items-center gap-2 px-3 py-3 rounded-lg ' + (currentSlot === 'green' ? 'bg-emerald-500/5 border border-emerald-500/20' : 'bg-slate-800/30') + '">' +
+                    '<div class="flex items-center gap-2 px-3 py-3 rounded-lg ' + (currentSlot === 'green' ? 'bg-accent-500/5 border border-accent-500/20' : 'bg-surface-800/30') + '">' +
                         '<span class="w-2 h-2 rounded-full ' + statusDot(greenStatus) + '"></span>' +
                         '<div class="min-w-0 flex-1">' +
-                            '<div class="text-xs font-medium ' + (currentSlot === 'green' ? 'text-emerald-400' : 'text-slate-400') + '">Green' + (currentSlot === 'green' ? ' <span class="text-emerald-500/60">active</span>' : '') + '</div>' +
+                            '<div class="text-xs font-medium ' + (currentSlot === 'green' ? 'text-accent-400' : 'text-surface-400') + '">Green' + (currentSlot === 'green' ? ' <span class="text-accent-500/60">active</span>' : '') + '</div>' +
                             '<div class="text-xs ' + statusText(greenStatus) + '">' + greenStatus + (greenPort ? ' :' + greenPort : '') + '</div>' +
                         '</div>' +
                     '</div>' +
                 '</div>' +
             '</div>' +
             '<div class="flex items-center border-t border-white/5 divide-x divide-white/5">' +
-                '<button data-app="' + AdminAPI.esc(name) + '" data-action="deploy" data-loading-text="Deploying..." onclick="AppManager.action(\'' + AdminAPI.esc(name) + '\', \'deploy\', this)" class="flex-1 px-3 py-2.5 text-xs font-medium text-emerald-400 hover:bg-emerald-500/5 transition-colors">Deploy</button>' +
-                '<button data-app="' + AdminAPI.esc(name) + '" data-action="restart" data-loading-text="Restarting..." onclick="AppManager.action(\'' + AdminAPI.esc(name) + '\', \'restart\', this)" class="flex-1 px-3 py-2.5 text-xs font-medium text-slate-400 hover:bg-white/5 transition-colors">Restart</button>' +
+                '<button data-app="' + AdminAPI.esc(name) + '" data-action="deploy" data-loading-text="Deploying..." onclick="AppManager.action(\'' + AdminAPI.esc(name) + '\', \'deploy\', this)" class="flex-1 px-3 py-2.5 text-xs font-medium text-accent-400 hover:bg-accent-500/5 transition-colors">Deploy</button>' +
+                '<button data-app="' + AdminAPI.esc(name) + '" data-action="restart" data-loading-text="Restarting..." onclick="AppManager.action(\'' + AdminAPI.esc(name) + '\', \'restart\', this)" class="flex-1 px-3 py-2.5 text-xs font-medium text-surface-400 hover:bg-white/5 transition-colors">Restart</button>' +
                 '<button data-app="' + AdminAPI.esc(name) + '" data-action="stop" data-loading-text="Stopping..." onclick="AppManager.action(\'' + AdminAPI.esc(name) + '\', \'stop\', this)" class="flex-1 px-3 py-2.5 text-xs font-medium text-rose-400 hover:bg-rose-500/5 transition-colors">Stop</button>' +
-                '<button onclick="AppManager.showLogs(\'' + AdminAPI.esc(name) + '\')" class="flex-1 px-3 py-2.5 text-xs font-medium text-slate-400 hover:bg-white/5 transition-colors">Logs</button>' +
+                '<button onclick="AppManager.showLogs(\'' + AdminAPI.esc(name) + '\')" class="flex-1 px-3 py-2.5 text-xs font-medium text-surface-400 hover:bg-white/5 transition-colors">Logs</button>' +
             '</div>' +
         '</div>';
     },
@@ -392,12 +392,12 @@ var AppManager = {
             var html = '<div class="p-6">' +
                 '<h2 class="text-lg font-semibold text-white mb-4">Logs: ' + AdminAPI.esc(name) + '</h2>' +
                 '<div class="space-y-3">' +
-                    '<div><h3 class="text-xs font-medium text-blue-400 mb-1">Blue</h3>' +
-                    '<pre class="bg-slate-950 rounded-lg p-3 text-xs text-slate-300 font-mono max-h-48 overflow-auto">' + AdminAPI.esc(logs.blue || 'No logs') + '</pre></div>' +
-                    '<div><h3 class="text-xs font-medium text-emerald-400 mb-1">Green</h3>' +
-                    '<pre class="bg-slate-950 rounded-lg p-3 text-xs text-slate-300 font-mono max-h-48 overflow-auto">' + AdminAPI.esc(logs.green || 'No logs') + '</pre></div>' +
+                    '<div><h3 class="text-xs font-medium text-accent-400 mb-1">Blue</h3>' +
+                    '<pre class="bg-surface-950 rounded-lg p-3 text-xs text-surface-300 font-mono max-h-48 overflow-auto">' + AdminAPI.esc(logs.blue || 'No logs') + '</pre></div>' +
+                    '<div><h3 class="text-xs font-medium text-accent-400 mb-1">Green</h3>' +
+                    '<pre class="bg-surface-950 rounded-lg p-3 text-xs text-surface-300 font-mono max-h-48 overflow-auto">' + AdminAPI.esc(logs.green || 'No logs') + '</pre></div>' +
                 '</div>' +
-                '<div class="mt-4"><button onclick="AdminAPI.closeModal()" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm rounded-lg transition-colors">Close</button></div>' +
+                '<div class="mt-4"><button onclick="AdminAPI.closeModal()" class="px-4 py-2 bg-surface-800 hover:bg-surface-700 text-surface-300 text-sm rounded-lg transition-colors">Close</button></div>' +
             '</div>';
             AdminAPI.showModal(html);
         }).catch(function(err) {
@@ -433,7 +433,7 @@ function renderCpuGraph(name, slot) {
     initCpuHistory(name);
     var history = CpuHistory[name][slot];
     if (!history || history.length < 2) {
-        return '<div class="text-[8px] text-slate-600 text-center leading-tight h-full flex items-center justify-center">Collecting...</div>';
+        return '<div class="text-[8px] text-surface-600 text-center leading-tight h-full flex items-center justify-center">Collecting...</div>';
     }
     
     var width = 200;

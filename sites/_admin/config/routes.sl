@@ -18,6 +18,9 @@ get("/config", "config#index");
 // Circuit breaker
 get("/circuit-breaker", "circuit_breaker#index");
 
+// Settings (theme presets)
+get("/settings", "settings#index");
+
 // Health check
 get("/health", "home#health");
 

@@ -241,6 +241,7 @@ async fn handle_admin_request(
         }
         (Method::GET, "/api/v1/events/apps") => handlers::sse_app_events(state.clone()).await,
         (Method::POST, "/api/v1/reload") => handlers::post_reload(&state).await,
+        (Method::GET, "/api/v1/settings") => handlers::get_settings(&state),
 
         // App management endpoints
         (Method::GET, "/api/v1/apps") => handlers::get_apps(&state).await,
@@ -310,6 +311,13 @@ async fn handle_admin_request(
                 Err(e) => return Ok(error_response(413, e)),
             };
             handlers::put_config(&state, &body)
+        }
+        (Method::PUT, "/api/v1/settings") => {
+            let body = match read_body(req).await {
+                Ok(b) => b,
+                Err(e) => return Ok(error_response(413, e)),
+            };
+            handlers::put_settings(&state, &body)
         }
 
         // Routes with index parameter

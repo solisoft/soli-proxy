@@ -1164,47 +1164,49 @@ async fn handle_request(
         .await;
     }
 
-    let timeout_duration = config.limits.request_timeout.map(Duration::from_secs);
+    // Always enforce a request timeout. Falls back to 60s when the config
+    // omits `[limits].request_timeout` — e.g. a deployed config.toml missing
+    // the field, or the .conf route format which can't express it. Without a
+    // default, a stuck backend hangs the client indefinitely ("pending" in the
+    // browser) instead of returning a bounded 504.
+    let timeout_sec = Duration::from_secs(config.limits.request_timeout.unwrap_or(60));
 
-    let result = if let Some(timeout_sec) = timeout_duration {
-        let handle_fut = handle_regular_request(
-            req,
-            client,
-            &config,
-            &lua_engine,
-            &circuit_breaker,
-            app_manager.clone(),
-            load_balancer.clone(),
-            is_tls,
-            peer_addr,
-        );
-        match timeout(timeout_sec, handle_fut).await {
-            Ok(res) => res,
-            Err(_) => {
-                metrics.dec_in_flight();
-                let duration = start_time.elapsed();
-                metrics.record_request(0, 0, 504, duration);
-                let body = http_body_util::Full::new(Bytes::from("Gateway Timeout")).boxed();
-                return Ok(Response::builder()
-                    .status(504)
-                    .header("Content-Type", "text/plain")
-                    .body(body)
-                    .unwrap());
-            }
+    // Capture before `req` is moved into the handler, for the timeout log.
+    let req_method = req.method().clone();
+    let req_path = req.uri().path().to_string();
+
+    let handle_fut = handle_regular_request(
+        req,
+        client,
+        &config,
+        &lua_engine,
+        &circuit_breaker,
+        app_manager.clone(),
+        load_balancer.clone(),
+        is_tls,
+        peer_addr,
+    );
+    let result = match timeout(timeout_sec, handle_fut).await {
+        Ok(res) => res,
+        Err(_) => {
+            metrics.dec_in_flight();
+            let duration = start_time.elapsed();
+            metrics.record_request(0, 0, 504, duration);
+            tracing::warn!(
+                layer = "proxy",
+                method = %req_method,
+                path = %req_path,
+                timeout_secs = timeout_sec.as_secs(),
+                elapsed_ms = duration.as_millis() as u64,
+                "regular request timed out; returning 504"
+            );
+            let body = http_body_util::Full::new(Bytes::from("Gateway Timeout")).boxed();
+            return Ok(Response::builder()
+                .status(504)
+                .header("Content-Type", "text/plain")
+                .body(body)
+                .unwrap());
         }
-    } else {
-        handle_regular_request(
-            req,
-            client,
-            &config,
-            &lua_engine,
-            &circuit_breaker,
-            app_manager.clone(),
-            load_balancer.clone(),
-            is_tls,
-            peer_addr,
-        )
-        .await
     };
     let duration = start_time.elapsed();
 
@@ -1414,14 +1416,29 @@ async fn handle_websocket_request(
         query
     );
 
-    // Connect to the backend
-    let backend = match TcpStream::connect(&backend_addr).await {
-        Ok(s) => s,
-        Err(e) => {
+    // Connect to the backend. Bounded by a 5s connect timeout (matching the
+    // HTTP pool's connect_timeout): the WS upgrade path runs before the
+    // request-timeout wrapper, so an unbounded connect to a black-holed
+    // backend would otherwise hang the upgrade indefinitely.
+    let backend = match timeout(Duration::from_secs(5), TcpStream::connect(&backend_addr)).await {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
             tracing::error!("Failed to connect to backend for WebSocket: {}", e);
             metrics.inc_errors();
             let body = http_body_util::Full::new(Bytes::from("Backend not reachable")).boxed();
             return Ok(Response::builder().status(502).body(body).unwrap());
+        }
+        Err(_) => {
+            tracing::warn!(
+                layer = "proxy_ws",
+                backend = %backend_addr,
+                path = %path,
+                timeout_secs = 5,
+                "websocket backend connect timed out; returning 504"
+            );
+            metrics.inc_errors();
+            let body = http_body_util::Full::new(Bytes::from("Gateway Timeout")).boxed();
+            return Ok(Response::builder().status(504).body(body).unwrap());
         }
     };
 

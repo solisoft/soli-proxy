@@ -1,0 +1,77 @@
+<!-- Header -->
+<div class="mb-6">
+    <p class="text-sm text-surface-400">Customize the admin interface. Your selection is saved on the server and shared across browsers.</p>
+</div>
+
+<!-- Theme presets -->
+<div class="bg-surface-900/60 border border-white/5 rounded-xl overflow-hidden">
+    <div class="px-5 py-4 border-b border-white/5">
+        <h3 class="text-sm font-semibold text-white">Theme</h3>
+        <p class="text-xs text-surface-500 mt-0.5">Pick a preset to re-skin the background and accent colors.</p>
+    </div>
+    <div id="theme-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 p-5">
+        <div class="text-surface-500 text-sm col-span-full">Loading themes...</div>
+    </div>
+</div>
+
+<script>
+var SettingsPage = {
+    render: function() {
+        var grid = document.getElementById('theme-grid');
+        var active = ThemeManager.current();
+
+        grid.innerHTML = ThemeManager.PRESETS.map(function(p) {
+            var sw = ThemeManager.swatch(p.id);
+            var isActive = p.id === active;
+            return '' +
+                '<button type="button" data-theme-id="' + p.id + '" onclick="SettingsPage.choose(\'' + p.id + '\')" ' +
+                    'class="theme-card group text-left rounded-xl border transition-all duration-150 overflow-hidden focus:outline-none ' +
+                    (isActive ? 'border-accent-500 ring-2 ring-accent-500/40' : 'border-white/5 hover:border-white/20') + '">' +
+                    // Swatch preview
+                    '<div class="h-20 p-3 flex items-end gap-2" style="background:' + sw.bg + '">' +
+                        '<span class="w-8 h-8 rounded-lg shadow" style="background:' + sw.accent + '"></span>' +
+                        '<span class="w-5 h-8 rounded-lg" style="background:' + sw.accentSoft + '"></span>' +
+                        '<span class="flex-1 h-8 rounded-lg" style="background:' + sw.panel + '"></span>' +
+                    '</div>' +
+                    // Label row
+                    '<div class="flex items-center justify-between px-4 py-3 bg-surface-900/80">' +
+                        '<div>' +
+                            '<div class="text-sm font-medium text-white">' + AdminAPI.esc(p.label) + '</div>' +
+                            '<div class="text-xs text-surface-500">' + AdminAPI.esc(p.desc) + '</div>' +
+                        '</div>' +
+                        '<span data-check class="' + (isActive ? '' : 'hidden ') + 'text-accent-400">' +
+                            '<svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>' +
+                        '</span>' +
+                    '</div>' +
+                '</button>';
+        }).join('');
+    },
+
+    choose: function(id) {
+        ThemeManager.select(id).then(function() {
+            AdminAPI.toast('Theme saved: ' + ThemeManager.get(id).label, 'success');
+        }).catch(function(err) {
+            AdminAPI.toast('Could not save theme: ' + err.message, 'error');
+        });
+        SettingsPage.markActive(id);
+    },
+
+    // Update card highlight/checkmarks without re-rendering swatches.
+    markActive: function(id) {
+        document.querySelectorAll('#theme-grid [data-theme-id]').forEach(function(card) {
+            var isActive = card.getAttribute('data-theme-id') === id;
+            card.classList.toggle('border-accent-500', isActive);
+            card.classList.toggle('ring-2', isActive);
+            card.classList.toggle('ring-accent-500/40', isActive);
+            card.classList.toggle('border-white/5', !isActive);
+            var check = card.querySelector('[data-check]');
+            if (check) check.classList.toggle('hidden', !isActive);
+        });
+    }
+};
+
+// Re-render highlight if the server sync changes the active theme after load.
+ThemeManager.onChange = function(theme) { SettingsPage.markActive(theme); };
+
+SettingsPage.render();
+</script>

@@ -2,6 +2,28 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Theme tokens — default preset (Emerald).
+ * Values are space-separated RGB channels so Tailwind's `<alpha-value>`
+ * opacity modifiers (e.g. bg-surface-900/80) keep working.
+ * ThemeManager (themes.js) overrides these on <html> per selected preset.
+ */
+:root {
+    --surface-200: 226 232 240;
+    --surface-300: 203 213 225;
+    --surface-400: 148 163 184;
+    --surface-500: 100 116 139;
+    --surface-600: 71 85 105;
+    --surface-700: 51 65 85;
+    --surface-800: 30 41 59;
+    --surface-900: 15 23 42;
+    --surface-950: 2 6 23;
+    --accent-300: 110 231 183;
+    --accent-400: 52 211 153;
+    --accent-500: 16 185 129;
+    --accent-600: 5 150 105;
+}
+
 /* Custom scrollbar */
 ::-webkit-scrollbar {
     width: 6px;
@@ -11,11 +33,11 @@
     background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-    background: rgba(16, 185, 129, 0.2);
+    background: rgb(var(--accent-500) / 0.2);
     border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-    background: rgba(16, 185, 129, 0.4);
+    background: rgb(var(--accent-500) / 0.4);
 }
 
 /* Smooth transitions for interactive elements */

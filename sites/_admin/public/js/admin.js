@@ -89,6 +89,9 @@ var AdminAPI = (function() {
     function reloadConfig() { return _post('/api/v1/reload'); }
     function resetCircuitBreaker() { return _post('/api/v1/circuit-breaker/reset'); }
 
+    function getSettings() { return _fetch('/api/v1/settings'); }
+    function updateSettings(settings) { return _put('/api/v1/settings', settings); }
+
     function hashPassword(password) { return _post('/api/v1/hash-password', {password: password}); }
 
     function appAction(name, action) {
@@ -179,9 +182,9 @@ var AdminAPI = (function() {
         if (!container) return;
 
         var colors = {
-            success: 'bg-emerald-500/20 border-emerald-500/30 text-emerald-400',
+            success: 'bg-accent-500/20 border-accent-500/30 text-accent-400',
             error: 'bg-rose-500/20 border-rose-500/30 text-rose-400',
-            info: 'bg-indigo-500/20 border-indigo-500/30 text-indigo-400'
+            info: 'bg-accent-500/20 border-accent-500/30 text-accent-400'
         };
 
         var el = document.createElement('div');
@@ -256,9 +259,9 @@ var AdminAPI = (function() {
             '<svg class="w-5 h-5 text-amber-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126z" /></svg>' +
             '<div class="flex-1">' +
                 '<div class="font-medium text-amber-400 mb-1">Cannot reach Admin API</div>' +
-                '<div class="text-slate-400 mb-3">Make sure the proxy is running and the admin API is enabled. Current target: <code class="text-xs bg-slate-800 px-1.5 py-0.5 rounded font-mono">' + esc(_baseUrl) + '</code></div>' +
+                '<div class="text-surface-400 mb-3">Make sure the proxy is running and the admin API is enabled. Current target: <code class="text-xs bg-surface-800 px-1.5 py-0.5 rounded font-mono">' + esc(_baseUrl) + '</code></div>' +
                 '<div class="flex items-center gap-2">' +
-                    '<input id="api-url-input" type="text" value="' + esc(_baseUrl) + '" placeholder="http://localhost:9090" class="flex-1 bg-slate-800 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-amber-500/50">' +
+                    '<input id="api-url-input" type="text" value="' + esc(_baseUrl) + '" placeholder="http://localhost:9090" class="flex-1 bg-surface-800 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-amber-500/50">' +
                     '<button onclick="AdminAPI.setBaseUrl(document.getElementById(\'api-url-input\').value);location.reload();" class="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white text-xs font-medium rounded-lg transition-colors">Connect</button>' +
                 '</div>' +
             '</div></div>';
@@ -332,6 +335,8 @@ var AdminAPI = (function() {
         deleteRoute: deleteRoute,
         reloadConfig: reloadConfig,
         resetCircuitBreaker: resetCircuitBreaker,
+        getSettings: getSettings,
+        updateSettings: updateSettings,
         hashPassword: hashPassword,
         appAction: appAction,
         setBaseUrl: setBaseUrl,

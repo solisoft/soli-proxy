@@ -1184,6 +1184,31 @@ mod admin_tests {
     }
 
     #[tokio::test]
+    async fn test_admin_settings_default_and_roundtrip() {
+        let (port, _mgr) = start_admin("default -> http://localhost:3000\n").await;
+
+        // Defaults to the emerald preset when no settings file exists.
+        let (status, body) = get(port, "/api/v1/settings").await;
+        assert_eq!(status, 200);
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["ok"], true);
+        assert_eq!(json["data"]["theme"], "emerald");
+
+        // A valid preset persists and is read back.
+        let (status, _) = put(port, "/api/v1/settings", r#"{"theme":"ocean"}"#).await;
+        assert_eq!(status, 200);
+
+        let (status, body) = get(port, "/api/v1/settings").await;
+        assert_eq!(status, 200);
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["data"]["theme"], "ocean");
+
+        // Unknown presets are rejected.
+        let (status, _) = put(port, "/api/v1/settings", r#"{"theme":"bogus"}"#).await;
+        assert_eq!(status, 400);
+    }
+
+    #[tokio::test]
     async fn test_admin_get_metrics() {
         let (port, _mgr) = start_admin("default -> http://localhost:3000\n").await;
 

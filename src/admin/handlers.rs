@@ -352,6 +352,62 @@ pub fn put_config(state: &Arc<AdminState>, body: &str) -> Response<BoxBody> {
     }
 }
 
+/// Built-in admin UI theme presets. Must stay in sync with the `PRESETS`
+/// list in `_admin/public/js/themes.js`.
+const VALID_THEMES: &[&str] = &["emerald", "ocean", "indigo", "violet", "amber", "rose"];
+const DEFAULT_THEME: &str = "emerald";
+
+/// Path to the admin UI settings file, kept beside the proxy config.
+fn settings_path(state: &Arc<AdminState>) -> std::path::PathBuf {
+    let cfg = state.config_manager.config_path();
+    let dir = cfg.parent().unwrap_or_else(|| std::path::Path::new("."));
+    dir.join("admin-settings.json")
+}
+
+pub fn get_settings(state: &Arc<AdminState>) -> Response<BoxBody> {
+    let stored = std::fs::read_to_string(settings_path(state))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+
+    let theme = stored
+        .as_ref()
+        .and_then(|v| v.get("theme"))
+        .and_then(|t| t.as_str())
+        .filter(|t| VALID_THEMES.contains(t))
+        .unwrap_or(DEFAULT_THEME);
+
+    ok_response(serde_json::json!({ "theme": theme }))
+}
+
+pub fn put_settings(state: &Arc<AdminState>, body: &str) -> Response<BoxBody> {
+    #[derive(serde::Deserialize)]
+    struct SettingsUpdate {
+        theme: String,
+    }
+
+    let update: SettingsUpdate = match serde_json::from_str(body) {
+        Ok(u) => u,
+        Err(e) => return error_response(400, &format!("Invalid settings JSON: {}", e)),
+    };
+
+    if !VALID_THEMES.contains(&update.theme.as_str()) {
+        return error_response(400, &format!("Unknown theme: {}", update.theme));
+    }
+
+    let payload = serde_json::json!({ "theme": update.theme });
+    let serialized = match serde_json::to_string_pretty(&payload) {
+        Ok(s) => s,
+        Err(e) => return error_response(500, &format!("Failed to serialize settings: {}", e)),
+    };
+
+    match std::fs::write(settings_path(state), serialized) {
+        Ok(()) => ok_response(
+            serde_json::json!({ "message": "Settings updated", "theme": update.theme }),
+        ),
+        Err(e) => error_response(500, &format!("Failed to write settings: {}", e)),
+    }
+}
+
 #[derive(serde::Deserialize)]
 struct HashPasswordRequest {
     password: String,
