@@ -98,7 +98,9 @@ pub struct AdminConfig {
     #[serde(default = "default_admin_enabled")]
     pub enabled: Option<bool>,
     pub bind: String,
-    #[serde(skip)]
+    // Read from `[admin].api_key` in config.toml, but never serialized back
+    // out (e.g. when the config is rewritten) so the secret doesn't leak.
+    #[serde(default, skip_serializing)]
     pub api_key: Option<String>,
     #[serde(default, skip)]
     pub username: Option<String>,
