@@ -41,6 +41,11 @@ pub struct ResponseMod {
 /// Shared state for cross-worker counters (used by `shared` Lua module).
 type SharedState = Arc<std::sync::RwLock<HashMap<String, f64>>>;
 
+/// Lua registry key under which each state stores the snapshot of its
+/// post-setup globals, so `cleanup_lua_state` can tell built-ins/stdlib/hook
+/// functions (keep) apart from request-scoped script globals (clear).
+const BASELINE_GLOBALS_KEY: &str = "__soli_baseline_globals";
+
 /// The Lua scripting engine. Thread-safe, cheaply cloneable.
 ///
 /// Holds a pool of pre-initialized Lua states (one per worker) for global scripts,
@@ -353,6 +358,23 @@ impl LuaEngine {
             let _ = globals.set(*dangerous, mlua::Value::Nil);
         }
 
+        // Snapshot the set of globals that exist after setup — the built-in
+        // modules, the loaded stdlib (math/string/table/utf8), the base
+        // library functions (tostring, pairs, …), and the script-defined hook
+        // functions. cleanup_lua_state() clears every global NOT in this set
+        // after each hook call, so a script cannot leak request-scoped globals
+        // into the next call — without also nuking the stdlib the next call
+        // needs (which would make `math.floor`, `tostring`, … fail on every
+        // reused pool state after the first request).
+        let baseline = lua.create_table()?;
+        for pair in globals.pairs::<mlua::Value, mlua::Value>() {
+            let (key, _) = pair?;
+            if let Ok(name) = key.to_string() {
+                baseline.set(name, true)?;
+            }
+        }
+        lua.set_named_registry_value(BASELINE_GLOBALS_KEY, baseline)?;
+
         Ok(lua)
     }
 
@@ -618,28 +640,23 @@ impl LuaEngine {
     }
 
     /// Remove script-defined globals after each hook call to prevent cross-request leakage.
-    /// Preserves built-in modules (log, base64, crypto, env, time, shared) and hook functions.
+    /// Preserves everything present at state-creation time (built-in modules, the loaded
+    /// stdlib, base library functions, and hook functions) via the baseline snapshot taken
+    /// in `create_lua_state`; only globals a script created at request time are cleared.
     fn cleanup_lua_state(lua: &Lua) {
         let globals = lua.globals();
-        let preserved: &[&str] = &[
-            "log",
-            "base64",
-            "crypto",
-            "env",
-            "time",
-            "shared",
-            "on_request",
-            "on_route",
-            "on_response",
-            "on_request_end",
-        ];
+        let baseline: Option<Table> = lua.named_registry_value(BASELINE_GLOBALS_KEY).ok();
         if let Ok(keys) = globals
             .pairs::<mlua::Value, mlua::Value>()
             .collect::<Result<Vec<_>, _>>()
         {
             for (key, _) in keys {
                 if let Ok(key_str) = key.to_string() {
-                    if !preserved.contains(&key_str.as_str()) {
+                    let is_baseline = baseline
+                        .as_ref()
+                        .and_then(|b| b.contains_key(key_str.as_str()).ok())
+                        .unwrap_or(false);
+                    if !is_baseline {
                         let _ = globals.set(key_str.as_str(), mlua::Value::Nil);
                     }
                 }

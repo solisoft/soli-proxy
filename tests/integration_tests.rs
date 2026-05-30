@@ -460,7 +460,14 @@ mod scripting_tests {
         )
         .unwrap();
 
-        let engine = LuaEngine::new(dir.path(), 1, Duration::from_millis(100), &[]).unwrap();
+        // `env.get` only exposes vars on the allowlist passed to the engine.
+        let engine = LuaEngine::new(
+            dir.path(),
+            1,
+            Duration::from_millis(100),
+            &["SOLI_TEST_VAR".to_string()],
+        )
+        .unwrap();
         let mut req = make_request("GET", "/test");
         let result = engine.call_on_request(&mut req);
 
