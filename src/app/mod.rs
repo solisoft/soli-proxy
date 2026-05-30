@@ -697,7 +697,7 @@ impl AppManager {
                         }
                         tracing::info!("Auto-starting app: {}", app_name);
                         if let Err(e) = mgr.deploy(&app_name, "blue").await {
-                            tracing::error!("Failed to auto-start {}: {}", app_name, e);
+                            tracing::error!("Failed to auto-start {}: {:#}", app_name, e);
                         }
                     }));
                 }

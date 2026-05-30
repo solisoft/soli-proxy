@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -617,6 +617,10 @@ impl DeploymentManager {
             );
         }
 
+        let run_as = match user {
+            Some(user) => format!("as user `{}`", user),
+            None => "as the proxy's own user".to_string(),
+        };
         let mut child = unsafe {
             cmd.pre_exec(|| {
                 libc::setsid();
@@ -624,8 +628,20 @@ impl DeploymentManager {
                 libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
                 Ok(())
             })
-            .spawn()?
-        };
+            .spawn()
+        }
+        .with_context(|| {
+            format!(
+                "Failed to spawn `{}` for {} (in {}) {}. \
+                 A `Permission denied` error usually means that user cannot execute the \
+                 program or traverse the working directory — check file ownership/permissions \
+                 (e.g. `ls -l {0}`) and that every parent directory is accessible to that user.",
+                program,
+                app.config.name,
+                app.path.display(),
+                run_as,
+            )
+        })?;
 
         let pid = child.id().unwrap_or(0);
         tracing::info!(
