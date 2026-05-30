@@ -6,7 +6,7 @@ use crate::config::ConfigManager;
 use crate::metrics::SharedMetrics;
 use crate::proxy_headers::strip_hop_by_hop;
 use crate::server::IpRateLimiter;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use bytes::Bytes;
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
@@ -752,7 +752,9 @@ pub async fn run_admin_server(state: Arc<AdminState>) -> Result<()> {
         );
     }
 
-    let listener = TcpListener::bind(addr).await?;
+    let listener = TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("failed to bind admin API to {addr}"))?;
 
     tracing::info!("Admin API listening on {}", addr);
 

@@ -588,7 +588,7 @@ impl DeploymentManager {
         if proxy_is_root && user.is_none() {
             anyhow::bail!(
                 "Refusing to spawn {} as root: no user/group configured. \
-                 Set `user` in app.infos or default_user in [deployment], or run the proxy as non-root.",
+                 Set `user` in app.infos or default_user in [apps], or run the proxy as non-root.",
                 app.config.name
             );
         }
