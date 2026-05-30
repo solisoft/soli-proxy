@@ -992,7 +992,7 @@ async fn run_server(
         std::process::exit(0);
     });
 
-    tracing::info!("Proxy server starting on port 8008");
+    tracing::info!("Proxy server starting on {}", cfg.server.bind);
     server.run().await?;
 
     if daemon_mode {
