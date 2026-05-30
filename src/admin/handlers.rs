@@ -401,9 +401,9 @@ pub fn put_settings(state: &Arc<AdminState>, body: &str) -> Response<BoxBody> {
     };
 
     match std::fs::write(settings_path(state), serialized) {
-        Ok(()) => ok_response(
-            serde_json::json!({ "message": "Settings updated", "theme": update.theme }),
-        ),
+        Ok(()) => {
+            ok_response(serde_json::json!({ "message": "Settings updated", "theme": update.theme }))
+        }
         Err(e) => error_response(500, &format!("Failed to write settings: {}", e)),
     }
 }
