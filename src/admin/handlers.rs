@@ -107,7 +107,7 @@ pub async fn post_app_deploy(state: &Arc<AdminState>, name: &str) -> Response<Bo
                     "app": name,
                     "slot": target_slot
                 })),
-                Err(e) => error_response(500, &format!("Deployment failed: {}", e)),
+                Err(e) => error_response(500, &format!("Deployment failed: {:#}", e)),
             }
         }
         None => error_response(501, "App management not configured"),
