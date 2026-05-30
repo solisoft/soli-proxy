@@ -201,20 +201,40 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    // Each test uses a disjoint port range. find_available_port_in_range
+    // probes real OS ports, so sharing the default range across concurrently
+    // running tests makes allocations race on the shared port space and the
+    // returned port numbers nondeterministic. Isolated ranges keep each test
+    // deterministic regardless of what else in the suite runs at the same time.
     #[tokio::test]
     async fn test_port_allocation() {
         let temp_dir = TempDir::new().unwrap();
         let pm = PortManager::new(temp_dir.path().to_str().unwrap()).unwrap();
 
-        let port1 = pm.allocate("app1", "blue").await.unwrap();
-        let port2 = pm.allocate("app1", "green").await.unwrap();
-        let port3 = pm.allocate("app2", "blue").await.unwrap();
+        let port1 = pm
+            .allocate_with_range("app1", "blue", 31000, 31999)
+            .await
+            .unwrap();
+        let port2 = pm
+            .allocate_with_range("app1", "green", 31000, 31999)
+            .await
+            .unwrap();
+        let port3 = pm
+            .allocate_with_range("app2", "blue", 31000, 31999)
+            .await
+            .unwrap();
 
         assert_ne!(port1, port2);
         assert_ne!(port1, port3);
         assert_ne!(port2, port3);
 
-        assert_eq!(pm.allocate("app1", "blue").await.unwrap(), port1);
+        // Re-allocating the same (app, slot) returns the cached port.
+        assert_eq!(
+            pm.allocate_with_range("app1", "blue", 31000, 31999)
+                .await
+                .unwrap(),
+            port1
+        );
     }
 
     #[tokio::test]
@@ -222,10 +242,18 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let pm = PortManager::new(temp_dir.path().to_str().unwrap()).unwrap();
 
-        let port = pm.allocate("app1", "blue").await.unwrap();
+        let port = pm
+            .allocate_with_range("app1", "blue", 32000, 32999)
+            .await
+            .unwrap();
         pm.release("app1", "blue").await;
 
-        let new_port = pm.allocate("app1", "blue").await.unwrap();
+        // After release the same (app, slot) reallocates the first free port
+        // in the range — deterministically the one just released.
+        let new_port = pm
+            .allocate_with_range("app1", "blue", 32000, 32999)
+            .await
+            .unwrap();
         assert_eq!(port, new_port);
     }
 }
