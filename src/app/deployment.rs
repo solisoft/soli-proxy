@@ -620,7 +620,7 @@ impl DeploymentManager {
         let mut child = unsafe {
             cmd.pre_exec(|| {
                 libc::setsid();
-                #[cfg(unix)]
+                #[cfg(target_os = "linux")]
                 libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
                 Ok(())
             })
