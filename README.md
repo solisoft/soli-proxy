@@ -97,6 +97,7 @@ staging = false
 [logging]
 level = "info"
 format = "json"
+log_endpoints = true  # log one line per request (method, path, host, status, latency)
 
 [metrics]
 enabled = true

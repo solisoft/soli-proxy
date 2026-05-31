@@ -28,6 +28,7 @@ format = "json"
 output = "stdout"  # or "file:/var/log/soli-proxy.log"
 include_request_body = true
 include_response_body = true
+log_endpoints = true  # log one line per request (method, path, host, status, latency)
 
 # Metrics Configuration
 [metrics]

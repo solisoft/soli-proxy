@@ -353,6 +353,9 @@ pub struct LoggingConfig {
     pub output: Option<String>,
     pub include_request_body: Option<bool>,
     pub include_response_body: Option<bool>,
+    /// When true, emit one structured log line per served request (method,
+    /// path, host, status, latency). Honoured on hot reload. Default false.
+    pub log_endpoints: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]

@@ -973,8 +973,114 @@ fn extract_response_headers(
         .collect()
 }
 
+/// Entry point for every served request. When `[logging].log_endpoints` is
+/// true it wraps the handler to emit one structured log line per request —
+/// covering all return paths (proxied responses, rate-limit/size rejections,
+/// timeouts, health/metrics, Lua denials, websockets). Otherwise it delegates
+/// straight to `handle_request_inner` with no added work. The flag is read
+/// from the current config on each request, so hot reloads take effect.
 #[allow(clippy::too_many_arguments)]
 async fn handle_request(
+    req: Request<Incoming>,
+    client: ProxyClient,
+    config_manager: Arc<ConfigManager>,
+    metrics: SharedMetrics,
+    challenge_store: ChallengeStore,
+    lua_engine: OptionalLuaEngine,
+    circuit_breaker: SharedCircuitBreaker,
+    app_manager: Option<Arc<AppManager>>,
+    load_balancer: Arc<LoadBalancerState>,
+    is_tls: bool,
+    peer_addr: Option<SocketAddr>,
+    rate_limiter: Option<Arc<IpRateLimiter>>,
+) -> Result<Response<BoxBody>, hyper::Error> {
+    let log_endpoints = config_manager
+        .get_config()
+        .logging
+        .log_endpoints
+        .unwrap_or(false);
+    if !log_endpoints {
+        return handle_request_inner(
+            req,
+            client,
+            config_manager,
+            metrics,
+            challenge_store,
+            lua_engine,
+            circuit_breaker,
+            app_manager,
+            load_balancer,
+            is_tls,
+            peer_addr,
+            rate_limiter,
+        )
+        .await;
+    }
+
+    // Capture identifying fields before `req` is moved into the handler.
+    let method = req.method().clone();
+    let path = req.uri().path().to_string();
+    let host = req
+        .uri()
+        .host()
+        .map(|h| h.to_string())
+        .or_else(|| {
+            req.headers()
+                .get("host")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_default();
+    let scheme = if is_tls { "https" } else { "http" };
+    let client_ip = peer_addr.map(|a| a.ip().to_string()).unwrap_or_default();
+    let start = std::time::Instant::now();
+
+    let result = handle_request_inner(
+        req,
+        client,
+        config_manager,
+        metrics,
+        challenge_store,
+        lua_engine,
+        circuit_breaker,
+        app_manager,
+        load_balancer,
+        is_tls,
+        peer_addr,
+        rate_limiter,
+    )
+    .await;
+
+    let elapsed_ms = start.elapsed().as_millis() as u64;
+    match &result {
+        Ok(resp) => tracing::info!(
+            layer = "endpoint",
+            method = %method,
+            scheme = scheme,
+            host = %host,
+            path = %path,
+            status = resp.status().as_u16(),
+            elapsed_ms = elapsed_ms,
+            client_ip = %client_ip,
+            "endpoint request"
+        ),
+        Err(e) => tracing::info!(
+            layer = "endpoint",
+            method = %method,
+            scheme = scheme,
+            host = %host,
+            path = %path,
+            error = %e,
+            elapsed_ms = elapsed_ms,
+            client_ip = %client_ip,
+            "endpoint request failed"
+        ),
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_request_inner(
     req: Request<Incoming>,
     client: ProxyClient,
     config_manager: Arc<ConfigManager>,
