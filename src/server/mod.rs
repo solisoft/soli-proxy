@@ -48,6 +48,40 @@ use crate::scripting::{LuaEngine, LuaRequest, RequestHookResult, RouteHookResult
 
 type BoxBody = http_body_util::combinators::BoxBody<Bytes, std::convert::Infallible>;
 
+/// Object-safe alias for a bidirectional byte stream — lets the WebSocket
+/// backend path treat plain-TCP and TLS connections uniformly.
+trait AsyncStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> AsyncStream for T {}
+
+/// Shared TLS connector for `https`/`wss` WebSocket backends (webpki roots,
+/// mirroring the HTTP pool's connector in `crate::pool`).
+fn ws_backend_tls_connector() -> &'static tokio_rustls::TlsConnector {
+    static CONNECTOR: std::sync::LazyLock<tokio_rustls::TlsConnector> =
+        std::sync::LazyLock::new(|| {
+            let roots = tokio_rustls::rustls::RootCertStore {
+                roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+            };
+            let config = tokio_rustls::rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+            tokio_rustls::TlsConnector::from(Arc::new(config))
+        });
+    &CONNECTOR
+}
+
+/// Format an error with its full source chain (`outer: cause: root`) so
+/// connect failures show the underlying reason, not just "client error".
+fn error_chain(e: &dyn std::error::Error) -> String {
+    let mut s = e.to_string();
+    let mut source = e.source();
+    while let Some(cause) = source {
+        s.push_str(": ");
+        s.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    s
+}
+
 #[cfg(feature = "scripting")]
 type OptionalLuaEngine = Option<LuaEngine>;
 #[cfg(not(feature = "scripting"))]
@@ -598,7 +632,8 @@ async fn run_http_server(
                         )
                         .await
                         {
-                            tracing::debug!("HTTP/1.1 connection error: {}", e);
+                            // anyhow error: `{:#}` prints the full chain
+                            tracing::debug!("HTTP/1.1 connection error: {:#}", e);
                         }
                     });
                 }
@@ -765,7 +800,7 @@ async fn handle_http11_connection(
     tokio::select! {
         res = conn.as_mut() => {
             if let Err(e) = res {
-                tracing::debug!("HTTP/1.1 connection error: {}", e);
+                tracing::debug!("HTTP/1.1 connection error: {}", error_chain(&e));
             }
         }
         _ = shutdown_rx.recv() => {
@@ -1486,12 +1521,13 @@ async fn handle_websocket_request(
     };
 
     // Extract host:port from target URL (e.g. "http://127.0.0.1:3000/path" -> "127.0.0.1:3000")
-    let backend_addr = match url::Url::parse(&target_url) {
-        Ok(u) => format!(
-            "{}:{}",
-            u.host_str().unwrap_or("127.0.0.1"),
-            u.port().unwrap_or(80)
-        ),
+    let (backend_addr, backend_host, backend_tls) = match url::Url::parse(&target_url) {
+        Ok(u) => {
+            let tls = matches!(u.scheme(), "https" | "wss");
+            let host = u.host_str().unwrap_or("127.0.0.1").to_string();
+            let port = u.port().unwrap_or(if tls { 443 } else { 80 });
+            (format!("{}:{}", host, port), host, tls)
+        }
         Err(_) => {
             metrics.inc_errors();
             let body = http_body_util::Full::new(Bytes::from("Bad backend URL")).boxed();
@@ -1506,16 +1542,27 @@ async fn handle_websocket_request(
         .map(|q| format!("?{}", q))
         .unwrap_or_default();
 
-    let host_header = req
+    let client_host = req
         .headers()
         .get("host")
         .and_then(|v| v.to_str().ok())
         .unwrap_or(&backend_addr)
         .to_string();
 
-    let extra_headers = build_ws_extra_headers(req.headers(), peer_addr, is_tls, &host_header);
+    // Like the HTTP path: a TLS backend is an external origin that expects
+    // its own name as Host (matching the SNI); the client's host still
+    // reaches it via X-Forwarded-Host (in extra_headers below).
+    let host_header = if backend_tls {
+        backend_host.clone()
+    } else {
+        client_host.clone()
+    };
 
-    tracing::info!(
+    let extra_headers = build_ws_extra_headers(req.headers(), peer_addr, is_tls, &client_host);
+
+    // debug-level: per-message upgrade chatter floods info logs (see
+    // `[logging].log_endpoints` for per-request access logging instead)
+    tracing::debug!(
         "WebSocket upgrade request to {}{}{}",
         backend_addr,
         path,
@@ -1526,7 +1573,7 @@ async fn handle_websocket_request(
     // HTTP pool's connect_timeout): the WS upgrade path runs before the
     // request-timeout wrapper, so an unbounded connect to a black-holed
     // backend would otherwise hang the upgrade indefinitely.
-    let backend = match timeout(Duration::from_secs(5), TcpStream::connect(&backend_addr)).await {
+    let tcp = match timeout(Duration::from_secs(5), TcpStream::connect(&backend_addr)).await {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
             tracing::error!("Failed to connect to backend for WebSocket: {}", e);
@@ -1546,6 +1593,55 @@ async fn handle_websocket_request(
             let body = http_body_util::Full::new(Bytes::from("Gateway Timeout")).boxed();
             return Ok(Response::builder().status(504).body(body).unwrap());
         }
+    };
+
+    // Wrap the stream in TLS when the backend target is https/wss.
+    let backend: Box<dyn AsyncStream> = if backend_tls {
+        let server_name = match rustls_pki_types::ServerName::try_from(backend_host.clone()) {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::error!(
+                    "Invalid TLS server name for WebSocket backend {}: {}",
+                    backend_host,
+                    e
+                );
+                metrics.inc_errors();
+                let body = http_body_util::Full::new(Bytes::from("Bad backend URL")).boxed();
+                return Ok(Response::builder().status(502).body(body).unwrap());
+            }
+        };
+        match timeout(
+            Duration::from_secs(5),
+            ws_backend_tls_connector().connect(server_name, tcp),
+        )
+        .await
+        {
+            Ok(Ok(s)) => Box::new(s),
+            Ok(Err(e)) => {
+                tracing::error!(
+                    "TLS handshake with WebSocket backend {} failed: {}",
+                    backend_addr,
+                    e
+                );
+                metrics.inc_errors();
+                let body = http_body_util::Full::new(Bytes::from("Backend not reachable")).boxed();
+                return Ok(Response::builder().status(502).body(body).unwrap());
+            }
+            Err(_) => {
+                tracing::warn!(
+                    layer = "proxy_ws",
+                    backend = %backend_addr,
+                    path = %path,
+                    timeout_secs = 5,
+                    "websocket backend TLS handshake timed out; returning 504"
+                );
+                metrics.inc_errors();
+                let body = http_body_util::Full::new(Bytes::from("Gateway Timeout")).boxed();
+                return Ok(Response::builder().status(504).body(body).unwrap());
+            }
+        }
+    } else {
+        Box::new(tcp)
     };
 
     // Build the upgrade request forwarding all relevant headers
@@ -1582,7 +1678,7 @@ async fn handle_websocket_request(
     handshake.push_str(&extra_headers);
     handshake.push_str("\r\n");
 
-    let (mut backend_read, mut backend_write) = backend.into_split();
+    let (mut backend_read, mut backend_write) = tokio::io::split(backend);
     if let Err(e) = backend_write.write_all(handshake.as_bytes()).await {
         tracing::error!("Failed to send WebSocket handshake to backend: {}", e);
         metrics.inc_errors();
@@ -1662,7 +1758,7 @@ async fn handle_websocket_request(
     let client_upgrade = hyper::upgrade::on(req);
 
     // Reunite the backend halves
-    let backend_stream = backend_read.reunite(backend_write).unwrap();
+    let backend_stream = backend_read.unsplit(backend_write);
 
     // Snapshot WS limits while we still have access to `config` (the spawned
     // task captures only what's needed by-value).
@@ -1847,10 +1943,17 @@ async fn handle_regular_request(
                 }
             }
 
-            // Only extract host_header when needed (domain rules only). Prefer
-            // the Host header over URI authority so an absolute-form request
-            // cannot inject an arbitrary X-Forwarded-Host into the backend.
-            let host_header = if from_domain_rule {
+            // An https target is an external origin whose vhost/CDN expects
+            // its own name as Host (matching the TLS SNI) — forwarding the
+            // client's Host there gets rejected (e.g. Cloudflare 403). The
+            // original host is still passed via X-Forwarded-Host.
+            let https_target = target_url.starts_with("https://");
+
+            // Only extract host_header when needed (domain rules and https
+            // targets). Prefer the Host header over URI authority so an
+            // absolute-form request cannot inject an arbitrary
+            // X-Forwarded-Host into the backend.
+            let host_header = if from_domain_rule || https_target {
                 req.headers()
                     .get("host")
                     .and_then(|h| h.to_str().ok())
@@ -1883,6 +1986,16 @@ async fn handle_regular_request(
             parts.version = http::Version::HTTP_11;
             parts.extensions = http::Extensions::new();
 
+            // Rewrite Host to the https origin's own authority (see
+            // https_target above); the client's host goes to X-Forwarded-Host.
+            if https_target {
+                if let Some(authority) = parts.uri.authority() {
+                    if let Ok(v) = HeaderValue::from_str(authority.as_str()) {
+                        parts.headers.insert(hyper::header::HOST, v);
+                    }
+                }
+            }
+
             crate::proxy_headers::strip_hop_by_hop(&mut parts.headers);
             // HTTP/2 browsers split cookies across multiple `cookie` fields;
             // join them before forwarding to the HTTP/1.1 upstream so servers
@@ -1908,7 +2021,7 @@ async fn handle_regular_request(
                 },
             );
 
-            if from_domain_rule {
+            if from_domain_rule || https_target {
                 if let Some(host) = host_header {
                     if let Ok(v) = HeaderValue::from_str(&host) {
                         request.headers_mut().insert("X-Forwarded-Host", v);
@@ -1917,7 +2030,14 @@ async fn handle_regular_request(
             }
 
             match client.request(request).await {
-                Ok(response) => {
+                Ok(mut response) => {
+                    // Hop-by-hop headers are per-connection and must not be
+                    // relayed (RFC 7230 §6.1). In particular a chunked
+                    // upstream's `Transfer-Encoding` header survives while
+                    // hyper has already de-chunked the body — re-sending it
+                    // makes the h1 server abort with User(UnexpectedHeader).
+                    crate::proxy_headers::strip_hop_by_hop(response.headers_mut());
+
                     // --- Circuit breaker: record success or failure ---
                     let status_code = response.status().as_u16();
                     if circuit_breaker.is_failure_status(status_code) {
@@ -2156,7 +2276,11 @@ async fn handle_regular_request(
                 }
                 Err(e) => {
                     circuit_breaker.record_failure(&base_url);
-                    tracing::error!("Backend request failed: {} (target: {})", e, target_url);
+                    tracing::error!(
+                        "Backend request failed: {} (target: {})",
+                        error_chain(&e),
+                        target_url
+                    );
                     let body = http_body_util::Full::new(Bytes::from("Bad Gateway")).boxed();
                     Ok((
                         Response::builder()
@@ -2245,7 +2369,11 @@ async fn handle_regular_request(
                     }
 
                     match client.request(request).await {
-                        Ok(response) => {
+                        Ok(mut response) => {
+                            // Hop-by-hop headers must not be relayed (see the
+                            // route path above).
+                            crate::proxy_headers::strip_hop_by_hop(response.headers_mut());
+
                             let status_code = response.status().as_u16();
                             if circuit_breaker.is_failure_status(status_code) {
                                 circuit_breaker.record_failure(&base_url);
@@ -2260,7 +2388,7 @@ async fn handle_regular_request(
                             circuit_breaker.record_failure(&base_url);
                             tracing::error!(
                                 "Backend request failed: {} (target: {})",
-                                e,
+                                error_chain(&e),
                                 target_url
                             );
                             // Trigger immediate async failover so the next

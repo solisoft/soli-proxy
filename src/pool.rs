@@ -1,11 +1,14 @@
 use hyper::body::Incoming;
+use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use std::time::Duration;
 
 /// The hyper client type used to proxy requests to backends.
-pub type ProxyClient = Client<HttpConnector, Incoming>;
+/// The `HttpsConnector` wrapper handles both `http://` and `https://`
+/// targets (TLS via rustls with webpki roots).
+pub type ProxyClient = Client<HttpsConnector<HttpConnector>, Incoming>;
 
 /// A shared connection pool for proxying HTTP requests to backends.
 ///
@@ -26,11 +29,20 @@ impl ConnectionPool {
         connector.set_nodelay(true);
         connector.set_keepalive(Some(Duration::from_secs(30)));
         connector.set_connect_timeout(Some(Duration::from_secs(5)));
+        // Let https:// URIs through to the TLS layer below instead of
+        // rejecting them at connect time.
+        connector.enforce_http(false);
+
+        let https = hyper_rustls::HttpsConnectorBuilder::new()
+            .with_webpki_roots()
+            .https_or_http()
+            .enable_http1()
+            .wrap_connector(connector);
 
         let client = Client::builder(TokioExecutor::new())
             .pool_max_idle_per_host(256)
             .pool_idle_timeout(Duration::from_secs(60))
-            .build(connector);
+            .build(https);
 
         Self { client }
     }
@@ -56,6 +68,9 @@ mod tests {
 
     #[test]
     fn test_pool_creation_and_clone() {
+        // The TLS connector needs a process-default crypto provider (main.rs
+        // installs it at startup; tests must do it themselves).
+        let _ = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default();
         let pool = ConnectionPool::new();
         // Cloning should be cheap (Arc under the hood)
         let _pool2 = pool.clone();
