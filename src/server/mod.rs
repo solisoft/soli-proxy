@@ -2182,7 +2182,26 @@ async fn handle_regular_request(
                         .map(|ct| ct.starts_with("text/html"))
                         .unwrap_or(false);
 
-                    if is_html {
+                    // The rewrite below can only decode gzip/deflate. Bodies
+                    // with any other encoding (br, zstd — common from CDN
+                    // origins) must pass through untouched: mangling them
+                    // through from_utf8_lossy and dropping content-encoding
+                    // serves compressed bytes as text.
+                    let rewritable_encoding = response
+                        .headers()
+                        .get("content-encoding")
+                        .and_then(|v| v.to_str().ok())
+                        .map(|enc| {
+                            enc.split(',').map(str::trim).all(|e| {
+                                matches!(
+                                    e.to_ascii_lowercase().as_str(),
+                                    "gzip" | "x-gzip" | "deflate" | "identity" | ""
+                                )
+                            })
+                        })
+                        .unwrap_or(true);
+
+                    if is_html && rewritable_encoding {
                         if let Some(prefix) = matched_prefix {
                             let (parts, body) = response.into_parts();
                             let body_bytes = body
@@ -2229,6 +2248,16 @@ async fn handle_regular_request(
                                     tracing::warn!(
                                         "Skipping HTML rewrite for prefix {} due to SRI/nonce attributes",
                                         prefix
+                                    );
+                                    // raw_bytes is the *decoded* body — the
+                                    // original encoding/length headers no
+                                    // longer describe it.
+                                    let mut parts = parts;
+                                    parts.headers.remove("content-encoding");
+                                    parts.headers.remove("content-length");
+                                    parts.headers.insert(
+                                        "content-length",
+                                        raw_bytes.len().to_string().parse().unwrap(),
                                     );
                                     let body = http_body_util::Full::new(raw_bytes).boxed();
                                     return Ok((
