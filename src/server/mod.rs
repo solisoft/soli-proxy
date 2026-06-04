@@ -1520,6 +1520,12 @@ async fn handle_websocket_request(
         }
     };
 
+    // A redirect:// target answers upgrade attempts with the 301 too —
+    // browsers re-resolve the socket URL after following the page redirect.
+    if target_url.starts_with("redirect://") {
+        return Ok(build_redirect_response(&target_url));
+    }
+
     // Extract host:port from target URL (e.g. "http://127.0.0.1:3000/path" -> "127.0.0.1:3000")
     let (backend_addr, backend_host, backend_tls) = match url::Url::parse(&target_url) {
         Ok(u) => {
@@ -1949,6 +1955,18 @@ async fn handle_regular_request(
                         RouteHookResult::Default => {}
                     }
                 }
+            }
+
+            // A redirect:// target short-circuits proxying: 301 to the same
+            // path/query on the new origin. Used to move a site to a new
+            // canonical domain (`old.example -> redirect://new.example`).
+            // Checked after the on_route hooks so Lua can also return one.
+            if target_url.starts_with("redirect://") {
+                return Ok((
+                    build_redirect_response(&target_url),
+                    target_url,
+                    route_scripts,
+                ));
             }
 
             // An https target is an external origin whose vhost/CDN expects
@@ -2553,6 +2571,29 @@ fn resolve_target_url(
     }
 }
 
+/// Build the 301 response for a `redirect://` rule target. The resolved
+/// target already carries the request's path/query appended by
+/// `resolve_target_url`; only the scheme is swapped to https. Redirect rules
+/// always point at an https destination — the proxy itself only serves
+/// redirects for domains it terminates TLS for.
+fn build_redirect_response(target_url: &str) -> Response<BoxBody> {
+    let rest = target_url.strip_prefix("redirect://").unwrap_or(target_url);
+    let location = format!("https://{}", rest);
+    match HeaderValue::from_str(&location) {
+        Ok(loc) => Response::builder()
+            .status(301)
+            .header(hyper::header::LOCATION, loc)
+            .body(http_body_util::Full::new(Bytes::from("Moved Permanently")).boxed())
+            .unwrap(),
+        // A request path with bytes invalid in a header value cannot be
+        // reflected into Location; reject rather than emit a broken redirect.
+        Err(_) => Response::builder()
+            .status(400)
+            .body(http_body_util::Full::new(Bytes::from("Bad Request")).boxed())
+            .unwrap(),
+    }
+}
+
 /// Pure routing: find which rule matches the request
 fn find_matching_rule<'a>(
     req: &Request<Incoming>,
@@ -2780,6 +2821,33 @@ fn find_target(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redirect_response_carries_path_and_query() {
+        let resp = build_redirect_response("redirect://bonfire-app.pro/feed?page=2");
+        assert_eq!(resp.status(), 301);
+        assert_eq!(
+            resp.headers().get("location").unwrap(),
+            "https://bonfire-app.pro/feed?page=2"
+        );
+    }
+
+    #[test]
+    fn redirect_target_resolves_with_request_path() {
+        let target = crate::config::Target {
+            url: url::Url::parse("redirect://bonfire-app.pro").unwrap(),
+            weight: 100,
+        };
+        let resolved =
+            resolve_target_url(&target, "/some/path", Some("q=1"), &UrlResolution::AppendPath);
+        assert_eq!(resolved, "redirect://bonfire-app.pro/some/path?q=1");
+    }
+
+    #[test]
+    fn redirect_response_rejects_bad_header_bytes() {
+        let resp = build_redirect_response("redirect://bonfire-app.pro/\u{7f}");
+        assert_eq!(resp.status(), 400);
+    }
 
     #[test]
     fn test_load_balancer_state_select_index() {

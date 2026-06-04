@@ -1222,6 +1222,19 @@ hook_timeout_ms = 10
     }
 
     #[test]
+    fn test_redirect_target_parses_as_domain_rule() {
+        let config = "bonfire.solisoft.net -> redirect://bonfire-app.pro\n";
+        let (rules, _) = parse_proxy_config(config).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert!(matches!(
+            &rules[0].matcher,
+            RuleMatcher::Domain(d) if d == "bonfire.solisoft.net"
+        ));
+        assert_eq!(rules[0].targets.len(), 1);
+        assert_eq!(rules[0].targets[0].url.as_str(), "redirect://bonfire-app.pro");
+    }
+
+    #[test]
     fn test_no_continuation_normal_config() {
         let config = "/api/* -> http://backend:8080\ndefault -> http://localhost:3000\n";
         let (rules, _) = parse_proxy_config(config).unwrap();
