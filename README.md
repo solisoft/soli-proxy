@@ -156,6 +156,13 @@ default -> http://localhost:3000
 # Regex routing
 ~^/users/(\d+)$ -> http://user-service:8080/users/$1
 
+# External https backend (Host/Origin are rewritten to the target's own
+# authority; the client's host is forwarded via X-Forwarded-Host)
+mirror.example.com -> https://origin.example.net
+
+# Permanent redirect to a new canonical domain (301, path and query preserved)
+old.example.com -> redirect://new.example.com
+
 # Headers to add
 headers {
     X-Forwarded-For: $client_ip

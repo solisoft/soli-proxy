@@ -79,6 +79,42 @@
                         </div>
                     </div>
 
+                    <!-- External https backends -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-3">External HTTPS Backends</h3>
+                        <p class="text-gray-400 text-sm mb-3">Targets can be <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">https://</code> origins. The proxy rewrites <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Host</code> to the target's own authority (matching the TLS SNI, so vhosts/CDNs accept the request) and aligns a same-origin <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Origin</code> header with it, so backends that CSRF-check Origin against the request authority keep working. Cross-site Origins are forwarded untouched. The client's host reaches the backend via <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">X-Forwarded-Host</code>.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">proxy.conf</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tc"># Serve an external https origin under your own domain</span>
+<span class="tf">mirror.example.com</span> <span class="tk">-></span> <span class="ts">https://origin.example.net</span></code></pre>
+                        </div>
+                    </div>
+
+                    <!-- Redirect rules -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-3">Redirect Rules</h3>
+                        <p class="text-gray-400 text-sm mb-3">Use a <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">redirect://</code> target to answer with a <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">301 Moved Permanently</code> instead of proxying &mdash; typically to move a site to a new canonical domain. The request path and query string are preserved on the new origin, and the destination is always <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">https://</code>. WebSocket upgrade attempts receive the same 301. ACME certificates are still issued for the source domain, so the redirect itself is served over TLS.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">proxy.conf</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tc"># Move a site to a new canonical domain</span>
+<span class="tc"># https://old.example.com/feed?page=2 -> 301 https://new.example.com/feed?page=2</span>
+<span class="tf">old.example.com</span> <span class="tk">-></span> <span class="ts">redirect://new.example.com</span></code></pre>
+                        </div>
+                        <p class="text-gray-400 text-sm mt-3">If another rule on the same proxy fetches its content <em>from</em> the redirected domain (e.g. <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">new.example.com -&gt; https://old.example.com</code>), the redirect creates an infinite loop &mdash; point that rule directly at the backend or app instead.</p>
+                    </div>
+
                     <!-- Domain + Path prefix -->
                     <div class="mb-8 ml-11">
                         <h3 class="text-lg font-semibold text-white mb-3">Domain + Path Prefix</h3>
@@ -289,6 +325,12 @@
 
 <span class="tc"># WebSocket</span>
 <span class="tf">/ws</span> <span class="tk">-></span> <span class="ts">ws://realtime:8888</span>
+
+<span class="tc"># External https backend (Host/Origin rewritten to the target)</span>
+<span class="tf">mirror.example.com</span> <span class="tk">-></span> <span class="ts">https://origin.example.net</span>
+
+<span class="tc"># Permanent redirect to a new canonical domain</span>
+<span class="tf">old.example.com</span> <span class="tk">-></span> <span class="ts">redirect://new.example.com</span>
 
 <span class="tc"># Catch-all fallback</span>
 <span class="tf">default</span> <span class="tk">-></span> <span class="ts">http://localhost:8080</span></code></pre>
