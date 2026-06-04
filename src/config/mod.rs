@@ -1231,7 +1231,10 @@ hook_timeout_ms = 10
             RuleMatcher::Domain(d) if d == "bonfire.solisoft.net"
         ));
         assert_eq!(rules[0].targets.len(), 1);
-        assert_eq!(rules[0].targets[0].url.as_str(), "redirect://bonfire-app.pro");
+        assert_eq!(
+            rules[0].targets[0].url.as_str(),
+            "redirect://bonfire-app.pro"
+        );
     }
 
     #[test]

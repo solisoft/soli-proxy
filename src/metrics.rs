@@ -120,6 +120,17 @@ impl Metrics {
         }
     }
 
+    /// Clonable handle to an app's `bytes_sent` counter (creates the app
+    /// entry if needed). Used by the streaming response-body counter, which
+    /// outlives the request handler.
+    pub fn app_bytes_sent_counter(&self, app_name: &str) -> Arc<AtomicU64> {
+        let mut apps = self.app_metrics.write();
+        apps.entry(app_name.to_string())
+            .or_default()
+            .bytes_sent
+            .clone()
+    }
+
     pub fn get_app_metrics(&self, app_name: &str) -> Option<AppMetricsJson> {
         let apps = self.app_metrics.read();
         apps.get(app_name).map(|m| AppMetricsJson {

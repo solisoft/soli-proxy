@@ -8,6 +8,8 @@ use ratatui::{
 
 use std::collections::{HashMap, VecDeque};
 
+use crate::metrics::{AppMetricsJson, MetricsSnapshot};
+
 use super::{route_form::RouteForm, screens, TuiContext};
 
 /// Per-app stats combining traffic (from admin API) and system (from /proc).
@@ -66,6 +68,11 @@ pub struct TuiApp {
     route_form: Option<RouteForm>,
     pub app_stats: HashMap<String, AppStats>,
     pub app_history: HashMap<String, AppHistory>,
+    /// Global traffic snapshot fetched from the daemon's admin API.
+    /// The TUI runs in its own process, so the local metrics registry is empty.
+    remote_snapshot: Option<MetricsSnapshot>,
+    /// Tick counter driving the periodic full PID re-probe.
+    ticks: u64,
     pending_action: Option<tokio::task::JoinHandle<Result<String, String>>>,
     filtered_apps_count: usize,
     log_viewer_page: usize,
@@ -87,6 +94,8 @@ impl TuiApp {
             route_form: None,
             app_stats: HashMap::new(),
             app_history: HashMap::new(),
+            remote_snapshot: None,
+            ticks: 0,
             pending_action: None,
             filtered_apps_count: 0,
             log_viewer_page: 1,
@@ -99,6 +108,11 @@ impl TuiApp {
 
     /// Collect all per-app stats: traffic from admin API + system from /proc.
     fn collect_stats(&mut self) {
+        // Traffic counters live in the daemon process — fetch them via the
+        // admin API (best effort; zeros if the daemon is unreachable).
+        let (traffic, global) = self.fetch_daemon_metrics();
+        self.remote_snapshot = global;
+
         // Re-probe PIDs for apps that lost theirs, then collect /proc stats
         if let Some(ref mgr) = self.ctx.app_manager {
             mgr.refresh_pids();
@@ -120,8 +134,19 @@ impl TuiApp {
 
             let name = &app.config.name;
 
-            // Start with empty stats (no API calls)
-            let mut stats = AppStats::default();
+            // Start with traffic data from the daemon (if available)
+            let mut stats = traffic
+                .get(name)
+                .map(|m| AppStats {
+                    requests: m.requests,
+                    bytes_received: m.bytes_received,
+                    bytes_sent: m.bytes_sent,
+                    avg_response_time_ms: m.avg_response_time_ms,
+                    errors: m.errors,
+                    cpu_percent: None,
+                    memory_bytes: None,
+                })
+                .unwrap_or_default();
 
             // Read system metrics from /proc
             if let Some(pid) = inst.pid {
@@ -157,11 +182,73 @@ impl TuiApp {
         }
     }
 
+    /// Fetch per-app and global traffic metrics from the daemon's admin API.
+    /// Best effort: returns empty/None when the admin API is disabled or
+    /// unreachable (short timeout so the UI never stalls noticeably).
+    fn fetch_daemon_metrics(&self) -> (HashMap<String, AppMetricsJson>, Option<MetricsSnapshot>) {
+        let cfg = self.ctx.config_manager.get_config();
+        if !cfg.admin.enabled.unwrap_or(true) {
+            return (HashMap::new(), None);
+        }
+
+        // Convert "0.0.0.0:9090" to "127.0.0.1:9090" for local connections
+        let admin_addr = cfg
+            .admin
+            .bind
+            .replace("0.0.0.0:", "127.0.0.1:")
+            .replace("[::]:", "127.0.0.1:");
+        let apps_url = format!("http://{}/api/v1/app-metrics", admin_addr);
+        let global_url = format!("http://{}/api/v1/metrics", admin_addr);
+        let api_key = cfg.admin.api_key.clone();
+
+        self.ctx.runtime.block_on(async {
+            let Ok(client) = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_millis(500))
+                .build()
+            else {
+                return (HashMap::new(), None);
+            };
+            let with_key = |mut req: reqwest::RequestBuilder| {
+                if let Some(ref key) = api_key {
+                    req = req.header("X-Api-Key", key);
+                }
+                req
+            };
+
+            // Admin API wraps JSON responses in {"ok": true, "data": ...}
+            #[derive(serde::Deserialize)]
+            struct Envelope {
+                data: HashMap<String, AppMetricsJson>,
+            }
+
+            let (apps, global) = tokio::join!(
+                async {
+                    let resp = with_key(client.get(&apps_url)).send().await.ok()?;
+                    resp.json::<Envelope>().await.ok().map(|e| e.data)
+                },
+                async {
+                    let resp = with_key(client.get(&global_url)).send().await.ok()?;
+                    let text = resp.text().await.ok()?;
+                    Some(parse_prometheus_snapshot(&text))
+                }
+            );
+            (apps.unwrap_or_default(), global)
+        })
+    }
+
     /// Called on each tick (auto-refresh).
     pub fn on_tick(&mut self) {
-        // Reload app state from disk to see deploys that happened via API
+        self.ticks += 1;
         if let Some(ref mgr) = self.ctx.app_manager {
+            // Reload app state from disk to see deploys that happened via API
             mgr.load_app_state();
+            // `refresh_pids` (in collect_stats) only validates that /proc/<pid>
+            // still exists, which a recycled PID passes. Periodically re-probe
+            // every port so displayed PIDs are re-verified against the actual
+            // listener.
+            if self.ticks.is_multiple_of(15) {
+                mgr.probe_running_apps();
+            }
         }
         self.collect_stats();
         self.check_pending_action();
@@ -846,7 +933,9 @@ impl TuiApp {
 
     fn render_main(&mut self, f: &mut Frame, area: Rect) {
         match self.current_screen {
-            Screen::Dashboard => screens::dashboard::render(f, area, &self.ctx),
+            Screen::Dashboard => {
+                screens::dashboard::render(f, area, &self.ctx, self.remote_snapshot.as_ref())
+            }
             Screen::Routes => {
                 screens::routes::render(f, area, &self.ctx, self.selected_index, &self.search_query)
             }
@@ -1361,6 +1450,62 @@ impl TuiApp {
     }
 }
 
+/// Parse the daemon's Prometheus text exposition into a `MetricsSnapshot`.
+fn parse_prometheus_snapshot(text: &str) -> MetricsSnapshot {
+    let mut snap = MetricsSnapshot {
+        requests_total: 0,
+        requests_in_flight: 0,
+        bytes_received: 0,
+        bytes_sent: 0,
+        errors_total: 0,
+        tls_connections: 0,
+        avg_response_time_ms: 0.0,
+        status_2xx: 0,
+        status_3xx: 0,
+        status_4xx: 0,
+        status_5xx: 0,
+    };
+
+    for line in text.lines() {
+        if line.starts_with('#') {
+            continue;
+        }
+        let Some((name, value)) = line.rsplit_once(' ') else {
+            continue;
+        };
+        let Ok(value) = value.parse::<f64>() else {
+            continue;
+        };
+
+        match name {
+            "proxy_requests_total" => snap.requests_total = value as u64,
+            "proxy_requests_in_flight" => snap.requests_in_flight = value as usize,
+            "proxy_bytes_received" => snap.bytes_received = value as u64,
+            "proxy_bytes_sent" => snap.bytes_sent = value as u64,
+            "proxy_response_time_seconds" => snap.avg_response_time_ms = value * 1000.0,
+            "proxy_tls_connections_total" => snap.tls_connections = value as u64,
+            "proxy_errors_total" => snap.errors_total = value as u64,
+            _ => {
+                // proxy_response_status_codes_total{code="200"} 432
+                if let Some(code) = name
+                    .strip_prefix("proxy_response_status_codes_total{code=\"")
+                    .and_then(|s| s.strip_suffix("\"}"))
+                {
+                    match code.chars().next() {
+                        Some('2') => snap.status_2xx += value as u64,
+                        Some('3') => snap.status_3xx += value as u64,
+                        Some('4') => snap.status_4xx += value as u64,
+                        Some('5') => snap.status_5xx += value as u64,
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    snap
+}
+
 fn with_cursor(text: &str, cursor_pos: usize) -> String {
     let chars: Vec<char> = text.chars().collect();
     let pos = cursor_pos.min(chars.len());
@@ -1375,4 +1520,48 @@ fn with_cursor(text: &str, cursor_pos: usize) -> String {
         display.push('|');
     }
     display
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_prometheus_snapshot_extracts_all_fields() {
+        let text = "\
+# HELP proxy_requests_total Total number of HTTP requests
+# TYPE proxy_requests_total counter
+proxy_requests_total 446
+proxy_requests_in_flight 34
+proxy_bytes_received 1024
+proxy_bytes_sent 2048
+proxy_response_time_seconds 0.012381441365470853
+proxy_tls_connections_total 1345
+proxy_errors_total 34
+proxy_response_status_codes_total{code=\"200\"} 432
+proxy_response_status_codes_total{code=\"301\"} 5
+proxy_response_status_codes_total{code=\"421\"} 2
+proxy_response_status_codes_total{code=\"500\"} 6
+proxy_response_status_codes_total{code=\"502\"} 6
+";
+        let snap = parse_prometheus_snapshot(text);
+        assert_eq!(snap.requests_total, 446);
+        assert_eq!(snap.requests_in_flight, 34);
+        assert_eq!(snap.bytes_received, 1024);
+        assert_eq!(snap.bytes_sent, 2048);
+        assert!((snap.avg_response_time_ms - 12.381441365470853).abs() < 1e-9);
+        assert_eq!(snap.tls_connections, 1345);
+        assert_eq!(snap.errors_total, 34);
+        assert_eq!(snap.status_2xx, 432);
+        assert_eq!(snap.status_3xx, 5);
+        assert_eq!(snap.status_4xx, 2);
+        assert_eq!(snap.status_5xx, 12);
+    }
+
+    #[test]
+    fn parse_prometheus_snapshot_handles_empty_input() {
+        let snap = parse_prometheus_snapshot("");
+        assert_eq!(snap.requests_total, 0);
+        assert_eq!(snap.avg_response_time_ms, 0.0);
+    }
 }

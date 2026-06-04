@@ -6,9 +6,15 @@ use ratatui::{
     Frame,
 };
 
+use crate::metrics::MetricsSnapshot;
 use crate::tui::TuiContext;
 
-pub fn render(f: &mut Frame, area: Rect, ctx: &TuiContext) {
+/// `remote_snap` carries traffic counters fetched from the daemon's admin
+/// API; the TUI's own metrics registry is empty (separate process), so it
+/// is only used as a fallback when the daemon is unreachable.
+pub fn render(f: &mut Frame, area: Rect, ctx: &TuiContext, remote_snap: Option<&MetricsSnapshot>) {
+    let local_snap = ctx.metrics.snapshot();
+    let snap = remote_snap.unwrap_or(&local_snap);
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -25,7 +31,7 @@ pub fn render(f: &mut Frame, area: Rect, ctx: &TuiContext) {
         .split(rows[0]);
 
     render_server_info(f, top_cols[0], ctx);
-    render_traffic(f, top_cols[1], ctx);
+    render_traffic(f, top_cols[1], snap);
 
     // Row 2: Resources | Status Codes
     let mid_cols = Layout::default()
@@ -34,7 +40,7 @@ pub fn render(f: &mut Frame, area: Rect, ctx: &TuiContext) {
         .split(rows[1]);
 
     render_resources(f, mid_cols[0], ctx);
-    render_status_codes(f, mid_cols[1], ctx);
+    render_status_codes(f, mid_cols[1], snap);
 
     // Row 3: Apps quick view
     render_apps_overview(f, rows[2], ctx);
@@ -87,9 +93,7 @@ fn render_server_info(f: &mut Frame, area: Rect, ctx: &TuiContext) {
     f.render_widget(table, inner);
 }
 
-fn render_traffic(f: &mut Frame, area: Rect, ctx: &TuiContext) {
-    let snap = ctx.metrics.snapshot();
-
+fn render_traffic(f: &mut Frame, area: Rect, snap: &MetricsSnapshot) {
     let block = Block::default()
         .title(" Traffic ")
         .borders(Borders::ALL)
@@ -228,9 +232,7 @@ fn render_resources(f: &mut Frame, area: Rect, ctx: &TuiContext) {
     f.render_widget(table, inner);
 }
 
-fn render_status_codes(f: &mut Frame, area: Rect, ctx: &TuiContext) {
-    let snap = ctx.metrics.snapshot();
-
+fn render_status_codes(f: &mut Frame, area: Rect, snap: &MetricsSnapshot) {
     let block = Block::default()
         .title(" HTTP Status ")
         .borders(Borders::ALL)

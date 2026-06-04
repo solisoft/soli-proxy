@@ -24,7 +24,7 @@ use hyper_util::rt::TokioTimer;
 use socket2::{Domain, Protocol, Socket, Type};
 use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroU32;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
@@ -47,6 +47,62 @@ pub type IpRateLimiter = GovernorRateLimiter<
 use crate::scripting::{LuaEngine, LuaRequest, RequestHookResult, RouteHookResult};
 
 type BoxBody = http_body_util::combinators::BoxBody<Bytes, std::convert::Infallible>;
+
+/// Body wrapper that adds each streamed data frame's length to a set of
+/// byte counters (global + per-app `bytes_sent`). Counting happens as the
+/// response streams to the client, after the request handler has already
+/// recorded the rest of its metrics.
+struct CountingBody {
+    inner: BoxBody,
+    counters: Vec<Arc<AtomicU64>>,
+}
+
+impl CountingBody {
+    fn new(inner: BoxBody, counters: Vec<Arc<AtomicU64>>) -> Self {
+        Self { inner, counters }
+    }
+}
+
+impl hyper::body::Body for CountingBody {
+    type Data = Bytes;
+    type Error = std::convert::Infallible;
+
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<hyper::body::Frame<Bytes>, Self::Error>>> {
+        let this = self.get_mut();
+        let res = std::pin::Pin::new(&mut this.inner).poll_frame(cx);
+        if let std::task::Poll::Ready(Some(Ok(frame))) = &res {
+            if let Some(data) = frame.data_ref() {
+                let n = data.len() as u64;
+                for counter in &this.counters {
+                    counter.fetch_add(n, Ordering::Relaxed);
+                }
+            }
+        }
+        res
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+/// Request body size as declared by the client. Chunked uploads carry no
+/// Content-Length and count as 0 — the body is streamed straight to the
+/// backend without inspection.
+fn request_content_length(req: &Request<Incoming>) -> u64 {
+    req.headers()
+        .get(hyper::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0)
+}
 
 /// Object-safe alias for a bidirectional byte stream — lets the WebSocket
 /// backend path treat plain-TCP and TLS connections uniformly.
@@ -106,25 +162,15 @@ impl LoadBalancerState {
     }
 }
 
-/// Helper to record app-specific metrics
-async fn record_app_metrics(
-    metrics: &SharedMetrics,
+/// Resolve which managed app served a request, from the target URL's port.
+async fn app_name_for_target(
     app_manager: &Option<Arc<AppManager>>,
     target_url: &str,
-    bytes_in: u64,
-    bytes_out: u64,
-    status: u16,
-    duration: Duration,
-) {
-    if let Some(ref manager) = app_manager {
-        if let Ok(url) = url::Url::parse(target_url) {
-            if let Some(port) = url.port() {
-                if let Some(app_name) = manager.get_app_name(port).await {
-                    metrics.record_app_request(&app_name, bytes_in, bytes_out, status, duration);
-                }
-            }
-        }
-    }
+) -> Option<String> {
+    let manager = app_manager.as_ref()?;
+    let url = url::Url::parse(target_url).ok()?;
+    let port = url.port()?;
+    manager.get_app_name(port).await
 }
 
 static X_FORWARDED_PROTO_HTTPS: std::sync::LazyLock<HeaderValue> =
@@ -270,6 +316,7 @@ pub(crate) async fn forward_ws_half<R, W>(
     idle_timeout: Duration,
     deadline: std::time::Instant,
     max_bytes: u64,
+    byte_counter: Option<Arc<AtomicU64>>,
 ) -> tokio::io::Result<()>
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -297,6 +344,9 @@ where
             return Ok(());
         }
         total = new_total;
+        if let Some(ref counter) = byte_counter {
+            counter.fetch_add(n as u64, Ordering::Relaxed);
+        }
         writer.write_all(&buf[..n]).await?;
     }
 }
@@ -1312,9 +1362,11 @@ async fn handle_request_inner(
     // browser) instead of returning a bounded 504.
     let timeout_sec = Duration::from_secs(config.limits.request_timeout.unwrap_or(60));
 
-    // Capture before `req` is moved into the handler, for the timeout log.
+    // Capture before `req` is moved into the handler, for the timeout log
+    // and byte accounting.
     let req_method = req.method().clone();
     let req_path = req.uri().path().to_string();
+    let req_bytes_in = request_content_length(&req);
 
     let handle_fut = handle_regular_request(
         req,
@@ -1387,11 +1439,24 @@ async fn handle_request_inner(
                 }
             }
 
-            metrics.record_request(0, 0, status, duration);
-            record_app_metrics(&metrics, &app_manager, &_target_url, 0, 0, status, duration).await;
+            // Record now with the request size; response bytes stream after
+            // this point, so they are counted by the CountingBody wrapper as
+            // frames flow to the client.
+            metrics.record_request(req_bytes_in, 0, status, duration);
+            let app_name = app_name_for_target(&app_manager, &_target_url).await;
+            if let Some(ref name) = app_name {
+                metrics.record_app_request(name, req_bytes_in, 0, status, duration);
+            }
+
+            let mut counters = vec![metrics.bytes_sent.clone()];
+            if let Some(ref name) = app_name {
+                counters.push(metrics.app_bytes_sent_counter(name));
+            }
+
             let (parts, body) = response.into_parts();
             let boxed = body.map_err(|_| unreachable!()).boxed();
-            Ok(Response::from_parts(parts, boxed))
+            let counted = BodyExt::boxed(CountingBody::new(boxed, counters));
+            Ok(Response::from_parts(parts, counted))
         }
         Err(e) => {
             metrics.inc_errors();
@@ -1785,6 +1850,11 @@ async fn handle_websocket_request(
         .unwrap_or(1_073_741_824);
     let ws_deadline = std::time::Instant::now() + ws_lifetime;
 
+    // Byte counters for the copy task: backend→client counts as sent,
+    // client→backend as received.
+    let ws_bytes_sent = metrics.bytes_sent.clone();
+    let ws_bytes_received = metrics.bytes_received.clone();
+
     // Spawn the bidirectional copy task
     tokio::spawn(async move {
         match client_upgrade.await {
@@ -1809,8 +1879,8 @@ async fn handle_websocket_request(
                 // error), the other half is dropped — a half-closed forwarder
                 // is useless and would otherwise hold both ends open.
                 tokio::select! {
-                    _ = forward_ws_half(br, cw, ws_idle, ws_deadline, ws_max_bytes) => {},
-                    _ = forward_ws_half(cr, bw, ws_idle, ws_deadline, ws_max_bytes) => {},
+                    _ = forward_ws_half(br, cw, ws_idle, ws_deadline, ws_max_bytes, Some(ws_bytes_sent)) => {},
+                    _ = forward_ws_half(cr, bw, ws_idle, ws_deadline, ws_max_bytes, Some(ws_bytes_received)) => {},
                 }
             }
             Err(e) => {
@@ -2838,8 +2908,12 @@ mod tests {
             url: url::Url::parse("redirect://bonfire-app.pro").unwrap(),
             weight: 100,
         };
-        let resolved =
-            resolve_target_url(&target, "/some/path", Some("q=1"), &UrlResolution::AppendPath);
+        let resolved = resolve_target_url(
+            &target,
+            "/some/path",
+            Some("q=1"),
+            &UrlResolution::AppendPath,
+        );
         assert_eq!(resolved, "redirect://bonfire-app.pro/some/path?q=1");
     }
 
