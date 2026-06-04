@@ -1461,7 +1461,7 @@ fn handle_acme_challenge(
 
 #[allow(clippy::too_many_arguments)]
 async fn handle_websocket_request(
-    req: Request<Incoming>,
+    mut req: Request<Incoming>,
     _client: ProxyClient,
     config: &crate::config::Config,
     metrics: &SharedMetrics,
@@ -1557,6 +1557,14 @@ async fn handle_websocket_request(
     } else {
         client_host.clone()
     };
+
+    // With Host rewritten to the backend's name, a same-origin upgrade's
+    // `Origin: https://<client host>` trips origin checks (Phoenix
+    // check_origin); align it. Cross-site Origins pass through untouched.
+    if backend_tls {
+        let backend_origin = format!("https://{}", backend_host);
+        crate::proxy_headers::rewrite_same_origin(req.headers_mut(), &client_host, &backend_origin);
+    }
 
     let extra_headers = build_ws_extra_headers(req.headers(), peer_addr, is_tls, &client_host);
 
@@ -1992,6 +2000,18 @@ async fn handle_regular_request(
                 if let Some(authority) = parts.uri.authority() {
                     if let Ok(v) = HeaderValue::from_str(authority.as_str()) {
                         parts.headers.insert(hyper::header::HOST, v);
+                    }
+                    // With Host rewritten, a same-origin `Origin: https://<client
+                    // host>` no longer matches the request authority and trips
+                    // CSRF origin checks (Phoenix/Bonfire). Align it; cross-site
+                    // Origins pass through untouched.
+                    if let Some(client_host) = &host_header {
+                        let backend_origin = format!("https://{}", authority);
+                        crate::proxy_headers::rewrite_same_origin(
+                            &mut parts.headers,
+                            client_host,
+                            &backend_origin,
+                        );
                     }
                 }
             }
