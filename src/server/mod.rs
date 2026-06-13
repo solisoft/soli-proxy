@@ -93,6 +93,182 @@ impl hyper::body::Body for CountingBody {
     }
 }
 
+/// Longest byte token the streaming HTML rewriter must be able to test at a
+/// chunk boundary (`action="/` is 9 bytes; `</script` is 8). We hold the last
+/// `REWRITE_MAX_TOKEN - 1` bytes of each frame back as carry-over so a token
+/// split across two upstream chunks is still recognised on the next frame.
+const REWRITE_MAX_TOKEN: usize = 9;
+
+/// Case-insensitive ASCII prefix match.
+fn ci_starts_with(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.len() >= needle.len()
+        && haystack[..needle.len()]
+            .iter()
+            .zip(needle)
+            .all(|(a, b)| a.eq_ignore_ascii_case(b))
+}
+
+/// Streaming body that rewrites root-relative `href`/`src`/`action` URLs to
+/// include a path prefix (`href="/x"` -> `href="/solidb/x"`) as bytes flow
+/// through, instead of buffering the whole response. This restores progressive
+/// delivery / time-to-first-byte for HTML served under a path-prefix mount:
+/// the previous `body.collect().await` gated the first byte to the client on
+/// the backend's *entire* response completing, turning a progressively-rendered
+/// page into a multi-second "blank then dump" stall.
+///
+/// Rewriting is suppressed inside `<script>...</script>` element bodies so
+/// inline JavaScript (and any CSP nonce/hash computed over it) is never mutated;
+/// attributes in the `<script ...>` start tag itself (e.g. an external `src`)
+/// are still rewritten so prefix-mounted apps load their scripts correctly.
+struct RewritingBody {
+    inner: BoxBody,
+    repl_href: Vec<u8>,
+    repl_src: Vec<u8>,
+    repl_action: Vec<u8>,
+    carry: Vec<u8>,
+    /// Inside a `<script ...>` start tag (before its closing `>`).
+    pending_script_open: bool,
+    /// Inside a `<script>...</script>` body — rewriting suppressed here.
+    in_script_body: bool,
+    done: bool,
+}
+
+impl RewritingBody {
+    fn new(inner: BoxBody, prefix: &str) -> Self {
+        let p = prefix.as_bytes();
+        let build = |attr: &[u8]| {
+            let mut v = attr.to_vec();
+            v.extend_from_slice(p);
+            v.push(b'/');
+            v
+        };
+        Self {
+            inner,
+            repl_href: build(b"href=\""),
+            repl_src: build(b"src=\""),
+            repl_action: build(b"action=\""),
+            carry: Vec::new(),
+            pending_script_open: false,
+            in_script_body: false,
+            done: false,
+        }
+    }
+
+    /// If `s` starts with a rewritable attribute prefix, return the consumed
+    /// length and its replacement bytes.
+    fn match_needle(&self, s: &[u8]) -> Option<(usize, &[u8])> {
+        if s.starts_with(b"action=\"/") {
+            Some((9, &self.repl_action))
+        } else if s.starts_with(b"href=\"/") {
+            Some((7, &self.repl_href))
+        } else if s.starts_with(b"src=\"/") {
+            Some((6, &self.repl_src))
+        } else {
+            None
+        }
+    }
+
+    /// Rewrite `input` (prepended with any carry-over from the previous frame).
+    /// When `flush` is false, the trailing `REWRITE_MAX_TOKEN - 1` bytes are
+    /// retained as carry so a token straddling the next frame is still matched;
+    /// when true (end of stream) everything is emitted.
+    fn process(&mut self, input: &[u8], flush: bool) -> Vec<u8> {
+        let mut combined = std::mem::take(&mut self.carry);
+        combined.extend_from_slice(input);
+        let boundary = if flush {
+            combined.len()
+        } else {
+            combined.len().saturating_sub(REWRITE_MAX_TOKEN - 1)
+        };
+        let mut out: Vec<u8> = Vec::with_capacity(combined.len() + 16);
+        let mut i = 0;
+        while i < boundary {
+            let rest = &combined[i..];
+            if self.in_script_body {
+                if ci_starts_with(rest, b"</script") {
+                    self.in_script_body = false;
+                    out.extend_from_slice(&combined[i..i + 8]);
+                    i += 8;
+                } else {
+                    out.push(combined[i]);
+                    i += 1;
+                }
+                continue;
+            }
+            if self.pending_script_open {
+                if combined[i] == b'>' {
+                    self.pending_script_open = false;
+                    self.in_script_body = true;
+                    out.push(b'>');
+                    i += 1;
+                } else if let Some((nlen, repl)) = self.match_needle(rest) {
+                    out.extend_from_slice(repl);
+                    i += nlen;
+                } else {
+                    out.push(combined[i]);
+                    i += 1;
+                }
+                continue;
+            }
+            if combined[i] == b'<' && ci_starts_with(rest, b"<script") {
+                self.pending_script_open = true;
+                out.extend_from_slice(&combined[i..i + 7]);
+                i += 7;
+            } else if let Some((nlen, repl)) = self.match_needle(rest) {
+                out.extend_from_slice(repl);
+                i += nlen;
+            } else {
+                out.push(combined[i]);
+                i += 1;
+            }
+        }
+        self.carry = combined[i..].to_vec();
+        out
+    }
+}
+
+impl hyper::body::Body for RewritingBody {
+    type Data = Bytes;
+    type Error = std::convert::Infallible;
+
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<hyper::body::Frame<Bytes>, Self::Error>>> {
+        use std::task::Poll;
+        let this = self.get_mut();
+        loop {
+            if this.done {
+                return Poll::Ready(None);
+            }
+            match std::pin::Pin::new(&mut this.inner).poll_frame(cx) {
+                Poll::Ready(Some(Ok(frame))) => match frame.into_data() {
+                    Ok(data) => {
+                        let out = this.process(&data, false);
+                        if out.is_empty() {
+                            // Everything held back as carry — poll for more.
+                            continue;
+                        }
+                        return Poll::Ready(Some(Ok(hyper::body::Frame::data(Bytes::from(out)))));
+                    }
+                    // Non-data frame (e.g. trailers): pass through untouched.
+                    Err(non_data) => return Poll::Ready(Some(Ok(non_data))),
+                },
+                Poll::Ready(Some(Err(e))) => return Poll::Ready(Some(Err(e))),
+                Poll::Ready(None) => {
+                    this.done = true;
+                    let out = this.process(&[], true);
+                    if out.is_empty() {
+                        return Poll::Ready(None);
+                    }
+                    return Poll::Ready(Some(Ok(hyper::body::Frame::data(Bytes::from(out)))));
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+}
+
 /// Request body size as declared by the client. Chunked uploads carry no
 /// Content-Length and count as 0 — the body is streamed straight to the
 /// backend without inspection.
@@ -1543,8 +1719,14 @@ async fn handle_websocket_request(
         .or_else(|| req.uri().host().map(|h| h.to_string()));
 
     let route = find_matching_rule(&req, &config.rules);
+    // Whole-domain rules (AppendPath) defer to AppManager so blue-green
+    // deployment keeps working; explicit DomainPath carve-outs (StripPrefix,
+    // e.g. "host/solidb/* -> ...") are more specific than the app and win.
     let override_with_app = match (&route, &host, &app_manager) {
-        (Some(matched), Some(h), Some(manager)) if matched.from_domain_rule => {
+        (Some(matched), Some(h), Some(manager))
+            if matched.from_domain_rule
+                && matches!(matched.resolution, UrlResolution::AppendPath) =>
+        {
             manager.resolve_app_target(h).await.is_some()
         }
         _ => false,
@@ -1767,11 +1949,18 @@ async fn handle_websocket_request(
         return Ok(Response::builder().status(502).body(body).unwrap());
     }
 
-    // Read the backend's 101 response
+    // Read the backend's 101 response. Bounded by a timeout so a backend that
+    // accepts the socket (connect already succeeded above) but never sends the
+    // upgrade response cannot hang the client indefinitely.
     let mut response_buf = vec![0u8; 4096];
-    let n = match tokio::io::AsyncReadExt::read(&mut backend_read, &mut response_buf).await {
-        Ok(n) if n > 0 => n,
-        _ => {
+    let n = match timeout(
+        Duration::from_secs(5),
+        tokio::io::AsyncReadExt::read(&mut backend_read, &mut response_buf),
+    )
+    .await
+    {
+        Ok(Ok(n)) if n > 0 => n,
+        Ok(_) => {
             tracing::error!("No response from backend for WebSocket upgrade");
             metrics.inc_errors();
             let body = http_body_util::Full::new(Bytes::from(
@@ -1779,6 +1968,14 @@ async fn handle_websocket_request(
             ))
             .boxed();
             return Ok(Response::builder().status(502).body(body).unwrap());
+        }
+        Err(_) => {
+            tracing::error!("Backend timed out sending WebSocket upgrade response");
+            metrics.inc_errors();
+            let body =
+                http_body_util::Full::new(Bytes::from("Backend timed out on WebSocket upgrade"))
+                    .boxed();
+            return Ok(Response::builder().status(504).body(body).unwrap());
         }
     };
 
@@ -1938,8 +2135,14 @@ async fn handle_regular_request(
 
     // When a static domain rule matches but AppManager manages this domain,
     // prefer dynamic app routing so blue-green deployment works correctly.
+    // Whole-domain rules (AppendPath) defer to AppManager so blue-green
+    // deployment keeps working; explicit DomainPath carve-outs (StripPrefix,
+    // e.g. "host/solidb/* -> ...") are more specific than the app and win.
     let override_with_app = match (&route, &host, &app_manager) {
-        (Some(matched), Some(h), Some(manager)) if matched.from_domain_rule => {
+        (Some(matched), Some(h), Some(manager))
+            if matched.from_domain_rule
+                && matches!(matched.resolution, UrlResolution::AppendPath) =>
+        {
             manager.resolve_app_target(h).await.is_some()
         }
         _ => false,
@@ -2311,6 +2514,37 @@ async fn handle_regular_request(
 
                     if is_html && rewritable_encoding {
                         if let Some(prefix) = matched_prefix {
+                            // Uncompressed HTML is rewritten on the fly so the
+                            // client receives bytes as the backend produces them.
+                            // Only compressed bodies still need full buffering
+                            // (to decode before rewriting); flate2 has no
+                            // incremental decoder wired in here. The buffered
+                            // path remains bounded by the request timeout.
+                            let is_compressed = response
+                                .headers()
+                                .get("content-encoding")
+                                .and_then(|v| v.to_str().ok())
+                                .map(|enc| {
+                                    let e = enc.to_ascii_lowercase();
+                                    e.contains("gzip") || e.contains("deflate")
+                                })
+                                .unwrap_or(false);
+
+                            if !is_compressed {
+                                let (mut parts, body) = response.into_parts();
+                                // Rewriting changes the body length, so the old
+                                // Content-Length no longer applies — drop it and
+                                // let hyper stream the response chunked.
+                                parts.headers.remove("content-length");
+                                let inner = body.map_err(|_| unreachable!()).boxed();
+                                let rewritten = RewritingBody::new(inner, &prefix).boxed();
+                                return Ok((
+                                    Response::from_parts(parts, rewritten),
+                                    target_url,
+                                    route_scripts.clone(),
+                                ));
+                            }
+
                             let (parts, body) = response.into_parts();
                             let body_bytes = body
                                 .collect()
@@ -2891,6 +3125,64 @@ fn find_target(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Feed `chunks` through a fresh `RewritingBody::process` (mimicking how
+    /// frames arrive), then flush, and return the concatenated rewritten output.
+    fn rewrite_chunks(prefix: &str, chunks: &[&str]) -> String {
+        let inner = http_body_util::Empty::<Bytes>::new().boxed();
+        let mut rb = RewritingBody::new(inner, prefix);
+        let mut out = Vec::new();
+        for c in chunks {
+            out.extend(rb.process(c.as_bytes(), false));
+        }
+        out.extend(rb.process(&[], true));
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn rewrites_root_relative_attrs() {
+        let html = r#"<a href="/x"><img src="/y"><form action="/z">"#;
+        assert_eq!(
+            rewrite_chunks("/solidb", &[html]),
+            r#"<a href="/solidb/x"><img src="/solidb/y"><form action="/solidb/z">"#
+        );
+    }
+
+    #[test]
+    fn rewrites_across_chunk_boundary() {
+        // The `href="/` token is split between two upstream frames.
+        let out = rewrite_chunks("/solidb", &["<a hr", "ef=\"/x\">"]);
+        assert_eq!(out, r#"<a href="/solidb/x">"#);
+    }
+
+    #[test]
+    fn leaves_inline_script_body_untouched_but_rewrites_start_tag() {
+        let html = r#"<script src="/app.js">var u = "/api"; el.innerHTML = '<a href="/no">';</script><a href="/yes">"#;
+        // The external script's start-tag `src` is rewritten; literals inside the
+        // inline JS body are left alone; markup after `</script>` resumes rewriting.
+        assert_eq!(
+            rewrite_chunks("/solidb", &[html]),
+            r#"<script src="/solidb/app.js">var u = "/api"; el.innerHTML = '<a href="/no">';</script><a href="/solidb/yes">"#
+        );
+    }
+
+    #[test]
+    fn does_not_rewrite_absolute_or_relative_urls() {
+        let html = r##"<a href="https://x/y"><a href="rel"><a href="#frag">"##;
+        assert_eq!(rewrite_chunks("/p", &[html]), html);
+    }
+
+    #[test]
+    fn rewrites_single_byte_chunks() {
+        // Pathological: every byte arrives in its own frame.
+        let html = r#"<link href="/a.css">"#;
+        let chunks: Vec<String> = html.chars().map(|c| c.to_string()).collect();
+        let refs: Vec<&str> = chunks.iter().map(|s| s.as_str()).collect();
+        assert_eq!(
+            rewrite_chunks("/solidb", &refs),
+            r#"<link href="/solidb/a.css">"#
+        );
+    }
 
     #[test]
     fn redirect_response_carries_path_and_query() {
