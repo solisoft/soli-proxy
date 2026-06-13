@@ -108,20 +108,17 @@ fn ci_starts_with(haystack: &[u8], needle: &[u8]) -> bool {
             .all(|(a, b)| a.eq_ignore_ascii_case(b))
 }
 
-/// Streaming body that rewrites root-relative `href`/`src`/`action` URLs to
-/// include a path prefix (`href="/x"` -> `href="/solidb/x"`) as bytes flow
-/// through, instead of buffering the whole response. This restores progressive
-/// delivery / time-to-first-byte for HTML served under a path-prefix mount:
-/// the previous `body.collect().await` gated the first byte to the client on
-/// the backend's *entire* response completing, turning a progressively-rendered
-/// page into a multi-second "blank then dump" stall.
+/// Stateful HTML URL rewriter shared by the streaming bodies below. It rewrites
+/// root-relative `href`/`src`/`action` URLs to include a path prefix
+/// (`href="/x"` -> `href="/solidb/x"`) incrementally: each `process` call may
+/// hold back a small carry-over tail so a token split across two calls is still
+/// matched on the next call.
 ///
 /// Rewriting is suppressed inside `<script>...</script>` element bodies so
 /// inline JavaScript (and any CSP nonce/hash computed over it) is never mutated;
 /// attributes in the `<script ...>` start tag itself (e.g. an external `src`)
 /// are still rewritten so prefix-mounted apps load their scripts correctly.
-struct RewritingBody {
-    inner: BoxBody,
+struct HtmlRewriter {
     repl_href: Vec<u8>,
     repl_src: Vec<u8>,
     repl_action: Vec<u8>,
@@ -130,11 +127,10 @@ struct RewritingBody {
     pending_script_open: bool,
     /// Inside a `<script>...</script>` body — rewriting suppressed here.
     in_script_body: bool,
-    done: bool,
 }
 
-impl RewritingBody {
-    fn new(inner: BoxBody, prefix: &str) -> Self {
+impl HtmlRewriter {
+    fn new(prefix: &str) -> Self {
         let p = prefix.as_bytes();
         let build = |attr: &[u8]| {
             let mut v = attr.to_vec();
@@ -143,14 +139,12 @@ impl RewritingBody {
             v
         };
         Self {
-            inner,
             repl_href: build(b"href=\""),
             repl_src: build(b"src=\""),
             repl_action: build(b"action=\""),
             carry: Vec::new(),
             pending_script_open: false,
             in_script_body: false,
-            done: false,
         }
     }
 
@@ -168,9 +162,9 @@ impl RewritingBody {
         }
     }
 
-    /// Rewrite `input` (prepended with any carry-over from the previous frame).
+    /// Rewrite `input` (prepended with any carry-over from the previous call).
     /// When `flush` is false, the trailing `REWRITE_MAX_TOKEN - 1` bytes are
-    /// retained as carry so a token straddling the next frame is still matched;
+    /// retained as carry so a token straddling the next call is still matched;
     /// when true (end of stream) everything is emitted.
     fn process(&mut self, input: &[u8], flush: bool) -> Vec<u8> {
         let mut combined = std::mem::take(&mut self.carry);
@@ -227,6 +221,28 @@ impl RewritingBody {
     }
 }
 
+/// Streaming body that rewrites an *uncompressed* HTML response (see
+/// `HtmlRewriter`) as bytes flow through, instead of buffering the whole thing.
+/// This restores progressive delivery / time-to-first-byte for HTML served
+/// under a path-prefix mount: the previous `body.collect().await` gated the
+/// first byte to the client on the backend's *entire* response completing,
+/// turning a progressively-rendered page into a "blank then dump" stall.
+struct RewritingBody {
+    inner: BoxBody,
+    rewriter: HtmlRewriter,
+    done: bool,
+}
+
+impl RewritingBody {
+    fn new(inner: BoxBody, prefix: &str) -> Self {
+        Self {
+            inner,
+            rewriter: HtmlRewriter::new(prefix),
+            done: false,
+        }
+    }
+}
+
 impl hyper::body::Body for RewritingBody {
     type Data = Bytes;
     type Error = std::convert::Infallible;
@@ -244,7 +260,7 @@ impl hyper::body::Body for RewritingBody {
             match std::pin::Pin::new(&mut this.inner).poll_frame(cx) {
                 Poll::Ready(Some(Ok(frame))) => match frame.into_data() {
                     Ok(data) => {
-                        let out = this.process(&data, false);
+                        let out = this.rewriter.process(&data, false);
                         if out.is_empty() {
                             // Everything held back as carry — poll for more.
                             continue;
@@ -257,7 +273,212 @@ impl hyper::body::Body for RewritingBody {
                 Poll::Ready(Some(Err(e))) => return Poll::Ready(Some(Err(e))),
                 Poll::Ready(None) => {
                     this.done = true;
-                    let out = this.process(&[], true);
+                    let out = this.rewriter.process(&[], true);
+                    if out.is_empty() {
+                        return Poll::Ready(None);
+                    }
+                    return Poll::Ready(Some(Ok(hyper::body::Frame::data(Bytes::from(out)))));
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+}
+
+/// Streaming body that incrementally gzip-decodes the upstream response and
+/// rewrites it (see `HtmlRewriter`) as it flows. This lets gzip-compressed HTML
+/// served under a path-prefix mount stream to the client instead of being
+/// buffered and decoded in one shot. The body is emitted decoded (identity);
+/// the caller drops the `content-encoding`/`content-length` headers to match.
+/// Result of parsing a gzip member header.
+enum GzHeader {
+    /// Not enough bytes yet to determine the full header length.
+    NeedMore,
+    /// Not a valid gzip header (bad magic / method).
+    Invalid,
+    /// Header occupies this many leading bytes; the deflate stream follows.
+    Len(usize),
+}
+
+/// Parse a gzip member header (RFC 1952) and return its length. The fixed part
+/// is 10 bytes; optional FEXTRA/FNAME/FCOMMENT/FHCRC fields (signalled by the
+/// FLG byte) follow and are skipped. Server-generated gzip almost always has
+/// FLG = 0 (just the 10-byte header), but we handle the optional fields so a
+/// header split across read frames is parsed correctly.
+fn parse_gzip_header(b: &[u8]) -> GzHeader {
+    if b.len() < 10 {
+        return GzHeader::NeedMore;
+    }
+    if b[0] != 0x1f || b[1] != 0x8b || b[2] != 8 {
+        return GzHeader::Invalid;
+    }
+    let flg = b[3];
+    let mut pos = 10;
+    if flg & 0x04 != 0 {
+        // FEXTRA: 2-byte length + that many bytes.
+        if b.len() < pos + 2 {
+            return GzHeader::NeedMore;
+        }
+        let xlen = u16::from_le_bytes([b[pos], b[pos + 1]]) as usize;
+        pos += 2 + xlen;
+    }
+    if flg & 0x08 != 0 {
+        // FNAME: NUL-terminated.
+        match b.get(pos..).and_then(|s| s.iter().position(|&c| c == 0)) {
+            Some(i) => pos += i + 1,
+            None => return GzHeader::NeedMore,
+        }
+    }
+    if flg & 0x10 != 0 {
+        // FCOMMENT: NUL-terminated.
+        match b.get(pos..).and_then(|s| s.iter().position(|&c| c == 0)) {
+            Some(i) => pos += i + 1,
+            None => return GzHeader::NeedMore,
+        }
+    }
+    if flg & 0x02 != 0 {
+        // FHCRC: 2 bytes.
+        pos += 2;
+    }
+    if b.len() < pos {
+        return GzHeader::NeedMore;
+    }
+    GzHeader::Len(pos)
+}
+
+struct DecodingRewritingBody {
+    inner: BoxBody,
+    /// Raw-DEFLATE decoder. flate2's `new_gzip` needs a zlib backend, so we
+    /// strip the gzip header ourselves and inflate the raw deflate payload
+    /// (the 8-byte gzip footer is simply ignored once the stream ends).
+    decoder: flate2::Decompress,
+    header_done: bool,
+    header_buf: Vec<u8>,
+    decoder_ended: bool,
+    rewriter: HtmlRewriter,
+    done: bool,
+}
+
+impl DecodingRewritingBody {
+    fn new_gzip(inner: BoxBody, prefix: &str) -> Self {
+        Self {
+            inner,
+            decoder: flate2::Decompress::new(false),
+            header_done: false,
+            header_buf: Vec::new(),
+            decoder_ended: false,
+            rewriter: HtmlRewriter::new(prefix),
+            done: false,
+        }
+    }
+
+    /// Strip the gzip header (buffering only the few header bytes), then inflate
+    /// the deflate payload into `out`.
+    fn inflate(&mut self, input: &[u8], out: &mut Vec<u8>) {
+        if self.decoder_ended {
+            return;
+        }
+        if !self.header_done {
+            self.header_buf.extend_from_slice(input);
+            match parse_gzip_header(&self.header_buf) {
+                GzHeader::NeedMore => return,
+                GzHeader::Invalid => {
+                    self.decoder_ended = true;
+                    return;
+                }
+                GzHeader::Len(n) => {
+                    self.header_done = true;
+                    let rest = self.header_buf[n..].to_vec();
+                    self.header_buf = Vec::new();
+                    self.inflate_deflate(&rest, out);
+                }
+            }
+            return;
+        }
+        self.inflate_deflate(input, out);
+    }
+
+    /// Drive the raw-deflate decoder over `input` until it is drained (or the
+    /// deflate stream ends).
+    fn inflate_deflate(&mut self, input: &[u8], out: &mut Vec<u8>) {
+        if self.decoder_ended {
+            return;
+        }
+        let mut in_off = 0;
+        let mut buf = [0u8; 16384];
+        loop {
+            let before_in = self.decoder.total_in();
+            let before_out = self.decoder.total_out();
+            let status =
+                self.decoder
+                    .decompress(&input[in_off..], &mut buf, flate2::FlushDecompress::None);
+            let consumed = (self.decoder.total_in() - before_in) as usize;
+            let produced = (self.decoder.total_out() - before_out) as usize;
+            in_off += consumed;
+            out.extend_from_slice(&buf[..produced]);
+            match status {
+                Ok(flate2::Status::StreamEnd) => {
+                    self.decoder_ended = true;
+                    return;
+                }
+                Ok(_) => {
+                    // No forward progress (and input remains) → can't proceed.
+                    if consumed == 0 && produced == 0 {
+                        return;
+                    }
+                    // All input consumed and the output buffer had spare room →
+                    // nothing more is pending right now.
+                    if in_off >= input.len() && produced < buf.len() {
+                        return;
+                    }
+                    // else: more input, or output buffer filled — keep looping.
+                }
+                Err(_) => {
+                    // Corrupt/unexpected stream: stop decoding.
+                    self.decoder_ended = true;
+                    return;
+                }
+            }
+        }
+    }
+}
+
+impl hyper::body::Body for DecodingRewritingBody {
+    type Data = Bytes;
+    type Error = std::convert::Infallible;
+
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<hyper::body::Frame<Bytes>, Self::Error>>> {
+        use std::task::Poll;
+        let this = self.get_mut();
+        loop {
+            if this.done {
+                return Poll::Ready(None);
+            }
+            match std::pin::Pin::new(&mut this.inner).poll_frame(cx) {
+                Poll::Ready(Some(Ok(frame))) => match frame.into_data() {
+                    Ok(data) => {
+                        let mut raw = Vec::new();
+                        this.inflate(&data, &mut raw);
+                        if raw.is_empty() {
+                            continue;
+                        }
+                        let out = this.rewriter.process(&raw, false);
+                        if out.is_empty() {
+                            continue;
+                        }
+                        return Poll::Ready(Some(Ok(hyper::body::Frame::data(Bytes::from(out)))));
+                    }
+                    Err(non_data) => return Poll::Ready(Some(Ok(non_data))),
+                },
+                Poll::Ready(Some(Err(e))) => return Poll::Ready(Some(Err(e))),
+                Poll::Ready(None) => {
+                    this.done = true;
+                    let raw = Vec::new();
+                    let mut out = this.rewriter.process(&raw, false);
+                    out.extend(this.rewriter.process(&[], true));
                     if out.is_empty() {
                         return Poll::Ready(None);
                     }
@@ -2519,27 +2740,20 @@ async fn handle_regular_request(
                         // (see `html_rewrite_prefix`), so their HTML is never
                         // buffered/decoded.
                         if let Some(prefix) = html_rewrite_prefix {
-                            // Uncompressed HTML is rewritten on the fly so the
-                            // client receives bytes as the backend produces them.
-                            // Only compressed bodies still need full buffering
-                            // (to decode before rewriting); flate2 has no
-                            // incremental decoder wired in here. The buffered
-                            // path remains bounded by the request timeout.
-                            let is_compressed = response
+                            // Rewriting changes the body length, so a fixed
+                            // Content-Length no longer applies — both streaming
+                            // paths below drop it and let hyper stream chunked.
+                            let encoding = response
                                 .headers()
                                 .get("content-encoding")
                                 .and_then(|v| v.to_str().ok())
-                                .map(|enc| {
-                                    let e = enc.to_ascii_lowercase();
-                                    e.contains("gzip") || e.contains("deflate")
-                                })
-                                .unwrap_or(false);
+                                .map(|e| e.to_ascii_lowercase())
+                                .unwrap_or_default();
 
-                            if !is_compressed {
+                            // Uncompressed HTML: rewrite on the fly so the client
+                            // receives bytes as the backend produces them.
+                            if !encoding.contains("gzip") && !encoding.contains("deflate") {
                                 let (mut parts, body) = response.into_parts();
-                                // Rewriting changes the body length, so the old
-                                // Content-Length no longer applies — drop it and
-                                // let hyper stream the response chunked.
                                 parts.headers.remove("content-length");
                                 let inner = body.map_err(|_| unreachable!()).boxed();
                                 let rewritten = RewritingBody::new(inner, &prefix).boxed();
@@ -2550,6 +2764,25 @@ async fn handle_regular_request(
                                 ));
                             }
 
+                            // gzip HTML: incrementally decode + rewrite as it
+                            // streams (emitted identity), so compressed pages on
+                            // a path-prefix mount no longer buffer the whole body.
+                            if encoding.contains("gzip") {
+                                let (mut parts, body) = response.into_parts();
+                                parts.headers.remove("content-encoding");
+                                parts.headers.remove("content-length");
+                                let inner = body.map_err(|_| unreachable!()).boxed();
+                                let streamed =
+                                    DecodingRewritingBody::new_gzip(inner, &prefix).boxed();
+                                return Ok((
+                                    Response::from_parts(parts, streamed),
+                                    target_url,
+                                    route_scripts.clone(),
+                                ));
+                            }
+
+                            // deflate (rare): fall back to the bounded buffered
+                            // decode + rewrite path below.
                             let (parts, body) = response.into_parts();
                             let body_bytes = body
                                 .collect()
@@ -3146,17 +3379,43 @@ fn find_target(
 mod tests {
     use super::*;
 
-    /// Feed `chunks` through a fresh `RewritingBody::process` (mimicking how
-    /// frames arrive), then flush, and return the concatenated rewritten output.
+    /// Feed `chunks` through a fresh `HtmlRewriter` (mimicking how frames
+    /// arrive), then flush, and return the concatenated rewritten output.
     fn rewrite_chunks(prefix: &str, chunks: &[&str]) -> String {
-        let inner = http_body_util::Empty::<Bytes>::new().boxed();
-        let mut rb = RewritingBody::new(inner, prefix);
+        let mut rw = HtmlRewriter::new(prefix);
         let mut out = Vec::new();
         for c in chunks {
-            out.extend(rb.process(c.as_bytes(), false));
+            out.extend(rw.process(c.as_bytes(), false));
         }
-        out.extend(rb.process(&[], true));
+        out.extend(rw.process(&[], true));
         String::from_utf8(out).unwrap()
+    }
+
+    fn gzip(data: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        e.write_all(data).unwrap();
+        e.finish().unwrap()
+    }
+
+    #[test]
+    fn gzip_decode_and_rewrite_streaming() {
+        let html = r#"<a href="/x"><img src="/y"><form action="/z"></form>"#;
+        let compressed = gzip(html.as_bytes());
+        let inner = http_body_util::Empty::<Bytes>::new().boxed();
+        let mut d = DecodingRewritingBody::new_gzip(inner, "/solidb");
+        // Feed the gzip stream in two halves to exercise incremental decode.
+        let mid = compressed.len() / 2;
+        let mut raw = Vec::new();
+        d.inflate(&compressed[..mid], &mut raw);
+        d.inflate(&compressed[mid..], &mut raw);
+        let mut out = d.rewriter.process(&raw, false);
+        out.extend(d.rewriter.process(&[], true));
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            r#"<a href="/solidb/x"><img src="/solidb/y"><form action="/solidb/z"></form>"#
+        );
+        assert!(d.decoder_ended);
     }
 
     #[test]
