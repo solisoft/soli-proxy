@@ -2155,6 +2155,7 @@ async fn handle_regular_request(
             let path = req.uri().path().to_string();
             let from_domain_rule = matched_route.from_domain_rule;
             let matched_prefix = matched_route.matched_prefix(is_tls);
+            let html_rewrite_prefix = matched_route.html_rewrite_prefix();
 
             if !matched_route.auth.is_empty() && !verify_basic_auth(&req, &matched_route.auth) {
                 tracing::debug!("Basic auth failed for {}", req.uri().path());
@@ -2513,7 +2514,11 @@ async fn handle_regular_request(
                         .unwrap_or(true);
 
                     if is_html && rewritable_encoding {
-                        if let Some(prefix) = matched_prefix {
+                        // Only path-prefix (StripPrefix) routes need URL
+                        // rewriting; whole-domain apps stream through untouched
+                        // (see `html_rewrite_prefix`), so their HTML is never
+                        // buffered/decoded.
+                        if let Some(prefix) = html_rewrite_prefix {
                             // Uncompressed HTML is rewritten on the fly so the
                             // client receives bytes as the backend produces them.
                             // Only compressed bodies still need full buffering
@@ -2832,6 +2837,21 @@ impl<'a> MatchedRoute<'a> {
                 let scheme = if is_tls { "https" } else { "http" };
                 Some(format!("{}://{}", scheme, self.host))
             }
+            _ => None,
+        }
+    }
+
+    /// Path prefix to splice into root-relative HTML URLs (`href="/x"` ->
+    /// `href="/prefix/x"`). Only path-based (StripPrefix) routes need this: a
+    /// whole-domain (AppendPath) app serves its HTML at the domain root, so
+    /// root-relative URLs already resolve correctly. Rewriting them there to
+    /// absolute `https://host/...` URLs is a pointless no-op that would force
+    /// the response to be buffered (and gzip-decoded) for nothing — the very
+    /// thing that stalls progressive HTML delivery. Returning None lets such
+    /// responses stream straight through, compression intact.
+    fn html_rewrite_prefix(&self) -> Option<String> {
+        match &self.resolution {
+            UrlResolution::StripPrefix(prefix) => Some(prefix.trim_end_matches('/').to_string()),
             _ => None,
         }
     }
