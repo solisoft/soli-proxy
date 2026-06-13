@@ -2,7 +2,7 @@ use hyper::body::Incoming;
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
-use hyper_util::rt::TokioExecutor;
+use hyper_util::rt::{TokioExecutor, TokioTimer};
 use std::time::Duration;
 
 /// The hyper client type used to proxy requests to backends.
@@ -40,8 +40,21 @@ impl ConnectionPool {
             .wrap_connector(connector);
 
         let client = Client::builder(TokioExecutor::new())
-            .pool_max_idle_per_host(256)
-            .pool_idle_timeout(Duration::from_secs(60))
+            // A pool timer is REQUIRED for `pool_idle_timeout` to take effect
+            // (hyper-util docs). Without it the idle timeout is a silent no-op:
+            // idle connections are never recycled by age, so the pool keeps
+            // handing out keep-alive connections the backend has already closed.
+            // Reusing such a half-closed socket stalls the request for seconds
+            // (until TCP gives up and hyper retries) — observed as intermittent
+            // multi-second hangs on otherwise-fast AJAX/asset requests.
+            .pool_timer(TokioTimer::new())
+            // Recycle idle connections well before typical backend keep-alive
+            // timeouts (Cowboy/Bandit/nginx default to ~60s) so the proxy always
+            // drops a connection before the backend does, avoiding the stale-
+            // reuse race. Backends are usually localhost, so reconnecting is
+            // cheap. If a backend uses a very short keep-alive (e.g. Node's 5s
+            // default), lower this below it or raise the backend's.
+            .pool_idle_timeout(Duration::from_secs(15))
             .build(https);
 
         Self { client }
