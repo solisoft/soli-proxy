@@ -161,7 +161,15 @@ impl AppInfo {
                 "soli serve . --port $PORT --workers $WORKERS".to_string()
             };
             config.start_script = Some(start_script);
-            config.health_check = Some("/".to_string());
+            // Gate blue/green promotion on Soli's built-in readiness probe
+            // rather than a bare liveness check. `/up` returns 503 until the
+            // app's session-store connection is warmed and 200 afterwards, so
+            // `wait_for_health` keeps the old slot serving until the new slot
+            // can actually complete a session round-trip — instead of switching
+            // traffic the moment the HTTP server answers `/` and landing real
+            // requests in the cold-connection window (a ~10s stall). Requires
+            // a Soli runtime new enough to serve `/up` (every current build).
+            config.health_check = Some("/up".to_string());
             if config.domain.is_empty() {
                 config.domain = app_name.clone();
             }
@@ -1798,6 +1806,24 @@ port_range_end = 30000
             Some("./custom-start.sh".to_string())
         );
         assert_eq!(app_info.config.health_check, Some("/health".to_string()));
+    }
+
+    #[test]
+    fn test_soli_auto_detected_uses_readiness_probe() {
+        // An auto-detected Soli app (app/ + app/models/, no explicit
+        // start_script) must gate promotion on the built-in `/up` readiness
+        // probe, not a bare liveness check — otherwise blue/green switches
+        // traffic into the cold session-connection window.
+        let temp_dir = TempDir::new().unwrap();
+        let app_path = temp_dir.path().join("myapp.example.com");
+        std::fs::create_dir_all(app_path.join("app/models")).unwrap();
+
+        let app_info = AppInfo::from_path(&app_path, false).unwrap();
+        assert_eq!(
+            app_info.config.start_script,
+            Some("soli serve . --port $PORT --workers $WORKERS".to_string())
+        );
+        assert_eq!(app_info.config.health_check, Some("/up".to_string()));
     }
 
     #[test]
