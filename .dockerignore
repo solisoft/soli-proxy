@@ -1,0 +1,17 @@
+# The image installs the prebuilt release binary and copies nothing from the
+# build context, so keep the context minimal (avoids shipping target/, logs,
+# node_modules, etc. to the Docker daemon).
+target
+node_modules
+.git
+.github
+sites
+certs
+run
+www
+docs
+tests
+benches
+*.log
+*.pid
+proxy.conf
