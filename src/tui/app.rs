@@ -997,7 +997,14 @@ impl TuiApp {
     fn refresh_data(&mut self) {}
 
     fn render_header(&self, f: &mut Frame, area: Rect) {
-        let screen_names = ["Dashboard", "Routes", "Apps", "Circuits", "Errors", "Config"];
+        let screen_names = [
+            "Dashboard",
+            "Routes",
+            "Apps",
+            "Circuits",
+            "Errors",
+            "Config",
+        ];
         let current_idx = match self.current_screen {
             Screen::Dashboard => 0,
             Screen::Routes => 1,

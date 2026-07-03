@@ -142,8 +142,14 @@ impl ErrorEntry {
             "Method:    {}\n",
             self.method.as_ref().unwrap_or(&dash)
         ));
-        s.push_str(&format!("Host:      {}\n", self.host.as_ref().unwrap_or(&dash)));
-        s.push_str(&format!("Path:      {}\n", self.path.as_ref().unwrap_or(&dash)));
+        s.push_str(&format!(
+            "Host:      {}\n",
+            self.host.as_ref().unwrap_or(&dash)
+        ));
+        s.push_str(&format!(
+            "Path:      {}\n",
+            self.path.as_ref().unwrap_or(&dash)
+        ));
         s.push_str(&format!(
             "Client IP: {}\n",
             self.client_ip.as_ref().unwrap_or(&dash)
