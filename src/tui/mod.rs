@@ -1,4 +1,5 @@
 pub mod app;
+pub mod errors;
 pub mod route_form;
 pub mod screens;
 

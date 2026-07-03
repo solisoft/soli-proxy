@@ -10,6 +10,7 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::metrics::{AppMetricsJson, MetricsSnapshot};
 
+use super::errors::{load_request_errors, ErrorEntry};
 use super::{route_form::RouteForm, screens, TuiContext};
 
 /// Per-app stats combining traffic (from admin API) and system (from /proc).
@@ -39,6 +40,7 @@ pub enum Screen {
     Routes,
     Apps,
     Circuits,
+    Errors,
     Config,
     Help,
 }
@@ -52,6 +54,7 @@ pub enum Modal {
     AppActionProgress(String, String), // app_name, action description
     AppActionResult(String),           // result message
     LogViewer(String, String),
+    ErrorDetail(usize), // index into TuiApp::errors
 }
 
 const APP_ACTIONS: &[&str] = &["Deploy", "Restart", "Stop", "Rollback", "View Logs"];
@@ -78,6 +81,10 @@ pub struct TuiApp {
     log_viewer_page: usize,
     log_viewer_max_offset: usize,
     log_auto_follow: bool,
+    /// Request failures parsed from proxy.log, oldest-first.
+    errors: Vec<ErrorEntry>,
+    /// Transient "copied to clipboard" flash for the error detail modal.
+    error_copied: bool,
 }
 
 impl TuiApp {
@@ -101,6 +108,8 @@ impl TuiApp {
             log_viewer_page: 1,
             log_viewer_max_offset: 0,
             log_auto_follow: true,
+            errors: Vec::new(),
+            error_copied: false,
         };
         app.collect_stats();
         app
@@ -180,6 +189,9 @@ impl TuiApp {
 
             self.app_stats.insert(name.clone(), stats);
         }
+
+        // Parse individual request failures from proxy.log for the Errors screen.
+        self.errors = load_request_errors();
     }
 
     /// Fetch per-app and global traffic metrics from the daemon's admin API.
@@ -321,6 +333,7 @@ impl TuiApp {
                 let slot = slot.clone();
                 self.render_log_viewer(f, &app_name, &slot);
             }
+            Modal::ErrorDetail(idx) => self.render_error_detail(f, *idx),
             Modal::None => {}
         }
     }
@@ -343,6 +356,7 @@ impl TuiApp {
             Modal::AppActionProgress(_, _) => self.handle_app_action_progress_key(key),
             Modal::AppActionResult(_) => self.handle_app_action_result_key(key),
             Modal::LogViewer(_, _) => self.handle_log_viewer_key(key),
+            Modal::ErrorDetail(_) => self.handle_error_detail_key(key),
         }
     }
 
@@ -747,6 +761,68 @@ impl TuiApp {
         false
     }
 
+    fn handle_error_detail_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        use crossterm::event::KeyCode;
+        let Modal::ErrorDetail(idx) = self.modal else {
+            return false;
+        };
+        let last = self.errors.len().saturating_sub(1);
+        match key.code {
+            KeyCode::Esc => {
+                self.modal = Modal::None;
+            }
+            KeyCode::Char('j') | KeyCode::Down | KeyCode::Char('n') => {
+                let new_idx = (idx + 1).min(last);
+                self.selected_index = new_idx;
+                self.error_copied = false;
+                self.modal = Modal::ErrorDetail(new_idx);
+            }
+            KeyCode::Char('k') | KeyCode::Up | KeyCode::Char('p') => {
+                let new_idx = idx.saturating_sub(1);
+                self.selected_index = new_idx;
+                self.error_copied = false;
+                self.modal = Modal::ErrorDetail(new_idx);
+            }
+            KeyCode::Char('y') | KeyCode::Char('c') => {
+                if let Some(entry) = self.errors.get(idx) {
+                    copy_to_clipboard_osc52(&entry.detail_block());
+                    self.error_copied = true;
+                }
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn render_error_detail(&self, f: &mut Frame, idx: usize) {
+        let Some(entry) = self.errors.get(idx) else {
+            return;
+        };
+
+        let area = f.area();
+        let w = area.width.saturating_sub(10).min(90);
+        let h = area.height.saturating_sub(6).min(16);
+        let x = (area.width.saturating_sub(w)) / 2;
+        let y = (area.height.saturating_sub(h)) / 2;
+        let modal_area = Rect::new(x, y, w, h);
+
+        f.render_widget(Clear, modal_area);
+
+        let copied = if self.error_copied { " [copied]" } else { "" };
+        let block = Block::default()
+            .title(format!(
+                " Error {}/{}{} [j/k:nav  y:copy  Esc:close] ",
+                idx + 1,
+                self.errors.len(),
+                copied
+            ))
+            .borders(Borders::ALL)
+            .style(Style::default().fg(Color::Red));
+
+        let paragraph = Paragraph::new(entry.detail_block()).block(block);
+        f.render_widget(paragraph, modal_area);
+    }
+
     fn cycle_screen(&mut self, dir: i32) {
         self.current_screen = match self.current_screen {
             Screen::Dashboard => {
@@ -772,16 +848,23 @@ impl TuiApp {
             }
             Screen::Circuits => {
                 if dir > 0 {
-                    Screen::Config
+                    Screen::Errors
                 } else {
                     Screen::Apps
+                }
+            }
+            Screen::Errors => {
+                if dir > 0 {
+                    Screen::Config
+                } else {
+                    Screen::Circuits
                 }
             }
             Screen::Config => {
                 if dir > 0 {
                     Screen::Dashboard
                 } else {
-                    Screen::Circuits
+                    Screen::Errors
                 }
             }
             Screen::Help => Screen::Dashboard,
@@ -814,6 +897,7 @@ impl TuiApp {
             Screen::Routes => self.ctx.config_manager.get_config().rules.len(),
             Screen::Apps => self.filtered_apps_count,
             Screen::Circuits => self.ctx.circuit_breaker.get_states().len(),
+            Screen::Errors => self.errors.len(),
             Screen::Config => 0,
             Screen::Help => 0,
         }
@@ -832,6 +916,13 @@ impl TuiApp {
     }
 
     fn handle_enter(&mut self) {
+        if self.current_screen == Screen::Errors {
+            if self.selected_index < self.errors.len() {
+                self.error_copied = false;
+                self.modal = Modal::ErrorDetail(self.selected_index);
+            }
+            return;
+        }
         if let Screen::Apps = self.current_screen {
             if let Some(ref mgr) = self.ctx.app_manager {
                 let all_apps = mgr.list_apps_sync();
@@ -906,13 +997,14 @@ impl TuiApp {
     fn refresh_data(&mut self) {}
 
     fn render_header(&self, f: &mut Frame, area: Rect) {
-        let screen_names = ["Dashboard", "Routes", "Apps", "Circuits", "Config"];
+        let screen_names = ["Dashboard", "Routes", "Apps", "Circuits", "Errors", "Config"];
         let current_idx = match self.current_screen {
             Screen::Dashboard => 0,
             Screen::Routes => 1,
             Screen::Apps => 2,
             Screen::Circuits => 3,
-            Screen::Config => 4,
+            Screen::Errors => 4,
+            Screen::Config => 5,
             Screen::Help => return,
         };
 
@@ -976,6 +1068,13 @@ impl TuiApp {
                 )
             }
             Screen::Circuits => screens::circuits::render(f, area, &self.ctx, self.selected_index),
+            Screen::Errors => screens::errors::render(
+                f,
+                area,
+                &self.errors,
+                self.selected_index,
+                self.scroll_offset,
+            ),
             Screen::Config => screens::config_viewer::render(f, area, &self.ctx),
             Screen::Help => {}
         }
@@ -988,6 +1087,9 @@ impl TuiApp {
         );
         if self.current_screen == Screen::Routes {
             footer_text.push_str(" | a:add | e:edit | d:delete");
+        }
+        if self.current_screen == Screen::Errors {
+            footer_text.push_str(" | Enter:detail");
         }
 
         if self.search_active {
@@ -1036,6 +1138,12 @@ impl TuiApp {
             "  APPS SCREEN",
             "    Enter          Open action menu",
             "                   (Deploy/Restart/Stop/Rollback/Logs)",
+            "",
+            "  ERRORS SCREEN",
+            "    Enter          Open error detail",
+            "    j/k (in detail) Navigate between errors",
+            "    y / c          Copy error block to clipboard",
+            "                   (needs log_endpoints = true)",
             "",
             "  Press any key to close this help",
         ];
@@ -1448,6 +1556,20 @@ impl TuiApp {
 
         f.render_widget(paragraph, modal_area);
     }
+}
+
+/// Copy `text` to the terminal clipboard via the OSC52 escape sequence. Works
+/// locally and over SSH without any display server or extra dependency. Note:
+/// tmux requires `set -g set-clipboard on` to forward the sequence.
+fn copy_to_clipboard_osc52(text: &str) {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use std::io::Write;
+    let payload = STANDARD.encode(text.as_bytes());
+    let mut out = std::io::stdout();
+    // ratatui owns the alternate screen, but the escape still reaches the
+    // emulator. Flush so it isn't left in the buffer until the next redraw.
+    let _ = write!(out, "\x1b]52;c;{}\x07", payload);
+    let _ = out.flush();
 }
 
 /// Parse the daemon's Prometheus text exposition into a `MetricsSnapshot`.
