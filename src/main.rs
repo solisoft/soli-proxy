@@ -493,6 +493,22 @@ fn run_app_command(config_path: &str, app_name: &str, action: &str) -> Result<()
     rt.block_on(async move {
         let config_manager = ConfigManager::new(config_path)?;
         let config_ref = Arc::new(config_manager);
+
+        // If a daemon is running, delegate through its admin API: only the
+        // daemon knows which slot is live and owns the app PIDs. A standalone
+        // AppManager here would target the live slot whenever the daemon last
+        // promoted green, and can never replace processes it didn't spawn.
+        if matches!(action, "deploy" | "restart" | "stop") {
+            match delegate_to_daemon(&config_ref, app_name, action).await {
+                DaemonDelegation::Done(message) => {
+                    println!("{}", message);
+                    return Ok(());
+                }
+                DaemonDelegation::Refused(err) => return Err(err),
+                DaemonDelegation::NoDaemon => {}
+            }
+        }
+
         let port_manager = Arc::new(PortManager::new("./run").unwrap());
         let _ = port_manager.load().await;
 
@@ -504,6 +520,9 @@ fn run_app_command(config_path: &str, app_name: &str, action: &str) -> Result<()
         if let Err(e) = app_manager.discover_apps_readonly().await {
             tracing::error!("Failed to discover apps: {}", e);
         }
+        // Fresh discovery defaults every app's current_slot to blue; read the
+        // slot persisted at last promotion so deploy/restart act on reality.
+        app_manager.load_app_state_async().await;
 
         match action {
             "deploy" => {
@@ -551,6 +570,122 @@ fn run_app_command(config_path: &str, app_name: &str, action: &str) -> Result<()
         }
         Ok(())
     })
+}
+
+enum DaemonDelegation {
+    /// The daemon handled the action; contains the success message to print.
+    Done(String),
+    /// A daemon is running but the action failed. Do NOT fall back to a
+    /// standalone AppManager — it would fight the daemon over the same apps.
+    Refused(anyhow::Error),
+    /// Nothing is listening on the admin bind address.
+    NoDaemon,
+}
+
+/// Ask the running daemon to perform `action` on `app_name` via its admin API
+/// (`POST /api/v1/apps/<name>/<action>`), authenticated with `[admin].api_key`.
+async fn delegate_to_daemon(
+    config: &Arc<ConfigManager>,
+    app_name: &str,
+    action: &str,
+) -> DaemonDelegation {
+    let cfg = config.get_config();
+    if !cfg.admin.enabled.unwrap_or(true) {
+        return DaemonDelegation::NoDaemon;
+    }
+    // Wildcard binds aren't connectable as-is.
+    let admin_addr = cfg
+        .admin
+        .bind
+        .replace("0.0.0.0:", "127.0.0.1:")
+        .replace("[::]:", "127.0.0.1:");
+
+    // Probe first: any HTTP response (even 401) proves a daemon is listening;
+    // only a connect failure means there is none. The action request itself
+    // gets a long timeout (deploy blocks on health checks and drain_delay),
+    // and by then a transport error must not trigger the standalone fallback.
+    let Ok(probe) = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+    else {
+        return DaemonDelegation::NoDaemon;
+    };
+    if probe
+        .get(format!("http://{}/api/v1/apps", admin_addr))
+        .send()
+        .await
+        .is_err()
+    {
+        return DaemonDelegation::NoDaemon;
+    }
+
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(600))
+        .build()
+    else {
+        return DaemonDelegation::NoDaemon;
+    };
+    let mut req = client.post(format!(
+        "http://{}/api/v1/apps/{}/{}",
+        admin_addr, app_name, action
+    ));
+    if let Some(ref key) = cfg.admin.api_key {
+        req = req.header("X-Api-Key", key);
+    }
+
+    let resp = match req.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            return DaemonDelegation::Refused(anyhow::anyhow!(
+                "daemon detected on {} but the {} request failed: {}",
+                admin_addr,
+                action,
+                e
+            ))
+        }
+    };
+
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    let json: Option<serde_json::Value> = serde_json::from_str(&body).ok();
+
+    if status.is_success() {
+        let past_tense = match action {
+            "deploy" => "deployed",
+            "restart" => "restarted",
+            "stop" => "stopped",
+            _ => action,
+        };
+        let slot = json
+            .as_ref()
+            .and_then(|v| v["data"]["slot"].as_str())
+            .map(|s| format!(" (slot {})", s))
+            .unwrap_or_default();
+        return DaemonDelegation::Done(format!(
+            "{} {} successfully via daemon{}",
+            app_name, past_tense, slot
+        ));
+    }
+
+    let detail = json
+        .as_ref()
+        .and_then(|v| v["error"].as_str())
+        .map(String::from)
+        .unwrap_or_else(|| format!("HTTP {}", status));
+    let hint = if status == reqwest::StatusCode::UNAUTHORIZED {
+        "\nThe daemon's admin API requires authentication; set [admin].api_key \
+         in the config so the CLI can authenticate."
+    } else {
+        ""
+    };
+    DaemonDelegation::Refused(anyhow::anyhow!(
+        "daemon on {} rejected {} for {}: {}{}",
+        admin_addr,
+        action,
+        app_name,
+        detail,
+        hint
+    ))
 }
 
 async fn run_server(

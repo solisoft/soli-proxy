@@ -961,24 +961,16 @@ impl AppManager {
     /// Load app state (current_slot) from disk so TUI can see deploys that happened
     /// while TUI was not running.
     pub fn load_app_state(&self) {
-        let state_file = PathBuf::from("./run/app_state.json");
-        if !state_file.exists() {
-            return;
+        if let Some(state) = read_app_state_file() {
+            apply_app_state(&mut self.apps.blocking_lock(), &state);
         }
-        if let Ok(content) = std::fs::read_to_string(&state_file) {
-            if let Ok(state) = serde_json::from_str::<serde_json::Value>(&content) {
-                if let Some(apps) = state.as_object() {
-                    let mut apps_guard = self.apps.blocking_lock();
-                    for (name, slot) in apps {
-                        if let Some(slot_str) = slot.as_str() {
-                            if let Some(app_info) = apps_guard.get_mut(name) {
-                                app_info.current_slot = slot_str.to_string();
-                            }
-                        }
-                    }
-                    tracing::debug!("Loaded app state from {:?}", state_file);
-                }
-            }
+    }
+
+    /// Async variant of [`Self::load_app_state`] for callers already inside a
+    /// runtime, where `blocking_lock()` would panic.
+    pub async fn load_app_state_async(&self) {
+        if let Some(state) = read_app_state_file() {
+            apply_app_state(&mut *self.apps.lock().await, &state);
         }
     }
 
@@ -1568,6 +1560,32 @@ impl AppManager {
                 }
             }
         });
+    }
+}
+
+/// Read `run/app_state.json` (app name -> current_slot), written on every
+/// promotion so other processes can recover the live slot.
+fn read_app_state_file() -> Option<serde_json::Map<String, serde_json::Value>> {
+    let state_file = PathBuf::from("./run/app_state.json");
+    let content = std::fs::read_to_string(&state_file).ok()?;
+    let state = serde_json::from_str::<serde_json::Value>(&content).ok()?;
+    let apps = state.as_object().cloned();
+    if apps.is_some() {
+        tracing::debug!("Loaded app state from {:?}", state_file);
+    }
+    apps
+}
+
+fn apply_app_state(
+    apps: &mut HashMap<String, AppInfo>,
+    state: &serde_json::Map<String, serde_json::Value>,
+) {
+    for (name, slot) in state {
+        if let Some(slot_str) = slot.as_str() {
+            if let Some(app_info) = apps.get_mut(name) {
+                app_info.current_slot = slot_str.to_string();
+            }
+        }
     }
 }
 
