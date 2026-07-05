@@ -440,6 +440,16 @@ impl AppManager {
         let apps = self.apps.lock().await;
         let mut result = HashMap::new();
         for app in apps.values() {
+            // The bundled `_admin` app is served only via the authenticated
+            // admin listener (which reaches it through `get_app("_admin")`
+            // directly). It must never be reachable through the public proxy's
+            // Host-based app routing: the admin API strips credentials before
+            // forwarding, so `_admin` does no auth of its own, and exposing it
+            // here would let any client reach the admin UI/actions unauthenticated
+            // with `Host: <admin-domain>`.
+            if app.config.name == "_admin" {
+                continue;
+            }
             if app.config.domain.is_empty() {
                 tracing::debug!(
                     "get_running_app_domains: app {} has empty domain, skipping",

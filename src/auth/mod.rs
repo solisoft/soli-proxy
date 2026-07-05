@@ -20,6 +20,21 @@ pub fn generate_hash(password: &str) -> String {
     hash_password(password, DEFAULT_COST)
 }
 
+/// A valid bcrypt hash (at `DEFAULT_COST`) of a fixed throwaway value, computed
+/// once on first use.
+///
+/// Used to equalize authentication timing: when a supplied username matches no
+/// configured account, callers still run one `verify_password` against this
+/// hash. Because bcrypt dominates the cost of a credential check, this stops
+/// response timing from revealing whether a username exists (user enumeration).
+/// The hash must be valid and at the same cost as real hashes — otherwise
+/// `verify_password` would bail out early and the timing would not match.
+pub fn dummy_hash() -> &'static str {
+    static HASH: std::sync::LazyLock<String> =
+        std::sync::LazyLock::new(|| generate_hash("soli-proxy-timing-equalizer"));
+    &HASH
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

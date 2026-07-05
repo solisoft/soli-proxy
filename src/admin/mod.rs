@@ -119,9 +119,18 @@ fn check_auth(
                     {
                         let creds = String::from_utf8_lossy(&decoded);
                         if let Some((u, p)) = creds.split_once(':') {
-                            if constant_time_eq(u.as_bytes(), user.as_bytes())
-                                && crate::auth::verify_password(p, hash)
-                            {
+                            let user_ok = constant_time_eq(u.as_bytes(), user.as_bytes());
+                            // Always run exactly one bcrypt verify — against the
+                            // real hash when the username matches, otherwise a
+                            // dummy — so response timing doesn't reveal whether
+                            // the admin username is correct (user enumeration).
+                            let verify_hash = if user_ok {
+                                hash.as_str()
+                            } else {
+                                crate::auth::dummy_hash()
+                            };
+                            let pass_ok = crate::auth::verify_password(p, verify_hash);
+                            if user_ok && pass_ok {
                                 return true;
                             }
                         }

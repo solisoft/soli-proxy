@@ -622,13 +622,20 @@ fn verify_basic_auth(req: &Request<Incoming>, auth_entries: &[crate::auth::Basic
 
     if let Some((username, password)) = creds.split_once(':') {
         let username_bytes = username.as_bytes();
+        // Locate the matching account without breaking early, so the loop's
+        // timing doesn't depend on which entry (if any) matched.
+        let mut matched_hash: Option<&str> = None;
         for entry in auth_entries {
-            if constant_time_eq(entry.username.as_bytes(), username_bytes)
-                && auth::verify_password(password, &entry.hash)
-            {
-                return true;
+            if constant_time_eq(entry.username.as_bytes(), username_bytes) {
+                matched_hash = Some(entry.hash.as_str());
             }
         }
+        // Always run exactly one bcrypt verify — against the matched hash, or a
+        // dummy when the username is unknown — so a wrong username and a wrong
+        // password take the same time (no user enumeration via timing).
+        let hash = matched_hash.unwrap_or_else(|| auth::dummy_hash());
+        let password_ok = auth::verify_password(password, hash);
+        return matched_hash.is_some() && password_ok;
     }
 
     false

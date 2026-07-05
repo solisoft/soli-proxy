@@ -16,34 +16,65 @@ pub struct ProcessExit {
     pub pid: u32,
 }
 
-/// Validate that docker_options does not contain dangerous flags.
-/// Rejects options that could escape the container namespace.
+/// Validate that docker_options does not contain flags that would break
+/// container isolation or expose the host.
+///
+/// Normalizes `--flag=value` to `--flag value` and lowercases before checking,
+/// so `--pid=host` and `--pid host` are caught identically and a denied flag
+/// can't be smuggled past the previous substring denylist by changing the
+/// `=`/space separator or casing. `docker_options` comes from on-disk
+/// `app.infos`, so this is defense-in-depth against a compromised/misconfigured
+/// app rather than a network-facing check.
 fn validate_docker_options(options: &str) -> Result<()> {
-    let dangerous = [
+    // `=` is treated as a token separator so value-bearing flags normalize to
+    // two tokens; this makes the host-namespace and mount checks below uniform.
+    let normalized = options.to_lowercase().replace('=', " ");
+    let tokens: Vec<&str> = normalized.split_whitespace().collect();
+
+    // Flags that grant host access / capabilities outright — disallowed with
+    // any value.
+    const DENIED_FLAGS: &[&str] = &[
         "--privileged",
-        "--pid=host",
-        "--pid=host ",
-        "--network=host",
-        "--network=host ",
-        "--userns=host",
-        "--userns=host ",
-        "--security-opt=seccomp=unconfined",
-        "--security-opt=seccomp=unconfined ",
-        "-v=/:/host",
-        "-v=/:/host ",
-        "--device=/dev/kmsg",
-        "--device=/dev/kmsg ",
         "--cap-add",
-        "--cap-add=",
-        "--cap-drop",
-        "--cap-drop=",
+        "--device",
+        "--security-opt",
+        "--userns",
+        "--cgroupns",
+        "--pid-mode",
     ];
-    let opts_lower = options.to_lowercase();
-    for d in &dangerous {
-        if opts_lower.contains(d) {
-            anyhow::bail!("docker_options contains disallowed flag: {}", d);
+    // Namespace flags that are only dangerous when set to the host namespace.
+    const HOST_NS_FLAGS: &[&str] = &["--pid", "--ipc", "--uts", "--network", "--net"];
+    // Bind-mount flags whose source we inspect for host-exposing paths.
+    const MOUNT_FLAGS: &[&str] = &["-v", "--volume", "--mount"];
+
+    for (i, tok) in tokens.iter().enumerate() {
+        if DENIED_FLAGS.contains(tok) {
+            anyhow::bail!("docker_options contains disallowed flag: {}", tok);
+        }
+        if HOST_NS_FLAGS.contains(tok) && tokens.get(i + 1).is_some_and(|v| *v == "host") {
+            anyhow::bail!(
+                "docker_options requests the host {} namespace, which is disallowed",
+                tok
+            );
+        }
+        if MOUNT_FLAGS.contains(tok) {
+            if let Some(spec) = tokens.get(i + 1) {
+                // Mounting the docker socket grants full control of the daemon;
+                // mounting the host root filesystem exposes everything.
+                if spec.contains("docker.sock") || spec.starts_with("/:") || *spec == "/" {
+                    anyhow::bail!("docker_options contains a disallowed host mount: {}", spec);
+                }
+            }
         }
     }
+
+    // Belt-and-braces: the docker socket must never appear anywhere, even if a
+    // mount is expressed in a form the per-token check above doesn't split
+    // cleanly (e.g. `--mount type=bind,source=/var/run/docker.sock,...`).
+    if normalized.contains("docker.sock") {
+        anyhow::bail!("docker_options mounts the docker socket, which is disallowed");
+    }
+
     Ok(())
 }
 /// Rejects empty strings, path separators, "..", and control characters.
@@ -300,7 +331,13 @@ impl DeploymentManager {
 
         if let Some(ref options) = app.config.docker_options {
             validate_docker_options(options)?;
-            docker_args.push(options.clone());
+            // Split into individual argv tokens: pushing the whole string as a
+            // single argument makes docker treat e.g. "-e FOO=bar" as one
+            // (invalid) flag. Whitespace-splitting matches how a shell would
+            // tokenize simple options (no quoting/escaping is supported).
+            for token in options.split_whitespace() {
+                docker_args.push(token.to_string());
+            }
         }
 
         docker_args.push("-e".to_string());
@@ -894,19 +931,134 @@ impl DeploymentManager {
 fn resolve_user(user: &str) -> Result<u32> {
     use std::ffi::CString;
     let c_user = CString::new(user)?;
-    let passwd = unsafe { libc::getpwnam(c_user.as_ptr()) };
-    if passwd.is_null() {
+    let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut buf = vec![0_i8 as libc::c_char; 1024];
+    let mut result: *mut libc::passwd = std::ptr::null_mut();
+    loop {
+        // getpwnam_r is the thread-safe variant: the non-reentrant getpwnam
+        // returns a pointer into a shared static buffer that a concurrent
+        // lookup (here, or anywhere else in the process) can overwrite.
+        let ret = unsafe {
+            libc::getpwnam_r(
+                c_user.as_ptr(),
+                &mut pwd,
+                buf.as_mut_ptr(),
+                buf.len(),
+                &mut result,
+            )
+        };
+        if ret == libc::ERANGE && buf.len() < (1 << 20) {
+            buf.resize(buf.len() * 2, 0);
+            continue;
+        }
+        if ret != 0 {
+            anyhow::bail!(
+                "Failed to look up user '{}': {}",
+                user,
+                std::io::Error::from_raw_os_error(ret)
+            );
+        }
+        break;
+    }
+    if result.is_null() {
         anyhow::bail!("User '{}' not found", user);
     }
-    Ok(unsafe { (*passwd).pw_uid })
+    Ok(pwd.pw_uid)
 }
 
 fn resolve_group(group: &str) -> Result<u32> {
     use std::ffi::CString;
     let c_group = CString::new(group)?;
-    let grp = unsafe { libc::getgrnam(c_group.as_ptr()) };
-    if grp.is_null() {
+    let mut grp: libc::group = unsafe { std::mem::zeroed() };
+    let mut buf = vec![0_i8 as libc::c_char; 1024];
+    let mut result: *mut libc::group = std::ptr::null_mut();
+    loop {
+        // getgrnam_r: thread-safe counterpart of getgrnam (see resolve_user).
+        let ret = unsafe {
+            libc::getgrnam_r(
+                c_group.as_ptr(),
+                &mut grp,
+                buf.as_mut_ptr(),
+                buf.len(),
+                &mut result,
+            )
+        };
+        if ret == libc::ERANGE && buf.len() < (1 << 20) {
+            buf.resize(buf.len() * 2, 0);
+            continue;
+        }
+        if ret != 0 {
+            anyhow::bail!(
+                "Failed to look up group '{}': {}",
+                group,
+                std::io::Error::from_raw_os_error(ret)
+            );
+        }
+        break;
+    }
+    if result.is_null() {
         anyhow::bail!("Group '{}' not found", group);
     }
-    Ok(unsafe { (*grp).gr_gid })
+    Ok(grp.gr_gid)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_start_command, validate_docker_options, validate_path_component};
+
+    #[test]
+    fn docker_options_allows_benign_flags() {
+        assert!(validate_docker_options("-e FOO=bar --memory 512m").is_ok());
+        assert!(validate_docker_options("-v /srv/data:/data:ro").is_ok());
+        assert!(validate_docker_options("").is_ok());
+    }
+
+    #[test]
+    fn docker_options_rejects_privileged_and_caps() {
+        assert!(validate_docker_options("--privileged").is_err());
+        assert!(validate_docker_options("--cap-add=NET_ADMIN").is_err());
+        assert!(validate_docker_options("--CAP-ADD SYS_ADMIN").is_err());
+        assert!(validate_docker_options("--device /dev/kmsg").is_err());
+        assert!(validate_docker_options("--security-opt seccomp=unconfined").is_err());
+    }
+
+    #[test]
+    fn docker_options_rejects_host_namespaces_regardless_of_separator() {
+        assert!(validate_docker_options("--pid=host").is_err());
+        assert!(validate_docker_options("--pid host").is_err());
+        assert!(validate_docker_options("--network=host").is_err());
+        assert!(validate_docker_options("--net host").is_err());
+        assert!(validate_docker_options("--ipc host").is_err());
+        assert!(validate_docker_options("--uts=host").is_err());
+        // A user-defined network name (not "host") is fine.
+        assert!(validate_docker_options("--network my-net").is_ok());
+    }
+
+    #[test]
+    fn docker_options_rejects_host_mounts() {
+        assert!(validate_docker_options("-v /:/host").is_err());
+        assert!(
+            validate_docker_options("--volume /var/run/docker.sock:/var/run/docker.sock").is_err()
+        );
+        assert!(validate_docker_options(
+            "--mount type=bind,source=/var/run/docker.sock,target=/sock"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn start_command_substitutes_port_and_workers_without_shell() {
+        let (program, args) =
+            parse_start_command("./serve --port $PORT -w $WORKERS", 8080, 4).expect("parses");
+        assert_eq!(program, "./serve");
+        assert_eq!(args, vec!["--port", "8080", "-w", "4"]);
+    }
+
+    #[test]
+    fn path_component_rejects_traversal() {
+        assert!(validate_path_component("myapp", "App name").is_ok());
+        assert!(validate_path_component("..", "App name").is_err());
+        assert!(validate_path_component("a/b", "App name").is_err());
+        assert!(validate_path_component("a\0b", "App name").is_err());
+    }
 }
