@@ -7,7 +7,7 @@ use crate::auth;
 use crate::circuit_breaker::SharedCircuitBreaker;
 use crate::config::ConfigManager;
 use crate::metrics::SharedMetrics;
-use crate::pool::{ConnectionPool, ProxyClient};
+use crate::pool::{is_body_limit_error, proxy_request_body, ConnectionPool, ProxyClient};
 use crate::shutdown::ShutdownCoordinator;
 use anyhow::Result;
 use bytes::Bytes;
@@ -541,21 +541,38 @@ type OptionalLuaEngine = Option<LuaEngine>;
 type OptionalLuaEngine = ();
 
 pub struct LoadBalancerState {
-    counters: Vec<AtomicUsize>,
+    /// Per-rule round-robin/weighted counters. Grows on demand so hot-reloaded
+    /// routes beyond the startup rule count still get an independent counter
+    /// (previously every route shared `counters[0]`).
+    counters: parking_lot::RwLock<Vec<AtomicUsize>>,
 }
 
 impl LoadBalancerState {
-    pub fn new(num_rules: usize) -> Self {
+    pub fn new(_num_rules: usize) -> Self {
         Self {
-            counters: (0..num_rules).map(|_| AtomicUsize::new(0)).collect(),
+            counters: parking_lot::RwLock::new(Vec::new()),
         }
+    }
+
+    fn bump(&self, rule_idx: usize) -> usize {
+        {
+            let counters = self.counters.read();
+            if rule_idx < counters.len() {
+                return counters[rule_idx].fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let mut counters = self.counters.write();
+        while counters.len() <= rule_idx {
+            counters.push(AtomicUsize::new(0));
+        }
+        counters[rule_idx].fetch_add(1, Ordering::Relaxed)
     }
 
     pub fn select_index(&self, rule_idx: usize, num_targets: usize) -> usize {
         if num_targets == 0 {
             return 0;
         }
-        self.counters[rule_idx].fetch_add(1, Ordering::Relaxed) % num_targets
+        self.bump(rule_idx) % num_targets
     }
 }
 
@@ -824,6 +841,9 @@ fn build_ws_extra_headers(
             continue;
         }
         if let Ok(v) = value.to_str() {
+            if contains_crlf(name_str) || contains_crlf(v) {
+                continue;
+            }
             out.push_str(&format!("{}: {}\r\n", name_str, v));
         }
     }
@@ -835,7 +855,9 @@ fn build_ws_extra_headers(
         "X-Forwarded-Proto: {}\r\n",
         if is_tls { "https" } else { "http" }
     ));
-    out.push_str(&format!("X-Forwarded-Host: {}\r\n", host_header));
+    if !contains_crlf(host_header) {
+        out.push_str(&format!("X-Forwarded-Host: {}\r\n", host_header));
+    }
     out
 }
 
@@ -910,8 +932,9 @@ impl ProxyServer {
             .map(|n| n.get())
             .unwrap_or(4);
 
-        // Spawn N HTTP accept loops with SO_REUSEPORT
-        // Each listener gets its own client with its own connection pool to avoid contention
+        // One shared connection pool for every accept loop (HTTP + HTTPS).
+        // Clones are cheap and share idle keep-alive sockets across listeners.
+        let shared_client = ConnectionPool::new().client();
         let app_manager = self.app_manager.clone();
         for i in 0..num_listeners {
             let config_clone = self.config.clone();
@@ -924,6 +947,7 @@ impl ProxyServer {
             let lb_clone = self.load_balancer.clone();
             let cl_clone = self.connection_limit.clone();
             let rl_clone = self.rate_limiter.clone();
+            let client = shared_client.clone();
 
             tokio::spawn(async move {
                 if let Err(e) = run_http_server(
@@ -938,6 +962,7 @@ impl ProxyServer {
                     lb_clone,
                     cl_clone,
                     rl_clone,
+                    client,
                 )
                 .await
                 {
@@ -959,6 +984,7 @@ impl ProxyServer {
                 let lb_clone = self.load_balancer.clone();
                 let cl_clone = self.connection_limit.clone();
                 let rl_clone = self.rate_limiter.clone();
+                let client = shared_client.clone();
 
                 tokio::spawn(async move {
                     if let Err(e) = run_https_server(
@@ -974,6 +1000,7 @@ impl ProxyServer {
                         lb_clone,
                         cl_clone,
                         rl_clone,
+                        client,
                     )
                     .await
                     {
@@ -1044,9 +1071,9 @@ async fn run_http_server(
     load_balancer: Arc<LoadBalancerState>,
     connection_limit: Option<Arc<Semaphore>>,
     rate_limiter: Option<Arc<IpRateLimiter>>,
+    client: ProxyClient,
 ) -> Result<()> {
     let listener = create_listener(addr)?;
-    let client = ConnectionPool::new().client();
     let mut shutdown_rx = shutdown.subscribe();
 
     loop {
@@ -1116,9 +1143,9 @@ async fn run_https_server(
     load_balancer: Arc<LoadBalancerState>,
     connection_limit: Option<Arc<Semaphore>>,
     rate_limiter: Option<Arc<IpRateLimiter>>,
+    client: ProxyClient,
 ) -> Result<()> {
     let listener = create_listener(addr)?;
-    let client = ConnectionPool::new().client();
     let mut shutdown_rx = shutdown.subscribe();
 
     loop {
@@ -1617,18 +1644,43 @@ async fn handle_request_inner(
 
     // HTTP to HTTPS redirect when TLS is off and force_https is enabled
     if !is_tls && config.tls.force_https {
-        let host = req
-            .uri()
-            .host()
-            .or(req.headers().get("host").and_then(|v| v.to_str().ok()))
+        let raw_host = req
+            .headers()
+            .get("host")
+            .and_then(|v| v.to_str().ok())
+            .or_else(|| req.uri().host())
             .unwrap_or("localhost");
+        // Prefer Host header (not absolute-form authority) and only redirect to
+        // requests we actually serve — prevents open redirects via forged Host.
+        // A host counts as served if it's localhost/an IP, if any routing rule
+        // matches (Domain/DomainPath/Exact/Prefix/Regex/Default — so path-based
+        // and catch-all routes still redirect), or if it's a managed app domain.
+        let host_ok = is_configured_host(raw_host, &config)
+            || find_matching_rule(&req, &config.rules).is_some()
+            || match &app_manager {
+                Some(m) => m.resolve_app_target(raw_host.split(':').next().unwrap_or(raw_host)).await.is_some(),
+                None => false,
+            };
+        let host_for_redirect = if host_ok {
+            raw_host
+        } else {
+            metrics.dec_in_flight();
+            let duration = start_time.elapsed();
+            metrics.record_request(0, 0, 400, duration);
+            let body = http_body_util::Full::new(Bytes::from("Bad Request")).boxed();
+            return Ok(Response::builder()
+                .status(400)
+                .header("Content-Type", "text/plain")
+                .body(body)
+                .unwrap());
+        };
         let path = req.uri().path();
         let query = req
             .uri()
             .query()
             .map(|q| format!("?{}", q))
             .unwrap_or_default();
-        let location = format!("https://{}{}{}", host, path, query);
+        let location = format!("https://{}{}{}", host_for_redirect, path, query);
         metrics.dec_in_flight();
         // RFC 6797 §7.2: HSTS over plaintext is ignored by browsers, so this
         // header on the 308 is non-load-bearing — the canonical home is the
@@ -1645,30 +1697,21 @@ async fn handle_request_inner(
             .unwrap());
     }
 
-    // Body size limit check
+    // Fast-path body size limit: reject when Content-Length already exceeds the
+    // cap. Chunked / HTTP/2 bodies without Content-Length are enforced later by
+    // streaming through `proxy_request_body` + Limited (returns 413 on overflow).
     if let Some(max_size) = config.limits.max_request_size {
         let content_length = req
             .headers()
             .get("content-length")
             .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse().ok())
+            .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(0);
-        let is_chunked = req
-            .headers()
-            .get("transfer-encoding")
-            .and_then(|v| v.to_str().ok())
-            .map(|v| v.to_lowercase().contains("chunked"))
-            .unwrap_or(false);
-        if content_length > max_size || is_chunked {
+        if content_length > max_size {
             metrics.dec_in_flight();
             let duration = start_time.elapsed();
             metrics.record_request(0, 0, 413, duration);
-            let body = http_body_util::Full::new(Bytes::from("Payload Too Large")).boxed();
-            return Ok(Response::builder()
-                .status(413)
-                .header("Content-Type", "text/plain")
-                .body(body)
-                .unwrap());
+            return Ok(payload_too_large());
         }
     }
 
@@ -1714,6 +1757,8 @@ async fn handle_request_inner(
 
     // --- Lua on_request hook ---
     #[cfg(feature = "scripting")]
+    let mut req = req;
+    #[cfg(feature = "scripting")]
     if let Some(ref engine) = lua_engine {
         if engine.has_on_request() {
             let mut lua_req = build_lua_request(&req);
@@ -1726,12 +1771,7 @@ async fn handle_request_inner(
                     return Ok(Response::builder().status(status).body(resp_body).unwrap());
                 }
                 RequestHookResult::Continue(updated_req) => {
-                    // Apply any header modifications back to the hyper request
-                    // We can't easily mutate the incoming request headers here since
-                    // we'd need to own it, so we store the lua_req for later use.
-                    // Headers set via set_header in on_request will be applied after
-                    // the request is decomposed into parts.
-                    let _ = updated_req;
+                    apply_lua_request_mods(&mut req, &updated_req);
                 }
             }
         }
@@ -1898,6 +1938,150 @@ fn is_health_request(req: &Request<Incoming>, health_config: &crate::config::Hea
     path == liveness_path || path == readiness_path
 }
 
+
+/// True if `s` contains CR or LF (unsafe in raw HTTP request lines/headers).
+fn contains_crlf(s: &str) -> bool {
+    s.bytes().any(|b| b == b'\r' || b == b'\n')
+}
+
+/// Case-insensitive host equality (ports already stripped by callers).
+fn host_eq(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
+}
+
+/// Validate a proxy target URL after config resolution or Lua `on_route` override.
+/// Only `http://`, `https://`, and `redirect://` with a non-empty host are allowed.
+fn validate_proxy_target_url(url: &str) -> bool {
+    if url.starts_with("redirect://") {
+        let rest = url.strip_prefix("redirect://").unwrap_or("");
+        if rest.is_empty() || contains_crlf(rest) {
+            return false;
+        }
+        // Host is everything before the first `/` (path may follow).
+        let host = rest.split('/').next().unwrap_or("");
+        let host = host.split('@').next_back().unwrap_or(host); // drop userinfo if any
+        let host = host.split('%').next().unwrap_or(host);
+        return !host.is_empty()
+            && !host.starts_with('[') // reject raw IPv6 form without brackets for simplicity? allow
+            && host.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '[' | ']'));
+    }
+    match url::Url::parse(url) {
+        Ok(u) => {
+            matches!(u.scheme(), "http" | "https")
+                && u.host().is_some()
+                && !contains_crlf(url)
+        }
+        Err(_) => false,
+    }
+}
+
+/// Whether `host` (no port) appears as a configured domain rule or is localhost.
+fn is_configured_host(host: &str, config: &crate::config::Config) -> bool {
+    let host = host.split(':').next().unwrap_or(host);
+    if host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::IpAddr>().is_ok() {
+        return true;
+    }
+    for rule in &config.rules {
+        match &rule.matcher {
+            crate::config::RuleMatcher::Domain(d)
+            | crate::config::RuleMatcher::DomainPath(d, _)
+                if host_eq(d, host) =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    // Also allow ACME/app-registered domains tracked on the live config via rules only.
+    false
+}
+
+/// Build a 413 Payload Too Large response body.
+fn payload_too_large() -> Response<BoxBody> {
+    Response::builder()
+        .status(413)
+        .header("Content-Type", "text/plain")
+        .body(http_body_util::Full::new(Bytes::from("Payload Too Large")).boxed())
+        .unwrap()
+}
+
+/// Map a failed backend request to 413 when the inbound body hit max_request_size.
+fn backend_error_response(e: &(dyn std::error::Error + 'static)) -> Response<BoxBody> {
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(e);
+    while let Some(err) = source {
+        if is_body_limit_error(err) {
+            return payload_too_large();
+        }
+        source = err.source();
+    }
+    Response::builder()
+        .status(502)
+        .body(http_body_util::Full::new(Bytes::from("Bad Gateway")).boxed())
+        .unwrap()
+}
+
+#[cfg(feature = "scripting")]
+fn apply_lua_request_mods(req: &mut Request<Incoming>, lua_req: &LuaRequest) {
+    // Apply path rewrite from Lua (preserve query string).
+    if lua_req.path != req.uri().path() {
+        let mut parts = req.uri().clone().into_parts();
+        let path_and_query = match req.uri().query() {
+            Some(q) => format!("{}?{}", lua_req.path, q),
+            None => lua_req.path.clone(),
+        };
+        if let Ok(pq) = path_and_query.parse::<http::uri::PathAndQuery>() {
+            parts.path_and_query = Some(pq);
+            if let Ok(uri) = hyper::Uri::from_parts(parts) {
+                *req.uri_mut() = uri;
+            }
+        }
+    }
+
+    // Apply header mutations: Lua owns the full header map after on_request.
+    // Remove headers not present in lua_req, then insert only the ones Lua
+    // actually changed. Hop-by-hop and Host are still handled later in the
+    // proxy path.
+    let headers = req.headers_mut();
+    let keep: std::collections::HashSet<String> = lua_req
+        .headers
+        .keys()
+        .map(|k| k.to_ascii_lowercase())
+        .collect();
+    let to_remove: Vec<_> = headers
+        .keys()
+        .filter(|k| !keep.contains(k.as_str()))
+        .cloned()
+        .collect();
+    for name in to_remove {
+        headers.remove(name);
+    }
+    for (name, value) in &lua_req.headers {
+        // The Lua view of headers is a lossy `HashMap<String, String>`:
+        // duplicate-valued headers collapse to one entry and non-UTF8 values
+        // become "". Skip re-inserting a header Lua left unchanged so we keep
+        // the original bytes / duplicate values intact — only overwrite when
+        // the value genuinely differs from every value currently present.
+        let unchanged = {
+            let existing = headers.get_all(name.as_str());
+            let mut iter = existing.iter();
+            let has_any = iter.next().is_some();
+            (value.is_empty() && has_any)
+                || existing
+                    .iter()
+                    .any(|v| v.to_str().map(|s| s == value).unwrap_or(false))
+        };
+        if unchanged {
+            continue;
+        }
+        if let (Ok(hn), Ok(hv)) = (
+            name.parse::<hyper::header::HeaderName>(),
+            HeaderValue::from_str(value),
+        ) {
+            headers.insert(hn, hv);
+        }
+    }
+}
+
 fn handle_acme_challenge(
     req: &Request<Incoming>,
     challenge_store: &ChallengeStore,
@@ -2039,6 +2223,17 @@ async fn handle_websocket_request(
         client_host.clone()
     };
 
+    // Defense-in-depth: never interpolate CRLF into the raw upgrade request.
+    if contains_crlf(&path)
+        || contains_crlf(&query)
+        || contains_crlf(&host_header)
+        || contains_crlf(&client_host)
+    {
+        metrics.inc_errors();
+        let body = http_body_util::Full::new(Bytes::from("Bad Request")).boxed();
+        return Ok(Response::builder().status(400).body(body).unwrap());
+    }
+
     // With Host rewritten to the backend's name, a same-origin upgrade's
     // `Origin: https://<client host>` trips origin checks (Phoenix
     // check_origin); align it. Cross-site Origins pass through untouched.
@@ -2151,6 +2346,15 @@ async fn handle_websocket_request(
         .get("sec-websocket-protocol")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
+
+    if contains_crlf(&ws_key)
+        || contains_crlf(&ws_version)
+        || ws_protocol.as_deref().is_some_and(contains_crlf)
+    {
+        metrics.inc_errors();
+        let body = http_body_util::Full::new(Bytes::from("Bad Request")).boxed();
+        return Ok(Response::builder().status(400).body(body).unwrap());
+    }
 
     let mut handshake = format!(
         "GET {}{} HTTP/1.1\r\n\
@@ -2442,7 +2646,14 @@ async fn handle_regular_request(
                     let lua_req = build_lua_request(&req);
                     match engine.call_on_route(&lua_req, &target_url) {
                         RouteHookResult::Override(new_url) => {
-                            target_url = new_url;
+                            if validate_proxy_target_url(&new_url) {
+                                target_url = new_url;
+                            } else {
+                                tracing::warn!(
+                                    "Lua on_route returned disallowed target URL, ignoring: {}",
+                                    new_url
+                                );
+                            }
                         }
                         RouteHookResult::Default => {}
                     }
@@ -2452,11 +2663,33 @@ async fn handle_regular_request(
                     let lua_req = build_lua_request(&req);
                     match engine.call_route_on_route(script_name, &lua_req, &target_url) {
                         RouteHookResult::Override(new_url) => {
-                            target_url = new_url;
+                            if validate_proxy_target_url(&new_url) {
+                                target_url = new_url;
+                            } else {
+                                tracing::warn!(
+                                    "Lua on_route ({}) returned disallowed target URL, ignoring: {}",
+                                    script_name,
+                                    new_url
+                                );
+                            }
                         }
                         RouteHookResult::Default => {}
                     }
                 }
+            }
+
+            // Reject non-http(s)/redirect targets (config misparse). Validate the
+            // backend authority (`base_url`), not the resolved `target_url`, so we
+            // don't re-parse the request path/query on every request — and because
+            // Lua overrides were already validated above when they replaced it.
+            if !validate_proxy_target_url(&base_url) {
+                tracing::warn!("Refusing to proxy disallowed target URL: {}", target_url);
+                let body = http_body_util::Full::new(Bytes::from("Bad Gateway")).boxed();
+                return Ok((
+                    Response::builder().status(502).body(body).unwrap(),
+                    target_url,
+                    route_scripts,
+                ));
             }
 
             // A redirect:// target short-circuits proxying: 301 to the same
@@ -2542,7 +2775,8 @@ async fn handle_regular_request(
             // that read only the first Cookie header (redbean) see them all.
             crate::proxy_headers::coalesce_cookies(&mut parts.headers);
 
-            let mut request = Request::from_parts(parts, body);
+            let outbound_body = proxy_request_body(body, config.limits.max_request_size);
+            let mut request = Request::from_parts(parts, outbound_body);
 
             request.headers_mut().insert(
                 "X-Forwarded-For",
@@ -2891,18 +3125,20 @@ async fn handle_regular_request(
                     ))
                 }
                 Err(e) => {
-                    circuit_breaker.record_failure(&base_url);
+                    // A body-limit rejection is the client's fault, not the
+                    // backend's — the backend never saw a completed request, so
+                    // do not count it against the circuit breaker (otherwise
+                    // oversized uploads could trip a healthy backend offline).
+                    if !is_body_limit_error(&e) {
+                        circuit_breaker.record_failure(&base_url);
+                    }
                     tracing::error!(
                         "Backend request failed: {} (target: {})",
                         error_chain(&e),
                         target_url
                     );
-                    let body = http_body_util::Full::new(Bytes::from("Bad Gateway")).boxed();
                     Ok((
-                        Response::builder()
-                            .status(502)
-                            .body(body)
-                            .expect("Failed to build response"),
+                        backend_error_response(&e),
                         target_url,
                         route_scripts,
                     ))
@@ -2963,7 +3199,8 @@ async fn handle_regular_request(
                     // proxy-deployed redbean apps (e.g. db.solisoft.test) use.
                     crate::proxy_headers::coalesce_cookies(&mut parts.headers);
 
-                    let mut request = Request::from_parts(parts, body);
+                    let outbound_body = proxy_request_body(body, config.limits.max_request_size);
+                    let mut request = Request::from_parts(parts, outbound_body);
                     request.headers_mut().insert(
                         "X-Forwarded-For",
                         peer_addr
@@ -3001,15 +3238,23 @@ async fn handle_regular_request(
                             return Ok((Response::from_parts(parts, boxed), target_url, vec![]));
                         }
                         Err(e) => {
-                            circuit_breaker.record_failure(&base_url);
+                            // A body-limit rejection is client-caused (oversized
+                            // upload); the backend never saw a failed request, so
+                            // skip both the failure count and the async failover —
+                            // otherwise a client could trip a healthy app offline.
+                            let body_limit = is_body_limit_error(&e);
+                            if !body_limit {
+                                circuit_breaker.record_failure(&base_url);
+                            }
                             tracing::error!(
                                 "Backend request failed: {} (target: {})",
                                 error_chain(&e),
                                 target_url
                             );
                             // Trigger immediate async failover so the next
-                            // request hits a healthy backend
-                            {
+                            // request hits a healthy backend (skip on body-limit
+                            // 413 — the backend never saw a failed request).
+                            if !body_limit {
                                 let mgr = manager.clone();
                                 let host = h.clone();
                                 tokio::spawn(async move {
@@ -3018,13 +3263,8 @@ async fn handle_regular_request(
                                     }
                                 });
                             }
-                            let body =
-                                http_body_util::Full::new(Bytes::from("Bad Gateway")).boxed();
                             return Ok((
-                                Response::builder()
-                                    .status(502)
-                                    .body(body)
-                                    .expect("Failed to build response"),
+                                backend_error_response(&e),
                                 target_url,
                                 vec![],
                             ));
@@ -3067,6 +3307,8 @@ struct MatchedRoute<'a> {
     auth: Vec<crate::auth::BasicAuth>,
     load_balancing: &'a crate::config::LoadBalancingStrategy,
     host: String,
+    /// Index into `config.rules` — used for independent per-route LB counters.
+    rule_idx: usize,
 }
 
 impl<'a> MatchedRoute<'a> {
@@ -3158,7 +3400,8 @@ fn build_redirect_response(target_url: &str) -> Response<BoxBody> {
     }
 }
 
-/// Pure routing: find which rule matches the request
+/// Pure routing: find which rule matches the request.
+/// Host matching is case-insensitive; the first matching rule wins.
 fn find_matching_rule<'a>(
     req: &Request<Incoming>,
     rules: &'a [crate::config::ProxyRule],
@@ -3171,11 +3414,14 @@ fn find_matching_rule<'a>(
         .or_else(|| req.uri().host().map(|h| h.to_string()))?;
 
     let path = req.uri().path();
-
-    for rule in rules {
+    // Domain / DomainPath — case-insensitive host match, first rule wins.
+    // A single linear scan is used regardless of rule count: routing does one
+    // lookup per request, so building a transient index (O(rules) allocations
+    // every request) would cost more than the scan it replaces.
+    for (i, rule) in rules.iter().enumerate() {
         match &rule.matcher {
             crate::config::RuleMatcher::Domain(domain)
-                if domain.as_str() == host.as_str() && !rule.targets.is_empty() =>
+                if host_eq(domain.as_str(), host.as_str()) && !rule.targets.is_empty() =>
             {
                 return Some(MatchedRoute {
                     targets: &rule.targets,
@@ -3185,13 +3431,15 @@ fn find_matching_rule<'a>(
                     auth: rule.auth.clone(),
                     load_balancing: &rule.load_balancing,
                     host: domain.clone(),
+                    rule_idx: i,
                 });
             }
             crate::config::RuleMatcher::DomainPath(domain, path_prefix)
-                if domain.as_str() == host.as_str() && !rule.targets.is_empty() =>
+                if host_eq(domain.as_str(), host.as_str()) && !rule.targets.is_empty() =>
             {
-                let matches = path.starts_with(path_prefix)
-                    || (path_prefix.ends_with('/') && path == path_prefix.trim_end_matches('/'));
+                let matches = path.starts_with(path_prefix.as_str())
+                    || (path_prefix.ends_with('/')
+                        && path == path_prefix.trim_end_matches('/'));
                 if matches {
                     return Some(MatchedRoute {
                         targets: &rule.targets,
@@ -3201,6 +3449,7 @@ fn find_matching_rule<'a>(
                         auth: rule.auth.clone(),
                         load_balancing: &rule.load_balancing,
                         host: domain.clone(),
+                        rule_idx: i,
                     });
                 }
             }
@@ -3209,7 +3458,7 @@ fn find_matching_rule<'a>(
     }
 
     // Check specific rules (Exact, Prefix, Regex) before Default
-    for rule in rules {
+    for (i, rule) in rules.iter().enumerate() {
         match &rule.matcher {
             crate::config::RuleMatcher::Exact(exact)
                 if path == exact && !rule.targets.is_empty() =>
@@ -3222,11 +3471,12 @@ fn find_matching_rule<'a>(
                     auth: rule.auth.clone(),
                     load_balancing: &rule.load_balancing,
                     host: host.to_string(),
+                    rule_idx: i,
                 });
             }
             crate::config::RuleMatcher::Prefix(prefix) if !rule.targets.is_empty() => {
                 // Match /db against prefix /db/ (path without trailing slash)
-                let matches = path.starts_with(prefix)
+                let matches = path.starts_with(prefix.as_str())
                     || (prefix.ends_with('/') && path == prefix.trim_end_matches('/'));
                 if matches {
                     return Some(MatchedRoute {
@@ -3237,6 +3487,7 @@ fn find_matching_rule<'a>(
                         auth: rule.auth.clone(),
                         load_balancing: &rule.load_balancing,
                         host: host.to_string(),
+                        rule_idx: i,
                     });
                 }
             }
@@ -3251,6 +3502,7 @@ fn find_matching_rule<'a>(
                     auth: rule.auth.clone(),
                     load_balancing: &rule.load_balancing,
                     host: host.to_string(),
+                    rule_idx: i,
                 });
             }
             _ => {}
@@ -3258,7 +3510,7 @@ fn find_matching_rule<'a>(
     }
 
     // Fall back to Default rule
-    for rule in rules {
+    for (i, rule) in rules.iter().enumerate() {
         if let crate::config::RuleMatcher::Default = &rule.matcher {
             if !rule.targets.is_empty() {
                 return Some(MatchedRoute {
@@ -3269,6 +3521,7 @@ fn find_matching_rule<'a>(
                     auth: rule.auth.clone(),
                     load_balancing: &rule.load_balancing,
                     host: host.to_string(),
+                    rule_idx: i,
                 });
             }
         }
@@ -3306,17 +3559,16 @@ fn select_target(
         crate::config::LoadBalancingStrategy::RoundRobin => {
             // Round-robin: cycle through all targets, skip unhealthy ones
             let num_targets = targets.len();
-            if num_targets == 0 || load_balancer.counters.is_empty() {
+            if num_targets == 0 {
                 return None;
             }
-            let start_idx = load_balancer.counters[0].load(Ordering::Relaxed) % num_targets;
+            let start_idx = load_balancer.select_index(route.rule_idx, num_targets);
 
             for i in 0..num_targets {
                 let idx = (start_idx + i) % num_targets;
                 let target = &targets[idx];
                 let base_url = target.url.as_str().to_owned();
                 if circuit_breaker.is_available(&base_url) {
-                    load_balancer.counters[0].fetch_add(1, Ordering::Relaxed);
                     let resolved = resolve_target_url(target, path, query, &route.resolution);
                     return Some((resolved, base_url));
                 }
@@ -3326,27 +3578,21 @@ fn select_target(
         crate::config::LoadBalancingStrategy::Weighted => {
             // Weighted: use weights to determine distribution, skip unhealthy
             let total_weight: u32 = targets.iter().map(|t| t.weight as u32).sum();
-            if total_weight == 0 {
-                return select_target(
-                    route,
-                    path,
-                    query,
-                    circuit_breaker,
-                    &LoadBalancerState::new(1),
-                );
-            }
+            // All weights zero: fall through to "first available" below instead
+            // of recursing on the same Weighted route (which would loop forever).
+            if total_weight > 0 {
+                let start_idx =
+                    (load_balancer.bump(route.rule_idx) % total_weight as usize) as u32;
+                let mut cumulative = 0u32;
 
-            let start_idx =
-                (load_balancer.counters[0].load(Ordering::Relaxed) % total_weight as usize) as u32;
-            let mut cumulative = 0u32;
-
-            for target in targets.iter() {
-                cumulative += target.weight as u32;
-                let base_url = target.url.as_str().to_owned();
-                if cumulative > start_idx && circuit_breaker.is_available(&base_url) {
-                    load_balancer.counters[0].fetch_add(1, Ordering::Relaxed);
-                    let resolved = resolve_target_url(target, path, query, &route.resolution);
-                    return Some((resolved, base_url));
+                for target in targets.iter() {
+                    cumulative += target.weight as u32;
+                    let base_url = target.url.as_str().to_owned();
+                    if cumulative > start_idx && circuit_breaker.is_available(&base_url) {
+                        let resolved =
+                            resolve_target_url(target, path, query, &route.resolution);
+                        return Some((resolved, base_url));
+                    }
                 }
             }
 
@@ -3502,6 +3748,36 @@ mod tests {
     }
 
     #[test]
+    fn validate_proxy_target_allows_http_https_redirect() {
+        assert!(validate_proxy_target_url("http://127.0.0.1:3000/path"));
+        assert!(validate_proxy_target_url("https://example.com/"));
+        assert!(validate_proxy_target_url("redirect://new.example.com/path"));
+    }
+
+    #[test]
+    fn validate_proxy_target_rejects_dangerous_schemes() {
+        assert!(!validate_proxy_target_url("file:///etc/passwd"));
+        assert!(!validate_proxy_target_url("gopher://evil"));
+        assert!(!validate_proxy_target_url("ftp://evil"));
+        assert!(!validate_proxy_target_url("redirect://"));
+        assert!(!validate_proxy_target_url("http://evil\r\nHost: x"));
+        assert!(!validate_proxy_target_url("not a url"));
+    }
+
+    #[test]
+    fn host_eq_is_case_insensitive() {
+        assert!(host_eq("Example.COM", "example.com"));
+        assert!(!host_eq("example.com", "other.com"));
+    }
+
+    #[test]
+    fn contains_crlf_detects_control_chars() {
+        assert!(contains_crlf("a\rb"));
+        assert!(contains_crlf("a\nb"));
+        assert!(!contains_crlf("safe-path"));
+    }
+
+    #[test]
     fn test_load_balancer_state_select_index() {
         let lb = LoadBalancerState::new(1);
 
@@ -3519,6 +3795,41 @@ mod tests {
     fn test_load_balancer_state_zero_targets() {
         let lb = LoadBalancerState::new(1);
         assert_eq!(lb.select_index(0, 0), 0);
+    }
+
+    #[test]
+    fn weighted_zero_weights_falls_back_without_recursing() {
+        // All-zero weights must not infinitely recurse into select_target; the
+        // strategy should fall back to the first available target.
+        let targets = vec![
+            crate::config::Target {
+                url: url::Url::parse("http://127.0.0.1:3001").unwrap(),
+                weight: 0,
+            },
+            crate::config::Target {
+                url: url::Url::parse("http://127.0.0.1:3002").unwrap(),
+                weight: 0,
+            },
+        ];
+        let strategy = crate::config::LoadBalancingStrategy::Weighted;
+        let route = MatchedRoute {
+            targets: &targets,
+            from_domain_rule: false,
+            resolution: UrlResolution::AppendPath,
+            route_scripts: vec![],
+            auth: vec![],
+            load_balancing: &strategy,
+            host: "example.com".to_string(),
+            rule_idx: 0,
+        };
+        let cb = crate::circuit_breaker::CircuitBreaker::new(
+            crate::circuit_breaker::CircuitBreakerConfig::default(),
+        );
+        let lb = LoadBalancerState::new(1);
+        // A fresh breaker leaves every target available, so the fallback loop
+        // returns the first one (rather than looping forever).
+        let selected = select_target(&route, "/p", None, &cb, &lb);
+        assert_eq!(selected.unwrap().1, "http://127.0.0.1:3001/");
     }
 
     fn xff_count(s: &str) -> usize {

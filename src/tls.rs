@@ -53,6 +53,12 @@ impl TlsManager {
         let key_path = self.cache_dir.join("self-signed.key.pem");
 
         if cert_path.exists() && key_path.exists() && extra_sans.is_empty() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                // Tighten key permissions if an earlier install left them open.
+                let _ = std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600));
+            }
             let cert_pem = std::fs::read(&cert_path)?;
             let key_pem = std::fs::read(&key_path)?;
             let ck = certified_key_from_pem(&cert_pem, &key_pem)?;

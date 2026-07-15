@@ -174,6 +174,9 @@ fn enforce_admin_body_size_limit(
     req: &Request<Incoming>,
     max_size: Option<usize>,
 ) -> Option<Response<BoxBody>> {
+    // Fast-path only: Content-Length already over the cap. Streaming bodies
+    // without CL are enforced by `http_body_util::Limited` in the passthrough
+    // / API body readers (chunked is no longer blanket-rejected).
     let max = max_size?;
     let content_length = req
         .headers()
@@ -181,13 +184,7 @@ fn enforce_admin_body_size_limit(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(0);
-    let is_chunked = req
-        .headers()
-        .get("transfer-encoding")
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v.to_lowercase().contains("chunked"))
-        .unwrap_or(false);
-    if content_length > max || is_chunked {
+    if content_length > max {
         let body = http_body_util::Full::new(Bytes::from("Payload Too Large")).boxed();
         return Some(
             Response::builder()
@@ -422,12 +419,25 @@ async fn proxy_to_admin_app(
     crate::proxy_headers::coalesce_cookies(&mut parts.headers);
     inject_forwarding_headers(&mut parts.headers, peer_addr);
 
-    let proxy_req = Request::from_parts(parts, body);
+    // Buffer with a hard cap so chunked / missing-CL bodies cannot blow memory.
+    let max = max_request_size.unwrap_or(MAX_ADMIN_REQUEST_BODY_SIZE);
+    let limited = http_body_util::Limited::new(body, max);
+    let body_bytes = match limited.collect().await {
+        Ok(collected) => collected.to_bytes(),
+        Err(_) => {
+            return Response::builder()
+                .status(413)
+                .header("Content-Type", "text/plain")
+                .body(http_body_util::Full::new(Bytes::from("Payload Too Large")).boxed())
+                .unwrap();
+        }
+    };
+    let proxy_req = Request::from_parts(parts, http_body_util::Full::new(body_bytes));
 
     let mut connector = HttpConnector::new();
     connector.set_connect_timeout(Some(std::time::Duration::from_secs(3)));
 
-    let client: Client<HttpConnector, Incoming> =
+    let client: Client<HttpConnector, http_body_util::Full<Bytes>> =
         Client::builder(TokioExecutor::new()).build(connector);
 
     match client.request(proxy_req).await {
@@ -758,6 +768,22 @@ pub async fn run_admin_server(state: Arc<AdminState>) -> Result<()> {
         anyhow::bail!(
             "refusing to start admin API on non-loopback address {} without authentication; \
              set [admin].api_key or [admin].username + password_hash, or bind to 127.0.0.1",
+            addr
+        );
+    }
+
+    // Loopback without auth is allowed for local dev, but any other process on
+    // the host can call deploy/stop/config — warn so operators enable auth.
+    if addr.ip().is_loopback()
+        && !admin_auth_configured(
+            &admin_cfg.api_key,
+            &admin_cfg.username,
+            &admin_cfg.password_hash,
+        )
+    {
+        tracing::warn!(
+            "Admin API on {} has no authentication configured — any local process can deploy, \
+             stop apps, and edit routes. Set ADMIN_USER/ADMIN_PASSWORD (bcrypt hash) or [admin].api_key.",
             addr
         );
     }

@@ -126,16 +126,19 @@ impl Default for AdminConfig {
             tracing::debug!("Loaded environment from .env file");
         }
 
-        if let Some(ref hash) = password_hash {
-            if !looks_like_bcrypt_hash(hash) {
+        // Hash plaintext at construction time so Default and env-based configs
+        // both store a bcrypt hash (never the raw password).
+        let password_hash = password_hash.map(|p| {
+            if looks_like_bcrypt_hash(&p) {
+                p
+            } else {
                 tracing::warn!(
-                    "ADMIN_PASSWORD does not look like a valid bcrypt hash (expected $2a$/$2b$/$2y$ prefix). \
-                    The value was stored as-is and login attempts will fail. \
-                    Set ADMIN_PASSWORD_HASH instead, or use ADMIN_PASSWORD to supply a plaintext password \
-                    that will be hashed at startup."
+                    "ADMIN_PASSWORD looks like plaintext; hashing at startup. \
+                     Prefer storing a bcrypt hash in ADMIN_PASSWORD_HASH."
                 );
+                crate::auth::generate_hash(&p)
             }
-        }
+        });
 
         Self {
             enabled: Some(true),
@@ -626,8 +629,9 @@ cache_dir = "./certs"
 level = "info"
 format = "json"
 output = "stdout"
-include_request_body = true
-include_response_body = true
+# Body logging flags are reserved; currently unused.
+include_request_body = false
+include_response_body = false
 
 # Metrics Configuration
 [metrics]
@@ -647,13 +651,12 @@ max_request_size = "10MB"
 keep_alive_timeout = 30
 request_timeout = 60
 
-# Rate Limiting Configuration
+# Rate Limiting Configuration (in-process; redis_url is unused if present)
 [rate_limiting]
 enabled = true
 strategy = "token_bucket"
 requests_per_second = 1000
 burst_size = 2000
-redis_url = "redis://localhost:6379"
 
 # Apps Configuration (defaults for deployed apps)
 # [apps]
@@ -716,7 +719,20 @@ realm = "Restricted"
                     admin.username = std::env::var("ADMIN_USER").ok();
                 }
                 if admin.password_hash.is_none() {
-                    admin.password_hash = std::env::var("ADMIN_PASSWORD").ok();
+                    // Prefer the explicit hash env; fall back to ADMIN_PASSWORD
+                    // which may be either a bcrypt hash or (legacy) plaintext.
+                    admin.password_hash = std::env::var("ADMIN_PASSWORD_HASH")
+                        .ok()
+                        .or_else(|| std::env::var("ADMIN_PASSWORD").ok());
+                }
+                if let Some(ref mut hash) = admin.password_hash {
+                    if !looks_like_bcrypt_hash(hash) {
+                        tracing::warn!(
+                            "ADMIN_PASSWORD looks like plaintext; hashing at startup. \
+                             Prefer storing a bcrypt hash in ADMIN_PASSWORD_HASH."
+                        );
+                        *hash = crate::auth::generate_hash(hash);
+                    }
                 }
                 admin
             },

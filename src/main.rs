@@ -723,6 +723,17 @@ async fn run_server(
     let cb_config =
         CircuitBreakerConfig::from_toml(config_ref.get_config().circuit_breaker.as_ref());
     let circuit_breaker = Arc::new(CircuitBreaker::new(cb_config));
+    // Pre-register known backends so the first request under load does not
+    // contend on the targets write lock.
+    {
+        let cfg = config_ref.get_config();
+        let urls: Vec<String> = cfg
+            .rules
+            .iter()
+            .flat_map(|r| r.targets.iter().map(|t| t.url.as_str().to_owned()))
+            .collect();
+        circuit_breaker.prewarm(urls);
+    }
 
     // Initialize Lua scripting engine if feature is enabled and config says so
     #[cfg(feature = "scripting")]
