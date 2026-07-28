@@ -26,8 +26,9 @@ terms_agreed = true
 level = "info"
 format = "json"
 output = "stdout"  # or "file:/var/log/soli-proxy.log"
-include_request_body = true
-include_response_body = true
+# Body logging flags are reserved for future use and currently have no effect.
+include_request_body = false
+include_response_body = false
 log_endpoints = true  # log one line per request (method, path, host, status, latency)
 
 # Metrics Configuration
@@ -48,13 +49,12 @@ max_request_size = "10MB"
 keep_alive_timeout = 30
 request_timeout = 60
 
-# Rate Limiting Configuration
+# Rate Limiting Configuration (in-process token bucket; redis_url is unused)
 [rate_limiting]
 enabled = true
 strategy = "token_bucket"
 requests_per_second = 1000
 burst_size = 2000
-redis_url = "redis://localhost:6379"
 
 # Apps Configuration (defaults for deployed apps)
 # Can be overridden per-app in app.infos

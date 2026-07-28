@@ -352,12 +352,12 @@ impl DeploymentManager {
 
         docker_args.push(docker_image.to_string());
 
-        let shell_cmd = if script.contains(" ") {
-            format!("/bin/sh -c '{}'", script.replace("'", "'\\''"))
-        } else {
-            script.clone()
-        };
-        docker_args.push(shell_cmd);
+        // Never use a shell for the container command — same argv parsing as
+        // the native spawn path, so a compromised start_script cannot inject
+        // via `/bin/sh -c`.
+        let (program, args) = parse_start_command(&script, port, app.config.workers)?;
+        docker_args.push(program);
+        docker_args.extend(args);
 
         tracing::info!(
             "Starting Docker container {} for {} slot {} with image {}",
@@ -915,16 +915,32 @@ impl DeploymentManager {
     }
 
     pub async fn get_deployment_log(&self, app_name: &str, slot: &str) -> Result<String> {
+        /// Cap admin log responses so a multi-GB log cannot OOM the proxy.
+        const MAX_LOG_BYTES: u64 = 256 * 1024;
+
         validate_path_component(app_name, "App name")?;
         if slot != "blue" && slot != "green" {
             anyhow::bail!("Invalid slot name: {:?}", slot);
         }
         let log_path = PathBuf::from(format!("run/logs/{}/{}.log", app_name, slot));
-        if log_path.exists() {
-            Ok(std::fs::read_to_string(&log_path)?)
-        } else {
-            Ok(String::new())
+        if !log_path.exists() {
+            return Ok(String::new());
         }
+        let meta = std::fs::metadata(&log_path)?;
+        let file = std::fs::File::open(&log_path)?;
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = file;
+        let mut buf = Vec::new();
+        if meta.len() > MAX_LOG_BYTES {
+            file.seek(SeekFrom::End(-(MAX_LOG_BYTES as i64)))?;
+            // Drop a partial first line so the response starts cleanly.
+            let mut skip = [0u8; 1];
+            while file.read(&mut skip)? == 1 && skip[0] != b'\n' {}
+            file.read_to_end(&mut buf)?;
+        } else {
+            file.read_to_end(&mut buf)?;
+        }
+        Ok(String::from_utf8_lossy(&buf).into_owned())
     }
 }
 

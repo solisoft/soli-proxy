@@ -90,6 +90,17 @@ impl CircuitBreaker {
         }
     }
 
+    /// Pre-register targets so the first request does not take the write lock
+    /// on a cold map under load (e.g. after startup or config reload).
+    pub fn prewarm(&self, target_urls: impl IntoIterator<Item = impl AsRef<str>>) {
+        let mut targets = self.targets.write().unwrap();
+        for url in target_urls {
+            targets
+                .entry(url.as_ref().to_string())
+                .or_insert_with(|| Arc::new(TargetState::new()));
+        }
+    }
+
     fn get_or_create(&self, target_url: &str) -> Arc<TargetState> {
         // Fast path: read lock
         {

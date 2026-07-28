@@ -5,17 +5,32 @@ After=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/home/olivier.bonnaure@delupay.com/workspace/soli/proxy
-ExecStart=/home/olivier.bonnaure@delupay.com/workspace/soli/proxy/target/release/soli-proxy daemon
+
+# Runtime state is written to PATHS RELATIVE TO THIS DIRECTORY and cannot be
+# relocated by flag or env var:
+#   run/logs/<app>/<blue|green>.log   stdout+stderr of each app slot
+#   run/app_state.json                which slot currently serves each app
+#   run/ports.lock                    blue/green port assignments
+#   certs/                            TLS cache, when [tls].cache_dir is "./certs"
+# Without WorkingDirectory systemd starts the process in / and the proxy tries
+# to write /run and /certs.
+WorkingDirectory=/var/lib/soli-proxy
+
+# --conf points at proxy.conf (the routing file), NOT config.toml.
+# config.toml is picked up automatically from the same directory.
+# --sites-dir is the only way to set the sites location; there is no
+# equivalent key in config.toml.
+ExecStart=/usr/local/bin/soli-proxy \
+    --conf /etc/soli-proxy/proxy.conf \
+    --sites-dir /srv/sites
+
+# Do NOT add -d/--daemon here: it forks and detaches, so systemd would lose
+# track of the process and restart it forever. Type=simple wants the proxy in
+# the foreground, and its own log then goes to the journal.
 Restart=always
 RestartSec=5
 
 Environment="RUST_LOG=info"
-Environment="SOLI_PID_DIR=/home/olivier.bonnaure@delupay.com/workspace/soli/proxy"
-Environment="SOLI_LOG_DIR=/home/olivier.bonnaure@delupay.com/workspace/soli/proxy"
-
-StandardOutput=append:/home/olivier.bonnaure@delupay.com/workspace/soli/proxy/proxy.log
-StandardError=append:/home/olivier.bonnaure@delupay.com/workspace/soli/proxy/proxy.log
 
 [Install]
 WantedBy=multi-user.target

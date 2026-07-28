@@ -61,6 +61,30 @@ pub struct CircuitBreakerTomlConfig {
 pub struct AppsTomlConfig {
     pub default_user: Option<String>,
     pub default_group: Option<String>,
+    /// Name of the per-site file whose mtime triggers a blue/green deploy when
+    /// touched. Looked up at the site root, e.g. `sites/<domain>/restart.txt`.
+    pub restart_trigger_file: Option<String>,
+    /// How often to stat the trigger file, in seconds. `0` disables the
+    /// mechanism entirely.
+    pub restart_trigger_poll_secs: Option<u64>,
+}
+
+/// Default name of the per-site deploy trigger file.
+pub const DEFAULT_RESTART_TRIGGER_FILE: &str = "restart.txt";
+/// Default polling interval for the deploy trigger file, in seconds.
+pub const DEFAULT_RESTART_TRIGGER_POLL_SECS: u64 = 2;
+
+impl AppsTomlConfig {
+    pub fn restart_trigger_file(&self) -> String {
+        self.restart_trigger_file
+            .clone()
+            .unwrap_or_else(|| DEFAULT_RESTART_TRIGGER_FILE.to_string())
+    }
+
+    pub fn restart_trigger_poll_secs(&self) -> u64 {
+        self.restart_trigger_poll_secs
+            .unwrap_or(DEFAULT_RESTART_TRIGGER_POLL_SECS)
+    }
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
@@ -126,16 +150,19 @@ impl Default for AdminConfig {
             tracing::debug!("Loaded environment from .env file");
         }
 
-        if let Some(ref hash) = password_hash {
-            if !looks_like_bcrypt_hash(hash) {
+        // Hash plaintext at construction time so Default and env-based configs
+        // both store a bcrypt hash (never the raw password).
+        let password_hash = password_hash.map(|p| {
+            if looks_like_bcrypt_hash(&p) {
+                p
+            } else {
                 tracing::warn!(
-                    "ADMIN_PASSWORD does not look like a valid bcrypt hash (expected $2a$/$2b$/$2y$ prefix). \
-                    The value was stored as-is and login attempts will fail. \
-                    Set ADMIN_PASSWORD_HASH instead, or use ADMIN_PASSWORD to supply a plaintext password \
-                    that will be hashed at startup."
+                    "ADMIN_PASSWORD looks like plaintext; hashing at startup. \
+                     Prefer storing a bcrypt hash in ADMIN_PASSWORD_HASH."
                 );
+                crate::auth::generate_hash(&p)
             }
-        }
+        });
 
         Self {
             enabled: Some(true),
@@ -626,8 +653,9 @@ cache_dir = "./certs"
 level = "info"
 format = "json"
 output = "stdout"
-include_request_body = true
-include_response_body = true
+# Body logging flags are reserved; currently unused.
+include_request_body = false
+include_response_body = false
 
 # Metrics Configuration
 [metrics]
@@ -647,18 +675,21 @@ max_request_size = "10MB"
 keep_alive_timeout = 30
 request_timeout = 60
 
-# Rate Limiting Configuration
+# Rate Limiting Configuration (in-process; redis_url is unused if present)
 [rate_limiting]
 enabled = true
 strategy = "token_bucket"
 requests_per_second = 1000
 burst_size = 2000
-redis_url = "redis://localhost:6379"
 
 # Apps Configuration (defaults for deployed apps)
 # [apps]
 # default_user = "rocky"
 # default_group = "rocky"
+# Touching sites/<domain>/restart.txt triggers a blue/green deploy of that app.
+# Detected by polling (inotify cannot see through the symlinks in sites/).
+# restart_trigger_file = "restart.txt"
+# restart_trigger_poll_secs = 2   # 0 disables the trigger entirely
 
 # Circuit Breaker Configuration
 [circuit_breaker]
@@ -716,7 +747,20 @@ realm = "Restricted"
                     admin.username = std::env::var("ADMIN_USER").ok();
                 }
                 if admin.password_hash.is_none() {
-                    admin.password_hash = std::env::var("ADMIN_PASSWORD").ok();
+                    // Prefer the explicit hash env; fall back to ADMIN_PASSWORD
+                    // which may be either a bcrypt hash or (legacy) plaintext.
+                    admin.password_hash = std::env::var("ADMIN_PASSWORD_HASH")
+                        .ok()
+                        .or_else(|| std::env::var("ADMIN_PASSWORD").ok());
+                }
+                if let Some(ref mut hash) = admin.password_hash {
+                    if !looks_like_bcrypt_hash(hash) {
+                        tracing::warn!(
+                            "ADMIN_PASSWORD looks like plaintext; hashing at startup. \
+                             Prefer storing a bcrypt hash in ADMIN_PASSWORD_HASH."
+                        );
+                        *hash = crate::auth::generate_hash(hash);
+                    }
                 }
                 admin
             },
@@ -1143,6 +1187,38 @@ fn parse_proxy_config(content: &str) -> Result<(Vec<ProxyRule>, Vec<String>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn apps_restart_trigger_defaults_when_absent() {
+        // Existing config.toml files have no [apps] section at all, and the
+        // ones that do only set default_user/default_group.
+        let cfg: TomlConfig = toml::from_str(
+            r#"
+[apps]
+default_user = "rocky"
+"#,
+        )
+        .expect("[apps] without trigger keys must still parse");
+        let apps = cfg.apps.unwrap_or_default();
+        assert_eq!(apps.restart_trigger_file(), "restart.txt");
+        assert_eq!(apps.restart_trigger_poll_secs(), 2);
+    }
+
+    #[test]
+    fn apps_restart_trigger_overrides_are_read() {
+        let cfg: TomlConfig = toml::from_str(
+            r#"
+[apps]
+restart_trigger_file = ".deploy"
+restart_trigger_poll_secs = 0
+"#,
+        )
+        .expect("trigger overrides must parse");
+        let apps = cfg.apps.unwrap_or_default();
+        assert_eq!(apps.restart_trigger_file(), ".deploy");
+        // 0 disables the poller entirely.
+        assert_eq!(apps.restart_trigger_poll_secs(), 0);
+    }
 
     #[test]
     fn scripting_config_parses_without_exposed_env_field() {

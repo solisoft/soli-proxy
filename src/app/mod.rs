@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
@@ -96,6 +97,10 @@ pub struct AppInfo {
     pub blue: AppInstance,
     pub green: AppInstance,
     pub current_slot: String,
+    /// True when the app failed to start and automatic remediation has been
+    /// suspended. Derived from `AppManager` state on read, never persisted.
+    #[serde(default, skip_deserializing)]
+    pub quarantined: bool,
 }
 
 impl AppInfo {
@@ -195,6 +200,7 @@ impl AppInfo {
                 last_started: None,
             },
             current_slot: "blue".to_string(),
+            quarantined: false,
         })
     }
 }
@@ -218,6 +224,15 @@ pub struct AppManager {
         Arc<parking_lot::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<ProcessExit>>>>,
     last_failover: Arc<parking_lot::Mutex<HashMap<String, std::time::Instant>>>,
     failure_count: Arc<parking_lot::Mutex<HashMap<String, u32>>>,
+    /// Apps whose start failed and for which automatic remediation (health-check
+    /// failover, process-exit failover) is suspended until an explicit deploy.
+    quarantined: Arc<parking_lot::Mutex<HashSet<String>>>,
+    /// app name -> mtime of its trigger file as of the last poll. The outer
+    /// `Option` distinguishes "never polled" (no entry) from "file absent"
+    /// (`Some(None)`); the first poll only records a baseline.
+    restart_triggers: Arc<parking_lot::Mutex<HashMap<String, Option<SystemTime>>>>,
+    restart_trigger_file: String,
+    restart_trigger_poll_secs: u64,
 }
 
 /// Convert a domain to its `.test` alias by replacing the TLD.
@@ -300,9 +315,33 @@ async fn kill_process_group(pid: u32) {
         .await;
 }
 
+/// Decide whether a change to a site's trigger file should fire a deploy, and
+/// return the mtime to remember for the next poll.
+///
+/// `baseline` is the entry previously recorded for this app: `None` means the
+/// app has never been polled, `Some(&None)` means the file was absent last time.
+/// The first poll of an app only records a baseline — otherwise every daemon
+/// restart would redeploy every site that already has a trigger file on disk,
+/// on top of the auto-start `discover_apps()` already performs.
+fn trigger_decision(
+    baseline: Option<&Option<SystemTime>>,
+    current: Option<SystemTime>,
+) -> (bool, Option<SystemTime>) {
+    match baseline {
+        // First time we look at this app: record, never fire.
+        None => (false, current),
+        // File appeared, or was touched/rewritten since the last poll.
+        Some(previous) => (current.is_some() && *previous != current, current),
+    }
+}
+
 /// Extract app names from changed file paths, filtering out irrelevant directories.
 /// Each path is expected to be under `sites_dir/<app_name>/...`.
-fn affected_app_names(sites_dir: &Path, paths: &HashSet<PathBuf>) -> HashSet<String> {
+fn affected_app_names(
+    sites_dir: &Path,
+    paths: &HashSet<PathBuf>,
+    trigger_file: &str,
+) -> HashSet<String> {
     const IGNORED_SEGMENTS: &[&str] = &["node_modules", ".git", "tmp", "target"];
 
     let mut names = HashSet::new();
@@ -326,10 +365,13 @@ fn affected_app_names(sites_dir: &Path, paths: &HashSet<PathBuf>) -> HashSet<Str
             continue;
         }
 
-        // Skip if the only changed file is app.infos (handled by discover_apps)
+        // Skip top-level files that have their own handling: `app.infos` is
+        // picked up by discover_apps, and the trigger file is polled separately
+        // (sites that are real directories, like _admin, would otherwise be
+        // restarted twice for one touch).
         if relative.components().count() == 2 {
             if let Some(filename) = relative.file_name() {
-                if filename == "app.infos" {
+                if filename == "app.infos" || filename == trigger_file {
                     continue;
                 }
             }
@@ -415,6 +457,10 @@ impl AppManager {
             process_exit_rx: Arc::new(parking_lot::Mutex::new(Some(process_exit_rx))),
             last_failover: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             failure_count: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            quarantined: Arc::new(parking_lot::Mutex::new(HashSet::new())),
+            restart_triggers: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            restart_trigger_file: cfg.apps.restart_trigger_file(),
+            restart_trigger_poll_secs: cfg.apps.restart_trigger_poll_secs(),
         };
 
         Ok(manager)
@@ -546,6 +592,13 @@ impl AppManager {
             if manager.deployment_manager.is_deploying(&app_name) {
                 tracing::debug!(
                     "Skipping request-triggered failover for {} — deploy already in progress",
+                    app_name
+                );
+                return;
+            }
+            if manager.is_quarantined(&app_name) {
+                tracing::debug!(
+                    "Skipping request-triggered failover for {} — app is quarantined",
                     app_name
                 );
                 return;
@@ -851,7 +904,11 @@ impl AppManager {
 
                 // In dev mode, restart affected apps that are currently running
                 if manager.dev_mode {
-                    let app_names = affected_app_names(&sites_dir, &changed_paths);
+                    let app_names = affected_app_names(
+                        &sites_dir,
+                        &changed_paths,
+                        &manager.restart_trigger_file,
+                    );
                     if !app_names.is_empty() {
                         let running_apps: Vec<String> = {
                             let apps = manager.apps.lock().await;
@@ -887,12 +944,17 @@ impl AppManager {
     }
 
     pub async fn list_apps(&self) -> Vec<AppInfo> {
+        let quarantined = self.quarantined.lock().clone();
         self.apps
             .lock()
             .await
             .values()
             .filter(|&a| a.config.name != "_admin")
             .cloned()
+            .map(|mut a| {
+                a.quarantined = quarantined.contains(&a.config.name);
+                a
+            })
             .collect()
     }
 
@@ -1008,7 +1070,10 @@ impl AppManager {
     }
 
     pub async fn get_app(&self, name: &str) -> Option<AppInfo> {
-        self.apps.lock().await.get(name).cloned()
+        self.apps.lock().await.get(name).cloned().map(|mut a| {
+            a.quarantined = self.is_quarantined(name);
+            a
+        })
     }
 
     pub async fn get_app_name(&self, port: u16) -> Option<String> {
@@ -1064,6 +1129,11 @@ impl AppManager {
             dm.unmark_deploying(&deploy_name);
         });
 
+        // Every explicit deploy path (CLI, admin API, trigger file, auto-start,
+        // restart, rollback) funnels through here, so this is the single place
+        // that lifts a quarantine. `failover` is gated before it reaches this.
+        self.clear_quarantine(app_name);
+
         let app = self
             .apps
             .lock()
@@ -1091,7 +1161,36 @@ impl AppManager {
 
         // Start new instance
         tracing::info!("Starting {} slot {}", app.config.name, slot);
-        let pid = self.deployment_manager.start_instance(&app, slot).await?;
+        let pid = match self.deployment_manager.start_instance(&app, slot).await {
+            Ok(pid) => pid,
+            Err(e) => {
+                // Spawn itself failed (bad start_script, port conflict, missing
+                // binary...). Quarantine so the health loop does not retry it
+                // every 30s; the previous slot, if any, keeps serving.
+                {
+                    let mut apps = self.apps.lock().await;
+                    if let Some(app_entry) = apps.get_mut(app_name) {
+                        let instance = if slot == "blue" {
+                            &mut app_entry.blue
+                        } else {
+                            &mut app_entry.green
+                        };
+                        instance.pid = None;
+                        instance.status = InstanceStatus::Failed;
+                    }
+                }
+                self.emit_event(AppEvent::StatusChanged {
+                    app_name: app_name.to_string(),
+                    slot: slot.to_string(),
+                    status: "failed".to_string(),
+                });
+                self.quarantine(
+                    app_name,
+                    &format!("slot {} could not be spawned: {:#}", slot, e),
+                );
+                return Err(e);
+            }
+        };
         tracing::info!("Started {} slot {} with PID {}", app.config.name, slot, pid);
 
         // Update state with new PID
@@ -1137,6 +1236,20 @@ impl AppManager {
                     instance.status = InstanceStatus::Failed;
                 }
             }
+            self.emit_event(AppEvent::StatusChanged {
+                app_name: app_name.to_string(),
+                slot: slot.to_string(),
+                status: "failed".to_string(),
+            });
+            // The app failed to start: stop here instead of letting the health
+            // loop retry forever. The previous slot, if any, keeps serving.
+            self.quarantine(
+                app_name,
+                &format!(
+                    "slot {} failed to start (see run/logs/{}/{}.log)",
+                    slot, app_name, slot
+                ),
+            );
             return Err(e);
         }
         tracing::info!("Health check passed for {} slot {}", app.config.name, slot);
@@ -1266,6 +1379,16 @@ impl AppManager {
     }
 
     pub async fn failover(&self, app_name: &str) -> Result<(), anyhow::Error> {
+        // Quarantined apps are left alone: a failed start must not turn into an
+        // endless restart loop. Only an explicit deploy clears this.
+        if self.is_quarantined(app_name) {
+            tracing::warn!(
+                "Skipping failover for {} — app is quarantined after a failed start",
+                app_name
+            );
+            return Ok(());
+        }
+
         let target_slot = {
             let apps = self.apps.lock().await;
             let app = apps
@@ -1396,6 +1519,9 @@ impl AppManager {
             if self.deployment_manager.is_deploying(&app_name) {
                 continue;
             }
+            if self.is_quarantined(&app_name) {
+                continue;
+            }
             let url_health = format!("http://localhost:{}{}", port, health_path);
             let url_root = format!("http://localhost:{}/", port);
             let healthy = match http_client.get(&url_health).send().await {
@@ -1466,6 +1592,125 @@ impl AppManager {
         }
     }
 
+    /// True when automatic remediation is suspended for this app after a failed
+    /// start. Cleared by any explicit deploy.
+    pub fn is_quarantined(&self, app_name: &str) -> bool {
+        self.quarantined.lock().contains(app_name)
+    }
+
+    fn quarantine(&self, app_name: &str, reason: &str) {
+        let newly = self.quarantined.lock().insert(app_name.to_string());
+        if newly {
+            tracing::error!(
+                "App '{}' quarantined: {}. Automatic restarts are suspended — \
+                 fix the app and `touch {}/{}`, or run `soli-proxy restart {}`",
+                app_name,
+                reason,
+                app_name,
+                self.restart_trigger_file,
+                app_name
+            );
+        }
+        self.emit_event(AppEvent::StatusChanged {
+            app_name: app_name.to_string(),
+            slot: "-".to_string(),
+            status: "quarantined".to_string(),
+        });
+    }
+
+    fn clear_quarantine(&self, app_name: &str) {
+        if self.quarantined.lock().remove(app_name) {
+            tracing::info!(
+                "App '{}' released from quarantine by an explicit deploy",
+                app_name
+            );
+        }
+    }
+
+    /// Poll each site's trigger file and restart the apps whose file was touched
+    /// since the last tick.
+    ///
+    /// This is a polling loop rather than an extension of the `notify` watcher
+    /// on purpose: inotify does not traverse symlinks, and sites are typically
+    /// symlinks into out-of-tree repositories, so no event is ever produced for
+    /// a file inside them. `AppInfo.path` keeps the un-canonicalized
+    /// `sites/<domain>` path and `fs::metadata` follows symlinks, so a single
+    /// stat per site per tick is enough.
+    pub async fn check_restart_triggers(&self) {
+        let candidates: Vec<(String, PathBuf)> = {
+            let apps = self.apps.lock().await;
+            apps.iter()
+                .filter(|(_, app)| app.config.start_script.is_some())
+                .map(|(name, app)| (name.clone(), app.path.clone()))
+                .collect()
+        };
+
+        let mut to_restart: Vec<String> = Vec::new();
+        {
+            let mut triggers = self.restart_triggers.lock();
+            let live: HashSet<&String> = candidates.iter().map(|(name, _)| name).collect();
+            triggers.retain(|name, _| live.contains(name));
+
+            for (name, path) in &candidates {
+                let current = std::fs::metadata(path.join(&self.restart_trigger_file))
+                    .and_then(|m| m.modified())
+                    .ok();
+                let (fire, remember) = trigger_decision(triggers.get(name), current);
+                // Record before restarting so a deploy that outlives several
+                // ticks cannot re-trigger itself.
+                triggers.insert(name.clone(), remember);
+                if fire {
+                    to_restart.push(name.clone());
+                }
+            }
+        }
+
+        for app_name in to_restart {
+            if self.deployment_manager.is_deploying(&app_name) {
+                tracing::info!(
+                    "Restart trigger detected for {} — deploy already in progress, skipping",
+                    app_name
+                );
+                continue;
+            }
+            tracing::info!(
+                "Restart trigger detected for {} ({} touched), deploying",
+                app_name,
+                self.restart_trigger_file
+            );
+            // Detached: a deploy waits on the health check for up to 30s and
+            // must not delay trigger detection for the other sites.
+            let manager = self.clone();
+            tokio::spawn(async move {
+                if let Err(e) = manager.restart(&app_name).await {
+                    tracing::error!("Triggered restart failed for {}: {:#}", app_name, e);
+                }
+            });
+        }
+    }
+
+    /// Spawn the trigger-file poller. No-op when the poll interval is 0.
+    pub fn spawn_restart_trigger_watcher(&self) {
+        let interval_secs = self.restart_trigger_poll_secs;
+        if interval_secs == 0 {
+            tracing::info!("Restart trigger file polling disabled (poll interval is 0)");
+            return;
+        }
+        tracing::info!(
+            "Watching for '<site>/{}' every {}s to trigger deploys",
+            self.restart_trigger_file,
+            interval_secs
+        );
+        let manager = self.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            loop {
+                interval.tick().await;
+                manager.check_restart_triggers().await;
+            }
+        });
+    }
+
     pub fn spawn_health_check(&self) {
         let manager = self.clone();
         let interval_secs = self.health_check_interval_secs;
@@ -1499,18 +1744,22 @@ impl AppManager {
                 );
 
                 // Check failure count - stop after 3 consecutive failures
-                {
+                let exhausted = {
                     let mut failure_count = manager.failure_count.lock();
                     let count = failure_count.entry(exit.app_name.clone()).or_insert(0);
                     *count += 1;
                     if *count > 3 {
-                        tracing::error!(
-                            "Skipping failover for {} — {} consecutive failures, giving up",
-                            exit.app_name,
-                            count
-                        );
-                        continue;
+                        Some(*count)
+                    } else {
+                        None
                     }
+                };
+                if let Some(count) = exhausted {
+                    manager.quarantine(
+                        &exit.app_name,
+                        &format!("{} consecutive unexpected exits, giving up", count),
+                    );
+                    continue;
                 }
 
                 // Verify the PID still matches the current slot — if it was
@@ -1891,5 +2140,101 @@ health_check = "/status"
 
         let app_info = AppInfo::from_path(&app_path, false).unwrap();
         assert_eq!(app_info.config.health_check, Some("/status".to_string()));
+    }
+
+    // --- restart trigger file ---
+
+    fn at(secs: u64) -> Option<SystemTime> {
+        Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs))
+    }
+
+    #[test]
+    fn test_trigger_first_poll_records_baseline_without_firing() {
+        // A daemon restart must not redeploy every site that already has a
+        // trigger file sitting on disk.
+        let (fire, remember) = trigger_decision(None, at(1000));
+        assert!(!fire);
+        assert_eq!(remember, at(1000));
+
+        // Same when the file is absent.
+        let (fire, remember) = trigger_decision(None, None);
+        assert!(!fire);
+        assert_eq!(remember, None);
+    }
+
+    #[test]
+    fn test_trigger_fires_when_file_appears() {
+        let baseline = None;
+        let (fire, remember) = trigger_decision(Some(&baseline), at(1000));
+        assert!(fire);
+        assert_eq!(remember, at(1000));
+    }
+
+    #[test]
+    fn test_trigger_fires_when_mtime_changes() {
+        let baseline = at(1000);
+        let (fire, _) = trigger_decision(Some(&baseline), at(1001));
+        assert!(fire);
+    }
+
+    #[test]
+    fn test_trigger_quiet_when_mtime_unchanged() {
+        let baseline = at(1000);
+        let (fire, remember) = trigger_decision(Some(&baseline), at(1000));
+        assert!(!fire);
+        assert_eq!(remember, at(1000));
+    }
+
+    #[test]
+    fn test_trigger_quiet_when_file_removed() {
+        let baseline = at(1000);
+        let (fire, remember) = trigger_decision(Some(&baseline), None);
+        assert!(!fire, "removing the trigger file must not deploy");
+        assert_eq!(remember, None);
+    }
+
+    #[test]
+    fn test_trigger_fires_again_after_file_removed_and_recreated() {
+        let baseline = None; // recorded after the removal above
+        let (fire, _) = trigger_decision(Some(&baseline), at(2000));
+        assert!(fire);
+    }
+
+    // --- affected_app_names ---
+
+    #[test]
+    fn test_affected_app_names_skips_top_level_trigger_file() {
+        let sites_dir = PathBuf::from("/srv/sites");
+        let paths: HashSet<PathBuf> = [sites_dir.join("foo.example.com/restart.txt")]
+            .into_iter()
+            .collect();
+        // The poller owns the trigger file; the dev watcher must not also
+        // restart real-directory sites like _admin.
+        assert!(affected_app_names(&sites_dir, &paths, "restart.txt").is_empty());
+    }
+
+    #[test]
+    fn test_affected_app_names_still_detects_code_changes() {
+        let sites_dir = PathBuf::from("/srv/sites");
+        let paths: HashSet<PathBuf> = [
+            sites_dir.join("foo.example.com/app/models/user.lua"),
+            sites_dir.join("foo.example.com/restart.txt"),
+        ]
+        .into_iter()
+        .collect();
+        let names = affected_app_names(&sites_dir, &paths, "restart.txt");
+        assert_eq!(names.len(), 1);
+        assert!(names.contains("foo.example.com"));
+    }
+
+    #[test]
+    fn test_affected_app_names_trigger_file_name_is_configurable() {
+        let sites_dir = PathBuf::from("/srv/sites");
+        let paths: HashSet<PathBuf> = [sites_dir.join("foo.example.com/.deploy")]
+            .into_iter()
+            .collect();
+        assert!(affected_app_names(&sites_dir, &paths, ".deploy").is_empty());
+        // ...and is not skipped under a different configured name.
+        assert!(!affected_app_names(&sites_dir, &paths, "restart.txt").is_empty());
     }
 }

@@ -419,6 +419,12 @@ pub fn load_certificate(cache_dir: &Path, domain: &str) -> Result<Option<Arc<Cer
         return Ok(None);
     }
 
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600));
+    }
+
     let ck = certified_key_from_pem(&std::fs::read(&cert_path)?, &std::fs::read(&key_path)?)?;
 
     if !cert_contains_domain(&std::fs::read(&cert_path).unwrap_or_default(), domain) {

@@ -355,6 +355,35 @@ If `start_script` is omitted, the proxy tries to infer one from the app director
 
 If no `start_script` is set and neither layout is detected, deployment fails with `No start script configured`.
 
+## Deploy Trigger File (`restart.txt`)
+
+Touching `restart.txt` at the root of a site triggers a zero-downtime blue/green deploy of
+that app — the same thing `soli-proxy restart <app>` does, with no SSH-side knowledge of the
+app name required:
+
+```bash
+# at the end of any deploy script
+rsync -rzuv ./ server:/home/rocky/sites/myapp.example.org/
+ssh server 'touch /home/rocky/sites/myapp.example.org/restart.txt'
+```
+
+- The trigger is **polled**, not watched. Sites are usually symlinks into out-of-tree
+  repositories and inotify does not traverse symlinks, so the `proxy.conf`/sites watcher never
+  sees files inside them.
+- Detection latency is the poll interval (2s by default).
+- The **first** poll after a daemon start only records a baseline: an already-present
+  `restart.txt` does not cause a deploy on startup.
+- Creating the file for the first time triggers a deploy; deleting it does not.
+
+Both the file name and the interval are configurable under `[apps]` in `config.toml`. Setting
+`restart_trigger_poll_secs = 0` disables the mechanism:
+
+```toml
+[apps]
+restart_trigger_file = "restart.txt"
+restart_trigger_poll_secs = 2
+```
+
 ## App Health Monitoring
 
 When apps are managed by the proxy, it automatically:
@@ -364,13 +393,31 @@ When apps are managed by the proxy, it automatically:
 
 See [App Configuration](#app-configuration-appinfos) above for how to set `health_check` per app.
 
+### Quarantine on failed start
+
+When an app **fails to start** — the process cannot be spawned, or the new slot never passes
+its health check — the proxy stops trying instead of restarting it in a loop:
+
+- The new slot is killed and marked `Failed`. **The previous slot keeps serving**, so a bad
+  deploy never takes the site down.
+- The app is put in *quarantine*: the 30s health loop, the process-exit monitor, and the
+  request-triggered failover all skip it. An app is also quarantined after 3 consecutive
+  unexpected exits.
+- `GET /api/v1/apps` and `/api/v1/apps/{name}` report `"quarantined": true`, and a
+  `StatusChanged` SSE event with status `quarantined` is emitted.
+
+Quarantine is lifted by any **explicit** deploy: touching `restart.txt`,
+`soli-proxy restart <app>`, or `POST /api/v1/apps/{name}/restart|deploy`. The failure reason
+and the path to the app's log (`run/logs/<app>/<slot>.log`) are logged at `error` level.
+
 ## Systemd Service
 
 Install soli-proxy as a systemd service for automatic restart on failure:
 
 ```bash
-# Copy the service file
+# Copy the service file and adjust the paths in it
 sudo cp scripts/soli-proxy.service /etc/systemd/system/
+sudo mkdir -p /var/lib/soli-proxy /etc/soli-proxy
 
 # Reload systemd
 sudo systemctl daemon-reload
@@ -386,7 +433,43 @@ sudo systemctl status soli-proxy
 journalctl -u soli-proxy -f
 ```
 
-The service file is located at `scripts/soli-proxy.service`.
+The service file is located at `scripts/soli-proxy.service`. Its three load-bearing lines:
+
+```ini
+WorkingDirectory=/var/lib/soli-proxy
+ExecStart=/usr/local/bin/soli-proxy \
+    --conf /etc/soli-proxy/proxy.conf \
+    --sites-dir /srv/sites
+```
+
+### Where things go
+
+| Setting | Notes |
+|---|---|
+| `--conf` | Points at **`proxy.conf`** (routing), *not* `config.toml`. Short form `-c`. There is no `--config` flag. |
+| `config.toml` | Never passed as an argument — it is read from the **same directory** as `--conf`, i.e. `/etc/soli-proxy/config.toml` above. |
+| `--sites-dir` | The **only** way to set the sites location. There is no equivalent key in `config.toml`. Defaults to `./sites`. |
+
+`WorkingDirectory` is mandatory: the runtime state paths are relative and cannot be relocated
+by flag or environment variable. With the unit above they resolve to:
+
+| Path | Contents |
+|---|---|
+| `/var/lib/soli-proxy/run/logs/<app>/<blue\|green>.log` | stdout + stderr of each app slot (created automatically) |
+| `/var/lib/soli-proxy/run/app_state.json` | which slot currently serves each app |
+| `/var/lib/soli-proxy/run/ports.lock` | blue/green port assignments |
+| `/var/lib/soli-proxy/certs/` | TLS cache, when `[tls].cache_dir` is `./certs` |
+
+Without `WorkingDirectory`, systemd starts the process in `/` and the proxy tries to write
+`/run` and `/certs`.
+
+Two things to avoid:
+
+- **Do not add `-d`/`--daemon`** to `ExecStart` under `Type=simple`. It forks and detaches, so
+  systemd loses the process and restarts it in a loop. In the foreground the proxy's own log
+  goes to the journal (`journalctl -u soli-proxy -f`).
+- `SOLI_LOG_DIR` / `SOLI_PID_DIR` only affect `proxy.log` and `proxy.pid`, and `proxy.log` is
+  only written on the `-d` path. They have **no effect** on the per-app `run/logs/` above.
 
 ## Commit messages
 
