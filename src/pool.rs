@@ -35,7 +35,9 @@ pub fn is_body_limit_error(err: &(dyn std::error::Error + 'static)) -> bool {
     let mut source: Option<&(dyn std::error::Error + 'static)> = Some(err);
     while let Some(e) = source {
         // Primary: the concrete type surfaced by `http_body_util::Limited`.
-        if e.downcast_ref::<http_body_util::LengthLimitError>().is_some() {
+        if e.downcast_ref::<http_body_util::LengthLimitError>()
+            .is_some()
+        {
             return true;
         }
         // Fallback: intermediate layers may box the error behind `Box<dyn Error>`

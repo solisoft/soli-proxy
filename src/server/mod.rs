@@ -1658,7 +1658,10 @@ async fn handle_request_inner(
         let host_ok = is_configured_host(raw_host, &config)
             || find_matching_rule(&req, &config.rules).is_some()
             || match &app_manager {
-                Some(m) => m.resolve_app_target(raw_host.split(':').next().unwrap_or(raw_host)).await.is_some(),
+                Some(m) => m
+                    .resolve_app_target(raw_host.split(':').next().unwrap_or(raw_host))
+                    .await
+                    .is_some(),
                 None => false,
             };
         let host_for_redirect = if host_ok {
@@ -1938,7 +1941,6 @@ fn is_health_request(req: &Request<Incoming>, health_config: &crate::config::Hea
     path == liveness_path || path == readiness_path
 }
 
-
 /// True if `s` contains CR or LF (unsafe in raw HTTP request lines/headers).
 fn contains_crlf(s: &str) -> bool {
     s.bytes().any(|b| b == b'\r' || b == b'\n')
@@ -1967,9 +1969,7 @@ fn validate_proxy_target_url(url: &str) -> bool {
     }
     match url::Url::parse(url) {
         Ok(u) => {
-            matches!(u.scheme(), "http" | "https")
-                && u.host().is_some()
-                && !contains_crlf(url)
+            matches!(u.scheme(), "http" | "https") && u.host().is_some() && !contains_crlf(url)
         }
         Err(_) => false,
     }
@@ -3137,11 +3137,7 @@ async fn handle_regular_request(
                         error_chain(&e),
                         target_url
                     );
-                    Ok((
-                        backend_error_response(&e),
-                        target_url,
-                        route_scripts,
-                    ))
+                    Ok((backend_error_response(&e), target_url, route_scripts))
                 }
             }
         }
@@ -3263,11 +3259,7 @@ async fn handle_regular_request(
                                     }
                                 });
                             }
-                            return Ok((
-                                backend_error_response(&e),
-                                target_url,
-                                vec![],
-                            ));
+                            return Ok((backend_error_response(&e), target_url, vec![]));
                         }
                     }
                 }
@@ -3438,8 +3430,7 @@ fn find_matching_rule<'a>(
                 if host_eq(domain.as_str(), host.as_str()) && !rule.targets.is_empty() =>
             {
                 let matches = path.starts_with(path_prefix.as_str())
-                    || (path_prefix.ends_with('/')
-                        && path == path_prefix.trim_end_matches('/'));
+                    || (path_prefix.ends_with('/') && path == path_prefix.trim_end_matches('/'));
                 if matches {
                     return Some(MatchedRoute {
                         targets: &rule.targets,
@@ -3581,16 +3572,14 @@ fn select_target(
             // All weights zero: fall through to "first available" below instead
             // of recursing on the same Weighted route (which would loop forever).
             if total_weight > 0 {
-                let start_idx =
-                    (load_balancer.bump(route.rule_idx) % total_weight as usize) as u32;
+                let start_idx = (load_balancer.bump(route.rule_idx) % total_weight as usize) as u32;
                 let mut cumulative = 0u32;
 
                 for target in targets.iter() {
                     cumulative += target.weight as u32;
                     let base_url = target.url.as_str().to_owned();
                     if cumulative > start_idx && circuit_breaker.is_available(&base_url) {
-                        let resolved =
-                            resolve_target_url(target, path, query, &route.resolution);
+                        let resolved = resolve_target_url(target, path, query, &route.resolution);
                         return Some((resolved, base_url));
                     }
                 }
