@@ -49,7 +49,17 @@ COPY --from=fetch /usr/local/bin/soli-proxy /usr/local/bin/soli-proxy-backup
 
 USER soli-proxy
 
+# Runtime state uses paths relative to the working directory and cannot be
+# relocated by flag or env var: run/logs/<app>/<slot>.log, run/app_state.json,
+# run/ports.lock, and certs/ when [tls].cache_dir is "./certs". Without this
+# the process would run in / and write to /run and /certs, ignoring the
+# mounted volumes.
+WORKDIR /etc/soli-proxy
+
 EXPOSE 80 443 9090
 
 ENTRYPOINT ["soli-proxy"]
-CMD ["--config", "/etc/soli-proxy/config.toml"]
+# --conf takes proxy.conf (the routing file), NOT config.toml — config.toml is
+# read from the same directory automatically. --sites-dir is the only way to
+# point at the sites tree.
+CMD ["--conf", "/etc/soli-proxy/proxy.conf", "--sites-dir", "/etc/soli-proxy/sites"]

@@ -13,6 +13,9 @@ services:
       - "443:443"
       - "9090:9090"
     volumes:
+      # proxy.conf is what --conf points at; config.toml is picked up from the
+      # same directory. Both are required.
+      - ./proxy.conf:/etc/soli-proxy/proxy.conf:ro
       - ./config.toml:/etc/soli-proxy/config.toml:ro
       - ./certs:/etc/soli-proxy/certs
       - ./sites:/etc/soli-proxy/sites

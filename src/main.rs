@@ -850,6 +850,7 @@ async fn run_server(
             m.set_circuit_breaker(circuit_breaker.clone());
             m.spawn_health_check();
             m.spawn_process_exit_monitor();
+            m.spawn_restart_trigger_watcher();
             Some(Arc::new(m))
         }
         Err(e) => {
