@@ -11,5 +11,6 @@ get("/docs/scripting", "docs#scripting");
 get("/docs/security", "docs#security");
 get("/docs/deployment", "docs#deployment");
 get("/docs/benchmark", "docs#benchmark");
+get("/changelog", "docs#changelog");
 get("/health", "home#health");
 get("/up", "home#up");

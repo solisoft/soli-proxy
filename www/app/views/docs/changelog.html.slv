@@ -1,0 +1,158 @@
+<!-- ============================================================ -->
+<!-- CHANGELOG -->
+<!-- ============================================================ -->
+<section class="relative py-16 sm:py-24">
+    <div class="container mx-auto max-w-7xl px-6 lg:px-8">
+        <div class="flex gap-12">
+
+            <!-- Sidebar -->
+            <aside class="hidden lg:block w-56 shrink-0">
+                <nav class="doc-sidebar sticky top-24 space-y-1 text-sm">
+                    <div class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3 px-3">Documentation</div>
+                    <a href="/docs/getting-started" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Getting Started</a>
+                    <a href="/docs/apps" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Apps</a>
+                    <a href="/docs/configuration" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Configuration</a>
+                    <a href="/docs/dev-https" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Dev HTTPS &amp; .test</a>
+                    <a href="/docs/admin-api" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Admin API</a>
+                    <a href="/docs/scripting" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Scripting</a>
+                    <a href="/docs/security" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Security</a>
+                    <a href="/docs/deployment" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Deployment</a>
+                    <a href="/docs/benchmark" class="block px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all">Benchmark</a>
+                    <a href="/changelog" class="active block px-3 py-2 rounded-lg text-white bg-white/10 transition-all">Changelog</a>
+                </nav>
+            </aside>
+
+            <!-- Content -->
+            <div class="flex-1 min-w-0">
+
+                <!-- Page Header -->
+                <div class="mb-12 reveal-on-scroll">
+                    <div class="flex items-center gap-3 text-sm text-gray-400 mb-4">
+                        <a href="/" class="hover:text-white transition-colors">Home</a>
+                        <svg class="w-4 h-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                        <span class="text-white">Changelog</span>
+                    </div>
+                    <div class="flex items-center gap-3 mb-4">
+                        <div class="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center text-emerald-400">
+                            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                        </div>
+                        <div>
+                            <h1 class="text-3xl sm:text-4xl font-bold tracking-tight text-white">Changelog</h1>
+                        </div>
+                    </div>
+                    <p class="text-lg text-gray-400 max-w-3xl">
+                        Release history for soli-proxy. Binaries for Linux (amd64, arm64) and macOS (arm64) are attached to every
+                        <a href="https://github.com/solisoft/soli-proxy/releases" target="_blank" class="text-emerald-400 hover:text-emerald-300 transition-colors">GitHub release</a>.
+                    </p>
+                </div>
+
+                <!-- 0.29.1 -->
+                <div class="mb-10 reveal-on-scroll">
+                    <div class="flex items-center gap-3 mb-5 flex-wrap">
+                        <h2 class="text-2xl font-bold text-white font-mono">v0.29.1</h2>
+                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
+                        <span class="text-sm text-gray-500">2026-07-28</span>
+                    </div>
+
+                    <div class="space-y-4">
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">feature</span>
+                                <h3 class="text-base font-semibold text-white">Deploy trigger file</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                Touching <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">restart.txt</code> at the root of a site triggers a
+                                zero-downtime blue/green deploy, so a deploy script can end with
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">touch &lt;site&gt;/restart.txt</code> instead of an SSH-side restart.
+                                The file is polled rather than watched, because inotify does not traverse the symlinks that sites usually are. The first poll after
+                                startup only records a baseline, so an existing trigger file never redeploys everything on daemon restart. Configurable through
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">[apps].restart_trigger_file</code> and
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">restart_trigger_poll_secs</code>.
+                            </p>
+                        </div>
+
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20">reliability</span>
+                                <h3 class="text-base font-semibold text-white">Quarantine on failed start</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                An app that fails to start is no longer restarted forever. The health loop previously retried every 30 seconds with no failure cap,
+                                leaving a broken deploy flapping indefinitely. The failed slot is now killed and marked failed, <strong class="text-gray-200">the previous
+                                slot keeps serving</strong>, and every automatic remediation path skips the app until an explicit deploy. Surfaced as
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">"quarantined": true</code> on the apps API.
+                            </p>
+                        </div>
+
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">fix</span>
+                                <h3 class="text-base font-semibold text-white">systemd unit and Docker entrypoint repaired</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                Both shipped deployment paths could never start: the systemd unit invoked a subcommand that does not exist, and the Docker
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">CMD</code> passed a flag that does not exist. Both now use
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">--conf</code> and
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">--sites-dir</code>, with a working directory so
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">run/</code> and
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">certs/</code> resolve to the mounted volumes.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 0.29.0 -->
+                <div class="mb-10 reveal-on-scroll">
+                    <div class="flex items-center gap-3 mb-5 flex-wrap">
+                        <h2 class="text-2xl font-bold text-white font-mono">v0.29.0</h2>
+                        <span class="text-sm text-gray-500">Security hardening</span>
+                    </div>
+
+                    <div class="space-y-4">
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20">security</span>
+                                <h3 class="text-base font-semibold text-white">Streaming request-body limits</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                Body-size limits are enforced on chunked and HTTP/2 bodies by streaming through a limiter and returning
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">413</code>, instead of blanket-rejecting chunked encoding.
+                                A body that omits or misreports its length can no longer buffer without bound.
+                            </p>
+                        </div>
+
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20">security</span>
+                                <h3 class="text-base font-semibold text-white">Header and target validation</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                WebSocket upgrade requests and forwarded headers are guarded against CR/LF injection, and proxy target URLs from configuration and
+                                Lua overrides are restricted to safe schemes, closing an SSRF avenue.
+                            </p>
+                        </div>
+
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-purple-500/10 text-purple-400 border border-purple-500/20">performance</span>
+                                <h3 class="text-base font-semibold text-white">Shared connection pool, faster routing</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                All listeners share a single connection pool with a per-host idle cap. Host matching is a single case-insensitive scan again,
+                                replacing an optimization that rebuilt a throwaway hash map on every request.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                    <p class="text-gray-400">
+                        Full history in
+                        <a href="https://github.com/solisoft/soli-proxy/blob/main/CHANGELOG.md" target="_blank" class="text-emerald-400 hover:text-emerald-300 transition-colors">CHANGELOG.md</a>.
+                    </p>
+                </div>
+
+            </div>
+        </div>
+    </div>
+</section>

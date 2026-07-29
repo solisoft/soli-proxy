@@ -52,4 +52,10 @@ class DocsController extends Controller {
             "title": "Benchmark"
         })
     }
+
+    fn changelog(req) {
+        render("docs/changelog", {
+            "title": "Changelog"
+        })
+    }
 }
