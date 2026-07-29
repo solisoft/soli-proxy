@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.29.2](https://github.com/solisoft/soli-proxy/compare/v0.29.1...v0.29.2) (2026-07-29)
+
+Website and admin UI only — the proxy binary is unchanged from 0.29.1.
+
+### Added
+
+* **www:** a Changelog page at `/changelog`, linked from the docs sidebar, the mobile navigation, and the footer.
+* **admin:** a Changelog page in the admin UI, linked from the sidebar.
+
+### Fixed
+
+* **fix(www):** the Tailwind content glob was `./app/views/**/*.{erb,html,html.erb}`. Brace expansion matches the whole extension, so `*.html.slv` never matched and every class used only in a `.slv` view was dropped from the build — silently affecting the two pre-existing `.slv` pages (`benchmark`, `dev_https`). Building with the old glob yields 45029 bytes and drops `bg-purple-500/10` and `list-decimal`; with `slv` added, 45853.
+* **fix(admin):** the committed `output.css` predated several views and Tailwind is not run at request time, so the changelog page's badge classes resolved to nothing. Rebuilt, and restricted to colour families the palette already carries.
+
 ## [0.29.1](https://github.com/solisoft/soli-proxy/compare/v0.29.0...v0.29.1) (2026-07-28)
 
 ### Added
