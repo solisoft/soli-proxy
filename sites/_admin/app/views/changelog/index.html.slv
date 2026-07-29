@@ -8,14 +8,14 @@
     <div class="px-5 py-4 border-b border-white/5 flex items-baseline justify-between gap-3 flex-wrap">
         <div class="flex items-baseline gap-3">
             <h3 class="text-base font-semibold text-white font-mono">v0.29.1</h3>
-            <span class="px-2 py-0.5 rounded-full text-[11px] font-medium bg-accent-500/10 text-accent-400 border border-accent-500/20">latest</span>
+            <span class="px-2 py-0.5 rounded-full text-xs font-medium bg-accent-500/10 text-accent-400 border border-accent-500/20">latest</span>
         </div>
         <span class="text-xs text-surface-500">2026-07-28</span>
     </div>
 
     <ul class="divide-y divide-white/5">
         <li class="px-5 py-4 flex gap-3">
-            <span class="shrink-0 mt-0.5 px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">feat</span>
+            <span class="shrink-0 mt-0.5 px-2 py-0.5 rounded text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">feat</span>
             <div class="min-w-0">
                 <div class="text-sm font-medium text-white">Deploy trigger file</div>
                 <p class="text-sm text-surface-400 mt-1">Touching <span class="font-mono text-surface-300">restart.txt</span> at the root of a site triggers a zero-downtime blue/green deploy, so a deploy script can end with <span class="font-mono text-surface-300">touch &lt;site&gt;/restart.txt</span> instead of an SSH-side restart. The file is polled (2s by default) rather than watched, because inotify does not traverse the symlinks that sites usually are. The first poll after startup only records a baseline, so an existing trigger file never redeploys everything on daemon restart. Configurable via <span class="font-mono text-surface-300">[apps].restart_trigger_file</span> and <span class="font-mono text-surface-300">restart_trigger_poll_secs</span> (<span class="font-mono text-surface-300">0</span> disables it).</p>
@@ -23,7 +23,7 @@
         </li>
 
         <li class="px-5 py-4 flex gap-3">
-            <span class="shrink-0 mt-0.5 px-2 py-0.5 rounded text-[11px] font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20">security</span>
+            <span class="shrink-0 mt-0.5 px-2 py-0.5 rounded text-xs font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20">security</span>
             <div class="min-w-0">
                 <div class="text-sm font-medium text-white">Quarantine on failed start</div>
                 <p class="text-sm text-surface-400 mt-1">An app that fails to start is no longer restarted forever. Previously the health loop called failover every 30s on any unreachable app with no failure cap, leaving a broken deploy flapping indefinitely. The failed slot is killed and marked <span class="font-mono text-surface-300">Failed</span>, the previous slot keeps serving, and all automatic remediation skips the app until an explicit deploy. Exposed as <span class="font-mono text-surface-300">"quarantined": true</span> on the apps API plus an SSE event.</p>
@@ -31,7 +31,7 @@
         </li>
 
         <li class="px-5 py-4 flex gap-3">
-            <span class="shrink-0 mt-0.5 px-2 py-0.5 rounded text-[11px] font-semibold bg-sky-500/10 text-sky-400 border border-sky-500/20">fix</span>
+            <span class="shrink-0 mt-0.5 px-2 py-0.5 rounded text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">fix</span>
             <div class="min-w-0">
                 <div class="text-sm font-medium text-white">systemd unit and Docker entrypoint repaired</div>
                 <p class="text-sm text-surface-400 mt-1">Both shipped deployment paths could never start. The systemd unit invoked a <span class="font-mono text-surface-300">daemon</span> subcommand that does not exist and hardcoded a developer's home directory; the Docker <span class="font-mono text-surface-300">CMD</span> passed <span class="font-mono text-surface-300">--config</span>, which is not a flag. Both now use <span class="font-mono text-surface-300">--conf</span> (which takes <span class="font-mono text-surface-300">proxy.conf</span>, not <span class="font-mono text-surface-300">config.toml</span>) plus <span class="font-mono text-surface-300">--sites-dir</span>, and set a working directory so <span class="font-mono text-surface-300">run/</span> and <span class="font-mono text-surface-300">certs/</span> resolve to the mounted volumes.</p>
@@ -49,7 +49,7 @@
 
     <ul class="divide-y divide-white/5">
         <li class="px-5 py-4 flex gap-3">
-            <span class="shrink-0 mt-0.5 px-2 py-0.5 rounded text-[11px] font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20">security</span>
+            <span class="shrink-0 mt-0.5 px-2 py-0.5 rounded text-xs font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20">security</span>
             <div class="min-w-0">
                 <div class="text-sm font-medium text-white">Streaming request-body limits</div>
                 <p class="text-sm text-surface-400 mt-1">Body-size limits are enforced on chunked and HTTP/2 bodies by streaming through a limiter and returning <span class="font-mono text-surface-300">413</span>, instead of blanket-rejecting chunked encoding. A body omitting or lying about <span class="font-mono text-surface-300">Content-Length</span> can no longer buffer without bound.</p>
@@ -57,7 +57,7 @@
         </li>
 
         <li class="px-5 py-4 flex gap-3">
-            <span class="shrink-0 mt-0.5 px-2 py-0.5 rounded text-[11px] font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20">security</span>
+            <span class="shrink-0 mt-0.5 px-2 py-0.5 rounded text-xs font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20">security</span>
             <div class="min-w-0">
                 <div class="text-sm font-medium text-white">Header and target validation</div>
                 <p class="text-sm text-surface-400 mt-1">WebSocket upgrade requests and forwarded headers are guarded against CR/LF injection; proxy target URLs from config and Lua overrides are restricted to <span class="font-mono text-surface-300">http</span>, <span class="font-mono text-surface-300">https</span>, and <span class="font-mono text-surface-300">redirect</span> schemes, closing an SSRF avenue.</p>
@@ -65,7 +65,7 @@
         </li>
 
         <li class="px-5 py-4 flex gap-3">
-            <span class="shrink-0 mt-0.5 px-2 py-0.5 rounded text-[11px] font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20">security</span>
+            <span class="shrink-0 mt-0.5 px-2 py-0.5 rounded text-xs font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20">security</span>
             <div class="min-w-0">
                 <div class="text-sm font-medium text-white">Admin API hardening</div>
                 <p class="text-sm text-surface-400 mt-1">A loud warning when the admin API binds loopback without authentication; plaintext <span class="font-mono text-surface-300">ADMIN_PASSWORD</span> is bcrypt-hashed at startup instead of stored verbatim; deployment-log responses capped at 256 KiB and request bodies at 1 MB.</p>
@@ -73,7 +73,7 @@
         </li>
 
         <li class="px-5 py-4 flex gap-3">
-            <span class="shrink-0 mt-0.5 px-2 py-0.5 rounded text-[11px] font-semibold bg-violet-500/10 text-violet-400 border border-violet-500/20">perf</span>
+            <span class="shrink-0 mt-0.5 px-2 py-0.5 rounded text-xs font-semibold bg-purple-500/10 text-purple-400 border border-purple-500/20">perf</span>
             <div class="min-w-0">
                 <div class="text-sm font-medium text-white">Shared connection pool and faster routing</div>
                 <p class="text-sm text-surface-400 mt-1">All listeners share one connection pool with a per-host idle cap of 64. Host matching is a single case-insensitive scan again, replacing an "optimization" that rebuilt a throwaway hash map on every request.</p>
