@@ -1051,6 +1051,8 @@ mod admin_tests {
             circuit_breaker: Arc::new(CircuitBreaker::new(CircuitBreakerConfig::default())),
             app_manager: None,
             rate_limiter: None,
+            tls_manager: None,
+            challenge_store: None,
         });
 
         tokio::spawn(async move {
@@ -1339,6 +1341,8 @@ mod admin_tests {
             circuit_breaker: Arc::new(CircuitBreaker::new(CircuitBreakerConfig::default())),
             app_manager: None,
             rate_limiter: None,
+            tls_manager: None,
+            challenge_store: None,
         });
         tokio::spawn(async move {
             let _ = run_admin_server(state).await;

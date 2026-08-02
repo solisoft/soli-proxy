@@ -33,6 +33,31 @@ pub struct AdminState {
     /// configured budget is global across both surfaces). `None` when
     /// `[rate_limiting].enabled` is unset/false.
     pub rate_limiter: Option<Arc<IpRateLimiter>>,
+    /// TLS manager for rescanning `certs/` at runtime.
+    ///
+    /// Certificate files were only ever read once, during startup, so dropping
+    /// a new or renewed certificate into `certs/` required a full restart —
+    /// every connection dropped to install a cert. `TlsManager` is `Clone` and
+    /// its resolver is an `Arc` shared with the running acceptor, so a reload
+    /// through this clone is visible to live TLS handshakes immediately.
+    pub tls_manager: Option<crate::TlsManager>,
+    /// HTTP-01 tokens this proxy will answer for.
+    ///
+    /// The same `Arc` the request path reads, so a token pushed here is
+    /// answerable on the next request with no reload.
+    ///
+    /// **This is what makes a second proxy possible.** Let's Encrypt validates
+    /// by fetching `http://<domain>/.well-known/acme-challenge/<token>` and
+    /// gets whichever node the VIP routes it to — not the node that placed the
+    /// order. With the token only in the ordering node's memory, a two-node
+    /// cluster answers correctly about half the time, and every miss also
+    /// spends one of the five failed-validation slots for that hostname.
+    ///
+    /// The cluster's elected orderer pushes its live tokens here before it
+    /// tells Let's Encrypt to validate. Nothing pushes today, and an empty map
+    /// changes no behaviour at all — locally-ordered certificates still write
+    /// their own tokens into the same store.
+    pub challenge_store: Option<crate::ChallengeStore>,
 }
 
 fn json_response(status: u16, body: serde_json::Value) -> Response<BoxBody> {
@@ -241,20 +266,52 @@ async fn handle_admin_request(
         (Method::GET, "/api/v1/config") => handlers::get_config(&state),
         (Method::GET, "/api/v1/routes") => handlers::get_routes(&state),
         (Method::GET, "/api/v1/metrics") => handlers::get_metrics(&state),
-        (Method::GET, "/api/v1/app-metrics") => handlers::get_all_app_metrics(&state),
+        (Method::GET, "/api/v1/app-metrics") => handlers::get_all_app_metrics(&state).await,
         (Method::GET, "/api/v1/app-metrics/system") => {
             handlers::get_app_system_metrics(&state).await
         }
         (Method::GET, "/api/v1/events/apps") => handlers::sse_app_events(state.clone()).await,
         (Method::POST, "/api/v1/reload") => handlers::post_reload(&state).await,
+        (Method::POST, "/api/v1/certs/reload") => handlers::post_certs_reload(&state),
         (Method::GET, "/api/v1/settings") => handlers::get_settings(&state),
 
         // App management endpoints
         (Method::GET, "/api/v1/apps") => handlers::get_apps(&state).await,
         (Method::GET, "/api/v1/apps/by-domain") => handlers::get_apps_by_domain(&state).await,
+        (Method::GET, "/api/v1/aliases") => handlers::get_aliases(&state).await,
+        (Method::GET, "/api/v1/routing-table") => handlers::get_routing_table(&state).await,
+        (Method::PUT, "/api/v1/routing-table") => match read_body(req).await {
+            Ok(body) => handlers::put_routing_table(&state, &body).await,
+            Err(e) => error_response(400, e),
+        },
+        (Method::PUT, "/api/v1/acme-challenges") => match read_body(req).await {
+            Ok(body) => handlers::put_acme_challenges(&state, &body).await,
+            Err(e) => error_response(400, e),
+        },
         (_, p) if p.starts_with("/api/v1/apps/") => {
             let app_name = p.strip_prefix("/api/v1/apps/").unwrap_or("");
-            if method == Method::GET && !app_name.is_empty() && !app_name.contains('/') {
+            // Aliases are matched before the generic app routes so
+            // `<name>/aliases` is not mistaken for an app called
+            // `<name>/aliases`.
+            if method == Method::POST && app_name.ends_with("/aliases") {
+                let name = app_name.strip_suffix("/aliases").unwrap_or("").to_string();
+                if name.is_empty() {
+                    error_response(400, "Invalid app name")
+                } else {
+                    let body = match read_body(req).await {
+                        Ok(b) => b,
+                        Err(e) => return Ok(error_response(413, e)),
+                    };
+                    handlers::post_app_alias(&state, &name, &body).await
+                }
+            } else if method == Method::DELETE && app_name.contains("/aliases/") {
+                let (name, domain) = app_name.split_once("/aliases/").unwrap_or(("", ""));
+                if name.is_empty() || domain.is_empty() {
+                    error_response(400, "Invalid app name or alias domain")
+                } else {
+                    handlers::delete_app_alias(&state, name, domain).await
+                }
+            } else if method == Method::GET && !app_name.is_empty() && !app_name.contains('/') {
                 handlers::get_app(&state, app_name).await
             } else if method == Method::GET && app_name.ends_with("/metrics") {
                 let name = app_name.strip_suffix("/metrics").unwrap_or("");

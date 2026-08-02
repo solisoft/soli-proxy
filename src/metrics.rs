@@ -40,6 +40,39 @@ pub struct SlotMetrics {
     pub cpu_percent: Option<f64>,
 }
 
+/// One app's resource use, added up across the slots that are running.
+///
+/// Summed rather than taken from the live slot alone: during a blue/green
+/// deploy both slots hold their memory, and that overlap is exactly the moment
+/// an app costs the most. Reporting only the serving slot would understate the
+/// peak — and this figure is the basis for metered billing, so understating it
+/// is not a display bug.
+///
+/// **`None` is not zero.** An app with no running process has *no measurement*,
+/// which is a different statement from "measured, and it was zero". A stopped
+/// app that reads as `0 MB` looks free; one that reads as `null` looks absent,
+/// which is what it is. The same holds for CPU: the first sample of a process
+/// has no previous sample to difference against, so it stays `None` rather
+/// than reading as an idle 0%.
+pub fn sum_slot_metrics(slots: &[SlotMetrics]) -> SlotMetrics {
+    let mut memory_rss_bytes: Option<u64> = None;
+    let mut cpu_percent: Option<f64> = None;
+
+    for slot in slots {
+        if let Some(rss) = slot.memory_rss_bytes {
+            memory_rss_bytes = Some(memory_rss_bytes.unwrap_or(0).saturating_add(rss));
+        }
+        if let Some(cpu) = slot.cpu_percent {
+            cpu_percent = Some(cpu_percent.unwrap_or(0.0) + cpu);
+        }
+    }
+
+    SlotMetrics {
+        memory_rss_bytes,
+        cpu_percent,
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AppSystemMetrics {
     pub blue: SlotMetrics,
@@ -202,12 +235,26 @@ impl Metrics {
 
         let mut cpu_percent: Option<f64> = None;
         if let Ok(content) = std::fs::read_to_string(&stat_path) {
-            if let Some(idx) = content.find('(') {
-                if let Some(idx2) = content[idx..].find(')') {
-                    let parts: Vec<&str> = content[idx + idx2 + 2..].split_whitespace().collect();
+            // `rfind`, not `find`: `comm` is the executable name in parentheses
+            // and may itself contain `)`. Finding the first one shifts every
+            // field after it, silently.
+            if let Some(close) = content.rfind(')') {
+                let parts: Vec<&str> = content[close + 2..].split_whitespace().collect();
+                {
                     if parts.len() >= 14 {
-                        let utime: u64 = parts[12].parse().unwrap_or(0);
-                        let stime: u64 = parts[13].parse().unwrap_or(0);
+                        // The slice starts at field 3, so field N is
+                        // `parts[N - 3]`: utime is field 14 and stime is 15.
+                        //
+                        // This read `parts[12]` and `parts[13]`, which are
+                        // **stime and cutime** — measured on the running proxy,
+                        // `ps` reported 46s of CPU while this computed 160s.
+                        // `cutime` accumulates the CPU of reaped children and
+                        // never decreases, so every app restart inflated the
+                        // figure permanently. Soli Cloud meters usage from
+                        // these numbers, so the error was about to become a
+                        // billing error.
+                        let utime: u64 = parts[11].parse().unwrap_or(0);
+                        let stime: u64 = parts[12].parse().unwrap_or(0);
                         let total_time = utime + stime;
 
                         let now = Instant::now();
@@ -217,7 +264,12 @@ impl Metrics {
                             let delta_time = now.duration_since(prev_snapshot.timestamp);
                             if delta_time.as_secs_f64() > 0.0 {
                                 let delta_cpu = total_time as f64 - prev_snapshot.total_time as f64;
-                                let hz = 100.0;
+                                // `sysconf(_SC_CLK_TCK)`, not a hardcoded
+                                // 100. It is 100 on every mainstream x86 Linux
+                                // and not guaranteed — a wrong divisor scales
+                                // every CPU figure by a constant nobody
+                                // notices until they compare with `top`.
+                                let hz = clock_ticks_per_second();
                                 cpu_percent =
                                     Some((delta_cpu / hz) / delta_time.as_secs_f64() * 100.0);
                             }
@@ -469,4 +521,148 @@ pub type SharedMetrics = Arc<Metrics>;
 
 pub fn new_metrics() -> SharedMetrics {
     Arc::new(Metrics::new())
+}
+
+/// `sysconf(_SC_CLK_TCK)` — the number of `/proc/<pid>/stat` clock ticks in a
+/// second.
+///
+/// 100 on mainstream x86 Linux, and not guaranteed to be: it is a kernel build
+/// option. Read once, because the value cannot change under a running kernel.
+fn clock_ticks_per_second() -> f64 {
+    use std::sync::OnceLock;
+    static TICKS: OnceLock<f64> = OnceLock::new();
+    *TICKS.get_or_init(|| {
+        // SAFETY: `sysconf` is thread-safe and takes no pointer arguments.
+        let raw = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+        if raw > 0 {
+            raw as f64
+        } else {
+            100.0
+        }
+    })
+}
+
+#[cfg(test)]
+mod proc_stat_field_tests {
+    /// The field offsets, isolated so they can be asserted without a process.
+    ///
+    /// `/proc/<pid>/stat` is `pid (comm) state ppid …`; a parser that slices
+    /// after `comm` starts at field 3, so field N lives at `parts[N - 3]`.
+    /// utime is field 14, stime is 15, cutime is 16.
+    fn cpu_ticks(raw: &str) -> Option<(u64, u64)> {
+        let close = raw.rfind(')')?;
+        let parts: Vec<&str> = raw[close + 2..].split_whitespace().collect();
+        if parts.len() < 14 {
+            return None;
+        }
+        Some((parts[11].parse().ok()?, parts[12].parse().ok()?))
+    }
+
+    /// Fields 1..17 with utime=100, stime=200, cutime=9000.
+    fn sample(comm: &str) -> String {
+        format!("42 ({comm}) S 1 42 42 0 -1 4194560 500 0 0 0 100 200 9000 300 20 0 1 0 900",)
+    }
+
+    #[test]
+    fn utime_and_stime_are_read_not_stime_and_cutime() {
+        // The bug this replaces: reading one field late gave stime + cutime.
+        // Measured on the running proxy, `ps` said 46s and the old arithmetic
+        // said 160s — and Soli Cloud meters usage from this.
+        assert_eq!(cpu_ticks(&sample("soli-proxy")), Some((100, 200)));
+    }
+
+    #[test]
+    fn a_comm_containing_a_paren_does_not_shift_every_field() {
+        // `comm` is whatever the executable is called, parentheses included.
+        // Finding the *first* `)` instead of the last shifts the whole slice
+        // and the numbers stay plausible, which is the worst kind of wrong.
+        assert_eq!(cpu_ticks(&sample("wei(rd)name")), Some((100, 200)));
+        assert_eq!(cpu_ticks(&sample("a) b")), Some((100, 200)));
+    }
+
+    #[test]
+    fn cutime_is_not_counted() {
+        // It accumulates the CPU of reaped children and never decreases, so
+        // including it made every app restart inflate the figure for good.
+        let (utime, stime) = cpu_ticks(&sample("soli")).unwrap();
+        assert_ne!(utime + stime, 200 + 9000);
+        assert_eq!(utime + stime, 300);
+    }
+
+    #[test]
+    fn a_truncated_line_is_rejected_rather_than_guessed() {
+        assert_eq!(cpu_ticks("42 (soli) S 1 42"), None);
+        assert_eq!(cpu_ticks("no parens here"), None);
+    }
+
+    #[test]
+    fn the_clock_rate_is_positive() {
+        // A zero or negative `sysconf` result would divide CPU time by zero.
+        assert!(super::clock_ticks_per_second() > 0.0);
+    }
+}
+
+#[cfg(test)]
+mod slot_sum_tests {
+    use super::{sum_slot_metrics, SlotMetrics};
+
+    fn slot(rss: Option<u64>, cpu: Option<f64>) -> SlotMetrics {
+        SlotMetrics {
+            memory_rss_bytes: rss,
+            cpu_percent: cpu,
+        }
+    }
+
+    #[test]
+    fn both_slots_count_during_a_blue_green_overlap() {
+        // The window where an app costs the most: the new slot is up and the
+        // old one has not been reaped. Charging for the serving slot alone
+        // would bill less than the machine is actually holding.
+        let totals = sum_slot_metrics(&[
+            slot(Some(120 * 1024 * 1024), Some(4.0)),
+            slot(Some(80 * 1024 * 1024), Some(1.5)),
+        ]);
+        assert_eq!(totals.memory_rss_bytes, Some(200 * 1024 * 1024));
+        assert_eq!(totals.cpu_percent, Some(5.5));
+    }
+
+    #[test]
+    fn an_app_with_no_running_process_is_unmeasured_not_zero() {
+        // `0 MB` reads as "running, and free". `null` reads as "not running".
+        // Only the second is true, and a metered plan that cannot tell them
+        // apart bills a stopped app as a live one that happens to be idle.
+        let totals = sum_slot_metrics(&[]);
+        assert_eq!(totals.memory_rss_bytes, None);
+        assert_eq!(totals.cpu_percent, None);
+    }
+
+    #[test]
+    fn a_measured_slot_is_not_dragged_to_none_by_an_unmeasured_one() {
+        // One slot answering and one not is the ordinary case — a stopped blue
+        // beside a running green. The answer is the running slot's figure, not
+        // "unknown" and not the running slot plus a phantom zero.
+        let totals = sum_slot_metrics(&[slot(None, None), slot(Some(64), Some(2.0))]);
+        assert_eq!(totals.memory_rss_bytes, Some(64));
+        assert_eq!(totals.cpu_percent, Some(2.0));
+    }
+
+    #[test]
+    fn memory_present_without_cpu_keeps_cpu_absent() {
+        // The first sample of a process has no earlier sample to difference
+        // against, so CPU is genuinely unknown while RSS is already known.
+        // Filling the gap with 0.0 would report a busy app as idle for one
+        // scrape, which is the direction that hides a runaway.
+        let totals = sum_slot_metrics(&[slot(Some(1024), None)]);
+        assert_eq!(totals.memory_rss_bytes, Some(1024));
+        assert_eq!(totals.cpu_percent, None);
+    }
+
+    #[test]
+    fn a_pathological_total_saturates_rather_than_wrapping() {
+        // Two slots cannot really hold `u64::MAX` between them, but a wrapped
+        // sum would report a colossal app as a tiny one — silently, and in the
+        // number a bill is computed from.
+        let totals = sum_slot_metrics(&[slot(Some(u64::MAX), None), slot(Some(4096), None)]);
+        assert_eq!(totals.memory_rss_bytes, Some(u64::MAX));
+    }
 }

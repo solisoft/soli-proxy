@@ -174,6 +174,12 @@ pub struct DeploymentManager {
     http_client: reqwest::Client,
     default_user: Option<String>,
     default_group: Option<String>,
+    /// Untrusted-tenant mode: require containers and impose hardening the app
+    /// cannot weaken. See `AppsTomlConfig::multi_tenant`.
+    multi_tenant: bool,
+    /// Container flags appended after the app's own `docker_options`, so the
+    /// platform's values win.
+    mandatory_docker_args: Vec<String>,
 }
 
 impl DeploymentManager {
@@ -198,7 +204,18 @@ impl DeploymentManager {
             http_client,
             default_user,
             default_group,
+            multi_tenant: false,
+            mandatory_docker_args: Vec::new(),
         }
+    }
+
+    /// Enable untrusted-tenant mode with the platform's mandatory container
+    /// flags. Off by default, so existing single-tenant deployments are
+    /// unaffected.
+    pub fn with_tenant_isolation(mut self, enabled: bool, mandatory_args: Vec<String>) -> Self {
+        self.multi_tenant = enabled;
+        self.mandatory_docker_args = mandatory_args;
+        self
     }
 
     pub fn is_deploying(&self, app_name: &str) -> bool {
@@ -283,6 +300,20 @@ impl DeploymentManager {
                 .await;
         }
 
+        // Refuse to start untrusted code outside a container. The native path
+        // gives a tenant process the host filesystem — every other tenant's
+        // site directory, `certs/`, and `config.toml` with the admin API key —
+        // so falling back to it under multi-tenant mode would silently undo the
+        // isolation the mode exists to provide. Failing the deploy is the point.
+        if self.multi_tenant {
+            anyhow::bail!(
+                "{} has no docker_image, and [apps] multi_tenant = true forbids the native \
+                 start path: it does not isolate the app from the host filesystem or from \
+                 other tenants",
+                app.config.name
+            );
+        }
+
         self.start_native_instance(app, slot, port).await
     }
 
@@ -339,6 +370,11 @@ impl DeploymentManager {
                 docker_args.push(token.to_string());
             }
         }
+
+        // Platform hardening goes last so it wins: `docker run` takes the final
+        // occurrence of a repeated flag, so an app that sets its own --memory
+        // or --user cannot raise its ceiling or become root.
+        docker_args.extend(self.mandatory_docker_args.iter().cloned());
 
         docker_args.push("-e".to_string());
         docker_args.push(format!("PORT={}", port));
@@ -1021,6 +1057,46 @@ fn resolve_group(group: &str) -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::{parse_start_command, validate_docker_options, validate_path_component};
+
+    /// The hardening is a floor, not a default: it is appended after the app's
+    /// own `docker_options`, and `docker run` honours the last occurrence of a
+    /// repeated flag. A tenant that sets `--memory 64g --user 0:0` must still
+    /// end up with the platform's ceiling and a non-root uid.
+    #[test]
+    fn mandatory_docker_args_override_app_supplied_ones() {
+        let cfg = crate::config::AppsTomlConfig {
+            multi_tenant: Some(true),
+            tenant_memory: Some("256m".to_string()),
+            tenant_cpus: Some("0.5".to_string()),
+            ..Default::default()
+        };
+
+        let app_options = ["--memory", "64g", "--user", "0:0"];
+        let mut argv: Vec<String> = app_options.iter().map(|s| s.to_string()).collect();
+        argv.extend(cfg.mandatory_docker_args());
+
+        let last_value = |flag: &str| -> Option<String> {
+            argv.iter()
+                .enumerate()
+                .filter(|(_, tok)| tok.as_str() == flag)
+                .next_back()
+                .and_then(|(i, _)| argv.get(i + 1).cloned())
+        };
+
+        assert_eq!(last_value("--memory").as_deref(), Some("256m"));
+        assert_eq!(last_value("--cpus").as_deref(), Some("0.5"));
+        assert_eq!(last_value("--user").as_deref(), Some("10000:10000"));
+        assert!(argv.iter().any(|a| a == "--read-only"));
+        assert!(argv.iter().any(|a| a == "--cap-drop"));
+        assert!(argv.iter().any(|a| a == "no-new-privileges"));
+        assert!(argv.iter().any(|a| a == "--pids-limit"));
+    }
+
+    #[test]
+    fn multi_tenant_defaults_off_so_existing_deployments_are_unchanged() {
+        let cfg = crate::config::AppsTomlConfig::default();
+        assert!(!cfg.multi_tenant());
+    }
 
     #[test]
     fn docker_options_allows_benign_flags() {

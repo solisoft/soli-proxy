@@ -235,6 +235,8 @@ async fn main() {
         circuit_breaker: cb,
         app_manager: None,
         rate_limiter: None,
+        tls_manager: None,
+        challenge_store: None,
     });
     tokio::spawn(async move {
         if let Err(e) = run_admin_server(admin_state).await {

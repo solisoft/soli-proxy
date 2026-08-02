@@ -1089,6 +1089,8 @@ async fn run_server(
             circuit_breaker: circuit_breaker.clone(),
             app_manager: app_manager.clone(),
             rate_limiter: admin_rate_limiter,
+            tls_manager: Some(tls_manager.clone()),
+            challenge_store: Some(challenge_store.clone()),
         });
         tokio::spawn(async move {
             if let Err(e) = soli_proxy::run_admin_server(admin_state).await {

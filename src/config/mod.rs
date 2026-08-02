@@ -67,6 +67,25 @@ pub struct AppsTomlConfig {
     /// How often to stat the trigger file, in seconds. `0` disables the
     /// mechanism entirely.
     pub restart_trigger_poll_secs: Option<u64>,
+    /// Treat every app as untrusted code (`[apps] multi_tenant = true`).
+    ///
+    /// The native spawn path is not a sandbox: it clears the environment and
+    /// sets `PR_SET_NO_NEW_PRIVS`, but the process still reads the host
+    /// filesystem — other tenants' site directories, `certs/`, and the proxy's
+    /// own `config.toml` with its admin credentials — and can dial the database
+    /// and cache on localhost. That is fine when you wrote every app and fatal
+    /// when you did not.
+    ///
+    /// With this set, apps must declare a `docker_image` and are started with
+    /// the hardening in `mandatory_docker_args`, which tenant config cannot
+    /// weaken.
+    pub multi_tenant: Option<bool>,
+    /// Memory ceiling applied to every container, e.g. `"512m"`.
+    pub tenant_memory: Option<String>,
+    /// CPU ceiling applied to every container, e.g. `"1.0"`.
+    pub tenant_cpus: Option<String>,
+    /// Uid:gid containers run as. Never root, never the proxy's own uid.
+    pub tenant_user: Option<String>,
 }
 
 /// Default name of the per-site deploy trigger file.
@@ -84,6 +103,59 @@ impl AppsTomlConfig {
     pub fn restart_trigger_poll_secs(&self) -> u64 {
         self.restart_trigger_poll_secs
             .unwrap_or(DEFAULT_RESTART_TRIGGER_POLL_SECS)
+    }
+
+    /// Whether apps are untrusted. Defaults to `false` so existing
+    /// single-tenant deployments are unchanged.
+    pub fn multi_tenant(&self) -> bool {
+        self.multi_tenant.unwrap_or(false)
+    }
+
+    /// Container flags the platform imposes on every tenant app.
+    ///
+    /// Returned *after* the app's own `docker_options`, so `docker run` takes
+    /// these as the effective values — the tenant cannot opt out of its own
+    /// resource limits or re-acquire capabilities. It is a mandatory floor, not
+    /// a default.
+    ///
+    /// Docker alone has a long history of container escapes; this raises the
+    /// cost of one but is not a substitute for a VM boundary. Treat it as the
+    /// first step toward gVisor or Firecracker, not the finish line.
+    pub fn mandatory_docker_args(&self) -> Vec<String> {
+        let mut args: Vec<String> = vec![
+            // No writes to the image; anything the app needs to write goes to
+            // the tmpfs below, which cannot hold executables.
+            "--read-only".to_string(),
+            "--tmpfs".to_string(),
+            "/tmp:rw,noexec,nosuid,size=64m".to_string(),
+            "--cap-drop".to_string(),
+            "ALL".to_string(),
+            "--security-opt".to_string(),
+            "no-new-privileges".to_string(),
+            // A fork bomb in one tenant must not take the host down with it.
+            "--pids-limit".to_string(),
+            "256".to_string(),
+        ];
+
+        args.push("--memory".to_string());
+        args.push(
+            self.tenant_memory
+                .clone()
+                .unwrap_or_else(|| "512m".to_string()),
+        );
+        args.push("--cpus".to_string());
+        args.push(
+            self.tenant_cpus
+                .clone()
+                .unwrap_or_else(|| "1.0".to_string()),
+        );
+        args.push("--user".to_string());
+        args.push(
+            self.tenant_user
+                .clone()
+                .unwrap_or_else(|| "10000:10000".to_string()),
+        );
+        args
     }
 }
 
@@ -690,6 +762,14 @@ burst_size = 2000
 # Detected by polling (inotify cannot see through the symlinks in sites/).
 # restart_trigger_file = "restart.txt"
 # restart_trigger_poll_secs = 2   # 0 disables the trigger entirely
+# Untrusted apps: require a docker_image and impose container hardening the
+# app cannot weaken (read-only rootfs, cap-drop ALL, no-new-privileges,
+# pids/memory/cpu limits, non-root uid). Apps without an image fail to deploy
+# rather than falling back to the unsandboxed native path. Default false.
+# multi_tenant = true
+# tenant_memory = "512m"
+# tenant_cpus = "1.0"
+# tenant_user = "10000:10000"
 
 # Circuit Breaker Configuration
 [circuit_breaker]

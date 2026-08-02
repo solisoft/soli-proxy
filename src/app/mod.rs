@@ -10,6 +10,7 @@ use tokio::sync::Mutex;
 use url::Url;
 
 pub mod deployment;
+pub mod external;
 pub mod port_manager;
 
 use crate::circuit_breaker::SharedCircuitBreaker;
@@ -232,8 +233,25 @@ pub struct AppManager {
     /// (`Some(None)`); the first poll only records a baseline.
     restart_triggers: Arc<parking_lot::Mutex<HashMap<String, Option<SystemTime>>>>,
     restart_trigger_file: String,
+    /// Routes served but not supervised here — the cluster migration seam.
+    ///
+    /// Empty by default, and an empty table changes no behaviour anywhere.
+    pub external_routes: Arc<external::ExternalRouteTable>,
     restart_trigger_poll_secs: u64,
+    /// Extra domain -> app name mappings, managed through the admin API.
+    ///
+    /// A site directory gives an app exactly one domain, which ties "the URL"
+    /// to "the checkout currently behind it". Aliases break that coupling: many
+    /// domains can point at one running app, and repointing an alias is an
+    /// atomic map swap with no restart — the primitive behind production
+    /// aliases, per-branch URLs and instant rollback.
+    aliases: Arc<Mutex<HashMap<String, String>>>,
 }
+
+/// Where the alias table is persisted, alongside `app_state.json` and
+/// `ports.lock`. Paths in `run/` are CWD-relative, matching the rest of the
+/// runtime state.
+const ALIASES_FILE: &str = "./run/aliases.json";
 
 /// Convert a domain to its `.test` alias by replacing the TLD.
 /// e.g. "soli.solisoft.net" → "soli.solisoft.test"
@@ -433,12 +451,22 @@ impl AppManager {
 
         let cfg = config_manager.get_config();
         let (process_exit_tx, process_exit_rx) = tokio::sync::mpsc::unbounded_channel();
-        let deployment_manager = Arc::new(DeploymentManager::new(
-            dev_mode,
-            cfg.apps.default_user.clone(),
-            cfg.apps.default_group.clone(),
-            process_exit_tx,
-        ));
+        let multi_tenant = cfg.apps.multi_tenant();
+        if multi_tenant {
+            tracing::info!(
+                "multi_tenant mode: apps must declare a docker_image and are started with \
+                 platform-imposed container hardening"
+            );
+        }
+        let deployment_manager = Arc::new(
+            DeploymentManager::new(
+                dev_mode,
+                cfg.apps.default_user.clone(),
+                cfg.apps.default_group.clone(),
+                process_exit_tx,
+            )
+            .with_tenant_isolation(multi_tenant, cfg.apps.mandatory_docker_args()),
+        );
         let (event_tx, _) = broadcast::channel(32);
 
         let manager = Self {
@@ -461,6 +489,8 @@ impl AppManager {
             restart_triggers: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             restart_trigger_file: cfg.apps.restart_trigger_file(),
             restart_trigger_poll_secs: cfg.apps.restart_trigger_poll_secs(),
+            aliases: Arc::new(Mutex::new(read_aliases_file())),
+            external_routes: Arc::new(external::ExternalRouteTable::default()),
         };
 
         Ok(manager)
@@ -547,7 +577,115 @@ impl AppManager {
                 }
             }
         }
+
+        // Fold in admin-managed aliases. An alias resolves to whatever its
+        // target app is serving right now, so repointing one takes effect on
+        // the next request without touching the running processes.
+        //
+        // This runs last and skips domains already present, so an alias can
+        // never shadow an app's own domain — otherwise a stale alias could
+        // silently hijack a real site.
+        let aliases = self.aliases.lock().await;
+        for (alias, target) in aliases.iter() {
+            if result.contains_key(alias) {
+                continue;
+            }
+            let Some(app) = apps.get(target) else {
+                continue;
+            };
+            // `_admin` is unauthenticated behind the admin listener; an alias
+            // to it would expose it on the public proxy.
+            if app.config.name == "_admin" {
+                continue;
+            }
+            if let Some((port, health_check)) = result.get(&app.config.domain).cloned() {
+                result.insert(alias.clone(), (port, health_check));
+            }
+        }
+        drop(aliases);
+
         result
+    }
+
+    /// Current alias table (domain -> app name).
+    pub async fn get_aliases(&self) -> HashMap<String, String> {
+        self.aliases.lock().await.clone()
+    }
+
+    /// Point `domain` at `app`, replacing any existing alias for that domain.
+    ///
+    /// Rejects a domain that is already an app's own site domain: those are
+    /// owned by the sites directory, and letting an alias override one would
+    /// make routing depend on map iteration order.
+    pub async fn set_alias(&self, domain: &str, app: &str) -> Result<(), anyhow::Error> {
+        let domain = domain.trim().to_lowercase();
+        if domain.is_empty() || !domain.contains('.') {
+            anyhow::bail!("Invalid alias domain: {}", domain);
+        }
+        if app == "_admin" {
+            anyhow::bail!("Refusing to alias the bundled admin app");
+        }
+
+        {
+            let apps = self.apps.lock().await;
+            if !apps.contains_key(app) {
+                anyhow::bail!("App not found: {}", app);
+            }
+            if let Some(owner) = apps.values().find(|info| info.config.domain == domain) {
+                anyhow::bail!(
+                    "{} is already the site domain of app {}",
+                    domain,
+                    owner.config.name
+                );
+            }
+        }
+
+        self.aliases
+            .lock()
+            .await
+            .insert(domain.clone(), app.to_string());
+        self.persist_aliases().await;
+        tracing::info!("Alias {} -> {}", domain, app);
+
+        // Register the alias for a certificate and drop any static rule that
+        // would now shadow it.
+        self.sync_routes().await;
+        Ok(())
+    }
+
+    /// Remove an alias. Returns whether it existed.
+    pub async fn remove_alias(&self, domain: &str) -> bool {
+        let domain = domain.trim().to_lowercase();
+        let removed = self.aliases.lock().await.remove(&domain).is_some();
+        if removed {
+            self.persist_aliases().await;
+            tracing::info!("Removed alias {}", domain);
+        }
+        removed
+    }
+
+    async fn persist_aliases(&self) {
+        let state = {
+            let aliases = self.aliases.lock().await;
+            serde_json::Value::Object(
+                aliases
+                    .iter()
+                    .map(|(domain, app)| (domain.clone(), serde_json::Value::String(app.clone())))
+                    .collect(),
+            )
+        };
+        let path = PathBuf::from(ALIASES_FILE);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match serde_json::to_string_pretty(&state) {
+            Ok(content) => {
+                if let Err(e) = std::fs::write(&path, content) {
+                    tracing::error!("Failed to write {}: {}", ALIASES_FILE, e);
+                }
+            }
+            Err(e) => tracing::error!("Failed to serialize aliases: {}", e),
+        }
     }
 
     pub async fn resolve_app_target(&self, host: &str) -> Option<super::config::Target> {
@@ -563,24 +701,54 @@ impl AppManager {
                 return Some(super::config::Target { url, weight: 100 });
             }
         }
-        None
+        // Then routes pushed from the cluster. **After** the proxy's own apps,
+        // never before: during a migration a domain may briefly exist on both
+        // sides, and the node that actually holds the process has to win.
+        // Preferring the pushed table would hand traffic to a workload that may
+        // not have started yet.
+        self.external_routes.target(host)
+    }
+
+    /// Every domain this proxy will answer for — its own apps plus pushed ones.
+    ///
+    /// Used where the *set* of domains matters rather than where each one
+    /// points: ACME registration and stale-static-rule pruning. Kept separate
+    /// from `get_running_app_domains`, whose value type is a local port and
+    /// means nothing for a workload on another machine.
+    pub async fn all_routable_domains(&self) -> Vec<String> {
+        let mut domains: Vec<String> = self.get_running_app_domains().await.into_keys().collect();
+        domains.extend(self.external_routes.domains());
+        domains.sort();
+        domains.dedup();
+        domains
     }
 
     /// Find the app name for a given host domain.
     pub async fn app_name_for_host(&self, host: &str) -> Option<String> {
-        let apps = self.apps.lock().await;
-        for (name, app) in apps.iter() {
-            if app.config.domain == host {
-                return Some(name.clone());
-            }
-            if strip_www(&app.config.domain).as_deref() == Some(host) {
-                return Some(name.clone());
-            }
-            if self.dev_mode && dev_domain(&app.config.domain).as_deref() == Some(host) {
-                return Some(name.clone());
+        {
+            let apps = self.apps.lock().await;
+            for (name, app) in apps.iter() {
+                if app.config.domain == host {
+                    return Some(name.clone());
+                }
+                if strip_www(&app.config.domain).as_deref() == Some(host) {
+                    return Some(name.clone());
+                }
+                if self.dev_mode && dev_domain(&app.config.domain).as_deref() == Some(host) {
+                    return Some(name.clone());
+                }
             }
         }
-        None
+
+        // Fall back to the alias table, so traffic arriving on an alias is
+        // still attributed to its app — this is what per-app metrics and
+        // request-triggered failover key off.
+        let alias_target = self.aliases.lock().await.get(host).cloned()?;
+        self.apps
+            .lock()
+            .await
+            .contains_key(&alias_target)
+            .then_some(alias_target)
     }
 
     /// Trigger a failover for the given app in a background task.
@@ -786,7 +954,13 @@ impl AppManager {
     /// Removes stale static rules from proxy.conf for domains now managed by
     /// the AppManager (which handles blue-green routing dynamically).
     async fn sync_routes(&self) {
-        let app_domains = self.get_running_app_domains().await;
+        // The *set* of managed domains, which now includes ones the cluster
+        // serves. A static rule left in place for a cluster-managed domain
+        // would shadow the pushed route, and the symptom — one domain still
+        // reaching the old backend after a migration — is the hardest kind to
+        // spot because everything else works.
+        let managed: std::collections::HashSet<String> =
+            self.all_routable_domains().await.into_iter().collect();
 
         // Remove static proxy.conf rules for app-managed domains so they
         // don't shadow the dynamic blue-green routing.
@@ -802,7 +976,7 @@ impl AppManager {
                     _ => None,
                 };
                 if let Some(d) = domain {
-                    if app_domains.contains_key(d) {
+                    if managed.contains(d) {
                         tracing::info!("Removing stale static rule for app-managed domain: {}", d);
                         return false;
                     }
@@ -820,8 +994,10 @@ impl AppManager {
             }
         }
 
-        let acme_eligible: Vec<String> = app_domains
-            .keys()
+        // Certificates follow the same set: a domain the cluster serves through
+        // this proxy still needs a certificate from it.
+        let acme_eligible: Vec<String> = managed
+            .iter()
             .filter(|d| is_acme_eligible(d))
             .cloned()
             .collect();
@@ -832,7 +1008,7 @@ impl AppManager {
         }
 
         if let Some(ref acme) = *self.acme_service.lock().await {
-            for domain in app_domains.keys() {
+            for domain in &managed {
                 if is_acme_eligible(domain) {
                     let acme = acme.clone();
                     let domain = domain.clone();
@@ -1078,6 +1254,31 @@ impl AppManager {
 
     pub async fn get_app_name(&self, port: u16) -> Option<String> {
         self.port_allocator.get_app_name(port).await
+    }
+
+    /// The OS processes behind each app, by app name.
+    ///
+    /// Both slots when both are up: a blue/green deploy runs two, and an app's
+    /// memory during that window is the pair. Slots with no pid are omitted
+    /// rather than reported as absent processes.
+    ///
+    /// A Soli app's workers are **threads, not child processes** — measured on
+    /// this host, `--workers 2` gives one pid with ten threads and no children
+    /// — so a slot's pid accounts for the whole app and there is no tree to
+    /// walk. That would stop being true for a container-backed app, where the
+    /// real process is a child of the container daemon; none exist here today,
+    /// and this comment is the marker for when one does.
+    pub async fn running_pids(&self) -> HashMap<String, Vec<u32>> {
+        let apps = self.apps.lock().await;
+        apps.iter()
+            .map(|(name, app)| {
+                let pids = [&app.blue, &app.green]
+                    .iter()
+                    .filter_map(|instance| instance.pid)
+                    .collect();
+                (name.clone(), pids)
+            })
+            .collect()
     }
 
     pub async fn get_system_metrics(&self, metrics: &AppMetrics) -> serde_json::Value {
@@ -1822,6 +2023,25 @@ impl AppManager {
     }
 }
 
+/// Read `run/aliases.json` (domain -> app name). A missing or malformed file
+/// yields an empty table: aliases are additive routing, so losing them degrades
+/// to site-domain-only routing rather than preventing startup.
+fn read_aliases_file() -> HashMap<String, String> {
+    let Ok(content) = std::fs::read_to_string(ALIASES_FILE) else {
+        return HashMap::new();
+    };
+    match serde_json::from_str::<HashMap<String, String>>(&content) {
+        Ok(aliases) => {
+            tracing::info!("Loaded {} alias(es) from {}", aliases.len(), ALIASES_FILE);
+            aliases
+        }
+        Err(e) => {
+            tracing::error!("Ignoring malformed {}: {}", ALIASES_FILE, e);
+            HashMap::new()
+        }
+    }
+}
+
 /// Read `run/app_state.json` (app name -> current_slot), written on every
 /// promotion so other processes can recover the live slot.
 fn read_app_state_file() -> Option<serde_json::Map<String, serde_json::Value>> {
@@ -1937,6 +2157,40 @@ fn find_pid_by_proc_net(port: u16) -> Option<u32> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// The alias file is best-effort state: a corrupt or absent one must not
+    /// stop the proxy booting, because aliases are additive routing and losing
+    /// them degrades to site-domain-only rather than to no service.
+    #[test]
+    fn malformed_alias_file_is_ignored() {
+        let temp_dir = TempDir::new().unwrap();
+        let previous = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        std::fs::create_dir_all("./run").unwrap();
+        std::fs::write(ALIASES_FILE, "{ this is not json").unwrap();
+        assert!(read_aliases_file().is_empty());
+
+        std::fs::write(ALIASES_FILE, r#"{"a.example.com":"app-one"}"#).unwrap();
+        let aliases = read_aliases_file();
+        assert_eq!(
+            aliases.get("a.example.com").map(String::as_str),
+            Some("app-one")
+        );
+
+        std::env::set_current_dir(previous).unwrap();
+    }
+
+    #[test]
+    fn missing_alias_file_yields_an_empty_table() {
+        let temp_dir = TempDir::new().unwrap();
+        let previous = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        assert!(read_aliases_file().is_empty());
+
+        std::env::set_current_dir(previous).unwrap();
+    }
 
     #[tokio::test]
     async fn test_app_info_parsing() {

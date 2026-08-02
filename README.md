@@ -355,6 +355,84 @@ If `start_script` is omitted, the proxy tries to infer one from the app director
 
 If no `start_script` is set and neither layout is detected, deployment fails with `No start script configured`.
 
+## Multi-Tenant Mode (untrusted apps)
+
+The native start path is **not a sandbox**. It clears the environment, calls `setsid()` and sets
+`PR_SET_NO_NEW_PRIVS`, but the process still reads the host filesystem — other tenants' site
+directories, `certs/`, and this proxy's own `config.toml`, which contains the admin API key — and
+can connect to anything on localhost. That is fine when you wrote every app, and unacceptable when
+you did not.
+
+```toml
+[apps]
+multi_tenant = true       # default false; existing deployments are unchanged
+tenant_memory = "512m"
+tenant_cpus   = "1.0"
+tenant_user   = "10000:10000"
+```
+
+With it on:
+
+- An app **without** a `docker_image` fails to deploy rather than falling back to the native path.
+  Failing loudly is the point — a silent fallback would undo the isolation.
+- Every container gets `--read-only`, a `noexec,nosuid` tmpfs at `/tmp`, `--cap-drop ALL`,
+  `--security-opt no-new-privileges`, `--pids-limit 256`, plus the memory/cpu/user limits above.
+- These are appended **after** the app's own `docker_options`, and `docker run` honours the last
+  occurrence of a repeated flag, so an app cannot raise its own ceiling or run as root.
+- `docker_options` is still validated (no `--privileged`, no host namespaces, no docker socket).
+
+> Docker has a long history of container escapes. This raises the cost of one; it is not a VM
+> boundary. For genuinely hostile code, treat it as the first step toward gVisor or Firecracker.
+
+## Reloading Certificates
+
+Certificate files in `certs/` are scanned at startup. To install one added or renewed since —
+a wildcard from an external DNS-01 client, or a `mkcert` certificate for local development —
+rescan without restarting:
+
+```bash
+curl -X POST http://127.0.0.1:9090/api/v1/certs/reload -H "X-Api-Key: $KEY"
+```
+
+The reload is visible to live TLS handshakes immediately; connections are not dropped. Prior to
+this, installing a certificate meant a full restart.
+
+ACME-issued certificates do **not** need this — the renewal task injects them into the resolver
+directly. Call it from your renewal hook when an external tool writes the files instead.
+
+## Domain Aliases
+
+A site directory gives an app exactly one domain, which ties *the URL* to *the checkout behind
+it*. Aliases break that coupling: several domains can point at one running app, and repointing
+an alias is an atomic map swap — no restart, no rebuild, effective on the next request. That is
+what makes instant rollback and per-branch preview URLs possible.
+
+```bash
+# Point a domain at a running app
+curl -X POST http://127.0.0.1:9090/api/v1/apps/myapp.example.com/aliases \
+     -H 'Content-Type: application/json' -H "X-Api-Key: $KEY" \
+     -d '{"domain":"www.example.com"}'
+
+curl http://127.0.0.1:9090/api/v1/aliases            # domain -> app
+curl -X DELETE http://127.0.0.1:9090/api/v1/apps/myapp.example.com/aliases/www.example.com
+```
+
+Rollback is the same POST with a different app: send `{"domain":"www.example.com"}` to the
+previous deployment and traffic moves back, with both processes left running.
+
+Notes:
+
+- Aliases are stored in `run/aliases.json` and reloaded at startup. A missing or malformed file
+  is ignored with a log line rather than being fatal — aliases are additive routing, so losing
+  them degrades to site-domain-only.
+- An alias can never shadow an app's own site domain; that is rejected, since otherwise routing
+  would depend on map iteration order.
+- Aliases are registered for ACME exactly like site domains, so a public alias gets its own
+  certificate automatically.
+- Traffic arriving on an alias is attributed to its app, so per-app metrics and request-triggered
+  failover behave the same as on the site domain.
+- `_admin` cannot be aliased: it does no auth of its own and is only safe behind the admin listener.
+
 ## Deploy Trigger File (`restart.txt`)
 
 Touching `restart.txt` at the root of a site triggers a zero-downtime blue/green deploy of

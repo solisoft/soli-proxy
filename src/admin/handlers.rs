@@ -153,13 +153,309 @@ pub async fn post_app_stop(state: &Arc<AdminState>, name: &str) -> Response<BoxB
     }
 }
 
+/// `POST /api/v1/certs/reload` — rescan the certificate directory.
+///
+/// Picks up certificates added or renewed on disk without restarting, which
+/// previously meant dropping every live connection to install one. ACME-issued
+/// certificates are injected directly by the renewal task and do not need this;
+/// it is for manually managed files — a wildcard from an external DNS-01 client,
+/// or a `mkcert` certificate for local development.
+pub fn post_certs_reload(state: &Arc<AdminState>) -> Response<BoxBody> {
+    let Some(tls) = &state.tls_manager else {
+        return error_response(501, "TLS is not enabled on this proxy");
+    };
+    match tls.load_all_cached_certs() {
+        Ok(()) => ok_response(serde_json::json!({
+            "message": "Certificates reloaded",
+            "cache_dir": tls.cache_dir().display().to_string()
+        })),
+        Err(e) => error_response(500, &format!("Certificate reload failed: {}", e)),
+    }
+}
+
+/// `GET /api/v1/aliases` — the whole alias table (domain -> app).
+pub async fn get_aliases(state: &Arc<AdminState>) -> Response<BoxBody> {
+    match &state.app_manager {
+        Some(manager) => {
+            let aliases = manager.get_aliases().await;
+            match serde_json::to_value(aliases) {
+                Ok(value) => ok_response(value),
+                Err(e) => error_response(500, &format!("Failed to serialize aliases: {}", e)),
+            }
+        }
+        None => error_response(501, "App management not configured"),
+    }
+}
+
+/// `PUT /api/v1/routing-table` — routes this proxy serves but does not run.
+///
+/// The cluster's side of the migration: `soli-oned` pushes the complete set of
+/// domains it is serving on other nodes, and the proxy routes them without
+/// supervising them.
+///
+/// ```json
+/// { "index": 42,
+///   "routes": { "x.soli.app": [ { "url": "http://10.0.0.12:20001", "weight": 100 } ] } }
+/// ```
+///
+/// **Complete set, not a delta.** A missed push then self-corrects on the next
+/// one, and removing a route needs no separate call. The `index` must increase:
+/// a retry overtaking the write that superseded it would otherwise reinstate
+/// routes that were deliberately removed, which looks exactly like a rollback
+/// nobody asked for. A stale push answers 409 rather than being silently
+/// ignored, so the pusher can tell "refused" from "applied".
+pub async fn put_routing_table(state: &Arc<AdminState>, body: &str) -> Response<BoxBody> {
+    use crate::app::external::ExternalRoutes;
+
+    let Some(manager) = &state.app_manager else {
+        return error_response(501, "App management not configured");
+    };
+    let parsed: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => return error_response(400, &format!("Invalid JSON: {}", e)),
+    };
+    let Some(index) = parsed.get("index").and_then(|v| v.as_u64()) else {
+        return error_response(400, "Missing index");
+    };
+    let Some(routes) = parsed.get("routes").and_then(|v| v.as_object()) else {
+        return error_response(400, "Missing routes");
+    };
+
+    let mut table = std::collections::HashMap::new();
+    for (host, targets) in routes {
+        let Some(list) = targets.as_array() else {
+            return error_response(400, &format!("routes[{}] is not an array", host));
+        };
+        let mut parsed_targets = Vec::new();
+        for target in list {
+            let Some(raw) = target.get("url").and_then(|v| v.as_str()) else {
+                return error_response(400, &format!("routes[{}] has a target with no url", host));
+            };
+            // Parsed here, not at use. A malformed URL rejected at push time is
+            // one error message for the pusher; the same URL rejected at
+            // request time is a 502 for a real user with no explanation.
+            let Ok(url) = raw.parse() else {
+                return error_response(
+                    400,
+                    &format!("routes[{}] has an invalid url: {}", host, raw),
+                );
+            };
+            let weight = target.get("weight").and_then(|v| v.as_u64()).unwrap_or(100) as u8;
+            parsed_targets.push(crate::config::Target { url, weight });
+        }
+        table.insert(host.to_lowercase(), parsed_targets);
+    }
+
+    let count = table.len();
+    if manager
+        .external_routes
+        .push(ExternalRoutes { index, table })
+    {
+        ok_response(serde_json::json!({ "applied": true, "index": index, "domains": count }))
+    } else {
+        // 409, not 200-with-a-flag: the pusher has to be able to tell
+        // "refused" from "applied" without parsing a body, because the
+        // difference decides whether it retries with a higher index.
+        error_response(409, "an equal or newer routing table is already in place")
+    }
+}
+
+/// `PUT /api/v1/acme-challenges` — HTTP-01 tokens this proxy will answer for.
+///
+/// The other half of the elected-orderer design. One node in the cluster orders
+/// certificates; **every** node has to be able to prove the challenge, because
+/// Let's Encrypt fetches the validation URL over the VIP and lands wherever
+/// routing sends it. A proxy that does not know the token answers 404, the
+/// order fails, and the failure is charged against that hostname's budget of
+/// five failed validations per hour.
+///
+/// ```json
+/// { "tokens": { "<token>": "<key authorization>" } }
+/// ```
+///
+/// **Replace, not merge**, exactly like the routing table: the pusher sends the
+/// complete live set, so a token the orderer has abandoned stops being
+/// answerable on the next push rather than lingering. Merging would leave a
+/// proxy able to satisfy a challenge the cluster no longer controls, and
+/// nothing would ever remove it.
+///
+/// There is no monotonic index here, unlike the routing table. A stale push
+/// costs at most one retried validation — Let's Encrypt retries, and the
+/// orderer re-probes before proving — whereas a stale *routing* push silently
+/// restores routes that were deliberately removed. Different blast radius,
+/// different guard.
+pub async fn put_acme_challenges(state: &Arc<AdminState>, body: &str) -> Response<BoxBody> {
+    let Some(store) = &state.challenge_store else {
+        return error_response(501, "ACME challenge serving is not configured");
+    };
+    let parsed: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => return error_response(400, &format!("Invalid JSON: {}", e)),
+    };
+    let Some(tokens) = parsed.get("tokens").and_then(|v| v.as_object()) else {
+        return error_response(400, "Missing tokens");
+    };
+
+    let mut next = std::collections::HashMap::with_capacity(tokens.len());
+    for (token, key_auth) in tokens {
+        // Validated at push time, not at request time. A malformed token
+        // rejected here is one clear error for the pusher; the same token
+        // accepted and then never matched is a validation failure whose cause
+        // is invisible from both ends.
+        if !plausible_acme_token(token) {
+            return error_response(400, &format!("implausible ACME token: {:?}", token));
+        }
+        let Some(value) = key_auth.as_str().filter(|v| !v.is_empty()) else {
+            return error_response(400, &format!("tokens[{}] has no key authorization", token));
+        };
+        next.insert(token.clone(), value.to_string());
+    }
+
+    let count = next.len();
+    match store.write() {
+        Ok(mut guard) => {
+            *guard = next;
+            tracing::info!(tokens = count, "ACME challenge set replaced by the cluster");
+            ok_response(serde_json::json!({ "applied": true, "tokens": count }))
+        }
+        Err(_) => error_response(500, "challenge store lock is poisoned"),
+    }
+}
+
+/// ACME tokens are base64url and at least 22 characters.
+///
+/// The token becomes part of a lookup key reached from an unauthenticated
+/// request path, so it is checked rather than trusted — "the CA would never
+/// send that" is the assumption every traversal bug is built on.
+fn plausible_acme_token(token: &str) -> bool {
+    token.len() >= 22
+        && token.len() <= 128
+        && token
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// `GET /api/v1/routing-table` — what the cluster last pushed.
+pub async fn get_routing_table(state: &Arc<AdminState>) -> Response<BoxBody> {
+    let Some(manager) = &state.app_manager else {
+        return error_response(501, "App management not configured");
+    };
+    let snapshot = manager.external_routes.snapshot();
+    let routes: serde_json::Map<String, serde_json::Value> = snapshot
+        .table
+        .iter()
+        .map(|(host, targets)| {
+            (
+                host.clone(),
+                serde_json::Value::Array(
+                    targets
+                        .iter()
+                        .map(|t| serde_json::json!({ "url": t.url.as_str(), "weight": t.weight }))
+                        .collect(),
+                ),
+            )
+        })
+        .collect();
+    ok_response(serde_json::json!({ "index": snapshot.index, "routes": routes }))
+}
+
+/// `POST /api/v1/apps/{name}/aliases` with `{"domain": "..."}`.
+///
+/// Point another domain at an already-running app. Repointing an existing alias
+/// is the same call with a different app, and takes effect on the next request
+/// without restarting anything — this is the rollback primitive.
+pub async fn post_app_alias(state: &Arc<AdminState>, name: &str, body: &str) -> Response<BoxBody> {
+    let Some(manager) = &state.app_manager else {
+        return error_response(501, "App management not configured");
+    };
+
+    let parsed: serde_json::Value = match serde_json::from_str(body) {
+        Ok(value) => value,
+        Err(e) => return error_response(400, &format!("Invalid JSON: {}", e)),
+    };
+    let Some(domain) = parsed.get("domain").and_then(|d| d.as_str()) else {
+        return error_response(400, "Missing \"domain\"");
+    };
+
+    match manager.set_alias(domain, name).await {
+        Ok(()) => ok_response(serde_json::json!({
+            "message": "Alias set",
+            "domain": domain.trim().to_lowercase(),
+            "app": name
+        })),
+        Err(e) => error_response(400, &format!("{}", e)),
+    }
+}
+
+/// `DELETE /api/v1/apps/{name}/aliases/{domain}`.
+pub async fn delete_app_alias(
+    state: &Arc<AdminState>,
+    name: &str,
+    domain: &str,
+) -> Response<BoxBody> {
+    let Some(manager) = &state.app_manager else {
+        return error_response(501, "App management not configured");
+    };
+
+    // Deleting through the wrong app would silently succeed and remove an alias
+    // the caller does not own, so verify ownership before touching the table.
+    let normalized = domain.trim().to_lowercase();
+    match manager.get_aliases().await.get(&normalized) {
+        Some(owner) if owner == name => {}
+        Some(owner) => {
+            return error_response(
+                409,
+                &format!(
+                    "Alias {} belongs to app {}, not {}",
+                    normalized, owner, name
+                ),
+            )
+        }
+        None => return error_response(404, &format!("No such alias: {}", normalized)),
+    }
+
+    if manager.remove_alias(&normalized).await {
+        ok_response(serde_json::json!({
+            "message": "Alias removed",
+            "domain": normalized,
+            "app": name
+        }))
+    } else {
+        error_response(404, &format!("No such alias: {}", normalized))
+    }
+}
+
 pub async fn get_app_metrics(state: &Arc<AdminState>, name: &str) -> Response<BoxBody> {
     match &state.app_manager {
         Some(manager) => {
             // First check if app exists
             match manager.get_app(name).await {
-                Some(_) => {
-                    let metrics = state.metrics.get_app_metrics(name);
+                Some(app) => {
+                    // Same join as the collection endpoint, for one app: an
+                    // `AppMetricsJson` whose memory field is always null is
+                    // worse than one that is absent, because it reads as a
+                    // measurement that came back empty.
+                    let mut metrics = state.metrics.get_app_metrics(name).unwrap_or(
+                        crate::metrics::AppMetricsJson {
+                            requests: 0,
+                            bytes_received: 0,
+                            bytes_sent: 0,
+                            avg_response_time_ms: 0.0,
+                            errors: 0,
+                            memory_rss_bytes: None,
+                            cpu_percent: None,
+                        },
+                    );
+
+                    let slots: Vec<_> = [&app.blue, &app.green]
+                        .iter()
+                        .filter_map(|instance| instance.pid)
+                        .filter_map(|pid| state.metrics.get_process_stats(pid))
+                        .collect();
+                    let totals = crate::metrics::sum_slot_metrics(&slots);
+                    metrics.memory_rss_bytes = totals.memory_rss_bytes;
+                    metrics.cpu_percent = totals.cpu_percent;
+
                     match serde_json::to_value(metrics) {
                         Ok(val) => ok_response(val),
                         Err(e) => {
@@ -174,8 +470,48 @@ pub async fn get_app_metrics(state: &Arc<AdminState>, name: &str) -> Response<Bo
     }
 }
 
-pub fn get_all_app_metrics(state: &Arc<AdminState>) -> Response<BoxBody> {
-    let metrics = state.metrics.get_all_app_metrics();
+/// Traffic **and** resources for every app, in one answer.
+///
+/// The two halves come from different places and used to be two endpoints:
+/// bytes and requests are counted by the proxy as it serves, memory and CPU
+/// are read from `/proc` for the app's own processes. `memory_rss_bytes` and
+/// `cpu_percent` were hardcoded `None` here, so the field existed, serialised,
+/// and told every caller the platform could not measure memory per app — while
+/// `/api/v1/app-metrics/system` was measuring exactly that, one endpoint away.
+///
+/// Joining them matters beyond convenience: metered billing needs bandwidth and
+/// memory for the *same* app over the *same* interval, and two endpoints
+/// sampled a second apart do not give that.
+pub async fn get_all_app_metrics(state: &Arc<AdminState>) -> Response<BoxBody> {
+    let mut metrics = state.metrics.get_all_app_metrics();
+
+    if let Some(manager) = &state.app_manager {
+        for (name, pids) in manager.running_pids().await {
+            // Only apps the proxy has served appear in the traffic map. An app
+            // that is running but has had no request yet still has memory, and
+            // omitting it would make "no traffic" look like "not running".
+            let entry = metrics
+                .entry(name)
+                .or_insert_with(|| crate::metrics::AppMetricsJson {
+                    requests: 0,
+                    bytes_received: 0,
+                    bytes_sent: 0,
+                    avg_response_time_ms: 0.0,
+                    errors: 0,
+                    memory_rss_bytes: None,
+                    cpu_percent: None,
+                });
+
+            let slots: Vec<_> = pids
+                .iter()
+                .filter_map(|pid| state.metrics.get_process_stats(*pid))
+                .collect();
+            let totals = crate::metrics::sum_slot_metrics(&slots);
+            entry.memory_rss_bytes = totals.memory_rss_bytes;
+            entry.cpu_percent = totals.cpu_percent;
+        }
+    }
+
     match serde_json::to_value(metrics) {
         Ok(val) => ok_response(val),
         Err(e) => error_response(500, &format!("Failed to serialize metrics: {}", e)),
@@ -500,4 +836,47 @@ pub async fn sse_app_events(state: Arc<AdminState>) -> Response<BoxBody> {
         .header("Connection", "keep-alive")
         .body(body.boxed())
         .unwrap()
+}
+
+#[cfg(test)]
+mod acme_challenge_tests {
+    use super::plausible_acme_token;
+
+    #[test]
+    fn a_real_token_is_accepted() {
+        // What Let's Encrypt actually issues: base64url, 43 characters.
+        assert!(plausible_acme_token(
+            "cVpQ4jNJb2xVZk1sTHBRc2RmZ2hqa2wxMjM0NTY3ODkw"
+        ));
+        assert!(plausible_acme_token("A-b_C-d_E-f_G-h_I-j_K1"));
+    }
+
+    #[test]
+    fn a_token_that_could_walk_the_keyspace_is_refused_at_push_time() {
+        // The token is used to build a lookup key reached from an
+        // unauthenticated request path. Rejecting it here gives the pusher one
+        // clear error; accepting it and never matching gives both ends a
+        // validation failure with no visible cause.
+        for token in [
+            "../../etc/passwd",
+            "a/b/../../../secret",
+            "tok en with spaces here",
+            "token.with.dots.aaaaaaaaa",
+            "%2e%2e%2fetc%2fpasswd%2e",
+        ] {
+            assert!(!plausible_acme_token(token), "accepted {token:?}");
+        }
+    }
+
+    #[test]
+    fn length_is_bounded_at_both_ends() {
+        // Too short is not an ACME token; unbounded length is an unbounded
+        // key in a map any peer can push to.
+        assert!(!plausible_acme_token(""));
+        assert!(!plausible_acme_token("tooshort"));
+        assert!(!plausible_acme_token(&"a".repeat(21)));
+        assert!(plausible_acme_token(&"a".repeat(22)));
+        assert!(plausible_acme_token(&"a".repeat(128)));
+        assert!(!plausible_acme_token(&"a".repeat(129)));
+    }
 }
