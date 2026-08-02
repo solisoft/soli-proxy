@@ -690,10 +690,52 @@ fn create_listener(addr: SocketAddr) -> Result<TcpListener> {
     socket.set_reuse_address(true)?;
     socket.set_reuse_port(true)?;
     socket.set_nonblocking(true)?;
-    socket.bind(&addr.into())?;
+    socket.bind(&addr.into()).map_err(|e| bind_error(addr, e))?;
     socket.listen(8192)?;
     let std_listener: std::net::TcpListener = socket.into();
     Ok(TcpListener::from_std(std_listener)?)
+}
+
+/// Checks that an address is bindable, without accepting anything on it.
+///
+/// Deliberately stops short of `listen()`. A socket that has listened is in the
+/// kernel's accept queue for that port, so a connection arriving in the moment
+/// before it is dropped gets an RST — a restart would then reject a handful of
+/// real requests to find out something it can learn without them.
+fn probe_bind(addr: SocketAddr) -> Result<()> {
+    let domain = if addr.is_ipv4() {
+        Domain::IPV4
+    } else {
+        Domain::IPV6
+    };
+    let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
+    socket.set_reuse_address(true)?;
+    socket.set_reuse_port(true)?;
+    socket.bind(&addr.into()).map_err(|e| bind_error(addr, e))?;
+    Ok(())
+}
+
+/// Turns a bind failure into something that names its own fix.
+///
+/// `Permission denied (os error 13)` on port 80 is almost always one thing: the
+/// binary lost `cap_net_bind_service`. Every tool that replaces a file —
+/// `cp`, `install`, `mv` across filesystems, an unpacked release archive —
+/// drops file capabilities silently, so the proxy comes back after a routine
+/// upgrade unable to bind the only two ports it exists to serve. The errno
+/// alone sends a person looking at firewalls and SELinux; naming `setcap` is
+/// the difference between a minute and an afternoon.
+fn bind_error(addr: SocketAddr, source: std::io::Error) -> anyhow::Error {
+    if source.kind() == std::io::ErrorKind::PermissionDenied && addr.port() < 1024 {
+        return anyhow::anyhow!(
+            "cannot bind {addr}: permission denied. Ports below 1024 need a capability this \
+             process does not have. Grant it to the binary — `sudo setcap \
+             cap_net_bind_service=+ep $(command -v soli-proxy)` — and start the proxy again. \
+             Note that capabilities live on the file, not the path: replacing the binary with \
+             cp/install/mv removes them, so this recurs after every upgrade unless setcap is \
+             part of it."
+        );
+    }
+    anyhow::Error::new(source).context(format!("cannot bind {addr}"))
 }
 
 pub struct ProxyServer {
@@ -931,6 +973,24 @@ impl ProxyServer {
         let num_listeners = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4);
+
+        // Bind is checked here, before a single accept loop is spawned.
+        //
+        // Every listener binds inside its own task, so a bind failure used to
+        // reach nothing but `tracing::error!` from a detached task — and the
+        // line below still announced the proxy as listening. All 32 loops could
+        // die of EACCES and the process would sit in its idle loop looking
+        // healthy, admin API answering, apps supervised, front door shut. That
+        // is the worst shape a failure can take: everything that reports says
+        // fine, and only real traffic disagrees.
+        //
+        // The probe binds without listening, so it never lands in an accept
+        // queue and no connection is lost to it. It exists to make the errno
+        // arrive on the startup path, where `?` can stop the process.
+        probe_bind(http_addr)?;
+        if let Some(addr) = https_addr {
+            probe_bind(addr)?;
+        }
 
         // One shared connection pool for every accept loop (HTTP + HTTPS).
         // Clones are cheap and share idle keep-alive sockets across listeners.
@@ -3952,5 +4012,61 @@ mod tests {
         assert_eq!(xff_count(&out), 0);
         assert_eq!(header_value(&out, "X-Forwarded-Proto"), Some("http"));
         assert_eq!(header_value(&out, "X-Forwarded-Host"), Some("example"));
+    }
+
+    #[test]
+    fn probing_a_high_port_succeeds_and_leaves_nothing_listening() {
+        // The probe must not become a listener. If it did, the restart window
+        // would hand RSTs to whatever connected during it.
+        let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        assert!(probe_bind(addr).is_ok());
+    }
+
+    #[test]
+    fn probing_a_privileged_port_without_the_capability_names_setcap() {
+        // Port 80 is the case that actually happens: a binary replaced by
+        // cp/install loses cap_net_bind_service and comes back deaf. Skipped
+        // where the process can bind low ports anyway (root, or a lowered
+        // ip_unprivileged_port_start), because there the errno never occurs.
+        let addr: SocketAddr = "127.0.0.1:80".parse().unwrap();
+        match probe_bind(addr) {
+            Ok(()) => {} // allowed to bind here; nothing to assert
+            Err(e) => {
+                let text = e.to_string();
+                assert!(text.contains("setcap"), "{text}");
+                assert!(text.contains("cap_net_bind_service"), "{text}");
+                // The recurrence is the part people lose an afternoon to.
+                assert!(text.contains("cp/install"), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_bind_failure_that_is_not_permission_keeps_its_own_error() {
+        // Only EACCES on a privileged port gets the setcap advice. Anything
+        // else must not be dressed up as a capability problem — sending
+        // someone to setcap for EADDRNOTAVAIL wastes the same afternoon in the
+        // other direction.
+        let addr: SocketAddr = "127.0.0.1:80".parse().unwrap();
+        let err = bind_error(
+            addr,
+            std::io::Error::from(std::io::ErrorKind::AddrNotAvailable),
+        );
+        let text = err.to_string();
+        assert!(text.contains("cannot bind 127.0.0.1:80"), "{text}");
+        assert!(!text.contains("setcap"), "{text}");
+    }
+
+    #[test]
+    fn permission_denied_on_a_high_port_is_not_blamed_on_capabilities() {
+        // Above 1024 no capability is involved, so EACCES means something else
+        // — a seccomp filter, an LSM, a container policy. Naming setcap there
+        // is a confident wrong answer.
+        let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        let err = bind_error(
+            addr,
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        );
+        assert!(!err.to_string().contains("setcap"), "{err}");
     }
 }
