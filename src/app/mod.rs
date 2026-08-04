@@ -2027,16 +2027,28 @@ impl AppManager {
 /// yields an empty table: aliases are additive routing, so losing them degrades
 /// to site-domain-only routing rather than preventing startup.
 fn read_aliases_file() -> HashMap<String, String> {
-    let Ok(content) = std::fs::read_to_string(ALIASES_FILE) else {
+    read_aliases_from(std::path::Path::new(ALIASES_FILE))
+}
+
+/// The same read, against an explicit path.
+///
+/// Split out so a test can point at a temp file instead of moving the *process*
+/// working directory to make a relative constant resolve. Two tests doing that in
+/// parallel raced: one restored the previous directory while the other was still
+/// writing, and the write landed somewhere that no longer existed. A test that has
+/// to mutate global state to reach the code under test is telling you the code
+/// wants a parameter.
+fn read_aliases_from(path: &std::path::Path) -> HashMap<String, String> {
+    let Ok(content) = std::fs::read_to_string(path) else {
         return HashMap::new();
     };
     match serde_json::from_str::<HashMap<String, String>>(&content) {
         Ok(aliases) => {
-            tracing::info!("Loaded {} alias(es) from {}", aliases.len(), ALIASES_FILE);
+            tracing::info!("Loaded {} alias(es) from {}", aliases.len(), path.display());
             aliases
         }
         Err(e) => {
-            tracing::error!("Ignoring malformed {}: {}", ALIASES_FILE, e);
+            tracing::error!("Ignoring malformed {}: {}", path.display(), e);
             HashMap::new()
         }
     }
@@ -2164,32 +2176,30 @@ mod tests {
     #[test]
     fn malformed_alias_file_is_ignored() {
         let temp_dir = TempDir::new().unwrap();
-        let previous = std::env::current_dir().unwrap();
-        std::env::set_current_dir(temp_dir.path()).unwrap();
+        let path = temp_dir.path().join("aliases.json");
 
-        std::fs::create_dir_all("./run").unwrap();
-        std::fs::write(ALIASES_FILE, "{ this is not json").unwrap();
-        assert!(read_aliases_file().is_empty());
+        std::fs::write(&path, "{ this is not json").unwrap();
+        assert!(read_aliases_from(&path).is_empty());
 
-        std::fs::write(ALIASES_FILE, r#"{"a.example.com":"app-one"}"#).unwrap();
-        let aliases = read_aliases_file();
+        std::fs::write(&path, r#"{"a.example.com":"app-one"}"#).unwrap();
+        let aliases = read_aliases_from(&path);
         assert_eq!(
             aliases.get("a.example.com").map(String::as_str),
             Some("app-one")
         );
-
-        std::env::set_current_dir(previous).unwrap();
     }
 
     #[test]
     fn missing_alias_file_yields_an_empty_table() {
         let temp_dir = TempDir::new().unwrap();
-        let previous = std::env::current_dir().unwrap();
-        std::env::set_current_dir(temp_dir.path()).unwrap();
+        assert!(read_aliases_from(&temp_dir.path().join("absent.json")).is_empty());
+    }
 
-        assert!(read_aliases_file().is_empty());
-
-        std::env::set_current_dir(previous).unwrap();
+    /// The constant the running proxy reads, so the split above cannot drift into
+    /// testing a path production never uses.
+    #[test]
+    fn the_default_alias_path_is_the_one_the_proxy_reads() {
+        assert_eq!(ALIASES_FILE, "./run/aliases.json");
     }
 
     #[tokio::test]
