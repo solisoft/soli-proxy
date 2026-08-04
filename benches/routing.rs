@@ -58,6 +58,13 @@ fn parse_proxy_config(content: &str) -> Vec<ProxyRule> {
     rules
 }
 
+// `collapsible_match` is allowed here: turning `if domain == host` into a match guard
+// changes what this does. A guard that fails falls through to the *later* arms, so a
+// rule whose domain does not match would then be tried against DomainPath and Path —
+// and the first arm sets `matched_domain` before its inner check, which a guard would
+// skip. A benchmark has to route the way the proxy routes or it measures something
+// else.
+#[allow(clippy::collapsible_match)]
 fn find_target(host: Option<&str>, path: &str, rules: &[ProxyRule]) -> Option<(String, bool)> {
     let host = host?;
     let mut matched_domain = false;

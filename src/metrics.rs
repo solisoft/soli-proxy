@@ -26,6 +26,20 @@ pub struct MetricsSnapshot {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AppMetricsJson {
     pub requests: u64,
+    /// Unix milliseconds of this app's most recent request, or `None` if it has
+    /// had none since the proxy started.
+    ///
+    /// The signal an idleness policy needs, and the reason it is a wall-clock
+    /// timestamp rather than an age: a caller comparing ages has to trust that its
+    /// clock and the proxy's tick at the same rate over an interval it did not
+    /// choose. A timestamp it can subtract from its own clock is one fewer
+    /// assumption, and the skew shows up as a bounded error rather than a drift.
+    ///
+    /// `None` is deliberately not zero. An app that has never been requested and
+    /// one requested at the epoch are different facts, and a policy that suspends
+    /// on "age since 0" would suspend everything on the first pass after a proxy
+    /// restart.
+    pub last_request_ms: Option<u64>,
     pub bytes_received: u64,
     pub bytes_sent: u64,
     pub avg_response_time_ms: f64,
@@ -82,6 +96,8 @@ pub struct AppSystemMetrics {
 #[derive(Clone)]
 pub struct AppMetrics {
     pub requests_total: Arc<AtomicU64>,
+    /// Unix milliseconds of the last request. 0 means "none yet".
+    pub last_request_ms: Arc<AtomicU64>,
     pub bytes_received: Arc<AtomicU64>,
     pub bytes_sent: Arc<AtomicU64>,
     pub response_time_nanos_sum: Arc<AtomicU64>,
@@ -93,6 +109,7 @@ impl AppMetrics {
     pub fn new() -> Self {
         Self {
             requests_total: Arc::new(AtomicU64::new(0)),
+            last_request_ms: Arc::new(AtomicU64::new(0)),
             bytes_received: Arc::new(AtomicU64::new(0)),
             bytes_sent: Arc::new(AtomicU64::new(0)),
             response_time_nanos_sum: Arc::new(AtomicU64::new(0)),
@@ -106,6 +123,20 @@ impl Default for AppMetrics {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Wall-clock milliseconds since the Unix epoch.
+fn unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// 0 is the sentinel for "no request yet", and it must not reach a caller as a
+/// timestamp — see [`AppMetricsJson::last_request_ms`].
+fn nonzero(ms: u64) -> Option<u64> {
+    (ms != 0).then_some(ms)
 }
 
 /// Status code array size: covers HTTP codes 100-599
@@ -167,6 +198,7 @@ impl Metrics {
     pub fn get_app_metrics(&self, app_name: &str) -> Option<AppMetricsJson> {
         let apps = self.app_metrics.read();
         apps.get(app_name).map(|m| AppMetricsJson {
+            last_request_ms: nonzero(m.last_request_ms.load(Ordering::Relaxed)),
             requests: m.requests_total.load(Ordering::Relaxed),
             bytes_received: m.bytes_received.load(Ordering::Relaxed),
             bytes_sent: m.bytes_sent.load(Ordering::Relaxed),
@@ -192,6 +224,7 @@ impl Metrics {
                 (
                     name.clone(),
                     AppMetricsJson {
+                        last_request_ms: nonzero(m.last_request_ms.load(Ordering::Relaxed)),
                         requests: m.requests_total.load(Ordering::Relaxed),
                         bytes_received: m.bytes_received.load(Ordering::Relaxed),
                         bytes_sent: m.bytes_sent.load(Ordering::Relaxed),
@@ -361,6 +394,12 @@ impl Metrics {
 
         if let Some(metrics) = app_metrics {
             metrics.requests_total.fetch_add(1, Ordering::Relaxed);
+            // Stored, not maxed: the clock can step backwards over NTP, and a
+            // monotone-only field would then freeze an app's last-request time at
+            // a future value and keep it from ever looking idle.
+            metrics
+                .last_request_ms
+                .store(unix_millis(), Ordering::Relaxed);
             metrics
                 .bytes_received
                 .fetch_add(bytes_in, Ordering::Relaxed);
@@ -664,5 +703,93 @@ mod slot_sum_tests {
         // number a bill is computed from.
         let totals = sum_slot_metrics(&[slot(Some(u64::MAX), None), slot(Some(4096), None)]);
         assert_eq!(totals.memory_rss_bytes, Some(u64::MAX));
+    }
+}
+
+#[cfg(test)]
+mod idle_signal_tests {
+    use super::*;
+
+    fn ms_now() -> u64 {
+        unix_millis()
+    }
+
+    #[test]
+    fn an_app_that_was_never_requested_reports_none_rather_than_the_epoch() {
+        // The trap this field exists to avoid. A policy that suspends on "age
+        // since last_request_ms" would, with 0 in there, compute an age of
+        // fifty-odd years for every app the proxy has not served yet — and
+        // suspend the whole fleet on its first pass after a restart.
+        let metrics = Metrics::new();
+        let _ = metrics.app_bytes_sent_counter("never-served");
+        let json = metrics
+            .get_app_metrics("never-served")
+            .expect("the app entry exists");
+        assert_eq!(json.requests, 0);
+        assert_eq!(json.last_request_ms, None);
+    }
+
+    #[test]
+    fn a_request_stamps_the_app_and_nothing_else() {
+        let metrics = Metrics::new();
+        let before = ms_now();
+        metrics.record_app_request("served", 10, 20, 200, std::time::Duration::from_millis(1));
+        let after = ms_now();
+
+        let json = metrics.get_app_metrics("served").expect("recorded");
+        let stamp = json.last_request_ms.expect("a served app has a timestamp");
+        assert!(
+            (before..=after).contains(&stamp),
+            "{stamp} is outside [{before}, {after}]"
+        );
+
+        // Per app, not global: an idle app must not look busy because a *different*
+        // app was requested, which is the whole point of tracking it here rather
+        // than reading the proxy-wide counter.
+        let _ = metrics.app_bytes_sent_counter("idle");
+        assert_eq!(
+            metrics.get_app_metrics("idle").unwrap().last_request_ms,
+            None
+        );
+    }
+
+    #[test]
+    fn the_stamp_is_visible_through_the_all_apps_view() {
+        // The endpoint an orchestrator reads is `/api/v1/app-metrics`, which goes
+        // through this path and not through `get_app_metrics`.
+        let metrics = Metrics::new();
+        metrics.record_app_request("served", 1, 1, 200, std::time::Duration::from_millis(1));
+        let all = metrics.get_all_app_metrics();
+        assert!(all.get("served").unwrap().last_request_ms.is_some());
+    }
+
+    #[test]
+    fn a_later_request_moves_the_stamp_forward() {
+        let metrics = Metrics::new();
+        metrics.record_app_request("served", 1, 1, 200, std::time::Duration::from_millis(1));
+        let first = metrics
+            .get_app_metrics("served")
+            .unwrap()
+            .last_request_ms
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        metrics.record_app_request("served", 1, 1, 200, std::time::Duration::from_millis(1));
+        let second = metrics
+            .get_app_metrics("served")
+            .unwrap()
+            .last_request_ms
+            .unwrap();
+        assert!(second > first, "{second} did not move past {first}");
+    }
+
+    #[test]
+    fn a_failed_request_still_counts_as_activity() {
+        // A 500 is traffic. Suspending an app because every request to it is
+        // failing would take away the thing an operator is trying to look at.
+        let metrics = Metrics::new();
+        metrics.record_app_request("broken", 1, 1, 500, std::time::Duration::from_millis(1));
+        let json = metrics.get_app_metrics("broken").unwrap();
+        assert_eq!(json.errors, 1);
+        assert!(json.last_request_ms.is_some());
     }
 }

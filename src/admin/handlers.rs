@@ -437,6 +437,10 @@ pub async fn get_app_metrics(state: &Arc<AdminState>, name: &str) -> Response<Bo
                     // measurement that came back empty.
                     let mut metrics = state.metrics.get_app_metrics(name).unwrap_or(
                         crate::metrics::AppMetricsJson {
+                            // Never requested is `None`, not the epoch — an
+                            // idleness policy reading 0 as a timestamp would
+                            // suspend every app on its first pass.
+                            last_request_ms: None,
                             requests: 0,
                             bytes_received: 0,
                             bytes_sent: 0,
@@ -493,6 +497,7 @@ pub async fn get_all_app_metrics(state: &Arc<AdminState>) -> Response<BoxBody> {
             let entry = metrics
                 .entry(name)
                 .or_insert_with(|| crate::metrics::AppMetricsJson {
+                    last_request_ms: None,
                     requests: 0,
                     bytes_received: 0,
                     bytes_sent: 0,

@@ -1078,8 +1078,7 @@ mod tests {
         let last_value = |flag: &str| -> Option<String> {
             argv.iter()
                 .enumerate()
-                .filter(|(_, tok)| tok.as_str() == flag)
-                .next_back()
+                .rfind(|(_, tok)| tok.as_str() == flag)
                 .and_then(|(i, _)| argv.get(i + 1).cloned())
         };
 
