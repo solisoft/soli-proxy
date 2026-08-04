@@ -260,6 +260,36 @@ pub async fn put_routing_table(state: &Arc<AdminState>, body: &str) -> Response<
     }
 }
 
+/// `GET /api/v1/acme-challenges` — the tokens this proxy currently needs proven.
+///
+/// The read that makes distribution possible. The node ordering a certificate is
+/// the only one that knows its own tokens, and Let's Encrypt validates over the VIP
+/// and lands wherever routing sends it — so something has to collect them from every
+/// node and hand the union back to all of them. That collector is outside the proxy,
+/// which knows nothing about its peers.
+///
+/// Returns the same shape `PUT` accepts, so a distributor reads from one node and
+/// writes to another without translating anything. A shape that differed between the
+/// two would be a translation step, and a translation step is somewhere to lose a
+/// token.
+///
+/// The key authorization is not a secret worth withholding here: it is served to
+/// anyone who asks for the challenge URL, by design — that is how HTTP-01 works. The
+/// admin API is authenticated anyway.
+pub async fn get_acme_challenges(state: &Arc<AdminState>) -> Response<BoxBody> {
+    let Some(store) = &state.challenge_store else {
+        return error_response(501, "ACME challenge serving is not configured");
+    };
+    let tokens: std::collections::BTreeMap<String, String> = match store.read() {
+        Ok(map) => map.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        // A poisoned lock means a panic happened while holding it. Reporting an
+        // empty set would make a distributor drop every token in the cluster on the
+        // next push, so this fails loudly instead.
+        Err(_) => return error_response(500, "the challenge store is unreadable"),
+    };
+    ok_response(serde_json::json!({ "tokens": tokens }))
+}
+
 /// `PUT /api/v1/acme-challenges` — HTTP-01 tokens this proxy will answer for.
 ///
 /// The other half of the elected-orderer design. One node in the cluster orders

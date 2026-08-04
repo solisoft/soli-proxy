@@ -284,6 +284,7 @@ async fn handle_admin_request(
             Ok(body) => handlers::put_routing_table(&state, &body).await,
             Err(e) => error_response(400, e),
         },
+        (Method::GET, "/api/v1/acme-challenges") => handlers::get_acme_challenges(&state).await,
         (Method::PUT, "/api/v1/acme-challenges") => match read_body(req).await {
             Ok(body) => handlers::put_acme_challenges(&state, &body).await,
             Err(e) => error_response(400, e),
