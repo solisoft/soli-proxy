@@ -1,172 +1,196 @@
+use std::collections::VecDeque;
+
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     prelude::Stylize,
     style::{Color, Style},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table},
+    widgets::{Cell, Paragraph, Row, Sparkline, Table},
     Frame,
 };
 
 use crate::metrics::MetricsSnapshot;
+use crate::tui::app::DaemonStatus;
+use crate::tui::theme;
 use crate::tui::TuiContext;
 
-/// `remote_snap` carries traffic counters fetched from the daemon's admin
-/// API; the TUI's own metrics registry is empty (separate process), so it
-/// is only used as a fallback when the daemon is unreachable.
-pub fn render(f: &mut Frame, area: Rect, ctx: &TuiContext, remote_snap: Option<&MetricsSnapshot>) {
+/// `remote_snap` carries traffic counters fetched from the daemon's admin API.
+/// The TUI runs in its own process, so its local metrics registry is always
+/// empty — `status` is what decides whether the numbers mean anything.
+pub fn render(
+    f: &mut Frame,
+    area: Rect,
+    ctx: &TuiContext,
+    remote_snap: Option<&MetricsSnapshot>,
+    status: DaemonStatus,
+    rps_history: &VecDeque<u64>,
+) {
     let local_snap = ctx.metrics.snapshot();
     let snap = remote_snap.unwrap_or(&local_snap);
+    let have_metrics = remote_snap.is_some();
+
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(10), // Server + Traffic
-            Constraint::Length(8),  // Resources + Status codes
-            Constraint::Min(4),     // Apps / Circuits
+            Constraint::Length(4),
+            Constraint::Length(6),
+            Constraint::Length(6),
+            Constraint::Min(6),
         ])
         .split(area);
 
-    // Row 1: Server Info | Traffic
-    let top_cols = Layout::default()
+    render_kpis(f, rows[0], snap, have_metrics, status, rps_history);
+    render_rps_and_status(f, rows[1], snap, have_metrics, rps_history);
+    render_meta(f, rows[2], ctx, status);
+
+    let bottom = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(rows[0]);
-
-    render_server_info(f, top_cols[0], ctx);
-    render_traffic(f, top_cols[1], snap);
-
-    // Row 2: Resources | Status Codes
-    let mid_cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(rows[1]);
-
-    render_resources(f, mid_cols[0], ctx);
-    render_status_codes(f, mid_cols[1], snap);
-
-    // Row 3: Apps quick view
-    render_apps_overview(f, rows[2], ctx);
+        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+        .split(rows[3]);
+    render_apps_overview(f, bottom[0], ctx);
+    render_server(f, bottom[1], ctx, snap, have_metrics);
 }
 
-fn render_server_info(f: &mut Frame, area: Rect, ctx: &TuiContext) {
-    let cfg = ctx.config_manager.get_config();
-    let uptime = ctx.uptime();
+fn render_kpis(
+    f: &mut Frame,
+    area: Rect,
+    snap: &MetricsSnapshot,
+    have_metrics: bool,
+    status: DaemonStatus,
+    rps_history: &VecDeque<u64>,
+) {
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+        ])
+        .split(area);
 
-    let block = Block::default()
-        .title(" Server ")
-        .borders(Borders::ALL)
-        .style(Style::default().fg(Color::Cyan));
-    f.render_widget(block, area);
+    // Without a sample the counters are not "zero", they are unknown — say
+    // which of the two it is rather than showing a confident 0.
+    if !have_metrics {
+        // `Ok` with no global sample means the metrics endpoint specifically
+        // did not answer, which `explain()` has nothing to say about.
+        let why = match status.explain() {
+            "" => "no metrics",
+            other => other,
+        };
+        theme::kpi(f, cols[0], "—", why, status.color());
+        theme::kpi(f, cols[1], "—", "req / s", theme::MUTED);
+        theme::kpi(f, cols[2], "—", "avg latency", theme::MUTED);
+        theme::kpi(f, cols[3], "—", "error rate", theme::MUTED);
+        return;
+    }
 
-    let inner = inner_area(area);
-
-    let uptime_str = format_uptime(uptime);
-    let tls_str = if cfg.tls.mode.is_empty() || cfg.tls.mode == "disabled" {
-        "disabled".to_string()
+    let rps = rps_history.back().copied().unwrap_or(0);
+    let lat = if snap.avg_response_time_ms > 0.0 {
+        theme::fmt_ms(snap.avg_response_time_ms)
     } else {
-        cfg.tls.mode.clone()
+        "-".into()
     };
-
-    let admin_str = if cfg.admin.enabled.unwrap_or(true) {
-        cfg.admin.bind.clone()
-    } else {
-        "disabled".to_string()
-    };
-
-    let rows = vec![
-        kv_row(
-            "",
-            format!("Soli Proxy v{}", env!("CARGO_PKG_VERSION")),
-            Color::Green,
-        ),
-        kv_row("Listen", cfg.server.bind.clone(), Color::White),
-        kv_row("HTTPS", format!(":{}", cfg.server.https_port), Color::White),
-        kv_row("TLS", tls_str, Color::White),
-        kv_row("Admin", admin_str, Color::White),
-        kv_row(
-            "Auth",
-            if ctx.auth_required { "enabled" } else { "-" }.to_string(),
-            Color::White,
-        ),
-        kv_row("Uptime", uptime_str, Color::Yellow),
-    ];
-
-    let table = Table::new(rows, [Constraint::Length(10), Constraint::Min(10)]);
-    f.render_widget(table, inner);
-}
-
-fn render_traffic(f: &mut Frame, area: Rect, snap: &MetricsSnapshot) {
-    let block = Block::default()
-        .title(" Traffic ")
-        .borders(Borders::ALL)
-        .style(Style::default().fg(Color::Cyan));
-    f.render_widget(block, area);
-
-    let inner = inner_area(area);
-
-    let error_str = if snap.requests_total > 0 && snap.errors_total > 0 {
+    let err = if snap.requests_total > 0 && snap.errors_total > 0 {
         format!(
-            "{} ({:.2}%)",
-            format_number(snap.errors_total),
+            "{:.2}%",
             (snap.errors_total as f64 / snap.requests_total as f64) * 100.0
         )
     } else {
-        format_number(snap.errors_total)
+        "0%".into()
     };
 
-    let resp_time_str = if snap.avg_response_time_ms > 0.0 {
-        if snap.avg_response_time_ms >= 1000.0 {
-            format!("{:.2} s", snap.avg_response_time_ms / 1000.0)
+    theme::kpi(
+        f,
+        cols[0],
+        &theme::fmt_num(snap.requests_total),
+        "requests",
+        theme::ACCENT,
+    );
+    theme::kpi(f, cols[1], &rps.to_string(), "req / s", theme::SUCCESS);
+    theme::kpi(f, cols[2], &lat, "avg latency", theme::WARN);
+    theme::kpi(
+        f,
+        cols[3],
+        &err,
+        "error rate",
+        if snap.errors_total > 0 {
+            theme::DANGER
         } else {
-            format!("{:.1} ms", snap.avg_response_time_ms)
-        }
-    } else {
-        "-".to_string()
-    };
-
-    let error_color = if snap.errors_total > 0 {
-        Color::Red
-    } else {
-        Color::Green
-    };
-
-    let rows = vec![
-        kv_row("Requests", format_number(snap.requests_total), Color::Cyan),
-        kv_row(
-            "In Flight",
-            format_number(snap.requests_in_flight as u64),
-            Color::Cyan,
-        ),
-        kv_row("Avg Resp", resp_time_str, Color::Cyan),
-        kv_row("Bytes In", format_bytes(snap.bytes_received), Color::Cyan),
-        kv_row("Bytes Out", format_bytes(snap.bytes_sent), Color::Cyan),
-        kv_row(
-            "TLS Conns",
-            format_number(snap.tls_connections),
-            Color::Cyan,
-        ),
-        kv_row("Errors", error_str, error_color),
-    ];
-
-    let table = Table::new(rows, [Constraint::Length(12), Constraint::Min(10)]);
-    f.render_widget(table, inner);
+            theme::SUCCESS
+        },
+    );
 }
 
-fn render_resources(f: &mut Frame, area: Rect, ctx: &TuiContext) {
+fn render_rps_and_status(
+    f: &mut Frame,
+    area: Rect,
+    snap: &MetricsSnapshot,
+    have_metrics: bool,
+    rps_history: &VecDeque<u64>,
+) {
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(area);
+
+    let rps_now = rps_history.back().copied().unwrap_or(0);
+    let spark_block = theme::list_block(&format!("live rps  {rps_now}"));
+    if rps_history.is_empty() {
+        f.render_widget(spark_block, cols[0]);
+    } else {
+        let data: Vec<u64> = rps_history.iter().copied().collect();
+        let max = data.iter().copied().max().unwrap_or(1).max(1);
+        let sparkline = Sparkline::default()
+            .block(spark_block)
+            .data(&data)
+            .max(max)
+            .style(Style::default().fg(theme::ACCENT));
+        f.render_widget(sparkline, cols[0]);
+    }
+
+    let total = snap.status_2xx + snap.status_3xx + snap.status_4xx + snap.status_5xx;
+    f.render_widget(theme::list_block("http"), cols[1]);
+    let inner = theme::body(cols[1]);
+    if !have_metrics || total == 0 {
+        f.render_widget(
+            Paragraph::new("no traffic yet").style(Style::default().fg(theme::MUTED)),
+            inner,
+        );
+        return;
+    }
+    let bar_width = inner.width.saturating_sub(16) as usize;
+    let rows = vec![
+        status_row("2xx", snap.status_2xx, total, bar_width, theme::SUCCESS),
+        status_row(
+            "3xx",
+            snap.status_3xx,
+            total,
+            bar_width,
+            Color::Rgb(139, 233, 253),
+        ),
+        status_row("4xx", snap.status_4xx, total, bar_width, theme::WARN),
+        status_row("5xx", snap.status_5xx, total, bar_width, theme::DANGER),
+    ];
+    f.render_widget(
+        Table::new(
+            rows,
+            [
+                Constraint::Length(4),
+                Constraint::Length(8),
+                Constraint::Min(6),
+            ],
+        ),
+        inner,
+    );
+}
+
+fn render_meta(f: &mut Frame, area: Rect, ctx: &TuiContext, status: DaemonStatus) {
     let cfg = ctx.config_manager.get_config();
-
-    let block = Block::default()
-        .title(" Resources ")
-        .borders(Borders::ALL)
-        .style(Style::default().fg(Color::Cyan));
-    f.render_widget(block, area);
-
-    let inner = inner_area(area);
-
     let apps = ctx
         .app_manager
         .as_ref()
         .map(|m| m.list_apps_sync())
         .unwrap_or_default();
-
     let running = apps
         .iter()
         .filter(|a| {
@@ -178,203 +202,226 @@ fn render_resources(f: &mut Frame, area: Rect, ctx: &TuiContext) {
             matches!(inst.status, crate::app::InstanceStatus::Running)
         })
         .count();
-
-    let apps_str = if apps.is_empty() {
-        "-".to_string()
-    } else {
-        format!("{} ({} running)", apps.len(), running)
-    };
-
     let circuits = ctx.circuit_breaker.get_states();
     let open = circuits.values().filter(|s| s.state == "open").count();
     let half = circuits.values().filter(|s| s.state == "half_open").count();
 
-    let circuits_str = if circuits.is_empty() {
-        "none".to_string()
-    } else if open == 0 && half == 0 {
-        format!("{} (all healthy)", circuits.len())
-    } else {
-        let mut parts = vec![format!("{} total", circuits.len())];
-        if open > 0 {
-            parts.push(format!("{} open", open));
-        }
-        if half > 0 {
-            parts.push(format!("{} half-open", half));
-        }
-        parts.join(", ")
-    };
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+        ])
+        .split(area);
 
-    let circuits_color = if open > 0 {
-        Color::Red
+    theme::kpi(
+        f,
+        cols[0],
+        &theme::fmt_uptime(ctx.uptime()),
+        &format!("up  {}  :{}", cfg.server.bind, cfg.server.https_port),
+        theme::ACCENT,
+    );
+    theme::kpi(
+        f,
+        cols[1],
+        &format!("{running}/{}", apps.len()),
+        "apps running",
+        theme::SUCCESS,
+    );
+    theme::kpi(
+        f,
+        cols[2],
+        &cfg.rules.len().to_string(),
+        "routes",
+        theme::MAGENTA,
+    );
+
+    let (cval, ccol) = if open > 0 {
+        (format!("{open} open"), theme::DANGER)
     } else if half > 0 {
-        Color::Yellow
+        (format!("{half} half-open"), theme::WARN)
     } else {
-        Color::Green
+        (circuits.len().to_string(), theme::SUCCESS)
     };
+    // Circuit state is local to this process, so it stays meaningful whatever
+    // the admin API is doing; only annotate when that distinction matters.
+    let clabel = if status.is_ok() {
+        "circuits".to_string()
+    } else {
+        format!("circuits · {}", status.explain())
+    };
+    theme::kpi(f, cols[3], &cval, &clabel, ccol);
+}
 
-    let scripts_str = if cfg.global_scripts.is_empty() {
+/// Listener/TLS configuration plus the traffic counters that do not fit in the
+/// KPI strip (bytes moved, in-flight requests, TLS connections).
+fn render_server(
+    f: &mut Frame,
+    area: Rect,
+    ctx: &TuiContext,
+    snap: &MetricsSnapshot,
+    have_metrics: bool,
+) {
+    let cfg = ctx.config_manager.get_config();
+    f.render_widget(theme::list_block("server"), area);
+    let inner = theme::body(area);
+
+    let tls = if cfg.tls.mode.is_empty() || cfg.tls.mode == "disabled" {
+        "disabled".to_string()
+    } else {
+        cfg.tls.mode.clone()
+    };
+    let admin = if cfg.admin.enabled.unwrap_or(true) {
+        cfg.admin.bind.clone()
+    } else {
+        "disabled".to_string()
+    };
+    let scripts = if cfg.global_scripts.is_empty() {
         "-".to_string()
     } else {
         cfg.global_scripts.join(", ")
     };
+    let unknown = |s: String| if have_metrics { s } else { "—".to_string() };
 
     let rows = vec![
-        kv_row("Routes", cfg.rules.len().to_string(), Color::White),
-        kv_row("Apps", apps_str, Color::White),
-        kv_row("Scripts", scripts_str, Color::Magenta),
-        Row::new(vec![
-            Cell::from("Circuits").style(Style::default().fg(Color::DarkGray)),
-            Cell::from(circuits_str).style(Style::default().fg(circuits_color)),
-        ]),
+        kv("listen", cfg.server.bind.clone(), theme::FG),
+        kv("https", format!(":{}", cfg.server.https_port), theme::FG),
+        kv("tls", tls, theme::FG),
+        kv("admin", admin, theme::FG),
+        kv(
+            "auth",
+            if ctx.auth_required { "enabled" } else { "-" }.to_string(),
+            theme::FG,
+        ),
+        kv("scripts", scripts, theme::MAGENTA),
+        kv(
+            "in flight",
+            unknown(theme::fmt_num(snap.requests_in_flight as u64)),
+            theme::FG,
+        ),
+        kv(
+            "bytes in",
+            unknown(theme::fmt_bytes(snap.bytes_received)),
+            theme::FG,
+        ),
+        kv(
+            "bytes out",
+            unknown(theme::fmt_bytes(snap.bytes_sent)),
+            theme::FG,
+        ),
+        kv(
+            "tls conns",
+            unknown(theme::fmt_num(snap.tls_connections)),
+            theme::FG,
+        ),
+        kv(
+            "errors",
+            unknown(theme::fmt_num(snap.errors_total)),
+            if snap.errors_total > 0 && have_metrics {
+                theme::DANGER
+            } else {
+                theme::FG
+            },
+        ),
     ];
 
-    let table = Table::new(rows, [Constraint::Length(10), Constraint::Min(10)]);
-    f.render_widget(table, inner);
+    f.render_widget(
+        Table::new(rows, [Constraint::Length(10), Constraint::Min(8)]),
+        inner,
+    );
 }
 
-fn render_status_codes(f: &mut Frame, area: Rect, snap: &MetricsSnapshot) {
-    let block = Block::default()
-        .title(" HTTP Status ")
-        .borders(Borders::ALL)
-        .style(Style::default().fg(Color::Cyan));
-    f.render_widget(block, area);
-
-    let inner = inner_area(area);
-
-    let total = snap.status_2xx + snap.status_3xx + snap.status_4xx + snap.status_5xx;
-
-    if total == 0 {
-        let text = Paragraph::new("No requests yet.").style(Style::default().fg(Color::DarkGray));
-        f.render_widget(text, inner);
-        return;
-    }
-
-    let bar_width = inner.width.saturating_sub(18) as usize;
-
-    let rows = vec![
-        status_row("2xx", snap.status_2xx, total, bar_width, Color::Green),
-        status_row("3xx", snap.status_3xx, total, bar_width, Color::Blue),
-        status_row("4xx", snap.status_4xx, total, bar_width, Color::Yellow),
-        status_row("5xx", snap.status_5xx, total, bar_width, Color::Red),
-    ];
-
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(5),
-            Constraint::Length(10),
-            Constraint::Min(8),
-        ],
-    );
-    f.render_widget(table, inner);
+fn kv(label: &str, value: String, color: Color) -> Row<'static> {
+    Row::new(vec![
+        Cell::from(label.to_string()).style(Style::default().fg(theme::MUTED)),
+        Cell::from(value).style(Style::default().fg(color)),
+    ])
 }
 
 fn render_apps_overview(f: &mut Frame, area: Rect, ctx: &TuiContext) {
-    let block = Block::default()
-        .title(" Applications ")
-        .borders(Borders::ALL)
-        .style(Style::default().fg(Color::Cyan));
-    f.render_widget(block, area);
-
-    let inner = inner_area(area);
-
     let apps = ctx
         .app_manager
         .as_ref()
         .map(|m| m.list_apps_sync())
         .unwrap_or_default();
 
+    f.render_widget(theme::list_block("apps"), area);
+    let inner = theme::body(area);
+
     if apps.is_empty() {
-        let text =
-            Paragraph::new("No apps discovered.").style(Style::default().fg(Color::DarkGray));
-        f.render_widget(text, inner);
+        f.render_widget(
+            Paragraph::new("no apps in sites/").style(Style::default().fg(theme::MUTED)),
+            inner,
+        );
         return;
     }
 
-    let header = Row::new(vec!["Name", "Domain", "Slot", "Status", "Port"])
-        .style(Style::default().fg(Color::DarkGray).bold());
+    let header = Row::new(vec!["name", "domain", "slot", "status", "port"])
+        .style(Style::default().fg(theme::MUTED).bold());
 
     let max_rows = inner.height.saturating_sub(1) as usize;
+    // Leave room for the overflow hint when the list does not fit.
+    let overflow = apps.len().saturating_sub(max_rows);
+    let shown = if overflow > 0 {
+        max_rows.saturating_sub(1)
+    } else {
+        max_rows
+    };
 
-    let rows: Vec<Row> = apps
+    let mut rows: Vec<Row> = apps
         .iter()
-        .take(max_rows)
+        .take(shown)
         .map(|app| {
             let inst = if app.current_slot == "blue" {
                 &app.blue
             } else {
                 &app.green
             };
-
             let (status_str, status_color) = match inst.status {
-                crate::app::InstanceStatus::Running => ("Running", Color::Green),
-                crate::app::InstanceStatus::Starting => ("Starting", Color::Yellow),
-                crate::app::InstanceStatus::Stopped => ("Stopped", Color::DarkGray),
-                crate::app::InstanceStatus::Unhealthy => ("Unhealthy", Color::Red),
-                crate::app::InstanceStatus::Failed => ("Failed", Color::Red),
+                crate::app::InstanceStatus::Running => ("● run", theme::SUCCESS),
+                crate::app::InstanceStatus::Starting => ("● start", theme::WARN),
+                crate::app::InstanceStatus::Stopped => ("○ stop", theme::MUTED),
+                crate::app::InstanceStatus::Unhealthy => ("● sick", theme::DANGER),
+                crate::app::InstanceStatus::Failed => ("● fail", theme::DANGER),
             };
-
             let port_str = if inst.port > 0 {
                 format!(":{}", inst.port)
             } else {
-                "-".to_string()
+                "-".into()
             };
-
             Row::new(vec![
-                Cell::from(app.config.name.clone()).style(Style::default().fg(Color::White)),
-                Cell::from(app.config.domain.clone()).style(Style::default().fg(Color::White)),
-                Cell::from(app.current_slot.clone()).style(Style::default().fg(Color::DarkGray)),
+                Cell::from(app.config.name.clone()).style(Style::default().fg(theme::FG)),
+                Cell::from(app.config.domain.clone()).style(Style::default().fg(theme::MUTED)),
+                Cell::from(app.current_slot.clone()).style(Style::default().fg(theme::MUTED)),
                 Cell::from(status_str).style(Style::default().fg(status_color)),
-                Cell::from(port_str).style(Style::default().fg(Color::DarkGray)),
+                Cell::from(port_str).style(Style::default().fg(theme::MUTED)),
             ])
         })
         .collect();
 
-    let overflow = apps.len().saturating_sub(max_rows);
-
-    let table = Table::new(
-        std::iter::once(header).chain(rows),
-        [
-            Constraint::Percentage(20),
-            Constraint::Percentage(30),
-            Constraint::Length(8),
-            Constraint::Length(10),
-            Constraint::Length(8),
-        ],
-    )
-    .column_spacing(1);
-
-    f.render_widget(table, inner);
-
     if overflow > 0 {
-        let hint = format!(" +{} more (see Apps tab) ", overflow);
-        let hint_len = hint.len() as u16;
-        if area.width > hint_len + 2 {
-            let hint_area = Rect::new(area.x + area.width - hint_len - 1, area.y, hint_len, 1);
-            f.render_widget(
-                Paragraph::new(hint).style(Style::default().fg(Color::DarkGray)),
-                hint_area,
-            );
-        }
+        rows.push(Row::new(vec![Cell::from(format!(
+            "+{overflow} more — press 3"
+        ))
+        .style(Style::default().fg(theme::MUTED))]));
     }
-}
 
-// ── helpers ────────────────────────────────────────────
-
-fn inner_area(area: Rect) -> Rect {
-    Rect::new(
-        area.x + 2,
-        area.y + 1,
-        area.width.saturating_sub(4),
-        area.height.saturating_sub(2),
-    )
-}
-
-fn kv_row(label: &str, value: String, value_color: Color) -> Row<'static> {
-    Row::new(vec![
-        Cell::from(label.to_string()).style(Style::default().fg(Color::DarkGray)),
-        Cell::from(value).style(Style::default().fg(value_color)),
-    ])
+    f.render_widget(
+        Table::new(
+            std::iter::once(header).chain(rows),
+            [
+                Constraint::Percentage(20),
+                Constraint::Percentage(35),
+                Constraint::Length(8),
+                Constraint::Length(10),
+                Constraint::Length(8),
+            ],
+        )
+        .column_spacing(1),
+        inner,
+    );
 }
 
 fn status_row(label: &str, count: u64, total: u64, bar_width: usize, color: Color) -> Row<'static> {
@@ -384,55 +431,10 @@ fn status_row(label: &str, count: u64, total: u64, bar_width: usize, color: Colo
         0.0
     };
     let filled = ((pct / 100.0) * bar_width as f64).round() as usize;
-    let bar: String = "\u{2588}".repeat(filled);
-
+    let bar: String = "█".repeat(filled);
     Row::new(vec![
         Cell::from(label.to_string()).style(Style::default().fg(color).bold()),
-        Cell::from(format_number(count)).style(Style::default().fg(Color::White)),
+        Cell::from(theme::fmt_num(count)).style(Style::default().fg(theme::FG)),
         Cell::from(bar).style(Style::default().fg(color)),
     ])
-}
-
-fn format_bytes(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = KB * 1024;
-    const GB: u64 = MB * 1024;
-
-    if bytes >= GB {
-        format!("{:.2} GB", bytes as f64 / GB as f64)
-    } else if bytes >= MB {
-        format!("{:.2} MB", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        format!("{:.2} KB", bytes as f64 / KB as f64)
-    } else {
-        format!("{} B", bytes)
-    }
-}
-
-fn format_number(n: u64) -> String {
-    if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
-    } else if n >= 10_000 {
-        format!("{:.1}K", n as f64 / 1_000.0)
-    } else {
-        n.to_string()
-    }
-}
-
-fn format_uptime(uptime: std::time::Duration) -> String {
-    let secs = uptime.as_secs();
-    let days = secs / 86400;
-    let hours = (secs % 86400) / 3600;
-    let mins = (secs % 3600) / 60;
-    let s = secs % 60;
-
-    if days > 0 {
-        format!("{}d {}h {}m", days, hours, mins)
-    } else if hours > 0 {
-        format!("{}h {}m {}s", hours, mins, s)
-    } else if mins > 0 {
-        format!("{}m {}s", mins, s)
-    } else {
-        format!("{}s", s)
-    }
 }

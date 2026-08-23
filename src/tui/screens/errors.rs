@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Constraint, Rect},
     prelude::Stylize,
     style::{Color, Style},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table},
+    widgets::{Cell, Paragraph, Row, Table},
     Frame,
 };
 
@@ -15,12 +15,10 @@ pub fn render(
     selected_index: usize,
     scroll_offset: usize,
 ) {
-    let block = Block::default()
-        .title(format!(" Request Errors ({}) ", entries.len()))
-        .borders(Borders::ALL);
+    let block = crate::tui::theme::list_block(&format!("errors  {}", entries.len()));
     f.render_widget(block, area);
 
-    let inner = Rect::new(area.x + 1, area.y + 1, area.width - 2, area.height - 2);
+    let inner = crate::tui::theme::body(area);
 
     if entries.is_empty() {
         let msg = Paragraph::new(
@@ -33,7 +31,7 @@ pub fn render(
     }
 
     let header = Row::new(vec!["Time", "Status", "Method", "Host", "Path"])
-        .style(Style::default().fg(Color::Green).bold());
+        .style(Style::default().fg(crate::tui::theme::ACCENT).bold());
 
     let max_rows = inner.height.saturating_sub(1) as usize;
 
@@ -46,11 +44,7 @@ pub fn render(
             let visual_idx = scroll_offset + idx;
             let is_selected = visual_idx == selected_index;
 
-            let style = if is_selected {
-                Style::default().bg(Color::Blue).fg(Color::White)
-            } else {
-                Style::default().fg(Color::White)
-            };
+            let style = crate::tui::theme::row_style(is_selected);
             // 5xx and connect failures are always red unless the row is selected.
             let status_style = if is_selected {
                 style
