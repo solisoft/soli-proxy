@@ -27,11 +27,9 @@ pub fn render(f: &mut Frame, area: Rect, ctx: &TuiContext, view: &AppsView) {
     };
 
     if all_apps.is_empty() {
-        let block = Block::default()
-            .title(" Applications ")
-            .borders(Borders::ALL);
+        let block = crate::tui::theme::list_block("apps");
         f.render_widget(block, area);
-        let inner = Rect::new(area.x + 1, area.y + 1, area.width - 2, area.height - 2);
+        let inner = crate::tui::theme::body(area);
         let msg = if ctx.app_manager.is_none() {
             "App manager not available. Check sites/ directory."
         } else {
@@ -69,7 +67,7 @@ pub fn render(f: &mut Frame, area: Rect, ctx: &TuiContext, view: &AppsView) {
             ))
             .borders(Borders::ALL);
         f.render_widget(block, area);
-        let inner = Rect::new(area.x + 1, area.y + 1, area.width - 2, area.height - 2);
+        let inner = crate::tui::theme::body(area);
         f.render_widget(Paragraph::new("No apps match your search."), inner);
         return;
     }
@@ -109,17 +107,15 @@ fn render_app_table(
     scroll_offset: usize,
     app_stats: &HashMap<String, AppStats>,
 ) {
-    let block = Block::default()
-        .title(" Applications ")
-        .borders(Borders::ALL);
+    let block = crate::tui::theme::list_block("apps");
     f.render_widget(block, area);
 
-    let inner = Rect::new(area.x + 1, area.y + 1, area.width - 2, area.height - 2);
+    let inner = crate::tui::theme::body(area);
 
     let header = Row::new(vec![
         "Name", "Domain", "Status", "CPU", "Memory", "Reqs", "Errors", "Avg RT",
     ])
-    .style(Style::default().fg(Color::Green).bold());
+    .style(Style::default().fg(crate::tui::theme::ACCENT).bold());
 
     let max_rows = inner.height.saturating_sub(1) as usize;
 
@@ -145,11 +141,7 @@ fn render_app_table(
                 crate::app::InstanceStatus::Failed => Color::Red,
             };
 
-            let style = if is_selected {
-                Style::default().bg(Color::Blue).fg(Color::White)
-            } else {
-                Style::default().fg(Color::White)
-            };
+            let style = crate::tui::theme::row_style(is_selected);
 
             let s = app_stats.get(&app.config.name);
 
@@ -225,10 +217,7 @@ fn render_app_detail(
     stats: Option<&AppStats>,
     history: Option<&AppHistory>,
 ) {
-    let block = Block::default()
-        .title(format!(" {} ", app.config.name))
-        .borders(Borders::ALL)
-        .style(Style::default().fg(Color::Cyan));
+    let block = crate::tui::theme::list_block(&app.config.name);
     f.render_widget(block, area);
 
     let inner = Rect::new(
