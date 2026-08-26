@@ -2,15 +2,20 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     prelude::Stylize,
     style::{Color, Style},
+    text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
     Frame,
 };
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
+use crate::config::ConfigManager;
 use crate::metrics::{AppMetricsJson, MetricsSnapshot};
 
 use super::errors::{load_request_errors, ErrorEntry};
+use super::theme;
 use super::{route_form::RouteForm, screens, TuiContext};
 
 /// Per-app stats combining traffic (from admin API) and system (from /proc).
@@ -31,7 +36,187 @@ pub struct AppHistory {
     pub mem: VecDeque<u64>,
 }
 
-const HISTORY_LEN: usize = 60; // 60 samples × 2s = 2 minutes
+const HISTORY_LEN: usize = 60; // 60 samples × 1s = 1 minute
+
+/// How often the background poller re-reads the daemon's admin API.
+const DAEMON_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+/// State of the daemon's admin API. "Not reachable" and "not enabled" are
+/// different things: a proxy running with `admin.enabled = false` is perfectly
+/// healthy, it just has no metrics endpoint to offer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DaemonStatus {
+    /// No poll has completed yet.
+    #[default]
+    Connecting,
+    Ok,
+    /// Admin API is enabled but did not answer.
+    Unreachable,
+    /// `admin.enabled = false` — nothing to connect to, nothing wrong.
+    Disabled,
+}
+
+impl DaemonStatus {
+    /// Short footer badge.
+    pub fn badge(self) -> &'static str {
+        match self {
+            DaemonStatus::Connecting => " daemon … ",
+            DaemonStatus::Ok => " daemon ● ",
+            DaemonStatus::Unreachable => " daemon ✕ ",
+            DaemonStatus::Disabled => " daemon ○ ",
+        }
+    }
+
+    pub fn color(self) -> Color {
+        match self {
+            DaemonStatus::Connecting => theme::MUTED,
+            DaemonStatus::Ok => theme::SUCCESS,
+            DaemonStatus::Unreachable => theme::DANGER,
+            DaemonStatus::Disabled => theme::MUTED,
+        }
+    }
+
+    /// Why the metric panes are empty, when they are.
+    pub fn explain(self) -> &'static str {
+        match self {
+            DaemonStatus::Connecting => "connecting",
+            DaemonStatus::Ok => "",
+            DaemonStatus::Unreachable => "daemon unreachable",
+            DaemonStatus::Disabled => "admin api off",
+        }
+    }
+
+    pub fn is_ok(self) -> bool {
+        self == DaemonStatus::Ok
+    }
+}
+
+/// One completed poll of the admin API.
+#[derive(Default)]
+struct DaemonSample {
+    apps: HashMap<String, AppMetricsJson>,
+    global: Option<MetricsSnapshot>,
+    status: DaemonStatus,
+    /// Incremented per completed poll so the UI can tell a fresh sample from a
+    /// repeat read of the same one.
+    seq: u64,
+}
+
+/// Handle to the background poller. The fetch used to run inline on the render
+/// thread via `block_on`, which froze the UI for the whole request timeout on
+/// every tick — worst exactly when the daemon was down and you most wanted to
+/// look around. Now the UI only ever reads the last completed sample.
+struct DaemonFeed {
+    latest: Arc<Mutex<DaemonSample>>,
+    wake: Arc<tokio::sync::Notify>,
+}
+
+impl DaemonFeed {
+    fn spawn(runtime: &tokio::runtime::Runtime, config_manager: Arc<ConfigManager>) -> Self {
+        let latest = Arc::new(Mutex::new(DaemonSample::default()));
+        let wake = Arc::new(tokio::sync::Notify::new());
+        let cell = latest.clone();
+        let signal = wake.clone();
+
+        runtime.spawn(async move {
+            // Off the render thread, so the timeout can be generous, and the
+            // client (with its connection pool) is built once rather than per tick.
+            let client = match reqwest::Client::builder()
+                .timeout(Duration::from_millis(1500))
+                .build()
+            {
+                Ok(client) => client,
+                Err(_) => {
+                    if let Ok(mut slot) = cell.lock() {
+                        slot.status = DaemonStatus::Unreachable;
+                        slot.seq = slot.seq.wrapping_add(1);
+                    }
+                    return;
+                }
+            };
+
+            loop {
+                let sample = poll_daemon(&client, &config_manager).await;
+                if let Ok(mut slot) = cell.lock() {
+                    let seq = slot.seq.wrapping_add(1);
+                    *slot = DaemonSample { seq, ..sample };
+                }
+                tokio::select! {
+                    _ = tokio::time::sleep(DAEMON_POLL_INTERVAL) => {}
+                    _ = signal.notified() => {}
+                }
+            }
+        });
+
+        Self { latest, wake }
+    }
+
+    /// Ask the poller to fetch again now instead of waiting out its interval.
+    fn request_refresh(&self) {
+        self.wake.notify_one();
+    }
+}
+
+/// Fetch per-app and global traffic metrics from the daemon's admin API.
+/// Best effort: an unreachable daemon yields an `Unreachable` sample rather
+/// than an error, so the UI keeps running with whatever it last knew.
+async fn poll_daemon(client: &reqwest::Client, config_manager: &ConfigManager) -> DaemonSample {
+    let cfg = config_manager.get_config();
+    if !cfg.admin.enabled.unwrap_or(true) {
+        return DaemonSample {
+            status: DaemonStatus::Disabled,
+            ..Default::default()
+        };
+    }
+
+    // Convert "0.0.0.0:9090" to "127.0.0.1:9090" for local connections
+    let admin_addr = cfg
+        .admin
+        .bind
+        .replace("0.0.0.0:", "127.0.0.1:")
+        .replace("[::]:", "127.0.0.1:");
+    let apps_url = format!("http://{}/api/v1/app-metrics", admin_addr);
+    let global_url = format!("http://{}/api/v1/metrics", admin_addr);
+    let api_key = cfg.admin.api_key.clone();
+
+    let with_key = |mut req: reqwest::RequestBuilder| {
+        if let Some(ref key) = api_key {
+            req = req.header("X-Api-Key", key);
+        }
+        req
+    };
+
+    // Admin API wraps JSON responses in {"ok": true, "data": ...}
+    #[derive(serde::Deserialize)]
+    struct Envelope {
+        data: HashMap<String, AppMetricsJson>,
+    }
+
+    let (apps, global) = tokio::join!(
+        async {
+            let resp = with_key(client.get(&apps_url)).send().await.ok()?;
+            resp.json::<Envelope>().await.ok().map(|e| e.data)
+        },
+        async {
+            let resp = with_key(client.get(&global_url)).send().await.ok()?;
+            let text = resp.text().await.ok()?;
+            Some(parse_prometheus_snapshot(&text))
+        }
+    );
+
+    let status = if apps.is_some() || global.is_some() {
+        DaemonStatus::Ok
+    } else {
+        DaemonStatus::Unreachable
+    };
+
+    DaemonSample {
+        apps: apps.unwrap_or_default(),
+        global,
+        status,
+        seq: 0,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Screen {
@@ -59,6 +244,17 @@ pub enum Modal {
 
 const APP_ACTIONS: &[&str] = &["Deploy", "Restart", "Stop", "Rollback", "View Logs"];
 
+/// How long a transient status flash stays on screen.
+const TOAST_TTL: Duration = Duration::from_secs(2);
+
+/// Largest scroll offset that still fills the viewport: the top of the last
+/// page, not the index of the last row. Every screen renders its rows as
+/// `.skip(scroll_offset).take(visible)`, so an offset of `len - 1` would leave
+/// exactly one row on screen.
+fn max_offset(len: usize, visible: usize) -> usize {
+    len.saturating_sub(visible.max(1))
+}
+
 pub struct TuiApp {
     ctx: TuiContext,
     current_screen: Screen,
@@ -85,10 +281,29 @@ pub struct TuiApp {
     errors: Vec<ErrorEntry>,
     /// Transient "copied to clipboard" flash for the error detail modal.
     error_copied: bool,
+    toast: Option<(String, Instant)>,
+    /// Background poller for the daemon's admin API.
+    daemon: DaemonFeed,
+    daemon_status: DaemonStatus,
+    /// `seq` of the last sample folded into `rps_history`, so a tick that
+    /// re-reads an unchanged sample does not fabricate a rate of zero.
+    last_daemon_seq: u64,
+    rps_history: VecDeque<u64>,
+    last_requests_total: u64,
+    last_metrics_at: Option<Instant>,
+    frame_ticks: u64,
+    /// Cached `proxy.conf` text and line count for the Config screen, so it is
+    /// not re-read from disk on every frame.
+    config_text: String,
+    config_line_count: usize,
+    last_sidebar: Rect,
+    last_body: Rect,
+    visible_height: usize,
 }
 
 impl TuiApp {
     pub fn new(ctx: TuiContext) -> Self {
+        let daemon = DaemonFeed::spawn(&ctx.runtime, ctx.config_manager.clone());
         let mut app = Self {
             ctx,
             current_screen: Screen::Dashboard,
@@ -110,16 +325,61 @@ impl TuiApp {
             log_auto_follow: true,
             errors: Vec::new(),
             error_copied: false,
+            toast: None,
+            daemon,
+            daemon_status: DaemonStatus::Connecting,
+            last_daemon_seq: 0,
+            rps_history: VecDeque::with_capacity(HISTORY_LEN),
+            last_requests_total: 0,
+            last_metrics_at: None,
+            frame_ticks: 0,
+            config_text: String::new(),
+            config_line_count: 0,
+            last_sidebar: Rect::default(),
+            last_body: Rect::default(),
+            visible_height: 20,
         };
         app.collect_stats();
         app
     }
 
-    /// Collect all per-app stats: traffic from admin API + system from /proc.
+    fn show_toast(&mut self, msg: impl Into<String>) {
+        self.toast = Some((msg.into(), Instant::now()));
+    }
+
+    /// Collect all per-app stats: traffic from the background daemon poller +
+    /// system stats from /proc. Never blocks on the network.
     fn collect_stats(&mut self) {
-        // Traffic counters live in the daemon process — fetch them via the
-        // admin API (best effort; zeros if the daemon is unreachable).
-        let (traffic, global) = self.fetch_daemon_metrics();
+        let (traffic, global, status, seq) = self.read_daemon_sample();
+        self.daemon_status = status;
+
+        // Only fold a sample into the rate history once. Re-reading the same
+        // sample would show a delta of zero over a growing interval.
+        let fresh = seq != self.last_daemon_seq;
+        self.last_daemon_seq = seq;
+        if fresh {
+            if let Some(ref snap) = global {
+                let now = Instant::now();
+                if let Some(prev_at) = self.last_metrics_at {
+                    let elapsed = now.duration_since(prev_at).as_secs_f64();
+                    let rps = theme::rps_from_delta(
+                        self.last_requests_total,
+                        snap.requests_total,
+                        elapsed,
+                    );
+                    if self.rps_history.len() >= HISTORY_LEN {
+                        self.rps_history.pop_front();
+                    }
+                    self.rps_history.push_back(rps);
+                }
+                self.last_requests_total = snap.requests_total;
+                self.last_metrics_at = Some(now);
+            } else {
+                // Daemon went away: drop the stale anchor so the first sample
+                // after it returns is not averaged across the whole outage.
+                self.last_metrics_at = None;
+            }
+        }
         self.remote_snapshot = global;
 
         // Re-probe PIDs for apps that lost theirs, then collect /proc stats
@@ -192,60 +452,38 @@ impl TuiApp {
 
         // Parse individual request failures from proxy.log for the Errors screen.
         self.errors = load_request_errors();
+
+        // Cached for the Config screen, which used to re-read the file on every
+        // frame and had no way to know how far it could scroll.
+        self.config_text = std::fs::read_to_string(self.ctx.config_manager.config_path())
+            .unwrap_or_else(|e| format!("Failed to read config file: {e}"));
+        self.config_line_count = self.config_text.lines().count();
+
+        self.clamp_scroll();
     }
 
-    /// Fetch per-app and global traffic metrics from the daemon's admin API.
-    /// Best effort: returns empty/None when the admin API is disabled or
-    /// unreachable (short timeout so the UI never stalls noticeably).
-    fn fetch_daemon_metrics(&self) -> (HashMap<String, AppMetricsJson>, Option<MetricsSnapshot>) {
-        let cfg = self.ctx.config_manager.get_config();
-        if !cfg.admin.enabled.unwrap_or(true) {
-            return (HashMap::new(), None);
+    /// Copy the newest sample produced by the background poller. Lock
+    /// contention is a few microseconds and there is no I/O on this path, so
+    /// this is safe to call from the render thread.
+    fn read_daemon_sample(
+        &self,
+    ) -> (
+        HashMap<String, AppMetricsJson>,
+        Option<MetricsSnapshot>,
+        DaemonStatus,
+        u64,
+    ) {
+        match self.daemon.latest.lock() {
+            Ok(slot) => (slot.apps.clone(), slot.global, slot.status, slot.seq),
+            // Poisoned only if the poller panicked mid-write; report it rather
+            // than propagating the panic into the render loop.
+            Err(_) => (
+                HashMap::new(),
+                None,
+                DaemonStatus::Unreachable,
+                self.last_daemon_seq,
+            ),
         }
-
-        // Convert "0.0.0.0:9090" to "127.0.0.1:9090" for local connections
-        let admin_addr = cfg
-            .admin
-            .bind
-            .replace("0.0.0.0:", "127.0.0.1:")
-            .replace("[::]:", "127.0.0.1:");
-        let apps_url = format!("http://{}/api/v1/app-metrics", admin_addr);
-        let global_url = format!("http://{}/api/v1/metrics", admin_addr);
-        let api_key = cfg.admin.api_key.clone();
-
-        self.ctx.runtime.block_on(async {
-            let Ok(client) = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_millis(500))
-                .build()
-            else {
-                return (HashMap::new(), None);
-            };
-            let with_key = |mut req: reqwest::RequestBuilder| {
-                if let Some(ref key) = api_key {
-                    req = req.header("X-Api-Key", key);
-                }
-                req
-            };
-
-            // Admin API wraps JSON responses in {"ok": true, "data": ...}
-            #[derive(serde::Deserialize)]
-            struct Envelope {
-                data: HashMap<String, AppMetricsJson>,
-            }
-
-            let (apps, global) = tokio::join!(
-                async {
-                    let resp = with_key(client.get(&apps_url)).send().await.ok()?;
-                    resp.json::<Envelope>().await.ok().map(|e| e.data)
-                },
-                async {
-                    let resp = with_key(client.get(&global_url)).send().await.ok()?;
-                    let text = resp.text().await.ok()?;
-                    Some(parse_prometheus_snapshot(&text))
-                }
-            );
-            (apps.unwrap_or_default(), global)
-        })
     }
 
     /// Called on each tick (auto-refresh).
@@ -266,6 +504,21 @@ impl TuiApp {
         self.check_pending_action();
     }
 
+    /// Per-loop housekeeping. Returns true when the frame needs repainting, so
+    /// an idle TUI does not redraw ten times a second for an identical image.
+    pub fn on_frame(&mut self) -> bool {
+        self.frame_ticks += 1;
+        let mut dirty = false;
+        if let Some((_, at)) = self.toast {
+            if at.elapsed() >= TOAST_TTL {
+                self.toast = None;
+                dirty = true;
+            }
+        }
+        // The footer spinner animates only while an action is in flight.
+        dirty || self.pending_action.is_some()
+    }
+
     pub fn has_pending_action(&self) -> bool {
         self.pending_action.is_some()
     }
@@ -280,13 +533,12 @@ impl TuiApp {
         }
         let handle = self.pending_action.take().unwrap();
         match self.ctx.runtime.block_on(handle) {
-            Ok(Ok(_msg)) => {
-                // Re-probe after action to update status
+            Ok(Ok(msg)) => {
                 if let Some(ref mgr) = self.ctx.app_manager {
                     mgr.probe_running_apps();
                 }
-                // Clear the progress modal silently on success
                 self.modal = Modal::None;
+                self.show_toast(msg);
             }
             Ok(Err(e)) => {
                 self.modal = Modal::AppActionResult(format!("Error: {}", e));
@@ -299,24 +551,45 @@ impl TuiApp {
 
     pub fn render(&mut self, f: &mut Frame) {
         let size = f.area();
+        let (sidebar, rest) = theme::split_shell(size);
+        let has_toast = self.toast.is_some();
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),
                 Constraint::Min(0),
+                Constraint::Length(if has_toast { 1 } else { 0 }),
                 Constraint::Length(1),
             ])
-            .split(size);
+            .split(rest);
 
-        self.render_header(f, chunks[0]);
+        self.last_sidebar = sidebar;
+        self.last_body = chunks[0];
+        // Panel rows minus the title chip and the column header.
+        self.visible_height = (chunks[0].height.saturating_sub(2) as usize).max(1);
+        // The terminal may have been resized since the last input event.
+        self.clamp_scroll();
+
+        let nav_idx = match self.current_screen {
+            Screen::Dashboard => 0,
+            Screen::Routes => 1,
+            Screen::Apps => 2,
+            Screen::Circuits => 3,
+            Screen::Errors => 4,
+            Screen::Config => 5,
+            Screen::Help => 0,
+        };
+        theme::render_sidebar(f, sidebar, nav_idx, env!("CARGO_PKG_VERSION"));
+        self.render_main(f, chunks[0]);
+        if has_toast {
+            if let Some((ref msg, _)) = self.toast {
+                theme::render_toast(f, chunks[1], msg);
+            }
+        }
+        self.render_footer(f, chunks[2]);
 
         if self.help_show {
-            self.render_help(f, chunks[1]);
-        } else {
-            self.render_main(f, chunks[1]);
+            self.render_help(f, chunks[0]);
         }
-
-        self.render_footer(f, chunks[2]);
 
         match &self.modal {
             Modal::RouteForm => self.render_route_form_modal(f),
@@ -390,6 +663,20 @@ impl TuiApp {
             }
             KeyCode::Char('r') => {
                 self.refresh_data();
+            }
+            KeyCode::Char('1') => self.jump_screen(Screen::Dashboard),
+            KeyCode::Char('2') => self.jump_screen(Screen::Routes),
+            KeyCode::Char('3') => self.jump_screen(Screen::Apps),
+            KeyCode::Char('4') => self.jump_screen(Screen::Circuits),
+            KeyCode::Char('5') => self.jump_screen(Screen::Errors),
+            KeyCode::Char('6') => self.jump_screen(Screen::Config),
+            KeyCode::PageDown => {
+                let page = self.get_visible_height().max(1) as i32;
+                self.move_selection(page);
+            }
+            KeyCode::PageUp => {
+                let page = self.get_visible_height().max(1) as i32;
+                self.move_selection(-page);
             }
             KeyCode::Char('/') => {
                 self.search_active = true;
@@ -874,6 +1161,10 @@ impl TuiApp {
     }
 
     fn move_selection(&mut self, dir: i32) {
+        if self.scrolls_text() {
+            self.scroll_text(dir);
+            return;
+        }
         let max = self.get_max_selection();
         if max == 0 {
             return;
@@ -894,7 +1185,13 @@ impl TuiApp {
     fn get_max_selection(&self) -> usize {
         match self.current_screen {
             Screen::Dashboard => 0,
-            Screen::Routes => self.ctx.config_manager.get_config().rules.len(),
+            // The filtered count, not the full one: with a search active the
+            // screen renders fewer rows than the config holds, and a cursor
+            // past the end scrolls the list into empty space.
+            Screen::Routes => {
+                let rules = self.ctx.config_manager.get_config().rules.clone();
+                screens::routes::filter_indices(&rules, &self.search_query).len()
+            }
             Screen::Apps => self.filtered_apps_count,
             Screen::Circuits => self.ctx.circuit_breaker.get_states().len(),
             Screen::Errors => self.errors.len(),
@@ -904,14 +1201,119 @@ impl TuiApp {
     }
 
     fn get_visible_height(&self) -> usize {
-        20
+        self.visible_height.max(1)
+    }
+
+    /// Screens that scroll a block of text rather than moving a row cursor.
+    /// They have no selectable rows, so `get_max_selection` is 0 for them and
+    /// the cursor-based path would refuse to move at all.
+    fn scrolls_text(&self) -> bool {
+        matches!(self.current_screen, Screen::Config)
+    }
+
+    fn text_line_count(&self) -> usize {
+        match self.current_screen {
+            Screen::Config => self.config_line_count,
+            _ => 0,
+        }
+    }
+
+    fn max_text_offset(&self) -> usize {
+        max_offset(self.text_line_count(), self.get_visible_height())
+    }
+
+    fn scroll_text(&mut self, dir: i32) {
+        let max_offset = self.max_text_offset() as i64;
+        let next = (self.scroll_offset as i64 + dir as i64).clamp(0, max_offset);
+        self.scroll_offset = next as usize;
+    }
+
+    /// Keep the viewport in range after the underlying content changes — a
+    /// search filter shrinking the list, errors rotating out of proxy.log, the
+    /// config file being edited, or the terminal being resized.
+    fn clamp_scroll(&mut self) {
+        if self.scrolls_text() {
+            self.scroll_offset = self.scroll_offset.min(self.max_text_offset());
+            return;
+        }
+        let len = self.get_max_selection();
+        if len == 0 {
+            self.selected_index = 0;
+            self.scroll_offset = 0;
+            return;
+        }
+        self.selected_index = self.selected_index.min(len - 1);
+        self.scroll_offset = self
+            .scroll_offset
+            .min(max_offset(len, self.get_visible_height()));
+        if self.selected_index < self.scroll_offset {
+            self.scroll_offset = self.selected_index;
+        }
+    }
+
+    fn jump_screen(&mut self, screen: Screen) {
+        self.current_screen = screen;
+        self.selected_index = 0;
+        self.scroll_offset = 0;
+    }
+
+    /// Returns true when the event changed something worth repainting.
+    pub fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) -> bool {
+        use crossterm::event::MouseEventKind;
+        if self.help_show || self.modal != Modal::None {
+            return false;
+        }
+        match mouse.kind {
+            MouseEventKind::Down(_) => {
+                if let Some(idx) = theme::nav_at(self.last_sidebar, mouse.column, mouse.row) {
+                    let screen = match idx {
+                        0 => Screen::Dashboard,
+                        1 => Screen::Routes,
+                        2 => Screen::Apps,
+                        3 => Screen::Circuits,
+                        4 => Screen::Errors,
+                        5 => Screen::Config,
+                        _ => return false,
+                    };
+                    self.jump_screen(screen);
+                    return true;
+                }
+                // Row 0 of the panel is the title chip and row 1 the column
+                // header; data rows start at +2. Clamping instead of offsetting
+                // would make a click on the header select the first row.
+                let first_row = self.last_body.y.saturating_add(2);
+                let past_end = self.last_body.y.saturating_add(self.last_body.height);
+                if mouse.row >= first_row && mouse.row < past_end {
+                    let rel = (mouse.row - first_row) as usize;
+                    let idx = self.scroll_offset + rel;
+                    if idx < self.get_max_selection() && idx != self.selected_index {
+                        self.selected_index = idx;
+                        return true;
+                    }
+                }
+                false
+            }
+            MouseEventKind::ScrollDown => {
+                self.move_selection(1);
+                true
+            }
+            MouseEventKind::ScrollUp => {
+                self.move_selection(-1);
+                true
+            }
+            _ => false,
+        }
     }
 
     fn scroll_to_bottom(&mut self) {
+        if self.scrolls_text() {
+            self.scroll_offset = self.max_text_offset();
+            return;
+        }
         let max = self.get_max_selection();
         if max > 0 {
-            self.scroll_offset = max.saturating_sub(1);
             self.selected_index = max - 1;
+            self.scroll_offset = max_offset(max, self.get_visible_height());
         }
     }
 
@@ -954,90 +1356,42 @@ impl TuiApp {
 
     /// Map the current selected_index to the actual rule index in config,
     /// accounting for search filtering.
+    /// Map the on-screen cursor back to an index into `config.rules`.
+    /// Uses the same predicate the Routes screen renders with, so `e`/`d`
+    /// always act on the row the user is looking at.
     fn resolve_route_index(&self) -> Option<usize> {
         let rules = self.ctx.config_manager.get_config().rules.clone();
-        if self.search_query.is_empty() {
-            if self.selected_index < rules.len() {
-                Some(self.selected_index)
-            } else {
-                None
-            }
-        } else {
-            let search_lower = self.search_query.to_lowercase();
-            let filtered: Vec<usize> = rules
-                .iter()
-                .enumerate()
-                .filter(|(idx, rule)| {
-                    let matcher_str = format!("{:?}", rule.matcher).to_lowercase();
-                    let targets_str: String = rule
-                        .targets
-                        .iter()
-                        .map(|t| t.url.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    let auth_str: String = rule
-                        .auth
-                        .iter()
-                        .map(|a| a.username.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    let scripts_str = rule.scripts.join(", ");
-                    matcher_str.contains(&search_lower)
-                        || targets_str.to_lowercase().contains(&search_lower)
-                        || auth_str.to_lowercase().contains(&search_lower)
-                        || scripts_str.to_lowercase().contains(&search_lower)
-                        || idx.to_string() == search_lower
-                })
-                .map(|(idx, _)| idx)
-                .collect();
-            filtered.get(self.selected_index).copied()
-        }
+        screens::routes::filter_indices(&rules, &self.search_query)
+            .get(self.selected_index)
+            .copied()
     }
 
-    fn refresh_data(&mut self) {}
-
-    fn render_header(&self, f: &mut Frame, area: Rect) {
-        let screen_names = [
-            "Dashboard",
-            "Routes",
-            "Apps",
-            "Circuits",
-            "Errors",
-            "Config",
-        ];
-        let current_idx = match self.current_screen {
-            Screen::Dashboard => 0,
-            Screen::Routes => 1,
-            Screen::Apps => 2,
-            Screen::Circuits => 3,
-            Screen::Errors => 4,
-            Screen::Config => 5,
-            Screen::Help => return,
-        };
-
-        let mut header_text = String::new();
-        for (i, name) in screen_names.iter().enumerate() {
-            if i == current_idx {
-                header_text.push_str(&format!("[ {} ] ", name));
-            } else {
-                header_text.push_str(&format!("  {}   ", name));
-            }
-        }
-
-        let paragraph = Paragraph::new(header_text)
-            .style(Style::default().fg(Color::Yellow))
-            .alignment(Alignment::Center);
-        f.render_widget(paragraph, area);
+    fn refresh_data(&mut self) {
+        // Kick the poller; its next sample lands on a later tick. The local
+        // (/proc, log, config) half refreshes synchronously right here.
+        self.daemon.request_refresh();
+        self.collect_stats();
+        self.show_toast("refreshed");
     }
 
     fn render_main(&mut self, f: &mut Frame, area: Rect) {
         match self.current_screen {
-            Screen::Dashboard => {
-                screens::dashboard::render(f, area, &self.ctx, self.remote_snapshot.as_ref())
-            }
-            Screen::Routes => {
-                screens::routes::render(f, area, &self.ctx, self.selected_index, &self.search_query)
-            }
+            Screen::Dashboard => screens::dashboard::render(
+                f,
+                area,
+                &self.ctx,
+                self.remote_snapshot.as_ref(),
+                self.daemon_status,
+                &self.rps_history,
+            ),
+            Screen::Routes => screens::routes::render(
+                f,
+                area,
+                &self.ctx,
+                self.selected_index,
+                self.scroll_offset,
+                &self.search_query,
+            ),
             Screen::Apps => {
                 let all_apps = self
                     .ctx
@@ -1074,7 +1428,13 @@ impl TuiApp {
                     },
                 )
             }
-            Screen::Circuits => screens::circuits::render(f, area, &self.ctx, self.selected_index),
+            Screen::Circuits => screens::circuits::render(
+                f,
+                area,
+                &self.ctx,
+                self.selected_index,
+                self.scroll_offset,
+            ),
             Screen::Errors => screens::errors::render(
                 f,
                 area,
@@ -1082,88 +1442,88 @@ impl TuiApp {
                 self.selected_index,
                 self.scroll_offset,
             ),
-            Screen::Config => screens::config_viewer::render(f, area, &self.ctx),
+            Screen::Config => screens::config_viewer::render(
+                f,
+                area,
+                &self.config_text,
+                self.scroll_offset,
+                self.config_line_count,
+            ),
             Screen::Help => {}
         }
     }
 
     fn render_footer(&self, f: &mut Frame, area: Rect) {
-        let mut footer_text = String::new();
-        footer_text.push_str(
-            " q:quit | ?:help | /:search | r:refresh | j/k:move | Tab:cycle | Enter:select",
-        );
-        if self.current_screen == Screen::Routes {
-            footer_text.push_str(" | a:add | e:edit | d:delete");
-        }
-        if self.current_screen == Screen::Errors {
-            footer_text.push_str(" | Enter:detail");
-        }
-
         if self.search_active {
-            footer_text = format!("Search: {}_", self.search_query);
+            let paragraph = Paragraph::new(format!(" / {}_  Esc:cancel", self.search_query))
+                .style(Style::default().fg(theme::WARN));
+            f.render_widget(paragraph, area);
+            return;
         }
 
-        let paragraph = Paragraph::new(footer_text)
-            .style(Style::default().fg(Color::DarkGray))
-            .alignment(Alignment::Left);
-        f.render_widget(paragraph, area);
+        let keys = match self.modal {
+            Modal::None => match self.current_screen {
+                Screen::Routes => "1-6 nav  j/k  a add  e edit  d delete  /  r  ?  q",
+                Screen::Apps => "1-6 nav  j/k  Enter action  /  r  ?  q",
+                Screen::Errors => "1-6 nav  j/k  Enter detail  r  ?  q",
+                Screen::Circuits => "1-6 nav  j/k  r  ?  q",
+                Screen::Config => "1-6 nav  j/k  r  ?  q",
+                _ => "1-6 nav  Tab cycle  r  ?  q",
+            },
+            Modal::RouteForm => "Tab fields  Enter save  Esc cancel",
+            Modal::DeleteConfirm(_) => "y confirm  n/Esc cancel",
+            Modal::AppActionMenu(_, _) => "j/k  Enter  Esc",
+            Modal::AppActionProgress(_, _) => "Esc dismiss (action continues)",
+            Modal::AppActionResult(_) => "Esc/Enter close",
+            Modal::LogViewer(_, _) => "j/k scroll  G follow  Esc close",
+            Modal::ErrorDetail(_) => "j/k  y copy  Esc",
+        };
+
+        let daemon = Span::styled(
+            self.daemon_status.badge(),
+            Style::default().fg(self.daemon_status.color()),
+        );
+        let spinner = if self.pending_action.is_some() {
+            Span::styled(
+                format!(" {} ", theme::spinner_frame(self.frame_ticks)),
+                Style::default().fg(theme::WARN),
+            )
+        } else {
+            Span::raw("")
+        };
+
+        let line = Line::from(vec![
+            Span::styled(format!(" {keys} "), Style::default().fg(theme::MUTED)),
+            Span::raw("  "),
+            spinner,
+            daemon,
+        ]);
+        f.render_widget(Paragraph::new(line).alignment(Alignment::Left), area);
     }
 
     fn render_help(&self, f: &mut Frame, area: Rect) {
-        let help_text = vec![
-            "",
-            "  SOLI PROXY TUI - HELP",
-            "  =====================",
-            "",
-            "  NAVIGATION",
-            "    j / Down       Move down",
-            "    k / Up         Move up",
-            "    g              Go to first item",
-            "    G              Go to last item",
-            "    Tab            Next screen",
-            "    Shift+Tab      Previous screen",
-            "    Enter          Select / Open",
-            "    Esc            Go back / Clear",
-            "",
-            "  ACTIONS",
-            "    q              Quit",
-            "    ?              Toggle this help",
-            "    /              Search filter",
-            "    r              Refresh data",
-            "",
-            "  ROUTES SCREEN",
-            "    a              Add new route",
-            "    e              Edit selected route",
-            "    d              Delete selected route",
-            "",
-            "  ROUTE FORM",
-            "    Tab/Shift+Tab  Navigate fields",
-            "    Left/Right     Change select options",
-            "    Enter          Save route",
-            "    Esc            Cancel",
-            "",
-            "  APPS SCREEN",
-            "    Enter          Open action menu",
-            "                   (Deploy/Restart/Stop/Rollback/Logs)",
-            "",
-            "  ERRORS SCREEN",
-            "    Enter          Open error detail",
-            "    j/k (in detail) Navigate between errors",
-            "    y / c          Copy error block to clipboard",
-            "                   (needs log_endpoints = true)",
-            "",
-            "  Press any key to close this help",
-        ];
+        let modal = theme::centered_modal(area, 64, 22);
+        f.render_widget(Clear, modal);
+        let help_text = "\
+  1-6            Jump to screen     Tab / S-Tab  Cycle
+  j/k  PgUp/Dn   Move               g / G        First / last
+  /              Search             r            Refresh now
+  Enter          Select / open      Esc          Back
+  a/e/d          Route add/edit/del
+  Mouse          Click nav, click rows, wheel scrolls
+  q              Quit
 
-        let block = Block::default()
-            .title(" Help ")
-            .borders(Borders::ALL)
-            .style(Style::default().fg(Color::Cyan));
+  Apps: Enter → Deploy / Restart / Stop / Rollback / Logs
+  Errors: Enter detail · y copy (OSC 52)
 
-        let paragraph = Paragraph::new(help_text.join("\n"))
-            .block(block)
-            .style(Style::default().fg(Color::White));
-        f.render_widget(paragraph, area);
+  Any key closes this overlay";
+        let block = theme::list_block("help");
+        f.render_widget(
+            Paragraph::new(help_text)
+                .block(block)
+                .style(Style::default().fg(theme::FG)),
+            modal,
+        );
     }
 
     fn render_route_form_modal(&self, f: &mut Frame) {
@@ -1509,8 +1869,7 @@ impl TuiApp {
 
     fn render_log_viewer(&mut self, f: &mut Frame, app_name: &str, slot: &str) {
         let log_path = format!("./run/logs/{}/{}.log", app_name, slot);
-        let log_content =
-            std::fs::read_to_string(&log_path).unwrap_or_else(|_| "No log file found.".to_string());
+        let log_content = tail_file(&log_path, 256 * 1024);
 
         let lines: Vec<&str> = log_content.lines().collect();
         let total_lines = lines.len();
@@ -1559,10 +1918,60 @@ impl TuiApp {
             .borders(Borders::ALL)
             .style(Style::default().fg(Color::Cyan));
 
-        let paragraph = Paragraph::new(display_text).block(block);
+        let paragraph = Paragraph::new(colorize_log(&display_text)).block(block);
 
         f.render_widget(paragraph, modal_area);
     }
+}
+
+/// Last `max_bytes` of a log file, as text.
+///
+/// Reads bytes rather than a `String`: seeking to a byte offset can land
+/// mid-codepoint, and a single non-UTF-8 byte anywhere in the file would make
+/// `read_to_string` fail — leaving the viewer blank with no explanation.
+fn tail_file(path: &str, max_bytes: u64) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) => return format!("Cannot read {path}: {e}"),
+    };
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let truncated = len > max_bytes;
+    if truncated {
+        let _ = file.seek(SeekFrom::Start(len - max_bytes));
+    }
+    let mut bytes = Vec::new();
+    if let Err(e) = file.read_to_end(&mut bytes) {
+        return format!("Cannot read {path}: {e}");
+    }
+    let mut text = String::from_utf8_lossy(&bytes).into_owned();
+    if truncated {
+        // Drop the partial first line left by the seek.
+        match text.find('\n') {
+            Some(i) => text.replace_range(..=i, ""),
+            None => text.clear(),
+        }
+    }
+    text
+}
+
+fn colorize_log(text: &str) -> ratatui::text::Text<'static> {
+    use ratatui::text::{Line, Span, Text};
+    let lines: Vec<Line> = text
+        .lines()
+        .map(|line| {
+            let lower = line.to_ascii_lowercase();
+            let style = if lower.contains("error") || lower.contains("fatal") {
+                Style::default().fg(theme::DANGER)
+            } else if lower.contains("warn") {
+                Style::default().fg(theme::WARN)
+            } else {
+                Style::default().fg(theme::FG)
+            };
+            Line::from(Span::styled(line.to_string(), style))
+        })
+        .collect();
+    Text::from(lines)
 }
 
 /// Copy `text` to the terminal clipboard via the OSC52 escape sequence. Works
@@ -1692,5 +2101,51 @@ proxy_response_status_codes_total{code=\"502\"} 6
         let snap = parse_prometheus_snapshot("");
         assert_eq!(snap.requests_total, 0);
         assert_eq!(snap.avg_response_time_ms, 0.0);
+    }
+
+    #[test]
+    fn max_offset_keeps_the_last_page_full() {
+        // 100 rows in a 20-row viewport: the last page starts at 80, not 99.
+        assert_eq!(max_offset(100, 20), 80);
+        // Everything fits: never scroll.
+        assert_eq!(max_offset(5, 20), 0);
+        assert_eq!(max_offset(0, 20), 0);
+        // A degenerate viewport must not divide by / subtract zero.
+        assert_eq!(max_offset(10, 0), 9);
+    }
+
+    #[test]
+    fn tail_file_reports_missing_and_unreadable_files() {
+        let text = tail_file("/definitely/not/a/log/file.log", 1024);
+        assert!(text.starts_with("Cannot read"), "{text}");
+    }
+
+    #[test]
+    fn tail_file_survives_non_utf8_bytes() {
+        let dir = std::env::temp_dir().join("soli-tail-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bad.log");
+        // An invalid UTF-8 byte used to make read_to_string fail, leaving the
+        // log viewer blank with no indication why.
+        std::fs::write(&path, b"first line\n\xffsecond line\n").unwrap();
+
+        let text = tail_file(path.to_str().unwrap(), 1024);
+        assert!(text.contains("first line"), "{text}");
+        assert!(text.contains("second line"), "{text}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn tail_file_drops_the_partial_first_line() {
+        let dir = std::env::temp_dir().join("soli-tail-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("long.log");
+        std::fs::write(&path, "aaaaaaaaaa\nbbbbbbbbbb\ncccccccccc\n").unwrap();
+
+        // 16 bytes back lands mid-way through the "bbb" line.
+        let text = tail_file(path.to_str().unwrap(), 16);
+        assert!(!text.contains("aaaa"), "{text}");
+        assert!(text.starts_with("cccccccccc"), "{text}");
+        let _ = std::fs::remove_file(&path);
     }
 }

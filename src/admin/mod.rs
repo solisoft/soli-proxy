@@ -448,7 +448,7 @@ async fn proxy_to_admin_app(
 
     let port = match resolve_admin_port(state).await {
         Ok(p) => p,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
 
     let path = req.uri().path();
@@ -512,15 +512,23 @@ async fn proxy_to_admin_app(
 }
 
 /// Resolve the _admin app's backend port, or return an error response.
-async fn resolve_admin_port(state: &Arc<AdminState>) -> Result<u16, Response<BoxBody>> {
+///
+/// The error is boxed because `Response<BoxBody>` dwarfs the `u16` success
+/// value, and every caller immediately returns it as its own response.
+async fn resolve_admin_port(state: &Arc<AdminState>) -> Result<u16, Box<Response<BoxBody>>> {
     let app_manager = match &state.app_manager {
         Some(m) => m,
-        None => return Err(error_response(501, "App management not configured")),
+        None => {
+            return Err(Box::new(error_response(
+                501,
+                "App management not configured",
+            )))
+        }
     };
 
     let app = match app_manager.get_app("_admin").await {
         Some(a) => a,
-        None => return Err(error_response(502, "_admin app not found")),
+        None => return Err(Box::new(error_response(502, "_admin app not found"))),
     };
 
     let port = if app.current_slot == "blue" {
@@ -530,7 +538,7 @@ async fn resolve_admin_port(state: &Arc<AdminState>) -> Result<u16, Response<Box
     };
 
     if port == 0 {
-        return Err(error_response(502, "_admin app not deployed"));
+        return Err(Box::new(error_response(502, "_admin app not deployed")));
     }
 
     Ok(port)
@@ -543,7 +551,7 @@ async fn proxy_websocket_to_admin_app(
 ) -> Response<BoxBody> {
     let port = match resolve_admin_port(state).await {
         Ok(p) => p,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
 
     let path = req.uri().path().to_string();

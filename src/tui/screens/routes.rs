@@ -13,59 +13,40 @@ pub fn render(
     area: Rect,
     ctx: &TuiContext,
     selected_index: usize,
+    scroll_offset: usize,
     search_query: &str,
 ) {
     let rules = ctx.config_manager.get_config().rules.clone();
 
-    let block = Block::default().title(" Routes ").borders(Borders::ALL);
+    let block = crate::tui::theme::list_block("routes");
     f.render_widget(block, area);
 
-    let inner = Rect::new(area.x + 1, area.y + 1, area.width - 2, area.height - 2);
+    let inner = crate::tui::theme::body(area);
 
     if rules.is_empty() {
-        let text = Paragraph::new("No routes configured. Press 'a' to add a route.");
+        let text = Paragraph::new("No routes configured. Press a to add a route.")
+            .style(Style::default().fg(Color::DarkGray));
         f.render_widget(text, inner);
         return;
     }
 
     let header = Row::new(vec!["#", "Matcher", "Targets", "Auth", "Scripts", "LB"])
-        .style(Style::default().fg(Color::Green).bold());
+        .style(Style::default().fg(crate::tui::theme::ACCENT).bold());
 
-    let filtered_rules: Vec<(usize, &crate::config::ProxyRule)> = rules
-        .iter()
-        .enumerate()
-        .filter(|(idx, rule)| {
-            if search_query.is_empty() {
-                return true;
-            }
-            let search_lower = search_query.to_lowercase();
-            let matcher_str = format_matcher(&rule.matcher).to_lowercase();
-            let targets_str: String = rule
-                .targets
-                .iter()
-                .map(|t| t.url.to_string())
-                .collect::<Vec<_>>()
-                .join(", ");
-            let auth_str: String = rule
-                .auth
-                .iter()
-                .map(|a| a.username.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-            let scripts_str = rule.scripts.join(", ");
-            matcher_str.contains(&search_lower)
-                || targets_str.to_lowercase().contains(&search_lower)
-                || auth_str.to_lowercase().contains(&search_lower)
-                || scripts_str.to_lowercase().contains(&search_lower)
-                || idx.to_string() == search_lower
-        })
-        .collect();
+    let filtered_rules: Vec<(usize, &crate::config::ProxyRule)> =
+        filter_indices(&rules, search_query)
+            .into_iter()
+            .map(|idx| (idx, &rules[idx]))
+            .collect();
 
+    let max_rows = inner.height.saturating_sub(1) as usize;
     let rows: Vec<Row> = filtered_rules
         .iter()
+        .skip(scroll_offset)
+        .take(max_rows)
         .enumerate()
         .map(|(display_idx, (idx, rule))| {
-            let is_selected = display_idx == selected_index;
+            let is_selected = scroll_offset + display_idx == selected_index;
             let matcher_str = format_matcher(&rule.matcher);
             let targets_str: String = rule
                 .targets
@@ -94,11 +75,7 @@ pub fn render(
                 format!("{} +{}", rule.scripts[0], rule.scripts.len() - 1)
             };
 
-            let style = if is_selected {
-                Style::default().bg(Color::Blue).fg(Color::White)
-            } else {
-                Style::default().fg(Color::White)
-            };
+            let style = crate::tui::theme::row_style(is_selected);
 
             let auth_style = if is_selected {
                 style
@@ -170,4 +147,45 @@ fn format_lb(lb: &crate::config::LoadBalancingStrategy) -> String {
         crate::config::LoadBalancingStrategy::Weighted => "weighted".to_string(),
         crate::config::LoadBalancingStrategy::Failover => "failover".to_string(),
     }
+}
+
+/// Indices of the rules matching `search_query`, in display order.
+///
+/// Shared with `TuiApp::resolve_route_index` and `get_max_selection` so that a
+/// row's position on screen always maps back to the same rule. These used to be
+/// two separate predicates — this one matched on `format_matcher`, the other on
+/// the matcher's `Debug` output — which meant a search could line up rows on
+/// screen with a different rule than `d` would delete.
+pub fn filter_indices(rules: &[crate::config::ProxyRule], search_query: &str) -> Vec<usize> {
+    if search_query.is_empty() {
+        return (0..rules.len()).collect();
+    }
+    let needle = search_query.to_lowercase();
+    rules
+        .iter()
+        .enumerate()
+        .filter(|(idx, rule)| {
+            let targets_str: String = rule
+                .targets
+                .iter()
+                .map(|t| t.url.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let auth_str: String = rule
+                .auth
+                .iter()
+                .map(|a| a.username.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let scripts_str = rule.scripts.join(", ");
+            format_matcher(&rule.matcher)
+                .to_lowercase()
+                .contains(&needle)
+                || targets_str.to_lowercase().contains(&needle)
+                || auth_str.to_lowercase().contains(&needle)
+                || scripts_str.to_lowercase().contains(&needle)
+                || idx.to_string() == needle
+        })
+        .map(|(idx, _)| idx)
+        .collect()
 }

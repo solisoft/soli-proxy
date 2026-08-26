@@ -2,19 +2,23 @@ use ratatui::{
     layout::{Constraint, Rect},
     prelude::Stylize,
     style::{Color, Style},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table},
+    widgets::{Cell, Paragraph, Row, Table},
     Frame,
 };
 
 use crate::tui::TuiContext;
 
-pub fn render(f: &mut Frame, area: Rect, ctx: &TuiContext, selected_index: usize) {
-    let block = Block::default()
-        .title(" Circuit Breakers ")
-        .borders(Borders::ALL);
+pub fn render(
+    f: &mut Frame,
+    area: Rect,
+    ctx: &TuiContext,
+    selected_index: usize,
+    scroll_offset: usize,
+) {
+    let block = crate::tui::theme::list_block("circuits");
     f.render_widget(block, area);
 
-    let inner = Rect::new(area.x + 1, area.y + 1, area.width - 2, area.height - 2);
+    let inner = crate::tui::theme::body(area);
 
     let states = ctx.circuit_breaker.get_states();
 
@@ -26,16 +30,19 @@ pub fn render(f: &mut Frame, area: Rect, ctx: &TuiContext, selected_index: usize
     }
 
     let header = Row::new(vec!["Target", "State", "Failures", "Successes"])
-        .style(Style::default().fg(Color::Green).bold());
+        .style(Style::default().fg(crate::tui::theme::ACCENT).bold());
 
     let states_vec: Vec<(String, crate::circuit_breaker::CircuitBreakerInfo)> =
         states.into_iter().collect();
 
+    let max_rows = inner.height.saturating_sub(1) as usize;
     let rows: Vec<Row> = states_vec
         .iter()
+        .skip(scroll_offset)
+        .take(max_rows)
         .enumerate()
         .map(|(idx, (url, info))| {
-            let is_selected = idx == selected_index;
+            let is_selected = scroll_offset + idx == selected_index;
 
             let state_color = match info.state.as_str() {
                 "open" => Color::Red,
@@ -43,11 +50,7 @@ pub fn render(f: &mut Frame, area: Rect, ctx: &TuiContext, selected_index: usize
                 _ => Color::Green,
             };
 
-            let style = if is_selected {
-                Style::default().bg(Color::Blue).fg(Color::White)
-            } else {
-                Style::default().fg(Color::White)
-            };
+            let style = crate::tui::theme::row_style(is_selected);
 
             Row::new(vec![
                 Cell::from(url.as_str()).style(style),

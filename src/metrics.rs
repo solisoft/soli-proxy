@@ -9,6 +9,7 @@ struct CpuSnapshot {
     timestamp: Instant,
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct MetricsSnapshot {
     pub requests_total: u64,
     pub requests_in_flight: usize,
