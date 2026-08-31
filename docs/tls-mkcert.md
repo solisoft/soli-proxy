@@ -6,7 +6,15 @@ gives you that: it generates a development root CA, installs it into the
 system trust store, and signs leaf certs from it.
 
 This doc covers wiring mkcert into the soli proxy, the gotcha that bit us in
-practice, and the tooling shipped in `scripts/` to recover from it.
+practice, and the tooling shipped in `scripts/` to recover from it. It assumes
+the multi-machine layout: the CA lives on a laptop, the certs are copied to a
+separate proxy host.
+
+> Running the proxy and the browser on one Arch/Omarchy workstation? See
+> [`omarchy-dev-setup.md`](omarchy-dev-setup.md) instead — it covers the
+> wildcard `.test` DNS and the privileged-port capability as well, plus the
+> Linux-only trust-store gotcha (`mkcert -install` does not reach
+> Chrome/Brave without `~/.pki/nssdb`).
 
 ## How the proxy uses cert files
 
@@ -31,9 +39,13 @@ On every machine that needs to trust the dev certs (your laptop, any client
 that hits the proxy):
 
 ```bash
-brew install mkcert nss   # nss is needed for Firefox trust on macOS
+brew install mkcert nss           # macOS; nss is needed for Firefox trust
+omarchy pkg add mkcert nss        # Arch/Omarchy; nss provides certutil
 mkcert -install
 ```
+
+On Linux, `mkcert -install` reaches the system store but **not** Chrome/Brave —
+see [`omarchy-dev-setup.md`](omarchy-dev-setup.md#the-linux-gotcha-two-trust-stores-and-mkcert-only-fills-one).
 
 Then on the machine where you keep the cert files (typically the laptop —
 keep them where the trusted CA lives), generate one wildcard per parent

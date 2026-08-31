@@ -138,6 +138,8 @@ After restart, every `*.example.test` alias is served with a Mac/Linux-trusted c
 
 See [`docs/tls-mkcert.md`](docs/tls-mkcert.md) for the full mkcert workflow, the CA-rotation pitfall (identical issuer string, different key → `bad signature`), and the `scripts/diag-mkcert-mac.sh` / `scripts/regen-mkcert-and-deploy.sh` helpers.
 
+For a single Arch/Omarchy workstation — wildcard `.test` DNS, binding 80/443 as a normal user, and getting Chrome/Brave to trust the dev CA — see [`docs/omarchy-dev-setup.md`](docs/omarchy-dev-setup.md).
+
 ### Proxy Rules (proxy.conf)
 
 ```proxy
