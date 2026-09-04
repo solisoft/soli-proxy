@@ -22,12 +22,27 @@ pub enum RequestHookResult {
     Deny { status: u16, body: String },
 }
 
-/// Result of calling on_route — either override or keep default.
+/// Result of calling on_route — override, keep default, or deny because the
+/// hook itself failed. A failing on_route may be doing authz-sensitive
+/// backend selection, so an error must not silently fall back to the
+/// default target.
 #[derive(Debug)]
 pub enum RouteHookResult {
     Override(String),
     Default,
+    Deny { status: u16, body: String },
 }
+
+/// Status/body returned to the client when a request-path hook (on_request,
+/// on_route) raises a Lua error. Hooks fail closed: an error must deny, not
+/// let the request through with whatever checks the script did not finish.
+const SCRIPT_ERROR_STATUS: u16 = 500;
+const SCRIPT_ERROR_BODY: &str = "script error";
+
+/// Per-call execution deadline read by the instruction-count hook. Stored
+/// in the Lua app-data slot and refreshed immediately before every hook
+/// invocation (see `arm_hook_timeout`).
+struct HookDeadline(Instant);
 
 /// Modifications returned by on_response hook.
 #[derive(Debug, Default)]
@@ -62,7 +77,8 @@ struct LuaEngineInner {
     has_on_route: bool,
     has_on_response: bool,
     has_on_request_end: bool,
-    _hook_timeout: Duration,
+    /// Max execution time per hook call; re-armed before every invocation.
+    hook_timeout: Duration,
     /// Per-script hook pool (script_name -> per-worker Lua states)
     route_scripts: HashMap<String, Vec<std::sync::Mutex<Lua>>>,
     /// Shared state for cross-worker counters (kept alive via Arc)
@@ -146,7 +162,7 @@ impl LuaEngine {
                 has_on_route,
                 has_on_response,
                 has_on_request_end,
-                _hook_timeout: hook_timeout,
+                hook_timeout,
                 route_scripts: HashMap::new(),
                 _shared_state: shared_state,
             }),
@@ -276,7 +292,7 @@ impl LuaEngine {
                 has_on_route,
                 has_on_response,
                 has_on_request_end,
-                _hook_timeout: hook_timeout,
+                hook_timeout,
                 route_scripts,
                 _shared_state: shared_state,
             }),
@@ -307,21 +323,9 @@ impl LuaEngine {
         const LUA_MEMORY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
         let _ = lua.set_memory_limit(LUA_MEMORY_LIMIT_BYTES);
 
-        // Set instruction count hook for timeout protection
-        let timeout_ms = hook_timeout.as_millis() as u32;
-        let deadline = Instant::now() + hook_timeout;
-        lua.set_hook(
-            mlua::HookTriggers::new().every_nth_instruction(10000),
-            move |_lua, _debug| {
-                if Instant::now() >= deadline {
-                    return Err(mlua::Error::RuntimeError(format!(
-                        "script execution timeout after {}ms",
-                        timeout_ms
-                    )));
-                }
-                Ok(mlua::VmState::Continue)
-            },
-        );
+        // Arm the timeout guard for the top-level chunk execution below. Hook
+        // calls re-arm it per invocation (see `arm_hook_timeout`).
+        Self::arm_hook_timeout(&lua, hook_timeout);
 
         // Register built-in modules
         Self::register_log_module(&lua)?;
@@ -378,6 +382,40 @@ impl LuaEngine {
         Ok(lua)
     }
 
+    /// (Re-)arm the per-call execution timeout on a pooled state.
+    ///
+    /// Must be called immediately before every hook invocation. Two things
+    /// are state-scoped rather than call-scoped and would otherwise go stale
+    /// on a long-lived pooled state:
+    ///  - the deadline: it lives in app data and is refreshed here, so the
+    ///    hook closure never captures an `Instant` from state creation;
+    ///  - the instruction counter: Lua 5.4's count hook accumulates across
+    ///    pcalls, so `set_hook` is called again each time — `lua_sethook`
+    ///    resets `hookcount`, giving every call a fresh 10,000-instruction
+    ///    window before the first check.
+    fn arm_hook_timeout(lua: &Lua, hook_timeout: Duration) {
+        let timeout_ms = hook_timeout.as_millis() as u32;
+        lua.set_app_data(HookDeadline(Instant::now() + hook_timeout));
+        lua.set_hook(
+            mlua::HookTriggers::new().every_nth_instruction(10000),
+            move |lua, _debug| {
+                // A missing deadline means the hook was not armed for this
+                // call; treat that as expired rather than run unbounded.
+                let expired = lua
+                    .app_data_ref::<HookDeadline>()
+                    .map(|d| Instant::now() >= d.0)
+                    .unwrap_or(true);
+                if expired {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "script execution timeout after {}ms",
+                        timeout_ms
+                    )));
+                }
+                Ok(mlua::VmState::Continue)
+            },
+        );
+    }
+
     fn register_log_module(lua: &Lua) -> LuaResult<()> {
         let log_table = lua.create_table()?;
 
@@ -429,15 +467,16 @@ impl LuaEngine {
             })?,
         )?;
 
+        // Lua convention: returns `decoded` on success, `nil, err` on bad
+        // input. Raising here instead would abort the calling hook with a
+        // script error on attacker-controlled input (e.g. a malformed
+        // Authorization header), which is exactly where it gets used.
         table.set(
             "decode",
             lua.create_function(|_, s: String| {
                 match base64::engine::general_purpose::STANDARD.decode(s.as_bytes()) {
-                    Ok(bytes) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
-                    Err(e) => Err(mlua::Error::RuntimeError(format!(
-                        "base64 decode error: {}",
-                        e
-                    ))),
+                    Ok(bytes) => Ok((Some(String::from_utf8_lossy(&bytes).into_owned()), None)),
+                    Err(e) => Ok((None, Some(format!("base64 decode error: {}", e)))),
                 }
             })?,
         )?;
@@ -606,8 +645,16 @@ impl LuaEngine {
             Ok(result) => result,
             Err(e) => {
                 tracing::error!("Lua on_request error: {}", e);
-                RequestHookResult::Continue(req.clone())
+                Self::script_error_deny()
             }
+        }
+    }
+
+    /// Fail-closed result for a request-path hook that raised an error.
+    fn script_error_deny() -> RequestHookResult {
+        RequestHookResult::Deny {
+            status: SCRIPT_ERROR_STATUS,
+            body: SCRIPT_ERROR_BODY.to_string(),
         }
     }
 
@@ -634,7 +681,7 @@ impl LuaEngine {
             Ok(result) => result,
             Err(e) => {
                 tracing::error!("Lua on_request error in {}: {}", script_name, e);
-                RequestHookResult::Continue(req.clone())
+                Self::script_error_deny()
             }
         }
     }
@@ -670,6 +717,7 @@ impl LuaEngine {
         // Build the request table
         let req_table = self.lua_request_table(lua, req)?;
 
+        Self::arm_hook_timeout(lua, self.inner.hook_timeout);
         let result: Value = func.call(req_table.clone())?;
 
         match result {
@@ -708,8 +756,16 @@ impl LuaEngine {
             Ok(result) => result,
             Err(e) => {
                 tracing::error!("Lua on_route error: {}", e);
-                RouteHookResult::Default
+                Self::route_script_error_deny()
             }
+        }
+    }
+
+    /// Fail-closed result for an on_route hook that raised an error.
+    fn route_script_error_deny() -> RouteHookResult {
+        RouteHookResult::Deny {
+            status: SCRIPT_ERROR_STATUS,
+            body: SCRIPT_ERROR_BODY.to_string(),
         }
     }
 
@@ -738,7 +794,7 @@ impl LuaEngine {
             }
             Err(e) => {
                 tracing::error!("Lua on_route error in {}: {}", script_name, e);
-                RouteHookResult::Default
+                Self::route_script_error_deny()
             }
         }
     }
@@ -752,6 +808,7 @@ impl LuaEngine {
         let func: Function = lua.globals().get("on_route")?;
         let req_table = self.lua_request_table(lua, req)?;
 
+        Self::arm_hook_timeout(lua, self.inner.hook_timeout);
         let result: Value = func.call((req_table, matched_target.to_string()))?;
 
         match result {
@@ -889,6 +946,7 @@ impl LuaEngine {
             })?,
         )?;
 
+        Self::arm_hook_timeout(lua, self.inner.hook_timeout);
         let _result: Value = func.call((req_table, resp_table))?;
 
         // Read back modifications
@@ -976,6 +1034,7 @@ impl LuaEngine {
         let resp_table = lua.create_table()?;
         resp_table.set("status", status)?;
 
+        Self::arm_hook_timeout(lua, self.inner.hook_timeout);
         func.call::<()>((req_table, resp_table, duration_ms, target.to_string()))?;
 
         Ok(())

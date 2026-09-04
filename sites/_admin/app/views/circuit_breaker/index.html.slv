@@ -56,7 +56,7 @@ var CBManager = {
                     '<h3 class="text-sm font-mono text-white truncate mr-2" title="' + AdminAPI.esc(target) + '">' + AdminAPI.esc(target) + '</h3>' +
                     '<span class="shrink-0 flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ' + stateBg + ' ' + stateColor + ' ' + borderColor + '">' +
                         '<span class="w-1.5 h-1.5 rounded-full ' + dotColor + '"></span>' +
-                        stateDisplay +
+                        AdminAPI.esc(stateDisplay) +
                     '</span>' +
                 '</div>' +
                 '<div class="grid grid-cols-2 gap-3">' +

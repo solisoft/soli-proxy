@@ -46,11 +46,85 @@
                     </p>
                 </div>
 
+                <!-- 0.31.0 -->
+                <div class="mb-10 reveal-on-scroll">
+                    <div class="flex items-center gap-3 mb-5 flex-wrap">
+                        <h2 class="text-2xl font-bold text-white font-mono">v0.31.0</h2>
+                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
+                        <span class="text-sm text-gray-500">2026-09-04</span>
+                    </div>
+
+                    <div class="space-y-4">
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20">security</span>
+                                <h3 class="text-base font-semibold text-white">Path traversal rejected before routing</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                Rules match on the raw path and per-route auth binds to the matched rule, so
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">/api/../admin/users</code> could pass an open
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">/api/</code> rule and land on a protected route at any backend that
+                                normalises. Dot segments in every spelling (literal, <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">%2e</code>,
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">..;</code>, <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">..\</code>)
+                                and encoded slashes are answered 400. Backends that carry <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">%2F</code>
+                                as data can set <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">[server] allow_encoded_slash = true</code>.
+                            </p>
+                        </div>
+
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20">security</span>
+                                <h3 class="text-base font-semibold text-white">Multi-tenant mode for untrusted apps</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">[apps] multi_tenant = true</code> treats every app as untrusted code:
+                                a <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">docker_image</code> is mandatory, every container gets a read-only
+                                root, dropped capabilities, no-new-privileges, pid/memory/cpu ceilings and a non-root uid that tenant config cannot weaken, and
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">docker_options</code> is validated against an allowlist. Bind mounts may only be
+                                the app's own site directory, passed to docker by its canonical path so a running container cannot race the check with a symlink.
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">docker_network</code> may not join the host or another container in any mode,
+                                and the single-tenant denylist now reads docker's syntax (<code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">-v/:/host</code>,
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">--mount type=bind,source=/</code>).
+                            </p>
+                        </div>
+
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20">security</span>
+                                <h3 class="text-base font-semibold text-white">Admin API hardening</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                Mutating requests without <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">X-Api-Key</code> must carry an
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">X-Requested-With</code> header, which an HTML form cannot set.
+                                Route password hashes are never returned by the API; a re-submitted entry with an empty hash keeps the existing one, matched by
+                                the rule's matcher rather than its position so a whole-table update that deletes or reorders rules cannot hand a route another
+                                route's password. Empty admin credentials (<code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">api_key = ""</code>)
+                                count as unset instead of producing a server that rejects everything. Lua hook errors fail closed with a 500.
+                            </p>
+                        </div>
+
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">fix</span>
+                                <h3 class="text-base font-semibold text-white">Apps get their own HOME and an environment allowlist</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                The proxy drops privileges to the app's user but handed the child its own
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">HOME</code> (<code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">/root</code> under systemd),
+                                silently breaking soli's package cache, registry credentials and the Tailwind CLI. It now comes from the passwd entry of the user the
+                                app runs as. A short allowlist (<code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">HTTP(S)_PROXY</code>,
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">SSL_CERT_FILE</code>,
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">XDG_CACHE_HOME</code>, the soli toolchain variables) survives the
+                                cleared environment, for native and Docker apps alike, so pinned interpreter versions and egress proxies work on a server.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- 0.29.1 -->
                 <div class="mb-10 reveal-on-scroll">
                     <div class="flex items-center gap-3 mb-5 flex-wrap">
                         <h2 class="text-2xl font-bold text-white font-mono">v0.29.1</h2>
-                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
                         <span class="text-sm text-gray-500">2026-07-28</span>
                     </div>
 

@@ -1,10 +1,22 @@
 use bcrypt::{hash, verify, DEFAULT_COST};
 use serde::{Deserialize, Serialize};
 
+/// One `@auth:user:hash` entry on a route.
+///
+/// The hash is never serialized (so `GET /api/v1/routes` does not leak it) but
+/// it *is* deserialized: a plain `#[serde(skip)]` also skipped it on input, so
+/// every route arriving through the admin API had `hash == ""`, the empty hash
+/// was written to `proxy.conf` as `@auth:user:`, and the next reload silently
+/// dropped the entry — editing a protected route removed its protection.
+///
+/// Contract with the admin API: `hash: ""` (or a missing field) on an entry
+/// whose username already exists on the rule being replaced means "keep the
+/// existing hash"; an empty hash for a new username is rejected.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BasicAuth {
     pub username: String,
-    #[serde(skip)]
+    #[serde(default, skip_serializing)]
     pub hash: String,
 }
 

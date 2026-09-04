@@ -105,7 +105,18 @@ pub struct AppInfo {
 }
 
 impl AppInfo {
-    pub fn from_path(path: &std::path::Path, dev_mode: bool) -> Result<Self, anyhow::Error> {
+    /// Load an app from its site directory.
+    ///
+    /// `multi_tenant` means `app.infos` is tenant input: `name` and `domain`
+    /// are then bound to the directory name (the one thing the operator, not
+    /// the tenant, chose), so a tenant cannot claim another site's `Host` or
+    /// another app's entry in the apps map. Single-tenant keeps them free-form
+    /// — the operator wrote both sides.
+    pub fn from_path(
+        path: &std::path::Path,
+        dev_mode: bool,
+        multi_tenant: bool,
+    ) -> Result<Self, anyhow::Error> {
         // Validate that folder name is a valid domain (contains at least one dot)
         let folder_name = path
             .file_name()
@@ -145,6 +156,43 @@ impl AppInfo {
         // Name fallback: use directory name if not set in app.infos
         if config.name.is_empty() {
             config.name = app_name.clone();
+        }
+
+        // Load-time validation, so a bad manifest is skipped (and logged) by
+        // discovery instead of reaching container names, log paths, the
+        // routing table or the admin UI. `name` and `domain` are hostnames;
+        // `health_check` is a URL path the proxy will request.
+        validate_hostname_field(&config.name, "name", folder_name)?;
+        if !config.domain.is_empty() {
+            validate_hostname_field(&config.domain, "domain", folder_name)?;
+        }
+        if let Some(ref health_check) = config.health_check {
+            validate_health_check_path(health_check)?;
+        }
+
+        if multi_tenant {
+            if config.name != app_name {
+                anyhow::bail!(
+                    "name {:?} must equal the site directory name {:?} in multi_tenant mode",
+                    config.name,
+                    app_name
+                );
+            }
+            // An app may answer for its own domain or its `www.` twin only.
+            // (`strip_www` already maps `www.<dir>` back to `<dir>`; the empty
+            // domain is the bundled `_admin`, which is never routed publicly.)
+            if !config.domain.is_empty()
+                && config.domain != app_name
+                && config.domain != format!("www.{}", app_name)
+            {
+                anyhow::bail!(
+                    "domain {:?} must equal the site directory name {:?} (or www.{}) in \
+                     multi_tenant mode",
+                    config.domain,
+                    app_name,
+                    app_name
+                );
+            }
         }
 
         // LuaOnBeans auto-detection: if no start_script and luaonbeans.org binary exists
@@ -216,6 +264,9 @@ pub struct AppManager {
     watcher: Arc<Mutex<Option<RecommendedWatcher>>>,
     acme_service: Arc<Mutex<Option<Arc<crate::acme::AcmeService>>>>,
     dev_mode: bool,
+    /// `[apps] multi_tenant`: treat `app.infos` as untrusted. See
+    /// `AppInfo::from_path` for what that changes at load time.
+    multi_tenant: bool,
     event_tx: broadcast::Sender<AppEvent>,
     #[allow(dead_code)]
     health_check_path: String,
@@ -277,6 +328,65 @@ fn is_valid_domain(name: &str) -> bool {
     !name.is_empty() && (!name.starts_with('.') && (name.contains('.') || name.starts_with('_')))
 }
 
+/// Check an `app.infos` hostname field (`name`, `domain`) against the charset
+/// `[A-Za-z0-9._-]`. That is RFC 1123 plus `_`: underscores are not valid in
+/// DNS host labels but are common in site directory names (`my_app.test`),
+/// were accepted before this check existed, and are harmless everywhere the
+/// value is used (container names, log paths, the routing table, the admin
+/// UI). A leading `_` is reserved for bundled apps and is only accepted when
+/// the site directory itself starts with `_` — otherwise a tenant directory
+/// could name itself `_admin` and take over the bundled admin app's entry in
+/// the apps map.
+fn validate_hostname_field(
+    value: &str,
+    label: &str,
+    folder_name: &str,
+) -> Result<(), anyhow::Error> {
+    let body = match value.strip_prefix('_') {
+        Some(rest) => {
+            if !folder_name.starts_with('_') {
+                anyhow::bail!(
+                    "{} {:?} starts with '_', which is reserved for bundled apps",
+                    label,
+                    value
+                );
+            }
+            rest
+        }
+        None => value,
+    };
+    if body.is_empty()
+        || !body
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+    {
+        anyhow::bail!(
+            "{} {:?} is not a valid hostname (letters, digits, '.', '-' and '_' only)",
+            label,
+            value
+        );
+    }
+    Ok(())
+}
+
+/// `health_check` is interpolated into the URL the proxy polls and exported to
+/// the container as `HEALTH_CHECK`: it must be an absolute URL path made of
+/// unreserved characters plus `/ ? = & %`.
+fn validate_health_check_path(path: &str) -> Result<(), anyhow::Error> {
+    let valid = path.starts_with('/')
+        && path.chars().all(|c| {
+            c.is_ascii_alphanumeric()
+                || matches!(c, '-' | '.' | '_' | '~' | '/' | '?' | '=' | '&' | '%')
+        });
+    if !valid {
+        anyhow::bail!(
+            "health_check {:?} must be an absolute URL path (unreserved characters and / ? = & % only)",
+            path
+        );
+    }
+    Ok(())
+}
+
 /// Get the non-www version of a domain if it starts with www.
 /// e.g. "www.solisoft.net" → Some("solisoft.net")
 fn strip_www(domain: &str) -> Option<String> {
@@ -285,6 +395,111 @@ fn strip_www(domain: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+/// The domain -> (port, health_check) table for every app with a live slot.
+///
+/// Apps are visited in name order and a domain, once claimed, is never
+/// overwritten: with a plain `HashMap::insert` a second app declaring the
+/// same `domain` would hijack the first one's traffic, and which one won
+/// would depend on map iteration order. A clash on a *declared* domain is
+/// logged as an error so it is visible instead of silently routing to the
+/// wrong app. A clash on a derived one (`www.`-stripped, `.test`) is routine
+/// — `x/` and `www.x/` both map to `x` — and stays at debug, since this runs
+/// on every request.
+fn running_app_domains(
+    apps: &HashMap<String, AppInfo>,
+    dev_mode: bool,
+) -> HashMap<String, (u16, Option<String>)> {
+    let mut result: HashMap<String, (u16, Option<String>)> = HashMap::new();
+    let mut claim = |domain: String, app: &AppInfo, port: u16, declared: bool| {
+        if let Some((existing_port, _)) = result.get(&domain) {
+            if declared {
+                tracing::error!(
+                    "get_running_app_domains: app {} declares domain {}, already served by port {}; \
+                     keeping the first, ignoring {}",
+                    app.config.name,
+                    domain,
+                    existing_port,
+                    app.config.name
+                );
+            } else {
+                tracing::debug!(
+                    "get_running_app_domains: derived domain {} of app {} already served by port {}, keeping the first",
+                    domain,
+                    app.config.name,
+                    existing_port
+                );
+            }
+            return;
+        }
+        result.insert(domain, (port, app.config.health_check.clone()));
+    };
+
+    let mut ordered: Vec<&AppInfo> = apps.values().collect();
+    ordered.sort_by(|a, b| a.config.name.cmp(&b.config.name));
+
+    for app in ordered {
+        // The bundled `_admin` app is served only via the authenticated
+        // admin listener (which reaches it through `get_app("_admin")`
+        // directly). It must never be reachable through the public proxy's
+        // Host-based app routing: the admin API strips credentials before
+        // forwarding, so `_admin` does no auth of its own, and exposing it
+        // here would let any client reach the admin UI/actions unauthenticated
+        // with `Host: <admin-domain>`.
+        if app.config.name == "_admin" {
+            continue;
+        }
+        if app.config.domain.is_empty() {
+            tracing::debug!(
+                "get_running_app_domains: app {} has empty domain, skipping",
+                app.config.name
+            );
+            continue;
+        }
+        let (port, pid) = if app.current_slot == "blue" {
+            (app.blue.port, app.blue.pid)
+        } else {
+            (app.green.port, app.green.pid)
+        };
+        tracing::debug!("get_running_app_domains: app {} domain={} current_slot={} blue_port={} blue_pid={:?} green_port={} green_pid={:?}",
+            app.config.name, app.config.domain, app.current_slot, app.blue.port, app.blue.pid, app.green.port, app.green.pid);
+        // If current slot has no PID, fall back to the other slot.
+        // This prevents permanent 421 when current_slot points to a
+        // dead slot but the other slot has a running process.
+        let (port, pid) = if pid.is_none() {
+            tracing::debug!(
+                "get_running_app_domains: app {} has no pid for slot {}, trying other slot",
+                app.config.name,
+                app.current_slot
+            );
+            if app.current_slot == "blue" {
+                (app.green.port, app.green.pid)
+            } else {
+                (app.blue.port, app.blue.pid)
+            }
+        } else {
+            (port, pid)
+        };
+        if pid.is_none() {
+            tracing::debug!(
+                "get_running_app_domains: app {} has no pid on either slot, skipping",
+                app.config.name,
+            );
+            continue;
+        }
+        claim(app.config.domain.clone(), app, port, true);
+        if let Some(non_www) = strip_www(&app.config.domain) {
+            claim(non_www, app, port, false);
+        }
+        if dev_mode {
+            if let Some(dev) = dev_domain(&app.config.domain) {
+                claim(dev, app, port, false);
+            }
+        }
+    }
+
+    result
 }
 
 /// Check if a port is currently in use by attempting to connect to it.
@@ -478,6 +693,7 @@ impl AppManager {
             watcher: Arc::new(Mutex::new(None)),
             acme_service: Arc::new(Mutex::new(None)),
             dev_mode,
+            multi_tenant,
             event_tx,
             health_check_path: health_check_path.to_string(),
             health_check_interval_secs,
@@ -514,69 +730,7 @@ impl AppManager {
 
     pub async fn get_running_app_domains(&self) -> HashMap<String, (u16, Option<String>)> {
         let apps = self.apps.lock().await;
-        let mut result = HashMap::new();
-        for app in apps.values() {
-            // The bundled `_admin` app is served only via the authenticated
-            // admin listener (which reaches it through `get_app("_admin")`
-            // directly). It must never be reachable through the public proxy's
-            // Host-based app routing: the admin API strips credentials before
-            // forwarding, so `_admin` does no auth of its own, and exposing it
-            // here would let any client reach the admin UI/actions unauthenticated
-            // with `Host: <admin-domain>`.
-            if app.config.name == "_admin" {
-                continue;
-            }
-            if app.config.domain.is_empty() {
-                tracing::debug!(
-                    "get_running_app_domains: app {} has empty domain, skipping",
-                    app.config.name
-                );
-                continue;
-            }
-            let (port, pid) = if app.current_slot == "blue" {
-                (app.blue.port, app.blue.pid)
-            } else {
-                (app.green.port, app.green.pid)
-            };
-            tracing::debug!("get_running_app_domains: app {} domain={} current_slot={} blue_port={} blue_pid={:?} green_port={} green_pid={:?}",
-                app.config.name, app.config.domain, app.current_slot, app.blue.port, app.blue.pid, app.green.port, app.green.pid);
-            // If current slot has no PID, fall back to the other slot.
-            // This prevents permanent 421 when current_slot points to a
-            // dead slot but the other slot has a running process.
-            let (port, pid) = if pid.is_none() {
-                tracing::debug!(
-                    "get_running_app_domains: app {} has no pid for slot {}, trying other slot",
-                    app.config.name,
-                    app.current_slot
-                );
-                if app.current_slot == "blue" {
-                    (app.green.port, app.green.pid)
-                } else {
-                    (app.blue.port, app.blue.pid)
-                }
-            } else {
-                (port, pid)
-            };
-            if pid.is_none() {
-                tracing::debug!(
-                    "get_running_app_domains: app {} has no pid on either slot, skipping",
-                    app.config.name,
-                );
-                continue;
-            }
-            result.insert(
-                app.config.domain.clone(),
-                (port, app.config.health_check.clone()),
-            );
-            if let Some(non_www) = strip_www(&app.config.domain) {
-                result.insert(non_www, (port, app.config.health_check.clone()));
-            }
-            if self.dev_mode {
-                if let Some(dev) = dev_domain(&app.config.domain) {
-                    result.insert(dev, (port, app.config.health_check.clone()));
-                }
-            }
-        }
+        let mut result = running_app_domains(&apps, self.dev_mode);
 
         // Fold in admin-managed aliases. An alias resolves to whatever its
         // target app is serving right now, so repointing one takes effect on
@@ -801,10 +955,15 @@ impl AppManager {
             // Track which apps still exist on disk
             let mut seen_names: HashSet<String> = HashSet::new();
 
-            for entry in std::fs::read_dir(&self.sites_dir)? {
-                let entry = entry?;
-                let path = entry.path();
+            // Directory order is filesystem-dependent; sort so that when two
+            // directories collide on a name, "first wins" below is stable
+            // across restarts.
+            let mut entries: Vec<PathBuf> = std::fs::read_dir(&self.sites_dir)?
+                .map(|entry| entry.map(|e| e.path()))
+                .collect::<Result<_, _>>()?;
+            entries.sort();
 
+            for path in entries {
                 // Skip directories starting with '.' (like .claude)
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                     if name.starts_with('.') {
@@ -821,10 +980,23 @@ impl AppManager {
                     path.clone()
                 };
                 if resolved_path.is_dir() {
-                    match AppInfo::from_path(&path, self.dev_mode) {
+                    match AppInfo::from_path(&path, self.dev_mode, self.multi_tenant) {
                         Ok(mut app_info) => {
                             let name = app_info.config.name.clone();
-                            seen_names.insert(name.clone());
+                            // Two directories resolving to one name would
+                            // otherwise share an apps-map entry: the later one
+                            // inherits the earlier one's ports and PIDs while
+                            // replacing its path and start command. Keep the
+                            // first, never overwrite.
+                            if !seen_names.insert(name.clone()) {
+                                tracing::error!(
+                                    "Skipping {}: app name {:?} is already taken by another site \
+                                     directory in this scan",
+                                    path.display(),
+                                    name
+                                );
+                                continue;
+                            }
 
                             if let Some(existing) = apps.get(&name) {
                                 // Preserve runtime state from existing entry
@@ -949,6 +1121,20 @@ impl AppManager {
         Ok(())
     }
 
+    /// Names of the site directories under `sites_dir` — the domains the
+    /// operator has provisioned, as opposed to whatever each `app.infos`
+    /// declares.
+    fn site_directory_names(&self) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(&self.sites_dir) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .filter(|entry| entry.path().is_dir())
+            .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
+            .collect()
+    }
+
     /// Synchronize proxy routes with discovered apps.
     ///
     /// Removes stale static rules from proxy.conf for domains now managed by
@@ -961,6 +1147,19 @@ impl AppManager {
         // spot because everything else works.
         let managed: std::collections::HashSet<String> =
             self.all_routable_domains().await.into_iter().collect();
+
+        // Pruning a static rule is destructive (it rewrites proxy.conf), so
+        // only domains chosen by the operator or the cluster may cause it: a
+        // site directory name, an admin-set alias, or a pushed route. An
+        // app's declared `domain` on its own does not qualify — in
+        // multi_tenant mode that string is tenant input, and letting it
+        // delete the operator's rule for someone else's domain is a hijack.
+        let prunable: HashSet<String> = self
+            .site_directory_names()
+            .into_iter()
+            .chain(self.aliases.lock().await.keys().cloned())
+            .chain(self.external_routes.domains())
+            .collect();
 
         // Remove static proxy.conf rules for app-managed domains so they
         // don't shadow the dynamic blue-green routing.
@@ -976,7 +1175,7 @@ impl AppManager {
                     _ => None,
                 };
                 if let Some(d) = domain {
-                    if managed.contains(d) {
+                    if managed.contains(d) && prunable.contains(d) {
                         tracing::info!("Removing stale static rule for app-managed domain: {}", d);
                         return false;
                     }
@@ -2220,7 +2419,7 @@ port_range_end = 30000
 "#;
         std::fs::write(app_path.join("app.infos"), app_infos).unwrap();
 
-        let app_info = AppInfo::from_path(&app_path, false).unwrap();
+        let app_info = AppInfo::from_path(&app_path, false, false).unwrap();
         assert_eq!(app_info.config.name, "test.solisoft.net");
         assert_eq!(app_info.config.domain, "test.solisoft.net");
         assert_eq!(app_info.config.start_script, Some("./start.sh".to_string()));
@@ -2287,7 +2486,7 @@ port_range_end = 30000
         std::fs::create_dir_all(&app_path).unwrap();
         std::fs::write(app_path.join("luaonbeans.org"), b"").unwrap();
 
-        let app_info = AppInfo::from_path(&app_path, false).unwrap();
+        let app_info = AppInfo::from_path(&app_path, false, false).unwrap();
         assert_eq!(app_info.config.name, "myapp.example.com");
         assert_eq!(app_info.config.domain, "myapp.example.com");
         assert_eq!(
@@ -2297,6 +2496,9 @@ port_range_end = 30000
         assert_eq!(app_info.config.health_check, Some("/".to_string()));
     }
 
+    /// Single-tenant: the operator wrote `app.infos`, so `domain` may differ
+    /// from the directory name. (Multi-tenant binds it — see
+    /// `multi_tenant_rejects_domain_not_bound_to_directory`.)
     #[test]
     fn test_luaonbeans_auto_detected_with_partial_app_infos() {
         let temp_dir = TempDir::new().unwrap();
@@ -2313,7 +2515,7 @@ port_range_end = 30000
 "#;
         std::fs::write(app_path.join("app.infos"), app_infos).unwrap();
 
-        let app_info = AppInfo::from_path(&app_path, false).unwrap();
+        let app_info = AppInfo::from_path(&app_path, false, false).unwrap();
         assert_eq!(app_info.config.name, "myapp.example.com");
         assert_eq!(app_info.config.domain, "custom.example.com");
         assert_eq!(
@@ -2321,6 +2523,256 @@ port_range_end = 30000
             Some("./luaonbeans.org -D . -p $PORT -s".to_string())
         );
         assert_eq!(app_info.config.health_check, Some("/".to_string()));
+    }
+
+    fn site_with_app_infos(sites: &Path, dir: &str, app_infos: &str) -> PathBuf {
+        let app_path = sites.join(dir);
+        std::fs::create_dir_all(&app_path).unwrap();
+        std::fs::write(app_path.join("app.infos"), app_infos).unwrap();
+        app_path
+    }
+
+    /// Multi-tenant: `domain` is tenant input. A tenant in `evil.example.com/`
+    /// declaring `domain = "victim.example.com"` would otherwise be routed
+    /// the victim's `Host` and prune the victim's static rule.
+    #[test]
+    fn multi_tenant_rejects_domain_not_bound_to_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let sites = temp_dir.path();
+
+        let hijack = site_with_app_infos(
+            sites,
+            "evil.example.com",
+            "domain = \"victim.example.com\"\n",
+        );
+        let err = AppInfo::from_path(&hijack, false, true).unwrap_err();
+        assert!(err.to_string().contains("domain"), "{}", err);
+        // ...but the same manifest is still accepted single-tenant.
+        assert!(AppInfo::from_path(&hijack, false, false).is_ok());
+
+        // Own domain, its www. twin and no domain at all are fine.
+        for domain in ["evil.example.com", "www.evil.example.com", ""] {
+            let ok = site_with_app_infos(
+                sites,
+                "evil.example.com",
+                &format!("domain = \"{}\"\n", domain),
+            );
+            assert!(
+                AppInfo::from_path(&ok, false, true).is_ok(),
+                "domain {:?} should be accepted",
+                domain
+            );
+        }
+    }
+
+    /// Multi-tenant: `name` keys the apps map, so a tenant naming itself after
+    /// another directory would merge into (and take over) that app's entry.
+    #[test]
+    fn multi_tenant_rejects_name_not_bound_to_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = site_with_app_infos(
+            temp_dir.path(),
+            "evil.example.com",
+            "name = \"victim.example.com\"\n",
+        );
+        let err = AppInfo::from_path(&path, false, true).unwrap_err();
+        assert!(err.to_string().contains("name"), "{}", err);
+        assert!(AppInfo::from_path(&path, false, false).is_ok());
+
+        let own = site_with_app_infos(
+            temp_dir.path(),
+            "evil.example.com",
+            "name = \"evil.example.com\"\n",
+        );
+        assert!(AppInfo::from_path(&own, false, true).is_ok());
+    }
+
+    /// `_`-prefixed names are the bundled apps' namespace (`_admin`). Only a
+    /// directory that itself starts with `_` may use one, in either mode.
+    #[test]
+    fn underscore_names_are_reserved_for_bundled_directories() {
+        let temp_dir = TempDir::new().unwrap();
+        let sites = temp_dir.path();
+
+        let impostor = site_with_app_infos(sites, "evil.example.com", "name = \"_admin\"\n");
+        assert!(AppInfo::from_path(&impostor, false, false).is_err());
+        assert!(AppInfo::from_path(&impostor, false, true).is_err());
+
+        let bundled = site_with_app_infos(sites, "_admin", "name = \"_admin\"\ndomain = \"\"\n");
+        let app = AppInfo::from_path(&bundled, false, true).unwrap();
+        assert_eq!(app.config.name, "_admin");
+        assert_eq!(app.config.domain, "");
+    }
+
+    /// `name`/`domain` reach container names, log paths and the admin UI:
+    /// hostname charset only, in both modes.
+    #[test]
+    fn name_and_domain_must_be_hostnames() {
+        let temp_dir = TempDir::new().unwrap();
+        let sites = temp_dir.path();
+        for manifest in [
+            "name = \"<script>alert(1)</script>\"\n",
+            "name = \"a b.example.com\"\n",
+            "name = \"a/b.example.com\"\n",
+            "domain = \"<img src=x onerror=alert(1)>\"\n",
+            "domain = \"evil.example.com;rm\"\n",
+            "domain = \"пример.example.com\"\n",
+        ] {
+            let path = site_with_app_infos(sites, "app.example.com", manifest);
+            assert!(
+                AppInfo::from_path(&path, false, false).is_err(),
+                "should reject {:?}",
+                manifest
+            );
+        }
+        let path = site_with_app_infos(
+            sites,
+            "app.example.com",
+            "name = \"App-1.example.com\"\ndomain = \"www.app.example.com\"\n",
+        );
+        assert!(AppInfo::from_path(&path, false, false).is_ok());
+
+        // Underscores were accepted before this check existed (only a dot was
+        // required) and existing `sites/my_app.example.com` directories must
+        // keep loading after an upgrade.
+        let path = site_with_app_infos(
+            sites,
+            "my_app.example.com",
+            "name = \"my_app.example.com\"\ndomain = \"my_app.example.com\"\n",
+        );
+        assert!(AppInfo::from_path(&path, false, false).is_ok());
+        assert!(AppInfo::from_path(&path, false, true).is_ok());
+    }
+
+    /// `health_check` is interpolated into a URL and exported as an env var.
+    #[test]
+    fn health_check_must_be_a_url_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let sites = temp_dir.path();
+        for health_check in [
+            "health",
+            "",
+            "/health\"><script>",
+            "/health <b>",
+            "/health\n",
+            "http://evil.example.com/",
+        ] {
+            let path = site_with_app_infos(
+                sites,
+                "app.example.com",
+                &format!("health_check = {:?}\n", health_check),
+            );
+            assert!(
+                AppInfo::from_path(&path, false, false).is_err(),
+                "should reject {:?}",
+                health_check
+            );
+        }
+        for health_check in ["/", "/up", "/health?deep=1&x=a%20b", "/v1/_status.json"] {
+            let path = site_with_app_infos(
+                sites,
+                "app.example.com",
+                &format!("health_check = {:?}\n", health_check),
+            );
+            assert!(
+                AppInfo::from_path(&path, false, false).is_ok(),
+                "should accept {:?}",
+                health_check
+            );
+        }
+    }
+
+    fn running_app(name: &str, domain: &str, port: u16) -> AppInfo {
+        let instance = |slot: &str, port: u16, pid: Option<u32>| AppInstance {
+            name: name.to_string(),
+            slot: slot.to_string(),
+            port,
+            pid,
+            status: InstanceStatus::Running,
+            last_started: None,
+        };
+        AppInfo {
+            config: AppConfig {
+                name: name.to_string(),
+                domain: domain.to_string(),
+                ..AppConfig::default()
+            },
+            path: PathBuf::from(format!("/srv/sites/{}", name)),
+            blue: instance("blue", port, Some(4242)),
+            green: instance("green", port + 1, None),
+            current_slot: "blue".to_string(),
+            quarantined: false,
+        }
+    }
+
+    /// Two apps claiming one domain: the first (by name) keeps it; the second
+    /// must not overwrite the routing entry, whatever the map's iteration
+    /// order.
+    #[test]
+    fn duplicate_domain_keeps_first_app() {
+        let mut apps = HashMap::new();
+        apps.insert(
+            "victim.example.com".to_string(),
+            running_app("victim.example.com", "victim.example.com", 20000),
+        );
+        apps.insert(
+            "zzz-evil.example.com".to_string(),
+            running_app("zzz-evil.example.com", "victim.example.com", 21000),
+        );
+
+        for _ in 0..8 {
+            let domains = running_app_domains(&apps, false);
+            assert_eq!(domains.get("victim.example.com").map(|d| d.0), Some(20000));
+        }
+
+        // A derived domain (www-stripped) cannot displace an app's own one either.
+        apps.insert(
+            "www.victim.example.com".to_string(),
+            running_app("www.victim.example.com", "www.victim.example.com", 22000),
+        );
+        let domains = running_app_domains(&apps, false);
+        assert_eq!(domains.get("victim.example.com").map(|d| d.0), Some(20000));
+        assert_eq!(
+            domains.get("www.victim.example.com").map(|d| d.0),
+            Some(22000)
+        );
+    }
+
+    /// Two site directories that resolve to one app name (single-tenant, where
+    /// `name` is free-form): the second is skipped, and the first entry keeps
+    /// its own path and start command instead of inheriting the second's.
+    #[tokio::test]
+    async fn duplicate_app_name_keeps_first_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let sites = temp_dir.path().join("sites");
+        let first = site_with_app_infos(
+            &sites,
+            "aaa.example.com",
+            "name = \"shared.example.com\"\nstart_script = \"./first\"\n",
+        );
+        site_with_app_infos(
+            &sites,
+            "zzz.example.com",
+            "name = \"shared.example.com\"\nstart_script = \"./second\"\n",
+        );
+
+        let config_manager = Arc::new(
+            crate::config::ConfigManager::new(temp_dir.path().join("proxy.conf").to_str().unwrap())
+                .unwrap(),
+        );
+        let port_manager =
+            Arc::new(PortManager::new(temp_dir.path().join("run").to_str().unwrap()).unwrap());
+        let manager =
+            AppManager::new(sites.to_str().unwrap(), port_manager, config_manager, false).unwrap();
+
+        // Twice: a rescan must not let the second directory in either.
+        for _ in 0..2 {
+            manager.discover_apps_readonly().await.unwrap();
+            let app = manager.get_app("shared.example.com").await.unwrap();
+            assert_eq!(app.path, first);
+            assert_eq!(app.config.start_script.as_deref(), Some("./first"));
+            assert_eq!(manager.list_apps().await.len(), 1);
+        }
     }
 
     #[test]
@@ -2341,7 +2793,7 @@ port_range_end = 30000
 "#;
         std::fs::write(app_path.join("app.infos"), app_infos).unwrap();
 
-        let app_info = AppInfo::from_path(&app_path, false).unwrap();
+        let app_info = AppInfo::from_path(&app_path, false, false).unwrap();
         assert_eq!(
             app_info.config.start_script,
             Some("./custom-start.sh".to_string())
@@ -2359,7 +2811,7 @@ port_range_end = 30000
         let app_path = temp_dir.path().join("myapp.example.com");
         std::fs::create_dir_all(app_path.join("app/models")).unwrap();
 
-        let app_info = AppInfo::from_path(&app_path, false).unwrap();
+        let app_info = AppInfo::from_path(&app_path, false, false).unwrap();
         assert_eq!(
             app_info.config.start_script,
             Some("soli serve . --port $PORT --workers $WORKERS".to_string())
@@ -2373,7 +2825,7 @@ port_range_end = 30000
         let app_path = temp_dir.path().join("emptyapp.example.com");
         std::fs::create_dir_all(&app_path).unwrap();
 
-        let app_info = AppInfo::from_path(&app_path, false).unwrap();
+        let app_info = AppInfo::from_path(&app_path, false, false).unwrap();
         assert_eq!(app_info.config.name, "emptyapp.example.com");
         assert!(app_info.config.start_script.is_none());
         assert_eq!(app_info.config.health_check, Some("/health".to_string()));
@@ -2385,7 +2837,7 @@ port_range_end = 30000
         let app_path = temp_dir.path().join("myapp.example.com");
         std::fs::create_dir_all(&app_path).unwrap();
 
-        let app_info = AppInfo::from_path(&app_path, false).unwrap();
+        let app_info = AppInfo::from_path(&app_path, false, false).unwrap();
         assert_eq!(app_info.config.health_check, Some("/health".to_string()));
     }
 
@@ -2402,7 +2854,7 @@ health_check = "/status"
 "#;
         std::fs::write(app_path.join("app.infos"), app_infos).unwrap();
 
-        let app_info = AppInfo::from_path(&app_path, false).unwrap();
+        let app_info = AppInfo::from_path(&app_path, false, false).unwrap();
         assert_eq!(app_info.config.health_check, Some("/status".to_string()));
     }
 

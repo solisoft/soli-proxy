@@ -212,6 +212,29 @@ fn looks_like_bcrypt_hash(s: &str) -> bool {
     s.starts_with("$2a$") || s.starts_with("$2b$") || s.starts_with("$2y$")
 }
 
+impl AdminConfig {
+    /// Treat an empty credential as unset, everywhere at once.
+    ///
+    /// A templated `config.toml` with an unresolved variable yields
+    /// `api_key = ""`, and `ADMIN_USER=""` is easy to export by accident.
+    /// Left as `Some("")`, the server's "is any auth configured" check and its
+    /// request-time check disagreed: the loopback guard logged "no
+    /// authentication configured" while every request got a bare 401, and an
+    /// empty user/password pair was bcrypt-hashed into a credential that
+    /// `Authorization: Basic Og==` satisfied. Normalising here, before the
+    /// plaintext-hashing step, keeps both checks looking at the same thing.
+    fn drop_empty_credentials(&mut self) {
+        let non_empty = |v: &mut Option<String>| {
+            if v.as_deref().is_some_and(str::is_empty) {
+                *v = None;
+            }
+        };
+        non_empty(&mut self.api_key);
+        non_empty(&mut self.username);
+        non_empty(&mut self.password_hash);
+    }
+}
+
 impl Default for AdminConfig {
     fn default() -> Self {
         let dotenv_loaded = dotenv::dotenv().is_ok();
@@ -222,27 +245,27 @@ impl Default for AdminConfig {
             tracing::debug!("Loaded environment from .env file");
         }
 
-        // Hash plaintext at construction time so Default and env-based configs
-        // both store a bcrypt hash (never the raw password).
-        let password_hash = password_hash.map(|p| {
-            if looks_like_bcrypt_hash(&p) {
-                p
-            } else {
-                tracing::warn!(
-                    "ADMIN_PASSWORD looks like plaintext; hashing at startup. \
-                     Prefer storing a bcrypt hash in ADMIN_PASSWORD_HASH."
-                );
-                crate::auth::generate_hash(&p)
-            }
-        });
-
-        Self {
+        let mut admin = Self {
             enabled: Some(true),
             bind: "127.0.0.1:9090".to_string(),
             api_key: None,
             username,
             password_hash,
+        };
+        admin.drop_empty_credentials();
+
+        // Hash plaintext at construction time so Default and env-based configs
+        // both store a bcrypt hash (never the raw password).
+        if let Some(ref mut hash) = admin.password_hash {
+            if !looks_like_bcrypt_hash(hash) {
+                tracing::warn!(
+                    "ADMIN_PASSWORD looks like plaintext; hashing at startup. \
+                     Prefer storing a bcrypt hash in ADMIN_PASSWORD_HASH."
+                );
+                *hash = crate::auth::generate_hash(hash);
+            }
         }
+        admin
     }
 }
 
@@ -266,6 +289,15 @@ pub struct ServerConfig {
     pub https_port: u16,
     #[serde(default)]
     pub worker_threads: Option<WorkerThreads>,
+    /// Let request paths containing an encoded slash (`%2F`) through instead
+    /// of answering 400. Default `false`: a backend that decodes `%2F` before
+    /// routing would see `/admin%2Fusers` as `/admin/users`, a path the
+    /// proxy's prefix rules and per-route auth never matched. Turn it on for
+    /// backends whose API paths carry `%2F` as data (GitLab's
+    /// `group%2Fproject`, S3-style object keys); dot segments spelled with
+    /// `%2F` (`..%2F`) are still rejected.
+    #[serde(default)]
+    pub allow_encoded_slash: Option<bool>,
 }
 
 impl Default for ServerConfig {
@@ -274,6 +306,7 @@ impl Default for ServerConfig {
             bind: "0.0.0.0:8080".to_string(),
             https_port: 443,
             worker_threads: None,
+            allow_encoded_slash: None,
         }
     }
 }
@@ -477,7 +510,12 @@ pub enum LoadBalancingStrategy {
     Failover,
 }
 
+// `deny_unknown_fields` on the rule and everything nested in it: a
+// cross-site `text/plain` form post can only reach the admin API if its
+// body still deserializes as a rule, and rejecting stray keys removes one
+// more way to smuggle a valid payload past the browser's preflight rules.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProxyRule {
     pub matcher: RuleMatcher,
     pub targets: Vec<Target>,
@@ -489,7 +527,34 @@ pub struct ProxyRule {
     pub load_balancing: LoadBalancingStrategy,
 }
 
-#[derive(Clone, Debug)]
+impl ProxyRule {
+    /// Resolve `hash: ""` auth entries against the rule this one replaces.
+    ///
+    /// The admin API never returns password hashes, so a client that edits a
+    /// protected route submits its existing users with an empty hash meaning
+    /// "keep". An empty hash for a username the old rule does not have is an
+    /// error: writing it would produce `@auth:user:` on disk, which the parser
+    /// discards, and the route would silently lose its protection.
+    pub fn carry_forward_auth_hashes(&mut self, existing: Option<&ProxyRule>) -> Result<()> {
+        for entry in &mut self.auth {
+            if !entry.hash.is_empty() {
+                continue;
+            }
+            let kept = existing.and_then(|old| {
+                old.auth
+                    .iter()
+                    .find(|a| a.username == entry.username && !a.hash.is_empty())
+            });
+            match kept {
+                Some(old) => entry.hash = old.hash.clone(),
+                None => anyhow::bail!("auth entry for {} has no password hash", entry.username),
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RuleMatcher {
     Default,
     Prefix(String),
@@ -505,6 +570,15 @@ pub struct RegexMatcher {
     pub pattern: String,
     pub regex: Regex,
 }
+
+/// Two regex matchers are the same rule when their patterns are.
+impl PartialEq for RegexMatcher {
+    fn eq(&self, other: &Self) -> bool {
+        self.pattern == other.pattern
+    }
+}
+
+impl Eq for RegexMatcher {}
 
 impl RegexMatcher {
     pub fn new(pattern: &str) -> Result<Self> {
@@ -620,12 +694,14 @@ impl<'de> Deserialize<'de> for RuleMatcher {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Target {
     pub url: Url,
     pub weight: u8,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HeaderRule {
     pub name: String,
     pub value: String,
@@ -706,7 +782,9 @@ impl ConfigManager {
         let config_dir = config_path.parent().unwrap_or(Path::new("."));
         let config_toml_path = config_dir.join("config.toml");
         let toml_content = if config_toml_path.exists() {
-            std::fs::read_to_string(&config_toml_path).ok()
+            std::fs::read_to_string(&config_toml_path).map_err(|e| {
+                anyhow::anyhow!("failed to read {}: {}", config_toml_path.display(), e)
+            })?
         } else {
             let default_config = r#"# Soli Proxy Configuration
 # Server settings
@@ -799,22 +877,18 @@ auth_type = "basic"
 realm = "Restricted"
 "#;
             std::fs::write(&config_toml_path, default_config).ok();
-            Some(default_config.to_string())
+            default_config.to_string()
         };
-        let toml_config: TomlConfig =
-            match toml_content.as_ref().and_then(|c| toml::from_str(c).ok()) {
-                Some(cfg) => cfg,
-                None => {
-                    if config_toml_path.exists() {
-                        tracing::error!(
-                            "Failed to parse config.toml at {} — check for TOML syntax errors. \
-                        Starting with defaults; your edits are being ignored.",
-                            config_toml_path.display()
-                        );
-                    }
-                    TomlConfig::default()
-                }
-            };
+        // A config.toml that exists but does not parse is an error, never a
+        // default. Substituting `TomlConfig::default()` on a typo used to drop
+        // `[admin].api_key` on the next reload while the listener stayed bound
+        // to whatever address it started on — an unauthenticated admin API
+        // that reported "reloaded successfully". Returning Err here makes a
+        // corrupt file fatal at startup and a no-op on reload (the previous
+        // config stays in place).
+        let toml_config: TomlConfig = toml::from_str(&toml_content).map_err(|e| {
+            anyhow::anyhow!("failed to parse {}: {}", config_toml_path.display(), e)
+        })?;
 
         Ok(Config {
             server: toml_config.server,
@@ -833,6 +907,7 @@ realm = "Restricted"
                         .ok()
                         .or_else(|| std::env::var("ADMIN_PASSWORD").ok());
                 }
+                admin.drop_empty_credentials();
                 if let Some(ref mut hash) = admin.password_hash {
                     if !looks_like_bcrypt_hash(hash) {
                         tracing::warn!(
@@ -979,6 +1054,19 @@ realm = "Restricted"
 
     /// Persist current rules to proxy.conf and swap in-memory config
     fn persist_rules(&self, rules: Vec<ProxyRule>, global_scripts: Vec<String>) -> Result<()> {
+        // Never write `@auth:user:` to disk: the parser discards it on the
+        // next reload and the route ends up unprotected. Callers are expected
+        // to have resolved empty hashes (`carry_forward_auth_hashes`) already;
+        // this is the last line of defence.
+        for rule in &rules {
+            if let Some(entry) = rule.auth.iter().find(|a| a.hash.is_empty()) {
+                anyhow::bail!(
+                    "refusing to persist rule {:?}: auth entry for {} has no password hash",
+                    rule.matcher,
+                    entry.username
+                );
+            }
+        }
         let content = serializer::serialize_proxy_conf(&rules, &global_scripts);
         self.suppress_watch.store(true, Ordering::SeqCst);
         std::fs::write(&self.config_path, &content)?;
@@ -1117,13 +1205,20 @@ fn extract_auth(s: &str) -> (String, Vec<BasicAuth>) {
         let auth_part = &after[..end_idx];
 
         // Parse username:hash - hash is everything after the first colon
-        if let Some((username, hash)) = auth_part.split_once(':') {
-            if !username.is_empty() && !hash.is_empty() {
+        match auth_part.split_once(':') {
+            Some((username, hash)) if !username.is_empty() && !hash.is_empty() => {
                 auth_entries.push(BasicAuth {
                     username: username.to_string(),
                     hash: hash.to_string(),
                 });
             }
+            // Discarding an entry means the route is served WITHOUT the
+            // protection the operator wrote down, so say so loudly.
+            _ => tracing::warn!(
+                "Ignoring malformed @auth entry {:?} (expected @auth:user:hash); \
+                 the route will not require that credential",
+                auth_part
+            ),
         }
 
         // Continue with the part BEFORE this @auth, plus any remaining after it
@@ -1564,6 +1659,171 @@ worker_threads = 2
 
         let got = read_worker_threads(proxy_conf.to_str().unwrap());
         assert_eq!(got, Some(WorkerThreads::Count(2)));
+    }
+
+    const VALID_TOML: &str = r#"
+[admin]
+enabled = true
+bind = "0.0.0.0:9090"
+api_key = "secret123"
+"#;
+
+    #[tokio::test]
+    async fn reload_with_corrupt_config_toml_fails_and_keeps_previous_config() {
+        // Regression: a parse error used to substitute TomlConfig::default(),
+        // which dropped [admin].api_key while the listener stayed bound to
+        // 0.0.0.0 — reload() reported success and the admin API was open.
+        let dir = tempfile::tempdir().unwrap();
+        let proxy_conf = dir.path().join("proxy.conf");
+        let toml_path = dir.path().join("config.toml");
+        std::fs::write(&proxy_conf, "default -> http://localhost:3000\n").unwrap();
+        std::fs::write(&toml_path, VALID_TOML).unwrap();
+
+        let manager = ConfigManager::new(proxy_conf.to_str().unwrap()).unwrap();
+        let before = manager.get_config();
+        assert_eq!(before.admin.api_key.as_deref(), Some("secret123"));
+        assert_eq!(before.admin.bind, "0.0.0.0:9090");
+
+        std::fs::write(&toml_path, "[admin\nthis is not toml").unwrap();
+        std::fs::write(&proxy_conf, "default -> http://localhost:4000\n").unwrap();
+
+        let err = manager
+            .reload()
+            .await
+            .expect_err("corrupt config.toml must fail reload");
+        assert!(err.to_string().contains("config.toml"), "{err}");
+
+        let after = manager.get_config();
+        assert!(
+            Arc::ptr_eq(&before, &after),
+            "config was swapped on a failed reload"
+        );
+        assert_eq!(after.admin.api_key.as_deref(), Some("secret123"));
+        assert_eq!(
+            after.rules[0].targets[0].url.as_str(),
+            "http://localhost:3000/"
+        );
+    }
+
+    #[test]
+    fn startup_with_corrupt_config_toml_is_fatal() {
+        let dir = tempfile::tempdir().unwrap();
+        let proxy_conf = dir.path().join("proxy.conf");
+        std::fs::write(&proxy_conf, "").unwrap();
+        std::fs::write(dir.path().join("config.toml"), "[server\nbind = ").unwrap();
+
+        assert!(ConfigManager::new(proxy_conf.to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn startup_without_config_toml_uses_defaults() {
+        // A missing file is not an error: the defaults are written out.
+        let dir = tempfile::tempdir().unwrap();
+        let proxy_conf = dir.path().join("proxy.conf");
+        std::fs::write(&proxy_conf, "").unwrap();
+
+        let manager = ConfigManager::new(proxy_conf.to_str().unwrap()).unwrap();
+        assert!(dir.path().join("config.toml").exists());
+        assert_eq!(manager.get_config().admin.bind, "127.0.0.1:9090");
+    }
+
+    fn rule_with_auth(auth: Vec<BasicAuth>) -> ProxyRule {
+        ProxyRule {
+            matcher: RuleMatcher::Prefix("/db/".to_string()),
+            targets: vec![Target {
+                url: Url::parse("http://localhost:8080").unwrap(),
+                weight: 100,
+            }],
+            headers: vec![],
+            scripts: vec![],
+            auth,
+            load_balancing: LoadBalancingStrategy::default(),
+        }
+    }
+
+    fn basic(username: &str, hash: &str) -> BasicAuth {
+        BasicAuth {
+            username: username.to_string(),
+            hash: hash.to_string(),
+        }
+    }
+
+    #[test]
+    fn admin_config_drops_empty_credentials() {
+        let mut admin = AdminConfig {
+            enabled: Some(true),
+            bind: "127.0.0.1:9090".to_string(),
+            api_key: Some(String::new()),
+            username: Some(String::new()),
+            password_hash: Some(String::new()),
+        };
+        admin.drop_empty_credentials();
+        assert_eq!(admin.api_key, None);
+        assert_eq!(admin.username, None);
+        assert_eq!(admin.password_hash, None);
+
+        let toml_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            toml_dir.path().join("config.toml"),
+            "[admin]\nbind = \"127.0.0.1:9090\"\napi_key = \"\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            toml_dir.path().join("proxy.conf"),
+            "default -> http://localhost:3000\n",
+        )
+        .unwrap();
+        let manager =
+            ConfigManager::new(toml_dir.path().join("proxy.conf").to_str().unwrap()).unwrap();
+        assert_eq!(manager.get_config().admin.api_key, None);
+    }
+
+    #[test]
+    fn carry_forward_keeps_existing_hash_and_rejects_unknown_user() {
+        let existing = rule_with_auth(vec![basic("demo", "$2b$12$old")]);
+
+        let mut incoming = rule_with_auth(vec![basic("demo", ""), basic("other", "$2b$12$new")]);
+        incoming.carry_forward_auth_hashes(Some(&existing)).unwrap();
+        assert_eq!(incoming.auth[0].hash, "$2b$12$old");
+        assert_eq!(incoming.auth[1].hash, "$2b$12$new");
+
+        let mut incoming = rule_with_auth(vec![basic("stranger", "")]);
+        let err = incoming
+            .carry_forward_auth_hashes(Some(&existing))
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "auth entry for stranger has no password hash"
+        );
+
+        let mut incoming = rule_with_auth(vec![basic("demo", "")]);
+        assert!(incoming.carry_forward_auth_hashes(None).is_err());
+    }
+
+    #[test]
+    fn persist_rules_refuses_empty_auth_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let proxy_conf = dir.path().join("proxy.conf");
+        std::fs::write(&proxy_conf, "default -> http://localhost:3000\n").unwrap();
+        let manager = ConfigManager::new(proxy_conf.to_str().unwrap()).unwrap();
+
+        let err = manager
+            .add_route(rule_with_auth(vec![basic("demo", "")]))
+            .unwrap_err();
+        assert!(err.to_string().contains("no password hash"), "{err}");
+
+        // Neither disk nor memory changed.
+        assert_eq!(manager.get_config().rules.len(), 1);
+        let on_disk = std::fs::read_to_string(&proxy_conf).unwrap();
+        assert!(!on_disk.contains("@auth"), "{on_disk}");
+    }
+
+    #[test]
+    fn extract_auth_discards_entry_without_hash() {
+        let (rest, entries) = extract_auth("http://localhost:8080/ @auth:demo: @auth:ok:$2b$x");
+        assert_eq!(rest, "http://localhost:8080/");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].username, "ok");
     }
 
     #[test]

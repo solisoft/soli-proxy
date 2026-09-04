@@ -50,8 +50,9 @@ function renderErrorHistory() {
         container.innerHTML = '';
         return;
     }
+    // e.message is the API error body, which may echo tenant-controlled strings.
     container.innerHTML = ErrorHistory.map(function(e) {
-        return '<div class="text-xs text-rose-400 py-1"><span class="text-surface-500">[' + e.time + ']</span> <span class="text-surface-400">' + e.source + ':</span> ' + e.message + '</div>';
+        return '<div class="text-xs text-rose-400 py-1"><span class="text-surface-500">[' + AdminAPI.esc(e.time) + ']</span> <span class="text-surface-400">' + AdminAPI.esc(e.source) + ':</span> ' + AdminAPI.esc(e.message) + '</div>';
     }).join('');
 }
 
@@ -187,14 +188,14 @@ var AppManager = {
             }).join('');
 
             return '<div class="domain-group col-span-full border border-white/5 rounded-xl overflow-hidden mb-4">' +
-                '<button class="domain-header w-full px-5 py-4 bg-surface-800/50 flex items-center justify-between hover:bg-surface-800/70 transition-colors" onclick="AppManager.toggleDomain(\'' + domainId + '\', this)">' +
+                '<button class="domain-header w-full px-5 py-4 bg-surface-800/50 flex items-center justify-between hover:bg-surface-800/70 transition-colors" data-domain-id="' + AdminAPI.esc(domainId) + '">' +
                     '<div class="flex items-center gap-3">' +
                         '<svg class="domain-chevron w-4 h-4 text-surface-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">' + chevronHtml + '</svg>' +
                         '<span class="text-sm font-medium text-white">' + AdminAPI.esc(domain) + '</span>' +
                         '<span class="text-xs text-surface-500 bg-surface-700 px-2 py-0.5 rounded-full">' + apps.length + '</span>' +
                     '</div>' +
                 '</button>' +
-                '<div id="' + domainId + '" class="domain-content grid grid-cols-1 lg:grid-cols-2 gap-4 p-4 ' + isExpanded + '">' +
+                '<div id="' + AdminAPI.esc(domainId) + '" class="domain-content grid grid-cols-1 lg:grid-cols-2 gap-4 p-4 ' + isExpanded + '">' +
                     appsHtml +
                 '</div>' +
             '</div>';
@@ -219,6 +220,31 @@ var AppManager = {
             }
         }
         AppManager.render(filtered, true);
+    },
+
+    // Single delegated click handler for everything rendered into #apps-grid.
+    // App names come from the API, so they are only ever carried in data-*
+    // attributes and read back via dataset — never interpolated into inline JS.
+    bindGridEvents: function() {
+        var grid = document.getElementById('apps-grid');
+        if (!grid || grid._eventsBound) return;
+        grid._eventsBound = true;
+        grid.addEventListener('click', function(ev) {
+            var header = ev.target.closest('[data-domain-id]');
+            if (header && grid.contains(header)) {
+                AppManager.toggleDomain(header.dataset.domainId, header);
+                return;
+            }
+            var btn = ev.target.closest('[data-app][data-action]');
+            if (!btn || !grid.contains(btn)) return;
+            var name = btn.dataset.app;
+            var action = btn.dataset.action;
+            if (action === 'logs') {
+                AppManager.showLogs(name);
+            } else if (action === 'deploy' || action === 'restart' || action === 'stop') {
+                AppManager.action(name, action, btn);
+            }
+        });
     },
 
     toggleDomain: function(domainId, btn) {
@@ -326,8 +352,8 @@ var AppManager = {
                     '</span>' +
                 '</div>' +
                 '<div class="flex items-center gap-3 bg-surface-800/30 rounded-lg px-3 py-2">' +
-                    '<div class="text-xs font-medium ' + (currentSlot === 'blue' ? 'text-accent-400' : 'text-accent-400') + '" data-cpu-current-value data-app-name="' + AdminAPI.esc(name) + '" data-slot="' + currentSlot + '">-</div>' +
-                    '<div data-cpu-graph-current data-app-name="' + AdminAPI.esc(name) + '" data-current-slot="' + currentSlot + '" class="flex-1 h-8">' + renderCpuGraph(name, currentSlot) + '</div>' +
+                    '<div class="text-xs font-medium ' + (currentSlot === 'blue' ? 'text-accent-400' : 'text-accent-400') + '" data-cpu-current-value data-app-name="' + AdminAPI.esc(name) + '" data-slot="' + AdminAPI.esc(currentSlot) + '">-</div>' +
+                    '<div data-cpu-graph-current data-app-name="' + AdminAPI.esc(name) + '" data-current-slot="' + AdminAPI.esc(currentSlot) + '" class="flex-1 h-8">' + renderCpuGraph(name, currentSlot) + '</div>' +
                     '<div class="text-xs text-surface-400">' + (currentSlot === 'blue' ? (blueMem ? formatBytes(blueMem) : '-') : (greenMem ? formatBytes(greenMem) : '-')) + '</div>' +
                 '</div>' +
             '</div>' +
@@ -353,23 +379,24 @@ var AppManager = {
                         '<span class="w-2 h-2 rounded-full ' + statusDot(blueStatus) + '"></span>' +
                         '<div class="min-w-0 flex-1">' +
                             '<div class="text-xs font-medium ' + (currentSlot === 'blue' ? 'text-accent-400' : 'text-surface-400') + '">Blue' + (currentSlot === 'blue' ? ' <span class="text-accent-500/60">active</span>' : '') + '</div>' +
-                            '<div class="text-xs ' + statusText(blueStatus) + '">' + blueStatus + (bluePort ? ' :' + bluePort : '') + '</div>' +
+                            '<div class="text-xs ' + statusText(blueStatus) + '">' + AdminAPI.esc(blueStatus) + (bluePort ? ' :' + AdminAPI.esc(bluePort) : '') + '</div>' +
                         '</div>' +
                     '</div>' +
                     '<div class="flex items-center gap-2 px-3 py-3 rounded-lg ' + (currentSlot === 'green' ? 'bg-accent-500/5 border border-accent-500/20' : 'bg-surface-800/30') + '">' +
                         '<span class="w-2 h-2 rounded-full ' + statusDot(greenStatus) + '"></span>' +
                         '<div class="min-w-0 flex-1">' +
                             '<div class="text-xs font-medium ' + (currentSlot === 'green' ? 'text-accent-400' : 'text-surface-400') + '">Green' + (currentSlot === 'green' ? ' <span class="text-accent-500/60">active</span>' : '') + '</div>' +
-                            '<div class="text-xs ' + statusText(greenStatus) + '">' + greenStatus + (greenPort ? ' :' + greenPort : '') + '</div>' +
+                            '<div class="text-xs ' + statusText(greenStatus) + '">' + AdminAPI.esc(greenStatus) + (greenPort ? ' :' + AdminAPI.esc(greenPort) : '') + '</div>' +
                         '</div>' +
                     '</div>' +
                 '</div>' +
             '</div>' +
             '<div class="flex items-center border-t border-white/5 divide-x divide-white/5">' +
-                '<button data-app="' + AdminAPI.esc(name) + '" data-action="deploy" data-loading-text="Deploying..." onclick="AppManager.action(\'' + AdminAPI.esc(name) + '\', \'deploy\', this)" class="flex-1 px-3 py-2.5 text-xs font-medium text-accent-400 hover:bg-accent-500/5 transition-colors">Deploy</button>' +
-                '<button data-app="' + AdminAPI.esc(name) + '" data-action="restart" data-loading-text="Restarting..." onclick="AppManager.action(\'' + AdminAPI.esc(name) + '\', \'restart\', this)" class="flex-1 px-3 py-2.5 text-xs font-medium text-surface-400 hover:bg-white/5 transition-colors">Restart</button>' +
-                '<button data-app="' + AdminAPI.esc(name) + '" data-action="stop" data-loading-text="Stopping..." onclick="AppManager.action(\'' + AdminAPI.esc(name) + '\', \'stop\', this)" class="flex-1 px-3 py-2.5 text-xs font-medium text-rose-400 hover:bg-rose-500/5 transition-colors">Stop</button>' +
-                '<button onclick="AppManager.showLogs(\'' + AdminAPI.esc(name) + '\')" class="flex-1 px-3 py-2.5 text-xs font-medium text-surface-400 hover:bg-white/5 transition-colors">Logs</button>' +
+                // Actions are bound by the delegated click handler on #apps-grid (see bindGridEvents).
+                '<button data-app="' + AdminAPI.esc(name) + '" data-action="deploy" data-loading-text="Deploying..." class="flex-1 px-3 py-2.5 text-xs font-medium text-accent-400 hover:bg-accent-500/5 transition-colors">Deploy</button>' +
+                '<button data-app="' + AdminAPI.esc(name) + '" data-action="restart" data-loading-text="Restarting..." class="flex-1 px-3 py-2.5 text-xs font-medium text-surface-400 hover:bg-white/5 transition-colors">Restart</button>' +
+                '<button data-app="' + AdminAPI.esc(name) + '" data-action="stop" data-loading-text="Stopping..." class="flex-1 px-3 py-2.5 text-xs font-medium text-rose-400 hover:bg-rose-500/5 transition-colors">Stop</button>' +
+                '<button data-app="' + AdminAPI.esc(name) + '" data-action="logs" class="flex-1 px-3 py-2.5 text-xs font-medium text-surface-400 hover:bg-white/5 transition-colors">Logs</button>' +
             '</div>' +
         '</div>';
     },
@@ -496,6 +523,7 @@ function refreshCpuData() {
     }).catch(function(err) { addError('refreshCpuData', err.message); AdminAPI.toast('Failed to refresh CPU data: ' + err.message, 'error'); });
 }
 
+AppManager.bindGridEvents();
 AppManager.load().then(function() {
     refreshCpuData();
     connectAppEvents();

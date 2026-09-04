@@ -3,12 +3,56 @@
     <p class="text-sm text-surface-400">Release history for soli-proxy. Mirrors <span class="font-mono text-surface-300">CHANGELOG.md</span> in the repository.</p>
 </div>
 
+<!-- 0.31.0 -->
+<div class="bg-surface-900/60 border border-white/5 rounded-xl overflow-hidden mb-5">
+    <div class="px-5 py-4 border-b border-white/5 flex items-baseline justify-between gap-3 flex-wrap">
+        <div class="flex items-baseline gap-3">
+            <h3 class="text-base font-semibold text-white font-mono">v0.31.0</h3>
+            <span class="px-2 py-0.5 rounded-full text-xs font-medium bg-accent-500/10 text-accent-400 border border-accent-500/20">latest</span>
+        </div>
+        <span class="text-xs text-surface-500">2026-09-04</span>
+    </div>
+
+    <ul class="divide-y divide-white/5">
+        <li class="px-5 py-4 flex gap-3">
+            <span class="shrink-0 mt-0.5 px-2 py-0.5 rounded text-xs font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20">security</span>
+            <div class="min-w-0">
+                <div class="text-sm font-medium text-white">Path traversal rejected before routing</div>
+                <p class="text-sm text-surface-400 mt-1">Rules match on the raw path and per-route auth binds to the matched rule, so <span class="font-mono text-surface-300">/api/../admin/users</span> could pass an open <span class="font-mono text-surface-300">/api/</span> rule and land on a protected route at any backend that normalises. Dot segments in every spelling (literal, <span class="font-mono text-surface-300">%2e</span>, <span class="font-mono text-surface-300">..;</span>, <span class="font-mono text-surface-300">..\</span>) and encoded slashes are answered 400. Backends that carry <span class="font-mono text-surface-300">%2F</span> as data can set <span class="font-mono text-surface-300">[server] allow_encoded_slash = true</span>.</p>
+            </div>
+        </li>
+
+        <li class="px-5 py-4 flex gap-3">
+            <span class="shrink-0 mt-0.5 px-2 py-0.5 rounded text-xs font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20">security</span>
+            <div class="min-w-0">
+                <div class="text-sm font-medium text-white">Multi-tenant mode for untrusted apps</div>
+                <p class="text-sm text-surface-400 mt-1"><span class="font-mono text-surface-300">[apps] multi_tenant = true</span> treats every app as untrusted code: a <span class="font-mono text-surface-300">docker_image</span> is mandatory, every container gets a read-only root, dropped capabilities, no-new-privileges, pid/memory/cpu ceilings and a non-root uid that tenant config cannot weaken, and <span class="font-mono text-surface-300">docker_options</span> is validated against an allowlist. Bind mounts may only be the app's own site directory, passed to docker by its canonical path. <span class="font-mono text-surface-300">docker_network</span> may not join the host or another container in any mode, and the single-tenant denylist now reads docker's syntax (<span class="font-mono text-surface-300">-v/:/host</span>, <span class="font-mono text-surface-300">--mount type=bind,source=/</span>).</p>
+            </div>
+        </li>
+
+        <li class="px-5 py-4 flex gap-3">
+            <span class="shrink-0 mt-0.5 px-2 py-0.5 rounded text-xs font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20">security</span>
+            <div class="min-w-0">
+                <div class="text-sm font-medium text-white">Admin API hardening</div>
+                <p class="text-sm text-surface-400 mt-1">Mutating requests without <span class="font-mono text-surface-300">X-Api-Key</span> must carry an <span class="font-mono text-surface-300">X-Requested-With</span> header, which an HTML form cannot set. Route password hashes are never returned; a re-submitted entry with an empty hash keeps the existing one, matched by the rule's matcher rather than its position so a whole-table update that deletes or reorders rules cannot hand a route another route's password. Empty admin credentials (<span class="font-mono text-surface-300">api_key = ""</span>) count as unset. Lua hook errors fail closed with a 500.</p>
+            </div>
+        </li>
+
+        <li class="px-5 py-4 flex gap-3">
+            <span class="shrink-0 mt-0.5 px-2 py-0.5 rounded text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">fix</span>
+            <div class="min-w-0">
+                <div class="text-sm font-medium text-white">Apps get their own HOME and an environment allowlist</div>
+                <p class="text-sm text-surface-400 mt-1">The proxy drops privileges to the app's user but handed the child its own <span class="font-mono text-surface-300">HOME</span> (<span class="font-mono text-surface-300">/root</span> under systemd), silently breaking soli's package cache, registry credentials and the Tailwind CLI. It now comes from the passwd entry of the user the app runs as. A short allowlist (<span class="font-mono text-surface-300">HTTP(S)_PROXY</span>, <span class="font-mono text-surface-300">SSL_CERT_FILE</span>, <span class="font-mono text-surface-300">XDG_CACHE_HOME</span>, the soli toolchain variables) survives the cleared environment, for native and Docker apps alike.</p>
+            </div>
+        </li>
+    </ul>
+</div>
+
 <!-- 0.29.1 -->
 <div class="bg-surface-900/60 border border-white/5 rounded-xl overflow-hidden mb-5">
     <div class="px-5 py-4 border-b border-white/5 flex items-baseline justify-between gap-3 flex-wrap">
         <div class="flex items-baseline gap-3">
             <h3 class="text-base font-semibold text-white font-mono">v0.29.1</h3>
-            <span class="px-2 py-0.5 rounded-full text-xs font-medium bg-accent-500/10 text-accent-400 border border-accent-500/20">latest</span>
         </div>
         <span class="text-xs text-surface-500">2026-07-28</span>
     </div>

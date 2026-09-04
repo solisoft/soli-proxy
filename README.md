@@ -86,6 +86,10 @@ soli-proxy update [--reinstall]                          # Self-update from GitH
 bind = "0.0.0.0:8080"
 https_port = 8443
 worker_threads = "auto"
+# Paths with a dot segment (`/api/../admin`, `%2e%2e`, `..;`, `..\`) are answered 400 before
+# any rule matches. So is an encoded slash (`%2F`) anywhere, unless the backend needs them as
+# data (GitLab's `group%2Fproject`, S3-style keys); `..%2F` stays rejected either way.
+allow_encoded_slash = false
 
 [tls]
 mode = "auto"  # "auto" for dev, "letsencrypt" for production
@@ -332,8 +336,63 @@ port_range_end = 30000
 | `user` | string | `[apps].default_user` from `config.toml` | OS user to drop privileges to (required when running the proxy as root). |
 | `group` | string | `[apps].default_group` from `config.toml` | OS group to drop privileges to. |
 | `docker_image` | string | _none_ | If set, the app runs inside Docker using this image instead of a host process. |
-| `docker_options` | string | _none_ | Extra flags appended to `docker run` (validated against an allowlist). |
-| `docker_network` | string | `"soli-apps"` | Docker network the container joins (created automatically if missing). |
+| `docker_options` | string | _none_ | Extra flags appended to `docker run`. Whitespace-split, no shell. Single-tenant: a denylist rejects `--privileged`, `--cap-add`, `--device`, `--security-opt`, `--userns`, `--volumes-from`, `--env-file`, `--group-add`, joining the `host` or another container's namespaces, and docker-socket / root mounts in every spelling (`-v/:/x`, `--mount type=bind,source=/`, `/./`, `/etc/..`). Multi-tenant: only the allowlist below is accepted. |
+| `docker_network` | string | `"soli-apps"` | Docker network the container joins (created automatically if missing). A plain network name only: `host` and `container:<id>` are refused in every mode, since the value goes straight to `--network`. |
+
+### The app's environment
+
+An app is started with a **cleared environment**, so nothing the proxy happens
+to inherit leaks into it. The child gets:
+
+| Variable | Value |
+|---|---|
+| `PORT` | The blue/green slot's port. |
+| `WORKERS` | The `workers` setting. |
+| `HOME` | **The home directory of the `user` the app runs as**, read from the passwd database — not the proxy's own. |
+| `PATH`, `LANG`, `TZ` | Copied from the proxy. |
+
+`HOME` matters more than it looks. The proxy usually runs as root and drops
+privileges to the app's `user`, so handing the child the proxy's own `HOME`
+(`/root` under systemd) pointed every `~`-resolved path at a directory the app
+cannot read. That silently broke soli's package cache (`~/.soli/packages`), its
+registry credentials, the Tailwind CLI it downloads to `~/.soli/bin`, and the
+cache for [pinned interpreter versions](https://soli.solisoft.net/docs/language/modules).
+
+A short allowlist also survives the clear, when it is set on the proxy:
+
+| Variable | Why |
+|---|---|
+| `XDG_CACHE_HOME` | Points at a shared soli toolchain cache, so a pinned app does not download its interpreter on the server and several apps running as different users can share one. |
+| `SOLI_RELEASE_BASE_URL` | An internal mirror for those downloads. |
+| `SOLI_NO_PIN` | Operator override for a version pin, e.g. during an incident. |
+| `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` (and lowercase) | Outbound egress proxy. |
+| `SSL_CERT_FILE`, `SSL_CERT_DIR` | Custom CA bundle. |
+
+Anything else stays cleared. Put per-app configuration in the app's own `.env`,
+not in the proxy's environment.
+
+A Docker app gets the same treatment, minus the entries that name a host path: the proxy-family
+variables, `SOLI_RELEASE_BASE_URL` and `SOLI_NO_PIN` are passed as `-e` flags into the
+container, while `XDG_CACHE_HOME`, `SSL_CERT_FILE` and `SSL_CERT_DIR` are not (the container
+cannot see those directories; bake a CA bundle into the image instead).
+
+### Pinned Soli versions
+
+A Soli app can pin the exact interpreter it runs on, with
+`soli_version = "=2.0.3"` in its `soli.toml`. The proxy needs no configuration
+for this: it starts an app with the app directory as the working directory, and
+soli resolves the pin from there — the same as on a developer machine.
+
+Two things to get right on a server:
+
+- **Provision the toolchain during deployment, not at start-up.** A new instance
+  has 30 seconds to pass its health check. A first start after changing a pin
+  spends part of that window downloading, and a slow link can push it over; the
+  deploy then fails and succeeds on the retry, once the cache is warm.
+- **Make the cache readable by the app's user.** With `HOME` now resolved
+  correctly this works by default, but several apps running as different users
+  will each download their own copy. Point `XDG_CACHE_HOME` at a shared
+  directory readable by all of them to avoid that.
 
 ### Variable substitution
 
@@ -380,8 +439,32 @@ With it on:
 - Every container gets `--read-only`, a `noexec,nosuid` tmpfs at `/tmp`, `--cap-drop ALL`,
   `--security-opt no-new-privileges`, `--pids-limit 256`, plus the memory/cpu/user limits above.
 - These are appended **after** the app's own `docker_options`, and `docker run` honours the last
-  occurrence of a repeated flag, so an app cannot raise its own ceiling or run as root.
-- `docker_options` is still validated (no `--privileged`, no host namespaces, no docker socket).
+  occurrence of a repeated flag, so an app cannot raise its own ceiling or run as root. The image
+  is passed after a `--` terminator, and `docker_image` must be a well-formed image reference, so
+  neither it nor the start script can smuggle in further flags.
+- `docker_options` is validated against an **allowlist** — anything not listed fails the deploy,
+  naming the offending token. Every flag must carry a value (a trailing flag would swallow the
+  platform's hardening). Permitted:
+  - `-e`/`--env KEY=VALUE`, `-l`/`--label`, `--restart`, `--stop-timeout`, `--health-*`
+  - `-m`/`--memory`, `--cpus`, `--cpu-shares`, `--pids-limit`, `--shm-size` (the platform's
+    limits still win, see above)
+  - no `-p`/`--publish`: the proxy publishes the allocated slot port as `127.0.0.1:$PORT:$PORT`
+    itself, so a tenant cannot bind a host port that belongs to another tenant's slot
+  - `-v`/`--volume SRC:DST[:ro|rw]` and `--mount type=bind,source=SRC,target=DST[,readonly]`
+    only when `SRC` canonicalises (symlinks resolved) to the app's own site directory — the
+    directory itself, not a path inside it. Everything under the site directory is writable by
+    the tenant's running container, which could swap a sub-directory for a symlink between the
+    check and docker's own path resolution at mount time; the site directory's own path has no
+    tenant-writable component. The canonical path is what reaches `docker run`, never the
+    tenant's spelling. Named volumes, other mount types, propagation and relabel options are
+    rejected.
+- `name` and `domain` in `app.infos` are bound to the site directory: `name` must equal it,
+  `domain` must be it or its `www.` twin (or empty). A tenant cannot claim another site's `Host`
+  or take over another app's entry; a directory whose manifest breaks the rule is skipped and
+  logged. Names starting with `_` are reserved for bundled apps (`_admin`) in every mode.
+- `name`, `domain` and `health_check` are checked at load time in every mode: hostname
+  characters (plus `_`, for existing `my_app.example.com` directories) for the first two, an
+  absolute URL path for the third.
 
 > Docker has a long history of container escapes. This raises the cost of one; it is not a VM
 > boundary. For genuinely hostile code, treat it as the first step toward gVisor or Firecracker.
@@ -416,8 +499,14 @@ curl -X POST http://127.0.0.1:9090/api/v1/apps/myapp.example.com/aliases \
      -d '{"domain":"www.example.com"}'
 
 curl http://127.0.0.1:9090/api/v1/aliases            # domain -> app
-curl -X DELETE http://127.0.0.1:9090/api/v1/apps/myapp.example.com/aliases/www.example.com
+curl -X DELETE http://127.0.0.1:9090/api/v1/apps/myapp.example.com/aliases/www.example.com \
+     -H "X-Api-Key: $KEY"
 ```
+
+Every non-GET request must carry `X-Api-Key`, or — when no key is configured, or with Basic
+auth — an `X-Requested-With` header of any value. That is the CSRF guard: an HTML form cannot
+set either header, so a page the operator happens to visit cannot drive the admin API with
+the browser's cached credentials or the open loopback default.
 
 Rollback is the same POST with a different app: send `{"domain":"www.example.com"}` to the
 previous deployment and traffic moves back, with both processes left running.

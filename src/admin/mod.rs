@@ -113,14 +113,27 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
-fn check_auth(
-    req: &Request<Incoming>,
+/// How a request got past `check_auth`. The dispatcher branches on this:
+/// Basic credentials are cached and replayed by the browser on any request
+/// to the origin, so only that path needs the cross-site checks below.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AuthMethod {
+    /// No credential is configured at all.
+    Open,
+    ApiKey,
+    Basic,
+}
+
+fn check_auth<B>(
+    req: &Request<B>,
     api_key: &Option<String>,
     username: &Option<String>,
     password_hash: &Option<String>,
-) -> bool {
-    if username.is_none() && password_hash.is_none() && api_key.is_none() {
-        return true;
+) -> Option<AuthMethod> {
+    // The same notion of "configured" as the bind-time guard: config loading
+    // drops empty credentials, and this keeps the two in step regardless.
+    if !admin_auth_configured(api_key, username, password_hash) {
+        return Some(AuthMethod::Open);
     }
 
     if let Some(key) = api_key {
@@ -131,7 +144,7 @@ fn check_auth(
                 .and_then(|v| v.to_str().ok())
                 .is_some_and(|v| constant_time_eq(v.as_bytes(), key.as_bytes()))
         {
-            return true;
+            return Some(AuthMethod::ApiKey);
         }
     }
 
@@ -156,7 +169,7 @@ fn check_auth(
                             };
                             let pass_ok = crate::auth::verify_password(p, verify_hash);
                             if user_ok && pass_ok {
-                                return true;
+                                return Some(AuthMethod::Basic);
                             }
                         }
                     }
@@ -165,7 +178,45 @@ fn check_auth(
         }
     }
 
-    false
+    None
+}
+
+/// Cross-site request check for Basic-authenticated mutations.
+///
+/// The browser attaches cached Basic credentials to any request it makes to
+/// this origin, including one a hostile page triggers with a `text/plain`
+/// form post — which needs no preflight and carries a body serde_json will
+/// happily parse. Two things a form cannot do: set a custom header, and lie
+/// about `Sec-Fetch-Site`. So a mutation must carry `X-Requested-With`
+/// (any value — a cross-origin `fetch` that sets it triggers a preflight,
+/// and OPTIONS answers 405), and if the browser sent `Sec-Fetch-Site` it
+/// must say the request is same-origin or user-initiated.
+///
+/// Applies to every credential a browser can supply on its own: cached
+/// Basic auth, and the no-auth loopback default (where a page can form-post
+/// to `127.0.0.1:9090` with nothing at all). An `X-Api-Key` caller is exempt:
+/// a browser never attaches that header by itself. The TUI and CLI send
+/// `X-Requested-With` unconditionally so they work in every mode.
+fn is_cross_site_mutation<B>(req: &Request<B>, method: AuthMethod) -> bool {
+    if method == AuthMethod::ApiKey {
+        return false;
+    }
+    if matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
+        return false;
+    }
+    if req.headers().get("x-requested-with").is_none() {
+        return true;
+    }
+    match req
+        .headers()
+        .get("sec-fetch-site")
+        .and_then(|v| v.to_str().ok())
+    {
+        None => false,
+        Some(site) => {
+            !(site.eq_ignore_ascii_case("same-origin") || site.eq_ignore_ascii_case("none"))
+        }
+    }
 }
 
 /// Extract route index from path like /api/v1/routes/3
@@ -226,6 +277,7 @@ async fn handle_admin_request(
     req: Request<Incoming>,
     state: Arc<AdminState>,
     peer_addr: Option<SocketAddr>,
+    bound_addr: SocketAddr,
 ) -> Result<Response<BoxBody>, std::convert::Infallible> {
     // Per-IP rate limit applied BEFORE auth so a rejected client can't
     // burn bcrypt rounds by replaying a wrong password under the limit.
@@ -247,8 +299,26 @@ async fn handle_admin_request(
     let username = admin_config.username.clone();
     let password_hash = admin_config.password_hash.clone();
     let use_basic_auth = username.is_some() && password_hash.is_some();
-    if !check_auth(&req, &api_key, &username, &password_hash) {
+
+    // `run_admin_server` refuses to start on a non-loopback address without
+    // a credential, but the config is hot-reloaded and the listener is not:
+    // if a reload ever produced an auth-less config while we are bound to a
+    // reachable address, deny everything rather than open up.
+    if !bound_addr.ip().is_loopback() && !admin_auth_configured(&api_key, &username, &password_hash)
+    {
+        tracing::error!(
+            "Admin API on {} has no credential configured; refusing request",
+            bound_addr
+        );
+        return Ok(error_response(503, "admin auth not configured"));
+    }
+
+    let Some(auth_method) = check_auth(&req, &api_key, &username, &password_hash) else {
         return Ok(unauthorized_response(use_basic_auth));
+    };
+
+    if is_cross_site_mutation(&req, auth_method) {
+        return Ok(error_response(403, "cross-site request rejected"));
     }
 
     let method = req.method().clone();
@@ -833,7 +903,8 @@ pub async fn run_admin_server(state: Arc<AdminState>) -> Result<()> {
     {
         anyhow::bail!(
             "refusing to start admin API on non-loopback address {} without authentication; \
-             set [admin].api_key or [admin].username + password_hash, or bind to 127.0.0.1",
+             set [admin].api_key in config.toml or the ADMIN_USER + ADMIN_PASSWORD_HASH \
+             environment variables, or bind to 127.0.0.1",
             addr
         );
     }
@@ -869,7 +940,7 @@ pub async fn run_admin_server(state: Arc<AdminState>) -> Result<()> {
                     let io = TokioIo::new(stream);
                     let svc = service_fn(move |req| {
                         let state = state.clone();
-                        async move { handle_admin_request(req, state, peer_addr).await }
+                        async move { handle_admin_request(req, state, peer_addr, addr).await }
                     });
                     if let Err(e) = hyper::server::conn::http1::Builder::new()
                         .serve_connection(io, svc)
@@ -939,5 +1010,116 @@ mod tests {
     #[test]
     fn auth_configured_returns_false_when_all_unset() {
         assert!(!admin_auth_configured(&None, &None, &None));
+    }
+
+    fn request(method: &str, headers: &[(&str, &str)]) -> Request<()> {
+        let mut builder = Request::builder().method(method).uri("/api/v1/reload");
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
+        builder.body(()).unwrap()
+    }
+
+    #[test]
+    fn check_auth_reports_which_credential_matched() {
+        let key = Some("k".to_string());
+        assert_eq!(
+            check_auth(&request("GET", &[]), &None, &None, &None),
+            Some(AuthMethod::Open)
+        );
+        assert_eq!(
+            check_auth(&request("GET", &[("X-Api-Key", "k")]), &key, &None, &None),
+            Some(AuthMethod::ApiKey)
+        );
+        assert_eq!(
+            check_auth(&request("GET", &[("X-Api-Key", "x")]), &key, &None, &None),
+            None
+        );
+    }
+
+    /// An empty credential is "unset" for `check_auth` exactly as it is for
+    /// `admin_auth_configured`: `api_key = ""` must not produce a server that
+    /// logs "no authentication configured" and then 401s every request, and
+    /// an empty user/hash pair must not accept `Basic Og==`.
+    #[test]
+    fn check_auth_treats_empty_credentials_as_unset() {
+        let empty = Some(String::new());
+        assert_eq!(
+            check_auth(&request("GET", &[]), &empty, &None, &None),
+            Some(AuthMethod::Open)
+        );
+        assert_eq!(
+            check_auth(&request("GET", &[]), &empty, &empty, &empty),
+            Some(AuthMethod::Open)
+        );
+        // Only a complete Basic pair counts, and an empty key never matches.
+        let key = Some("k".to_string());
+        assert_eq!(
+            check_auth(&request("GET", &[("X-Api-Key", "")]), &key, &empty, &None),
+            None
+        );
+    }
+
+    #[test]
+    fn basic_auth_mutation_without_x_requested_with_is_cross_site() {
+        // Exactly what a hostile page's text/plain form post looks like:
+        // cached Basic credentials, no custom header.
+        assert!(is_cross_site_mutation(
+            &request("POST", &[]),
+            AuthMethod::Basic
+        ));
+        assert!(!is_cross_site_mutation(
+            &request("POST", &[("X-Requested-With", "soli-admin")]),
+            AuthMethod::Basic
+        ));
+    }
+
+    #[test]
+    fn basic_auth_mutation_honours_sec_fetch_site() {
+        let same = [("X-Requested-With", "x"), ("Sec-Fetch-Site", "same-origin")];
+        let none = [("X-Requested-With", "x"), ("Sec-Fetch-Site", "none")];
+        let cross = [("X-Requested-With", "x"), ("Sec-Fetch-Site", "cross-site")];
+        let same_site = [("X-Requested-With", "x"), ("Sec-Fetch-Site", "same-site")];
+        assert!(!is_cross_site_mutation(
+            &request("PUT", &same),
+            AuthMethod::Basic
+        ));
+        assert!(!is_cross_site_mutation(
+            &request("PUT", &none),
+            AuthMethod::Basic
+        ));
+        assert!(is_cross_site_mutation(
+            &request("PUT", &cross),
+            AuthMethod::Basic
+        ));
+        assert!(is_cross_site_mutation(
+            &request("DELETE", &same_site),
+            AuthMethod::Basic
+        ));
+    }
+
+    #[test]
+    fn reads_and_non_basic_callers_are_never_cross_site() {
+        for method in ["GET", "HEAD", "OPTIONS"] {
+            assert!(!is_cross_site_mutation(
+                &request(method, &[]),
+                AuthMethod::Basic
+            ));
+        }
+        // X-Api-Key is never attached by a browser on its own.
+        assert!(!is_cross_site_mutation(
+            &request("POST", &[]),
+            AuthMethod::ApiKey
+        ));
+        // The open loopback default has no credential for a page to steal,
+        // but a form post needs none — so it is gated like Basic.
+        assert!(is_cross_site_mutation(
+            &request("POST", &[]),
+            AuthMethod::Open
+        ));
+        assert!(!is_cross_site_mutation(
+            &request("POST", &[("X-Requested-With", "soli-cli")]),
+            AuthMethod::Open
+        ));
     }
 }

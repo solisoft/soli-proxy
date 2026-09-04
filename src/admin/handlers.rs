@@ -635,10 +635,15 @@ pub async fn post_reload(state: &Arc<AdminState>) -> Response<BoxBody> {
 // Phase 2: Mutation endpoints
 
 pub fn post_route(state: &Arc<AdminState>, body: &str) -> Response<BoxBody> {
-    let rule: ProxyRule = match serde_json::from_str(body) {
+    let mut rule: ProxyRule = match serde_json::from_str(body) {
         Ok(r) => r,
         Err(e) => return error_response(400, &format!("Invalid route JSON: {}", e)),
     };
+
+    // A new route has nothing to inherit from: every auth entry needs a hash.
+    if let Err(e) = rule.carry_forward_auth_hashes(None) {
+        return error_response(400, &e.to_string());
+    }
 
     match state.config_manager.add_route(rule) {
         Ok(()) => {
@@ -653,10 +658,17 @@ pub fn post_route(state: &Arc<AdminState>, body: &str) -> Response<BoxBody> {
 }
 
 pub fn put_route(state: &Arc<AdminState>, index: usize, body: &str) -> Response<BoxBody> {
-    let rule: ProxyRule = match serde_json::from_str(body) {
+    let mut rule: ProxyRule = match serde_json::from_str(body) {
         Ok(r) => r,
         Err(e) => return error_response(400, &format!("Invalid route JSON: {}", e)),
     };
+
+    // `hash: ""` on a username the route already has means "keep"; the API
+    // never returns hashes, so this is how the UI re-submits existing users.
+    let cfg = state.config_manager.get_config();
+    if let Err(e) = rule.carry_forward_auth_hashes(cfg.rules.get(index)) {
+        return error_response(400, &e.to_string());
+    }
 
     match state.config_manager.update_route(index, rule) {
         Ok(()) => ok_response(serde_json::json!({ "message": "Route updated" })),
@@ -709,10 +721,29 @@ pub fn put_config(state: &Arc<AdminState>, body: &str) -> Response<BoxBody> {
         global_scripts: Vec<String>,
     }
 
-    let update: ConfigUpdate = match serde_json::from_str(body) {
+    let mut update: ConfigUpdate = match serde_json::from_str(body) {
         Ok(u) => u,
         Err(e) => return error_response(400, &format!("Invalid config JSON: {}", e)),
     };
+
+    // Whole-table replace: a `hash: ""` entry keeps the hash of the rule it
+    // replaces. That rule is identified by its matcher, not its position — a
+    // PUT that deletes, inserts or reorders rules shifts every index, and
+    // pairing by index would hand a route the password of whichever rule
+    // used to sit there (or reject a legitimate deletion). The same-index
+    // rule is preferred when its matcher matches, so duplicate matchers
+    // still pair up one-to-one.
+    let cfg = state.config_manager.get_config();
+    for (index, rule) in update.rules.iter_mut().enumerate() {
+        let existing = cfg
+            .rules
+            .get(index)
+            .filter(|old| old.matcher == rule.matcher)
+            .or_else(|| cfg.rules.iter().find(|old| old.matcher == rule.matcher));
+        if let Err(e) = rule.carry_forward_auth_hashes(existing) {
+            return error_response(400, &format!("rule {}: {}", index, e));
+        }
+    }
 
     match state
         .config_manager
