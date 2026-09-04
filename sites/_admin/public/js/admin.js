@@ -31,6 +31,10 @@ var AdminAPI = (function() {
         var headers = options.headers || {};
         var apiKey = localStorage.getItem('admin_api_key');
         if (apiKey) headers['X-Api-Key'] = apiKey;
+        // CSRF guard: the server rejects non-GET requests authenticated via
+        // Basic auth unless this custom header is present. A cross-origin
+        // form/img cannot set it, so its presence proves a scripted same-app call.
+        headers['X-Requested-With'] = 'soli-admin';
 
         return fetch(url, {
             method: options.method || 'GET',
@@ -168,11 +172,13 @@ var AdminAPI = (function() {
         return vals.reduce(function(a, b) { return a + b; }, 0);
     }
 
+    // HTML-escape a value for use in text content AND inside double- or
+    // single-quoted attribute values. Never use the result inside a JS string
+    // literal (inline on* handlers) — bind events with data-* + addEventListener.
+    var _escMap = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'};
     function esc(str) {
-        if (!str) return '';
-        var div = document.createElement('div');
-        div.textContent = str;
-        return div.innerHTML;
+        if (str === null || str === undefined || str === '') return '';
+        return String(str).replace(/[&<>"']/g, function(c) { return _escMap[c]; });
     }
 
     // ---- Toast Notifications ----
@@ -220,10 +226,12 @@ var AdminAPI = (function() {
 
     // Find button by name and action and set loading
     function setActionButtonLoading(name, action, loading) {
-        var btn = document.querySelector('[data-app="' + esc(name) + '"][data-action="' + esc(action) + '"]');
-        if (btn) {
-            setButtonLoading(btn, loading);
-        }
+        // Match on dataset rather than interpolating into a CSS selector.
+        document.querySelectorAll('[data-app][data-action]').forEach(function(btn) {
+            if (btn.dataset.app === name && btn.dataset.action === action) {
+                setButtonLoading(btn, loading);
+            }
+        });
     }
 
     // ---- Modal System ----

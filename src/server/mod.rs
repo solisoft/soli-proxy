@@ -1702,6 +1702,28 @@ async fn handle_request_inner(
         }
     }
 
+    // Reject dot-segment / encoded-slash paths before any rule matching. Rules
+    // match `starts_with(prefix)` on the raw path and per-route auth / Lua deny
+    // hooks bind to the matched rule, so `/api/../admin/users` would pass the
+    // open `/api/` rule's checks and land on `/admin/users` at any backend that
+    // normalises dot segments (`%2e%2e` and `%2f` variants likewise). Rejecting
+    // beats normalising: no routing semantics change for legitimate paths.
+    // This is the single choke point for both the HTTP and WebSocket paths.
+    if has_dot_segment_or_encoded_slash(
+        req.uri().path(),
+        config.server.allow_encoded_slash.unwrap_or(false),
+    ) {
+        metrics.dec_in_flight();
+        let duration = start_time.elapsed();
+        metrics.record_request(0, 0, 400, duration);
+        let body = http_body_util::Full::new(Bytes::from("Bad Request")).boxed();
+        return Ok(Response::builder()
+            .status(400)
+            .header("Content-Type", "text/plain")
+            .body(body)
+            .unwrap());
+    }
+
     // HTTP to HTTPS redirect when TLS is off and force_https is enabled
     if !is_tls && config.tls.force_https {
         let raw_host = req
@@ -2140,6 +2162,87 @@ fn apply_lua_request_mods(req: &mut Request<Incoming>, lua_req: &LuaRequest) {
             headers.insert(hn, hv);
         }
     }
+}
+
+/// True when `path` (the raw, undecoded request path) contains a dot
+/// segment in any spelling a backend might normalise away — literal or
+/// percent-encoded dots, terminated by `/`, the end of the path, a `;` path
+/// parameter (Tomcat, Jetty, Spring: `/api/..;/admin`), or a backslash (IIS
+/// and anything that treats `\` as `/`) — or, unless `allow_encoded_slash`,
+/// an encoded slash anywhere.
+///
+/// Both `/` and `%2F` count as segment boundaries for the dot-segment scan,
+/// so `..%2Fadmin` and `%2F..` are caught even when encoded slashes are
+/// allowed through for backends whose API paths carry them (GitLab's
+/// `group%2Fproject`, S3-style keys).
+fn has_dot_segment_or_encoded_slash(path: &str, allow_encoded_slash: bool) -> bool {
+    // `%XY` at `i`, case-insensitive hex digits.
+    fn is_pct(bytes: &[u8], i: usize, hi: u8, lo: u8) -> bool {
+        bytes.len() >= i + 3
+            && bytes[i] == b'%'
+            && (bytes[i + 1] | 0x20) == hi
+            && (bytes[i + 2] | 0x20) == lo
+    }
+    // Length of a segment separator at `i` (`/`, `\`, `%2F`, `%5C`), if any.
+    fn separator_len(bytes: &[u8], i: usize) -> Option<usize> {
+        match bytes.get(i) {
+            Some(b'/') | Some(b'\\') => Some(1),
+            Some(b'%') if is_pct(bytes, i, b'2', b'f') || is_pct(bytes, i, b'5', b'c') => Some(3),
+            _ => None,
+        }
+    }
+    // Length of a dot-segment terminator at `i`: a separator, `;` / `%3B`,
+    // or the end of the path.
+    fn terminator_len(bytes: &[u8], i: usize) -> Option<usize> {
+        if i == bytes.len() {
+            return Some(0);
+        }
+        separator_len(bytes, i).or_else(|| match bytes[i] {
+            b';' => Some(1),
+            b'%' if is_pct(bytes, i, b'3', b'b') => Some(3),
+            _ => None,
+        })
+    }
+
+    let bytes = path.as_bytes();
+    let mut i = 0;
+    let mut at_segment_start = true;
+    while i < bytes.len() {
+        if !allow_encoded_slash && is_pct(bytes, i, b'2', b'f') {
+            return true;
+        }
+        if at_segment_start {
+            // Count leading dots (literal or `%2e`); a segment made of exactly
+            // one or two dots is a dot segment.
+            let mut j = i;
+            let mut dots = 0usize;
+            loop {
+                if j < bytes.len() && bytes[j] == b'.' {
+                    dots += 1;
+                    j += 1;
+                } else if is_pct(bytes, j, b'2', b'e') {
+                    dots += 1;
+                    j += 3;
+                } else {
+                    break;
+                }
+            }
+            if (1..=2).contains(&dots) && terminator_len(bytes, j).is_some() {
+                return true;
+            }
+        }
+        match separator_len(bytes, i) {
+            Some(n) => {
+                at_segment_start = true;
+                i += n;
+            }
+            None => {
+                at_segment_start = false;
+                i += 1;
+            }
+        }
+    }
+    false
 }
 
 fn handle_acme_challenge(
@@ -2682,6 +2785,8 @@ async fn handle_regular_request(
             };
             // --- Lua route-specific on_request hooks ---
             #[cfg(feature = "scripting")]
+            let mut req = req;
+            #[cfg(feature = "scripting")]
             if let Some(ref engine) = lua_engine {
                 for script_name in &route_scripts {
                     let mut lua_req = build_lua_request(&req);
@@ -2694,7 +2799,14 @@ async fn handle_regular_request(
                                 route_scripts.clone(),
                             ));
                         }
-                        RequestHookResult::Continue(_) => {}
+                        // Apply the script's mutations to the real request so
+                        // they feed the next script and the outbound build —
+                        // same as the global on_request path. Without this a
+                        // client-supplied header the script meant to overwrite
+                        // (e.g. x-user) would be forwarded verbatim.
+                        RequestHookResult::Continue(updated_req) => {
+                            apply_lua_request_mods(&mut req, &updated_req);
+                        }
                     }
                 }
             }
@@ -2716,6 +2828,16 @@ async fn handle_regular_request(
                             }
                         }
                         RouteHookResult::Default => {}
+                        // The hook raised — fail closed rather than proxy to
+                        // the default target it may have meant to steer away from.
+                        RouteHookResult::Deny { status, body } => {
+                            let resp_body = http_body_util::Full::new(Bytes::from(body)).boxed();
+                            return Ok((
+                                Response::builder().status(status).body(resp_body).unwrap(),
+                                target_url,
+                                route_scripts,
+                            ));
+                        }
                     }
                 }
                 // Route-specific on_route hooks
@@ -2734,6 +2856,14 @@ async fn handle_regular_request(
                             }
                         }
                         RouteHookResult::Default => {}
+                        RouteHookResult::Deny { status, body } => {
+                            let resp_body = http_body_util::Full::new(Bytes::from(body)).boxed();
+                            return Ok((
+                                Response::builder().status(status).body(resp_body).unwrap(),
+                                target_url,
+                                route_scripts.clone(),
+                            ));
+                        }
                     }
                 }
             }
@@ -3794,6 +3924,99 @@ mod tests {
     fn redirect_response_rejects_bad_header_bytes() {
         let resp = build_redirect_response("redirect://bonfire-app.pro/\u{7f}");
         assert_eq!(resp.status(), 400);
+    }
+
+    #[test]
+    fn dot_segment_traversal_rejected_before_rule_matching() {
+        // Literal, percent-encoded, mixed-case and encoded-slash variants.
+        for p in [
+            "/a/../b",
+            "/a/%2e%2e/b",
+            "/a/%2E%2E/b",
+            "/a/.%2e/b",
+            "/a/./b",
+            "/a/%2e/b",
+            "/a%2fb",
+            "/a%2Fb",
+            "/api/..",
+            "/api/../admin/users",
+            "/.",
+            "/..",
+            "..",
+            // Servlet-container path parameters and backslash separators:
+            // Tomcat strips `;x` and IIS treats `\\` as `/` before normalising.
+            "/api/..;/admin/users",
+            "/api/.;/admin",
+            "/api/%2e%2e;/admin/users",
+            "/api/..%3b/admin/users",
+            "/api/..\\admin",
+            "/api\\..\\admin",
+            "/api/..%5cadmin",
+            "/api/..%5Cadmin",
+        ] {
+            assert!(
+                has_dot_segment_or_encoded_slash(p, false),
+                "should reject {p:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn dot_segment_check_accepts_legitimate_paths() {
+        for p in [
+            "/",
+            "/a/..b",
+            "/a/b..",
+            "/a/...",
+            "/.well-known/acme-challenge/tok",
+            "/a/b.c",
+            "/a/b/",
+            "/a%20b",
+            "/a/%2ex",
+            "/a/x%2e",
+            "/a/x;v=1/b",
+            "/a/x..;/b",
+            "",
+        ] {
+            assert!(
+                !has_dot_segment_or_encoded_slash(p, false),
+                "should accept {p:?}"
+            );
+        }
+    }
+
+    /// With `allow_encoded_slash`, `%2F` inside a segment is data (GitLab's
+    /// `group%2Fproject`), but it still counts as a segment boundary for the
+    /// dot-segment scan, so it cannot be used to spell a traversal.
+    #[test]
+    fn encoded_slash_opt_in_keeps_dot_segments_rejected() {
+        for p in [
+            "/api/v4/projects/group%2Fproject/repository/branches",
+            "/a%2fb",
+            "/o/redirect_uri=https:%2F%2Fexample.com%2Fcb",
+        ] {
+            assert!(
+                !has_dot_segment_or_encoded_slash(p, true),
+                "should accept {p:?}"
+            );
+            assert!(
+                has_dot_segment_or_encoded_slash(p, false),
+                "default rejects {p:?}"
+            );
+        }
+        for p in [
+            "/api/..%2Fadmin/users",
+            "/api%2F..%2Fadmin",
+            "/api%2F../admin",
+            "/api/%2e%2e%2Fadmin",
+            "/api/.%2Fadmin",
+            "/api%2f..",
+        ] {
+            assert!(
+                has_dot_segment_or_encoded_slash(p, true),
+                "should reject {p:?}"
+            );
+        }
     }
 
     #[test]

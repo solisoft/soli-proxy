@@ -884,13 +884,13 @@ mod scripting_tests {
             dir.path().join("test.lua"),
             r#"
             function on_request(req)
-                local ok, err = pcall(function()
-                    base64.decode("!!!invalid!!!")
-                end)
-                if not ok then
+                -- Lua convention: bad input yields nil, err rather than raising
+                -- (a raise would abort the hook on attacker-controlled input).
+                local decoded, err = base64.decode("!!!invalid!!!")
+                if decoded == nil and type(err) == "string" then
                     req:set_header("x-error", "caught")
                 else
-                    return req:deny(500, "should have errored")
+                    return req:deny(500, "should have returned nil, err")
                 end
             end
             "#,
@@ -995,7 +995,7 @@ mod scripting_tests {
     }
 
     #[test]
-    fn test_script_error_continues() {
+    fn on_request_error_denies_instead_of_continuing() {
         let dir = tempdir().unwrap();
         std::fs::write(
             dir.path().join("bad.lua"),
@@ -1010,10 +1010,360 @@ mod scripting_tests {
         let engine = LuaEngine::new(dir.path(), 1, Duration::from_millis(100), &[]).unwrap();
         assert!(engine.has_on_request());
 
-        // Script error should not crash, should continue
+        // A hook that raises must fail closed: a 500 deny, never Continue.
         let mut req = make_request("GET", "/test");
+        match engine.call_on_request(&mut req) {
+            RequestHookResult::Deny { status, .. } => assert_eq!(status, 500),
+            RequestHookResult::Continue(_) => panic!("on_request error must not fail open"),
+        }
+    }
+
+    #[test]
+    fn route_on_request_error_denies_instead_of_continuing() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("bad.lua"),
+            r#"
+            function on_request(req)
+                error("intentional error")
+            end
+            "#,
+        )
+        .unwrap();
+
+        let engine = LuaEngine::with_route_scripts(
+            dir.path(),
+            1,
+            Duration::from_millis(100),
+            &[],
+            &["bad.lua".to_string()],
+            &[],
+        )
+        .unwrap();
+
+        let mut req = make_request("GET", "/test");
+        match engine.call_route_on_request("bad.lua", &mut req) {
+            RequestHookResult::Deny { status, .. } => assert_eq!(status, 500),
+            RequestHookResult::Continue(_) => panic!("route on_request error must not fail open"),
+        }
+    }
+
+    #[test]
+    fn on_route_error_denies_instead_of_default() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("bad.lua"),
+            r#"
+            function on_route(req, target)
+                error("intentional error")
+            end
+            "#,
+        )
+        .unwrap();
+
+        let engine = LuaEngine::with_route_scripts(
+            dir.path(),
+            1,
+            Duration::from_millis(100),
+            &["bad.lua".to_string()],
+            &["bad.lua".to_string()],
+            &[],
+        )
+        .unwrap();
+        assert!(engine.has_on_route());
+
+        let req = make_request("GET", "/test");
+        match engine.call_on_route(&req, "http://backend:8080/test") {
+            RouteHookResult::Deny { status, .. } => assert_eq!(status, 500),
+            other => panic!("on_route error must deny, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn hook_timeout_deadline_is_per_call_not_per_state() {
+        // Regression: the timeout hook used to capture `deadline` once at state
+        // creation and never re-arm the instruction counter, so once the
+        // process had been up longer than hook_timeout every pooled state
+        // spuriously raised "script execution timeout" from inside real hooks.
+        // Each call here runs well over the 10,000-instruction hook interval
+        // so the count hook fires (and checks the deadline) on every call.
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("busy.lua"),
+            r#"
+            function on_request(req)
+                local x = 0
+                for i = 1, 8000 do
+                    x = x + i
+                end
+                req:set_header("x-ok", "1")
+            end
+            "#,
+        )
+        .unwrap();
+
+        let hook_timeout = Duration::from_millis(20);
+        let engine = LuaEngine::new(dir.path(), 1, hook_timeout, &[]).unwrap();
+
+        // Let the state outlive the (formerly one-shot) deadline.
+        std::thread::sleep(hook_timeout * 2);
+
+        for n in 0..5_000 {
+            let mut req = make_request("GET", "/test");
+            match engine.call_on_request(&mut req) {
+                RequestHookResult::Continue(r) => {
+                    assert_eq!(
+                        r.headers.get("x-ok").map(String::as_str),
+                        Some("1"),
+                        "call {} did not complete",
+                        n
+                    );
+                }
+                RequestHookResult::Deny { status, body } => {
+                    panic!("call {} denied: {} {}", n, status, body);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hook_timeout_still_stops_runaway_script() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("spin.lua"),
+            r#"
+            function on_request(req)
+                while true do end
+            end
+            "#,
+        )
+        .unwrap();
+
+        let engine = LuaEngine::new(dir.path(), 1, Duration::from_millis(10), &[]).unwrap();
+        let mut req = make_request("GET", "/test");
+        let started = std::time::Instant::now();
         let result = engine.call_on_request(&mut req);
-        assert!(matches!(result, RequestHookResult::Continue(_)));
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "timeout did not fire"
+        );
+        assert!(matches!(
+            result,
+            RequestHookResult::Deny { status: 500, .. }
+        ));
+    }
+
+    #[test]
+    fn base64_decode_returns_nil_on_bad_input() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("b64.lua"),
+            r#"
+            function on_request(req)
+                local decoded, err = base64.decode("!!!!")
+                if decoded ~= nil then
+                    return req:deny(500, "expected nil, got " .. tostring(decoded))
+                end
+                if type(err) ~= "string" then
+                    return req:deny(500, "expected error message")
+                end
+                req:set_header("x-b64", "nil")
+            end
+            "#,
+        )
+        .unwrap();
+
+        let engine = LuaEngine::new(dir.path(), 1, Duration::from_millis(100), &[]).unwrap();
+        let mut req = make_request("GET", "/test");
+        match engine.call_on_request(&mut req) {
+            RequestHookResult::Continue(r) => {
+                assert_eq!(r.headers.get("x-b64").map(String::as_str), Some("nil"));
+            }
+            RequestHookResult::Deny { status, body } => {
+                panic!("base64.decode must not raise: Deny({}, {})", status, body);
+            }
+        }
+    }
+
+    #[test]
+    fn auth_lua_denies_malformed_basic_credentials() {
+        // The shipped auth.lua must reject an undecodable Basic token with a
+        // 401 instead of letting it through (it used to raise inside
+        // base64.decode, which was mapped to Continue).
+        let scripts_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/lua");
+        let engine = LuaEngine::with_route_scripts(
+            &scripts_dir,
+            1,
+            Duration::from_millis(100),
+            &[],
+            &["auth.lua".to_string()],
+            &[],
+        )
+        .unwrap();
+        assert!(engine.has_route_script("auth.lua"));
+
+        let mut req =
+            make_request_with_headers("GET", "/api/x", vec![("authorization", "Basic !!!!")]);
+        match engine.call_route_on_request("auth.lua", &mut req) {
+            RequestHookResult::Deny { status, .. } => assert_eq!(status, 401),
+            RequestHookResult::Continue(_) => panic!("malformed Basic token must be denied"),
+        }
+    }
+}
+
+// ---- Route-script end-to-end tests (real proxy + backend) ----
+
+#[cfg(feature = "scripting")]
+mod route_script_e2e_tests {
+    use soli_proxy::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
+    use soli_proxy::{
+        new_challenge_store, new_metrics, ConfigManager, LuaEngine, ProxyServer,
+        ShutdownCoordinator,
+    };
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tempfile::tempdir;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Minimal HTTP/1.1 backend: answers every request with the value of the
+    /// request's `x-user` header as the body.
+    async fn spawn_echo_x_user_backend() -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut tmp = [0u8; 4096];
+                    loop {
+                        let n = match sock.read(&mut tmp).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => n,
+                        };
+                        buf.extend_from_slice(&tmp[..n]);
+                        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    let head = String::from_utf8_lossy(&buf);
+                    let user = head
+                        .lines()
+                        .find_map(|l| {
+                            let (k, v) = l.split_once(':')?;
+                            k.trim()
+                                .eq_ignore_ascii_case("x-user")
+                                .then(|| v.trim().to_string())
+                        })
+                        .unwrap_or_default();
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        user.len(),
+                        user
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+        port
+    }
+
+    async fn wait_for_port(port: u16) {
+        for _ in 0..100 {
+            if tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port))
+                .await
+                .is_ok()
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("proxy did not start on port {} within 2 seconds", port);
+    }
+
+    #[tokio::test]
+    async fn route_script_set_header_overrides_client_supplied_header() {
+        // The proxy's TLS connector needs a process-default crypto provider
+        // (main.rs installs it at startup; tests must do it themselves).
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
+        let backend_port = spawn_echo_x_user_backend().await;
+
+        let dir = tempdir().unwrap();
+        let scripts_dir = dir.path().join("lua");
+        std::fs::create_dir_all(&scripts_dir).unwrap();
+        std::fs::write(
+            scripts_dir.join("setuser.lua"),
+            r#"
+            function on_request(req)
+                req:set_header("x-user", "from-script")
+            end
+            "#,
+        )
+        .unwrap();
+
+        let proxy_port = portpicker::pick_unused_port().unwrap();
+        let conf_path = dir.path().join("proxy.conf");
+        std::fs::write(
+            &conf_path,
+            format!(
+                "/api/* -> http://127.0.0.1:{}/ @script:setuser.lua\n",
+                backend_port
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            format!(
+                "[server]\nbind = \"127.0.0.1:{}\"\nhttps_port = 443\n\n\
+                 [scripting]\nenabled = true\nscripts_dir = \"{}\"\n",
+                proxy_port,
+                scripts_dir.display()
+            ),
+        )
+        .unwrap();
+
+        let manager = Arc::new(ConfigManager::new(conf_path.to_str().unwrap()).unwrap());
+        let engine = LuaEngine::with_route_scripts(
+            &scripts_dir,
+            1,
+            Duration::from_millis(100),
+            &[],
+            &["setuser.lua".to_string()],
+            &[],
+        )
+        .unwrap();
+        let shutdown = ShutdownCoordinator::new();
+        let server = ProxyServer::new(
+            manager,
+            shutdown.clone(),
+            new_metrics(),
+            new_challenge_store(),
+            Some(engine),
+            Arc::new(CircuitBreaker::new(CircuitBreakerConfig::default())),
+            None,
+            None,
+        )
+        .unwrap();
+        tokio::spawn(async move {
+            let _ = server.run().await;
+        });
+        wait_for_port(proxy_port).await;
+
+        // The client sends its own x-user; the route script's set_header must
+        // win at the backend (it used to be discarded, forwarding the
+        // client's value verbatim).
+        let resp = reqwest::Client::new()
+            .get(format!("http://127.0.0.1:{}/api/whoami", proxy_port))
+            .header("x-user", "attacker")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(resp.text().await.unwrap(), "from-script");
+
+        shutdown.initiate();
+        // Keep temp_dir alive for the (still running) config watcher.
+        std::mem::forget(dir);
     }
 }
 
@@ -1099,6 +1449,7 @@ mod admin_tests {
         let resp = client
             .post(&url)
             .header("Content-Type", "application/json")
+            .header("X-Requested-With", "test")
             .body(body.to_string())
             .send()
             .await
@@ -1114,6 +1465,7 @@ mod admin_tests {
         let resp = client
             .put(&url)
             .header("Content-Type", "application/json")
+            .header("X-Requested-With", "test")
             .body(body.to_string())
             .send()
             .await
@@ -1126,7 +1478,12 @@ mod admin_tests {
     async fn delete(port: u16, path: &str) -> u16 {
         let url = format!("http://127.0.0.1:{}{}", port, path);
         let client = reqwest::Client::new();
-        let resp = client.delete(&url).send().await.unwrap();
+        let resp = client
+            .delete(&url)
+            .header("X-Requested-With", "test")
+            .send()
+            .await
+            .unwrap();
         resp.status().as_u16()
     }
 
@@ -1290,6 +1647,186 @@ mod admin_tests {
             RuleMatcher::Prefix(p) => assert_eq!(p, "/api/v2/"),
             _ => panic!("Expected Prefix matcher"),
         }
+    }
+
+    /// Re-parse proxy.conf from disk the way a restart would, so the test
+    /// checks what was persisted rather than what is in memory.
+    fn reparse(mgr: &ConfigManager) -> soli_proxy::Config {
+        let fresh = ConfigManager::new(mgr.config_path().to_str().unwrap()).unwrap();
+        (*fresh.get_config()).clone()
+    }
+
+    const HASH_A: &str = "$2b$12$YFlnIiACnSaAcxDWQlYjeedxq/3GvhvoGhRTYHMqLifJrETSqOZQa";
+
+    #[tokio::test]
+    async fn route_auth_hash_survives_put_and_reparse() {
+        // Regression: `#[serde(skip)]` on BasicAuth.hash also skipped
+        // deserialization, so every route written through the API had an
+        // empty hash, `@auth:user:` went to disk, and the next reload dropped
+        // the entry — editing a protected route silently unprotected it.
+        let (port, mgr) = start_admin("default -> http://localhost:3000\n").await;
+
+        let route = serde_json::json!({
+            "matcher": { "type": "prefix", "value": "/db/" },
+            "targets": [{ "url": "http://localhost:8080/", "weight": 100 }],
+            "headers": [],
+            "scripts": [],
+            "auth": [{ "username": "demo", "hash": HASH_A }]
+        });
+        let (status, body) = put(port, "/api/v1/routes/0", &route.to_string()).await;
+        assert_eq!(status, 200, "{body}");
+
+        let in_memory = mgr.get_config();
+        assert_eq!(in_memory.rules[0].auth.len(), 1);
+        assert_eq!(in_memory.rules[0].auth[0].hash, HASH_A);
+
+        let on_disk = reparse(&mgr);
+        assert_eq!(on_disk.rules[0].auth.len(), 1, "@auth entry lost on disk");
+        assert_eq!(on_disk.rules[0].auth[0].hash, HASH_A);
+
+        // The hash must never come back out of the API.
+        let (_, body) = get(port, "/api/v1/routes/0").await;
+        assert!(!body.contains(HASH_A));
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(json["data"]["auth"][0].get("hash").is_none());
+    }
+
+    #[tokio::test]
+    async fn route_put_with_empty_hash_keeps_existing_user_hash() {
+        // The UI never sees the hash, so it re-submits existing users with
+        // `hash: ""` meaning "keep". The old hash must be carried forward.
+        let (port, mgr) = start_admin(&format!(
+            "default -> http://localhost:3000\n/db/* -> http://localhost:8080/ @auth:demo:{}\n",
+            HASH_A
+        ))
+        .await;
+        assert_eq!(mgr.get_config().rules[1].auth[0].hash, HASH_A);
+
+        let route = serde_json::json!({
+            "matcher": { "type": "prefix", "value": "/db/" },
+            "targets": [{ "url": "http://localhost:8081/", "weight": 100 }],
+            "headers": [],
+            "scripts": [],
+            "auth": [{ "username": "demo", "hash": "" }]
+        });
+        let (status, body) = put(port, "/api/v1/routes/1", &route.to_string()).await;
+        assert_eq!(status, 200, "{body}");
+
+        assert_eq!(mgr.get_config().rules[1].auth[0].hash, HASH_A);
+        assert_eq!(reparse(&mgr).rules[1].auth[0].hash, HASH_A);
+
+        // A missing `hash` field (exactly what GET returns) means the same.
+        let route = serde_json::json!({
+            "matcher": { "type": "prefix", "value": "/db/" },
+            "targets": [{ "url": "http://localhost:8082/", "weight": 100 }],
+            "headers": [],
+            "scripts": [],
+            "auth": [{ "username": "demo" }]
+        });
+        let (status, body) = put(port, "/api/v1/routes/1", &route.to_string()).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(reparse(&mgr).rules[1].auth[0].hash, HASH_A);
+    }
+
+    #[tokio::test]
+    async fn route_with_new_user_and_empty_hash_is_rejected() {
+        let (port, mgr) = start_admin(&format!(
+            "default -> http://localhost:3000\n/db/* -> http://localhost:8080/ @auth:demo:{}\n",
+            HASH_A
+        ))
+        .await;
+
+        let route = serde_json::json!({
+            "matcher": { "type": "prefix", "value": "/db/" },
+            "targets": [{ "url": "http://localhost:8080/", "weight": 100 }],
+            "headers": [],
+            "scripts": [],
+            "auth": [{ "username": "newcomer", "hash": "" }]
+        });
+
+        // PUT on the existing route: "newcomer" is not on it, nothing to keep.
+        let (status, body) = put(port, "/api/v1/routes/1", &route.to_string()).await;
+        assert_eq!(status, 400, "{body}");
+        assert!(body.contains("auth entry for newcomer has no password hash"));
+
+        // POST a new route: there is never anything to inherit from.
+        let (status, body) = post(port, "/api/v1/routes", &route.to_string()).await;
+        assert_eq!(status, 400, "{body}");
+
+        // PUT /config pairs rules by matcher; the /db/ rule still has demo only.
+        let (status, body) = put(
+            port,
+            "/api/v1/config",
+            &serde_json::json!({ "rules": [mgr.get_config().rules[0], route] }).to_string(),
+        )
+        .await;
+        assert_eq!(status, 400, "{body}");
+
+        // Nothing was written: the original entry is intact on disk.
+        assert_eq!(reparse(&mgr).rules[1].auth[0].hash, HASH_A);
+        assert_eq!(reparse(&mgr).rules.len(), 2);
+    }
+
+    /// A whole-table PUT that deletes or reorders rules must not pair a
+    /// `hash: ""` entry with whatever rule used to sit at the same index:
+    /// that would hand `/b/` the password of `/a/`, or reject the deletion
+    /// outright when the usernames differ.
+    #[tokio::test]
+    async fn config_put_carries_auth_hashes_by_matcher_not_index() {
+        const HASH_A: &str = "$2b$12$aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const HASH_B: &str = "$2b$12$bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let (port, mgr) = start_admin(&format!(
+            "default -> http://localhost:3000\n\
+             /a/* -> http://localhost:8081 @auth:admin:{HASH_A}\n\
+             /b/* -> http://localhost:8082 @auth:ops:{HASH_B}\n"
+        ))
+        .await;
+        let rules = mgr.get_config().rules.clone();
+        assert_eq!(rules.len(), 3);
+
+        // Delete /a/ (index 1); /b/ moves to index 1 and is re-submitted with
+        // an empty hash, exactly as a client that only ever saw hash-less
+        // config from GET would send it.
+        let mut b = serde_json::to_value(&rules[2]).unwrap();
+        b["auth"] = serde_json::json!([{ "username": "ops", "hash": "" }]);
+        let (status, body) = put(
+            port,
+            "/api/v1/config",
+            &serde_json::json!({ "rules": [rules[0], b] }).to_string(),
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        let on_disk = reparse(&mgr);
+        assert_eq!(on_disk.rules.len(), 2);
+        assert_eq!(on_disk.rules[1].auth[0].username, "ops");
+        assert_eq!(on_disk.rules[1].auth[0].hash, HASH_B);
+
+        // A username the moved rule never had is still rejected, even though
+        // the rule formerly at that index knew it.
+        let mut b = serde_json::to_value(&rules[2]).unwrap();
+        b["auth"] = serde_json::json!([{ "username": "admin", "hash": "" }]);
+        let (status, body) = put(
+            port,
+            "/api/v1/config",
+            &serde_json::json!({ "rules": [rules[0], b] }).to_string(),
+        )
+        .await;
+        assert_eq!(status, 400, "{body}");
+        assert_eq!(reparse(&mgr).rules[1].auth[0].hash, HASH_B);
+    }
+
+    #[tokio::test]
+    async fn route_rejects_unknown_fields() {
+        let (port, _mgr) = start_admin("default -> http://localhost:3000\n").await;
+        let route = serde_json::json!({
+            "matcher": { "type": "prefix", "value": "/x/" },
+            "targets": [{ "url": "http://localhost:8080/", "weight": 100 }],
+            "headers": [],
+            "scripts": [],
+            "smuggled": 1
+        });
+        let (status, _) = post(port, "/api/v1/routes", &route.to_string()).await;
+        assert_eq!(status, 400);
     }
 
     #[tokio::test]

@@ -150,8 +150,8 @@ docker_network = <span class="ts">"soli-apps"</span>               <span class="
                         <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">port_range_start</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Minimum port for allocation. Default: 20000.</td></tr>
                         <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">port_range_end</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Maximum port for allocation. Default: 30000.</td></tr>
                         <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">docker_image</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Docker image to use for this app. When set, app runs inside a Docker container instead of as a local process.</td></tr>
-                        <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">docker_options</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Additional options to pass to <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">docker run</code>. Example: <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">--memory=512m --cpus=1</code></td></tr>
-                        <tr><td class="px-4 py-3 font-mono text-xs text-cyan-300">docker_network</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Docker network to join. Apps on the same network can communicate by container name. Default: <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">soli-apps</code></td></tr>
+                        <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">docker_options</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Additional options to pass to <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">docker run</code>. Example: <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">--memory=512m --cpus=1</code>. Whitespace-split, no shell. A denylist refuses <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">--privileged</code>, <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">--cap-add</code>, <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">--device</code>, <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">--volumes-from</code>, <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">--env-file</code>, host or foreign-container namespaces, and root / docker-socket mounts in any spelling. With <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">[apps] multi_tenant = true</code> only an allowlist is accepted (see the README).</td></tr>
+                        <tr><td class="px-4 py-3 font-mono text-xs text-cyan-300">docker_network</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Docker network to join. Apps on the same network can communicate by container name. A plain network name only: <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">host</code> and <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">container:&lt;id&gt;</code> are refused. Default: <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">soli-apps</code></td></tr>
                     </tbody>
                 </table>
             </div>
@@ -277,17 +277,20 @@ health_check = <span class="ts">"/"</span></code></pre>
                     <button class="text-xs text-gray-500 hover:text-white px-2 py-1 rounded hover:bg-white/10 transition-all" onclick="copyCode(this)">Copy</button>
                 </div>
                 <div class="p-6">
-<pre class="text-sm leading-7"><code><span class="tc"># Deploy new version to the inactive slot</span>
-curl -X POST http://127.0.0.1:9090/api/v1/apps/myapp/deploy
+<pre class="text-sm leading-7"><code><span class="tc"># Without an API key, mutations need X-Requested-With (CSRF guard); with one, X-Api-Key is enough</span>
+H='-H X-Requested-With:curl'
+
+<span class="tc"># Deploy new version to the inactive slot</span>
+curl -X POST $H http://127.0.0.1:9090/api/v1/apps/myapp/deploy
 
 <span class="tc"># Rollback to previous slot</span>
-curl -X POST http://127.0.0.1:9090/api/v1/apps/myapp/rollback
+curl -X POST $H http://127.0.0.1:9090/api/v1/apps/myapp/rollback
 
 <span class="tc"># Restart current slot</span>
-curl -X POST http://127.0.0.1:9090/api/v1/apps/myapp/restart
+curl -X POST $H http://127.0.0.1:9090/api/v1/apps/myapp/restart
 
 <span class="tc"># Stop the app</span>
-curl -X POST http://127.0.0.1:9090/api/v1/apps/myapp/stop
+curl -X POST $H http://127.0.0.1:9090/api/v1/apps/myapp/stop
 
 <span class="tc"># View deployment logs</span>
 curl http://127.0.0.1:9090/api/v1/apps/myapp/logs</code></pre>

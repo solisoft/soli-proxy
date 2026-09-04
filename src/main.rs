@@ -625,10 +625,13 @@ async fn delegate_to_daemon(
     else {
         return DaemonDelegation::NoDaemon;
     };
-    let mut req = client.post(format!(
-        "http://{}/api/v1/apps/{}/{}",
-        admin_addr, app_name, action
-    ));
+    let mut req = client
+        .post(format!(
+            "http://{}/api/v1/apps/{}/{}",
+            admin_addr, app_name, action
+        ))
+        // Marks this as a non-browser mutation for the admin CSRF gate.
+        .header("X-Requested-With", "soli-cli");
     if let Some(ref key) = cfg.admin.api_key {
         req = req.header("X-Api-Key", key);
     }

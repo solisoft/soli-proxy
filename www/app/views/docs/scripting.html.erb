@@ -304,8 +304,11 @@
         <span class="tk">return</span> req:<span class="tf">deny</span>(<span class="tn">401</span>, <span class="ts">"Unauthorized"</span>)
     <span class="tk">end</span>
 
-    <span class="tc">-- Decode Base64 credentials</span>
+    <span class="tc">-- Decode Base64 credentials (returns nil, err on malformed input)</span>
     <span class="tk">local</span> decoded = base64.<span class="tf">decode</span>(auth:<span class="tf">sub</span>(<span class="tn">7</span>))
+    <span class="tk">if</span> <span class="tk">not</span> decoded <span class="tk">then</span>
+        <span class="tk">return</span> req:<span class="tf">deny</span>(<span class="tn">401</span>, <span class="ts">"Malformed credentials"</span>)
+    <span class="tk">end</span>
     <span class="tk">local</span> user, pass = decoded:<span class="tf">match</span>(<span class="ts">"^(.+):(.+)$"</span>)
 
     <span class="tc">-- Compare hashed password against env var</span>
@@ -484,7 +487,7 @@
                                 <tr class="hover:bg-white/[0.02] transition-colors">
                                     <td class="px-6 py-4"><code class="text-cyan-300 font-mono text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">base64</code></td>
                                     <td class="px-6 py-4 text-gray-300 font-mono text-xs">encode(), decode()</td>
-                                    <td class="px-6 py-4 text-gray-400">Base64 encoding and decoding</td>
+                                    <td class="px-6 py-4 text-gray-400">Base64 encoding and decoding; decode() returns nil, err on malformed input</td>
                                 </tr>
                                 <tr class="hover:bg-white/[0.02] transition-colors">
                                     <td class="px-6 py-4"><code class="text-cyan-300 font-mono text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">crypto</code></td>

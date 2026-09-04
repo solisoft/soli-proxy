@@ -187,7 +187,7 @@ Options:
                 types[t] = (types[t] || 0) + 1;
             });
             var html = Object.keys(types).map(function(t) {
-                return '<span class="px-2 py-0.5 rounded bg-white/5 text-surface-300">' + t + ': ' + types[t] + '</span>';
+                return '<span class="px-2 py-0.5 rounded bg-white/5 text-surface-300">' + AdminAPI.esc(t) + ': ' + types[t] + '</span>';
             }).join('');
             document.getElementById('dash-route-types').innerHTML = html || '<span class="text-surface-500">No routes</span>';
         }).catch(function(err) { AdminAPI.toast('Failed to load routes: ' + err.message, 'error'); });

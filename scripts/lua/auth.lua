@@ -19,7 +19,12 @@ function on_request(req)
         return req:deny(401, "Unsupported auth scheme")
     end
 
+    -- base64.decode returns nil, err on malformed input; never let a bad
+    -- header raise past this point (an error would abort the hook).
     local decoded = base64.decode(encoded)
+    if not decoded then
+        return req:deny(401, "Malformed credentials")
+    end
     local user, pass = decoded:match("^([^:]+):(.+)$")
     if not user or not pass then
         return req:deny(401, "Malformed credentials")

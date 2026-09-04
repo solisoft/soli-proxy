@@ -24,7 +24,7 @@ var SettingsPage = {
             var sw = ThemeManager.swatch(p.id);
             var isActive = p.id === active;
             return '' +
-                '<button type="button" data-theme-id="' + p.id + '" onclick="SettingsPage.choose(\'' + p.id + '\')" ' +
+                '<button type="button" data-theme-id="' + AdminAPI.esc(p.id) + '" ' +
                     'class="theme-card group text-left rounded-xl border transition-all duration-150 overflow-hidden focus:outline-none ' +
                     (isActive ? 'border-accent-500 ring-2 ring-accent-500/40' : 'border-white/5 hover:border-white/20') + '">' +
                     // Swatch preview
@@ -72,6 +72,12 @@ var SettingsPage = {
 
 // Re-render highlight if the server sync changes the active theme after load.
 ThemeManager.onChange = function(theme) { SettingsPage.markActive(theme); };
+
+// Delegated click handler: theme ids are read from data-theme-id, not inline JS.
+document.getElementById('theme-grid').addEventListener('click', function(ev) {
+    var card = ev.target.closest('[data-theme-id]');
+    if (card) SettingsPage.choose(card.dataset.themeId);
+});
 
 SettingsPage.render();
 </script>

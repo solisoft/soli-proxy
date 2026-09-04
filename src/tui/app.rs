@@ -962,7 +962,10 @@ impl TuiApp {
                 .timeout(std::time::Duration::from_secs(120))
                 .build()
                 .map_err(|e| e.to_string())?;
-            let mut req = client.post(&url);
+            let mut req = client
+                .post(&url)
+                // Marks this as a non-browser mutation for the admin CSRF gate.
+                .header("X-Requested-With", "soli-tui");
             if let Some(ref key) = api_key {
                 req = req.header("X-Api-Key", key);
             }

@@ -1,5 +1,96 @@
 # Changelog
 
+## Unreleased
+
+### Security
+
+* **Request paths with dot segments are rejected before routing.** Rules match on the raw
+  path and per-route auth binds to the matched rule, so `/api/../admin/users` could pass an
+  open `/api/` rule and land on `/admin/users` at any backend that normalises. Literal and
+  `%2e`-encoded dots are caught, terminated by `/`, end of path, a `;` path parameter
+  (`/api/..;/admin`, as Tomcat/Jetty/Spring strip it) or a backslash (`..\`, as IIS treats
+  it). An encoded slash (`%2F`) anywhere is rejected as well, since a backend that decodes it
+  before routing would see a path the proxy never matched. Backends whose API paths carry
+  `%2F` as data (GitLab's `group%2Fproject`, S3-style keys) can set
+  `[server] allow_encoded_slash = true`; `..%2F` and `%2F..` stay rejected.
+* **`docker_network` is validated.** The value went straight to `docker run --network`, so
+  `docker_network = "host"` bypassed the namespace denylist that only looked at
+  `docker_options`. `host` and `container:<id>` are refused in every mode, the name must be
+  one docker accepts, and the manifest is fully validated before the network is created, so
+  a rejected deploy no longer leaves a tenant-named network behind.
+* **The single-tenant `docker_options` denylist reads docker's syntax.** It split on `=` and
+  whitespace and inspected the next token, so `-v/:/host`, `--mount type=bind,source=/`,
+  `/./:/host`, `--pid container:x`, `--volumes-from`, `--env-file` and `--group-add` all
+  passed. Flags are now parsed the way docker parses them (attached shorthand, `--mount`
+  key=value specs), mount sources are normalised and canonicalised before the root / docker
+  socket check, and the namespace, volumes-from, env-file and group-add flags are on the list.
+* **Multi-tenant bind mounts may only be the site directory itself, emitted canonicalised.**
+  A sub-path such as `<site>/data` was validated by canonicalising it, but the tenant's raw
+  token reached `docker run`, which resolves the path again at mount time — and every
+  component under the site directory is writable by the tenant's still-running previous slot,
+  which could swap `data` for a symlink to `/` in between. The site directory's own path has
+  no tenant-writable component; it is the only permitted source, and its canonical path is
+  what reaches docker.
+* **`PUT /api/v1/config` pairs auth hashes by matcher, not index.** A `hash: ""` entry (the
+  API never returns hashes) was resolved against whichever old rule sat at the same index, so
+  deleting or reordering rules handed a route the password of another (same username) or
+  rejected the change with 400 (different username).
+* **Empty admin credentials count as unset.** `[admin] api_key = ""` (a templated config with
+  an unresolved variable) made the server log "no authentication configured" and then 401
+  every request, and `ADMIN_USER="" ADMIN_PASSWORD=""` was hashed into a credential that
+  `Authorization: Basic Og==` satisfied. Empty strings are dropped at load time.
+* **Admin mutations need `X-Requested-With`.** Any non-GET request without `X-Api-Key` must
+  carry an `X-Requested-With` header of any value, or it is answered 403. An HTML form cannot
+  set it, which is what stops a page the operator visits from driving the API with cached
+  Basic credentials or the open loopback default. A bare `curl -X POST` against loopback
+  needs `-H X-Requested-With:curl` now.
+
+### Changed
+
+* **`base64.decode` in Lua returns `nil, err` on malformed input instead of raising.** Hook
+  errors now fail closed (500 "script error"), so a raise on an attacker-controlled
+  `Authorization` header would have turned every malformed credential into a 500. Scripts
+  written against the old contract (`pcall(base64.decode, s)`) keep working for valid input,
+  but the failure branch must change to check the return value:
+
+  ```lua
+  local decoded = base64.decode(token)
+  if not decoded then return req:deny(401, "Malformed credentials") end
+  ```
+
+  The bundled `scripts/lua/auth.lua` is updated.
+* **`name` and `domain` in `app.infos` are validated in every mode.** Hostname characters
+  plus `_` (an existing `sites/my_app.example.com` keeps loading), a leading `_` only for
+  bundled apps, and `health_check` must be an absolute URL path. A directory whose manifest
+  fails is skipped and logged at warn level.
+* **The environment allowlist reaches Docker apps too.** `HTTP(S)_PROXY`/`NO_PROXY`,
+  `SOLI_RELEASE_BASE_URL` and `SOLI_NO_PIN` are passed as `-e` flags into the container;
+  the host-path entries (`XDG_CACHE_HOME`, `SSL_CERT_FILE`, `SSL_CERT_DIR`) are native-only.
+
+### Fixed
+
+* **Apps got the proxy's `HOME`, not their own.** The proxy drops privileges to
+  the app's `user` but handed the child the environment variable it inherited
+  itself — `/root` under systemd. Every `~`-resolved path therefore pointed at a
+  directory the app could not read, silently breaking soli's package cache
+  (`~/.soli/packages`), its registry credentials and the Tailwind CLI it
+  downloads to `~/.soli/bin`. `HOME` is now read from the passwd entry of the
+  user the app actually runs as.
+
+### Added
+
+* **A short environment allowlist survives `env_clear()`.** Apps still start
+  with a cleared environment, but `XDG_CACHE_HOME`, `SOLI_RELEASE_BASE_URL`,
+  `SOLI_NO_PIN`, the `HTTP(S)_PROXY`/`NO_PROXY` family and `SSL_CERT_FILE` /
+  `SSL_CERT_DIR` now pass through when set on the proxy. Without them an app
+  behind an egress proxy could not make outbound HTTPS requests, and could not
+  be pointed at a shared cache.
+
+  Together these let a Soli app pin its interpreter version
+  (`soli_version = "=2.0.3"` in `soli.toml`) and have the proxy start it on that
+  version. No proxy configuration is needed — the app already starts with its
+  own directory as the working directory, which is where soli looks for the pin.
+
 ## [0.29.2](https://github.com/solisoft/soli-proxy/compare/v0.29.1...v0.29.2) (2026-07-29)
 
 Website and admin UI only — the proxy binary is unchanged from 0.29.1.

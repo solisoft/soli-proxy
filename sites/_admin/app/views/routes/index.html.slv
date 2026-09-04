@@ -89,14 +89,27 @@ var RouteManager = {
                 '<td class="px-4 py-3">' + scripts + '</td>' +
                 '<td class="px-4 py-3">' + auth + '</td>' +
                 '<td class="px-4 py-3 text-right">' +
-                    '<button onclick="RouteManager.showEditModal(' + i + ')" class="p-1.5 rounded hover:bg-white/10 text-surface-400 hover:text-white transition-colors" title="Edit">' +
+                    '<button data-route-index="' + i + '" data-route-action="edit" class="p-1.5 rounded hover:bg-white/10 text-surface-400 hover:text-white transition-colors" title="Edit">' +
                         '<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125" /></svg>' +
                     '</button>' +
-                    '<button onclick="RouteManager.deleteRoute(' + i + ')" class="p-1.5 rounded hover:bg-rose-500/10 text-surface-400 hover:text-rose-400 transition-colors ml-1" title="Delete">' +
+                    '<button data-route-index="' + i + '" data-route-action="delete" class="p-1.5 rounded hover:bg-rose-500/10 text-surface-400 hover:text-rose-400 transition-colors ml-1" title="Delete">' +
                         '<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" /></svg>' +
                     '</button>' +
                 '</td></tr>';
         }).join('');
+    },
+
+    // Delegated click handler for the table's Edit/Delete buttons.
+    bindTableEvents: function() {
+        var tbody = document.getElementById('routes-table-body');
+        tbody.addEventListener('click', function(ev) {
+            var btn = ev.target.closest('[data-route-index][data-route-action]');
+            if (!btn || !tbody.contains(btn)) return;
+            var index = parseInt(btn.dataset.routeIndex, 10);
+            if (isNaN(index)) return;
+            if (btn.dataset.routeAction === 'edit') RouteManager.showEditModal(index);
+            else if (btn.dataset.routeAction === 'delete') RouteManager.deleteRoute(index);
+        });
     },
 
     showAddModal: function() {
@@ -153,37 +166,48 @@ var RouteManager = {
                 '<div><label class="block text-xs font-medium text-surface-400 mb-1.5">Scripts (one per line, optional)</label>' +
                 '<textarea id="route-scripts" rows="2" class="w-full bg-surface-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-accent-500/50">' + AdminAPI.esc(scripts) + '</textarea></div>' +
                 '<div class="border-t border-white/10 pt-4"><label class="block text-xs font-medium text-amber-400 mb-1.5">Basic Auth (optional)</label>' +
-                '<div class="text-xs text-surface-500 mb-2">Add users to protect this route with HTTP Basic Auth</div>' +
+                '<div class="text-xs text-surface-500 mb-2">Add users to protect this route with HTTP Basic Auth. Existing users keep their password unless you type a new one.</div>' +
                 '<div id="auth-users-container"></div>' +
                 '<button type="button" onclick="RouteManager.addAuthUserRow()" class="px-3 py-1.5 bg-surface-800 border border-white/10 text-surface-400 rounded-lg hover:bg-surface-700 text-xs">+ Add User</button></div>' +
             '</div>' +
             '<div class="flex gap-3 mt-6">' +
-                '<button onclick="RouteManager.saveRoute(' + index + ')" class="flex-1 px-4 py-2 bg-accent-500 hover:bg-accent-600 text-white text-sm font-medium rounded-lg transition-colors">Save</button>' +
+                '<button id="route-save-btn" data-route-index="' + index + '" class="flex-1 px-4 py-2 bg-accent-500 hover:bg-accent-600 text-white text-sm font-medium rounded-lg transition-colors">Save</button>' +
                 '<button onclick="AdminAPI.closeModal()" class="px-4 py-2 bg-surface-800 hover:bg-surface-700 text-surface-300 text-sm font-medium rounded-lg transition-colors border border-white/10">Cancel</button>' +
             '</div></div>';
 
         AdminAPI.showModal(html);
 
-        if (route.auth && route.auth.length) {
-            var container = document.getElementById('auth-users-container');
-            route.auth.forEach(function(a) {
-                var row = document.createElement('div');
-                row.className = 'auth-user-row flex gap-2 mb-2';
-                row.innerHTML = '<input type="text" placeholder="Username" class="auth-username flex-1 bg-surface-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-white" value="' + AdminAPI.esc(a.username) + '">' +
-                    '<input type="text" placeholder="Password" class="auth-password flex-1 bg-surface-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-white font-mono text-xs" value="' + AdminAPI.esc(a.hash) + '">' +
-                    '<button type="button" onclick="this.parentElement.remove()" class="px-3 py-2 bg-rose-500/20 text-rose-400 rounded-lg hover:bg-rose-500/30 text-sm">×</button>';
-                container.appendChild(row);
-            });
-        }
+        document.getElementById('route-save-btn').addEventListener('click', function() {
+            RouteManager.saveRoute(parseInt(this.dataset.routeIndex, 10));
+        });
+
+        // Delegated remove handler for the per-user × buttons.
+        var container = document.getElementById('auth-users-container');
+        container.addEventListener('click', function(ev) {
+            var btn = ev.target.closest('[data-remove-user]');
+            if (btn && container.contains(btn)) btn.parentElement.remove();
+        });
+
+        // The API never returns password hashes; existing users are listed by
+        // name with a blank password meaning "keep the current one".
+        (route.auth || []).forEach(function(a) {
+            RouteManager.addAuthUserRow(a.username);
+        });
     },
 
-    addAuthUserRow: function() {
+    // Append a user row. With `existingUsername` the row represents a user
+    // already on the route: the username is fixed and an empty password is
+    // submitted as hash "" (server keeps the stored hash). Without it the row
+    // is a new user and requires a password.
+    addAuthUserRow: function(existingUsername) {
         var container = document.getElementById('auth-users-container');
+        var isExisting = typeof existingUsername === 'string' && existingUsername !== '';
         var row = document.createElement('div');
         row.className = 'auth-user-row flex gap-2 mb-2';
-        row.innerHTML = '<input type="text" placeholder="Username" class="auth-username flex-1 bg-surface-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-white">' +
-            '<input type="password" placeholder="Password" class="auth-password flex-1 bg-surface-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-white">' +
-            '<button type="button" onclick="this.parentElement.remove()" class="px-3 py-2 bg-rose-500/20 text-rose-400 rounded-lg hover:bg-rose-500/30 text-sm">×</button>';
+        if (isExisting) row.dataset.existing = '1';
+        row.innerHTML = '<input type="text" placeholder="Username" class="auth-username flex-1 bg-surface-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-white' + (isExisting ? ' opacity-70' : '') + '"' + (isExisting ? ' value="' + AdminAPI.esc(existingUsername) + '" readonly' : '') + '>' +
+            '<input type="password" placeholder="' + (isExisting ? '(unchanged)' : 'Password') + '" autocomplete="new-password" class="auth-password flex-1 bg-surface-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-white">' +
+            '<button type="button" data-remove-user class="px-3 py-2 bg-rose-500/20 text-rose-400 rounded-lg hover:bg-rose-500/30 text-sm" title="Remove user">×</button>';
         container.appendChild(row);
     },
 
@@ -199,21 +223,34 @@ var RouteManager = {
         var authRows = document.querySelectorAll('.auth-user-row');
         var self = this;
         var needsHashing = [];
+        var missingPassword = [];
 
         authRows.forEach(function(row, i) {
             var username = row.querySelector('.auth-username').value.trim();
             var password = row.querySelector('.auth-password').value.trim();
-            if (username && password) {
-                if (password.startsWith('$2')) {
-                    auth.push({username: username, hash: password});
-                } else {
-                    needsHashing.push({row: row, username: username, password: password});
-                }
+            var isExisting = row.dataset.existing === '1';
+            if (!username) return;
+            if (!password) {
+                // Existing user with no new password: hash "" tells the server
+                // to keep the stored hash. A new user must have a password.
+                if (isExisting) auth.push({username: username, hash: ''});
+                else missingPassword.push(username);
+                return;
+            }
+            if (password.startsWith('$2')) {
+                auth.push({username: username, hash: password});
+            } else {
+                needsHashing.push({row: row, username: username, password: password});
             }
         });
 
+        if (missingPassword.length > 0) {
+            AdminAPI.toast('Password required for new user: ' + missingPassword.join(', '), 'error');
+            return;
+        }
+
         if (needsHashing.length > 0) {
-            var saveBtn = document.querySelector('#modal-container button');
+            var saveBtn = document.getElementById('route-save-btn');
             AdminAPI.setButtonLoading(saveBtn, true, 'Hashing passwords...');
 
             var hashed = [];
@@ -246,7 +283,7 @@ var RouteManager = {
             auth: auth
         };
 
-        var saveBtn = document.querySelector('#modal-container button');
+        var saveBtn = document.getElementById('route-save-btn');
         AdminAPI.setButtonLoading(saveBtn, true, 'Saving...');
 
         var promise = index === -1 ? AdminAPI.addRoute(route) : AdminAPI.updateRoute(index, route);
@@ -272,5 +309,6 @@ var RouteManager = {
     }
 };
 
+RouteManager.bindTableEvents();
 RouteManager.load();
 </script>
