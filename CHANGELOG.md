@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.31.0](https://github.com/solisoft/soli-proxy/compare/v0.30.0...v0.31.0) (2026-09-04)
 
 ### Security
 
