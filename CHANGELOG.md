@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.32.0](https://github.com/solisoft/soli-proxy/compare/v0.31.0...v0.32.0) (2026-09-09)
+
+### Features
+
+* **`@noauth:` exempts paths from a route's Basic Auth.** A whole domain can be
+  password-protected while the endpoints that machines call — a Stripe webhook, a health
+  probe — stay reachable without credentials:
+  `app.example.com -> http://app:8080 @auth:admin:$2b$12$... @noauth:/webhooks/stripe,/hooks/*`.
+  Entries are comma-separated and each is either an exact path or a prefix ending in `*`
+  (which also matches the bare prefix). Paths are matched against the URL as the client sent
+  it, before any prefix stripping, so what you write is what you see in the browser.
+  `@noauth` without `@auth` does nothing. Editable from the admin UI (Routes → Basic Auth)
+  and the TUI route form, and exposed as `auth_exempt` on the admin API.
+
+  The match is deliberately literal and fails closed: a path carrying percent-encoding or a
+  `..`/`.` segment is never exempt, so a request cannot walk out of the carve-out into a
+  protected path that a normalising backend would resolve differently. Patterns that cannot
+  be compared literally (relative, traversing, percent-encoded) are refused by the admin API
+  and dropped with a warning by the `.conf` parser, leaving the path protected.
+
 ## [0.31.0](https://github.com/solisoft/soli-proxy/compare/v0.30.0...v0.31.0) (2026-09-04)
 
 ### Security
