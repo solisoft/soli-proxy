@@ -175,11 +175,13 @@ headers {
     X-Forwarded-Proto: $scheme
 }
 
-# Authentication
-/auth/* {
-    auth: basic
-    realm: "Restricted"
-}
+# HTTP Basic Auth on a route (hash from: soli-proxy hash-password)
+secure.example.com -> http://localhost:9000 @auth:admin:$2b$12$...
+
+# ...with carve-outs for callers that cannot send credentials.
+# Exact path, or a prefix ending in *. Only meaningful next to @auth.
+app.example.com -> http://localhost:8080 @auth:admin:$2b$12$... \
+                   @noauth:/webhooks/stripe,/hooks/*
 ```
 
 ## Architecture

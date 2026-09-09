@@ -1866,7 +1866,7 @@ async fn handle_request_inner(
 
     if is_websocket {
         if let Some(matched) = find_matching_rule(&req, &config.rules) {
-            if !matched.auth.is_empty() && !verify_basic_auth(&req, &matched.auth) {
+            if matched.requires_auth(req.uri().path()) && !verify_basic_auth(&req, &matched.auth) {
                 metrics.dec_in_flight();
                 return Ok(create_auth_required_response());
             }
@@ -2752,7 +2752,7 @@ async fn handle_regular_request(
             let matched_prefix = matched_route.matched_prefix(is_tls);
             let html_rewrite_prefix = matched_route.html_rewrite_prefix();
 
-            if !matched_route.auth.is_empty() && !verify_basic_auth(&req, &matched_route.auth) {
+            if matched_route.requires_auth(&path) && !verify_basic_auth(&req, &matched_route.auth) {
                 tracing::debug!("Basic auth failed for {}", req.uri().path());
                 return Ok((create_auth_required_response(), String::new(), vec![]));
             }
@@ -3487,6 +3487,7 @@ struct MatchedRoute<'a> {
     resolution: UrlResolution,
     route_scripts: Vec<String>,
     auth: Vec<crate::auth::BasicAuth>,
+    auth_exempt: Vec<String>,
     load_balancing: &'a crate::config::LoadBalancingStrategy,
     host: String,
     /// Index into `config.rules` — used for independent per-route LB counters.
@@ -3494,6 +3495,17 @@ struct MatchedRoute<'a> {
 }
 
 impl<'a> MatchedRoute<'a> {
+    /// Whether this request must present Basic Auth credentials.
+    ///
+    /// False when the rule has no `@auth` entries at all, and false for the
+    /// `@noauth` carve-outs on a protected rule — the escape hatch for
+    /// machine-to-machine callers (a Stripe webhook, a health probe) that
+    /// cannot send a password. `path` is the raw request path, matched before
+    /// any prefix stripping, so operators write the URL they actually see.
+    fn requires_auth(&self, path: &str) -> bool {
+        !self.auth.is_empty() && !crate::config::path_is_auth_exempt(&self.auth_exempt, path)
+    }
+
     fn matched_prefix(&self, is_tls: bool) -> Option<String> {
         match &self.resolution {
             UrlResolution::StripPrefix(prefix) => Some(prefix.trim_end_matches('/').to_string()),
@@ -3611,6 +3623,7 @@ fn find_matching_rule<'a>(
                     resolution: UrlResolution::AppendPath,
                     route_scripts: rule.scripts.clone(),
                     auth: rule.auth.clone(),
+                    auth_exempt: rule.auth_exempt.clone(),
                     load_balancing: &rule.load_balancing,
                     host: domain.clone(),
                     rule_idx: i,
@@ -3628,6 +3641,7 @@ fn find_matching_rule<'a>(
                         resolution: UrlResolution::StripPrefix(path_prefix.clone()),
                         route_scripts: rule.scripts.clone(),
                         auth: rule.auth.clone(),
+                        auth_exempt: rule.auth_exempt.clone(),
                         load_balancing: &rule.load_balancing,
                         host: domain.clone(),
                         rule_idx: i,
@@ -3650,6 +3664,7 @@ fn find_matching_rule<'a>(
                     resolution: UrlResolution::Identity,
                     route_scripts: rule.scripts.clone(),
                     auth: rule.auth.clone(),
+                    auth_exempt: rule.auth_exempt.clone(),
                     load_balancing: &rule.load_balancing,
                     host: host.to_string(),
                     rule_idx: i,
@@ -3666,6 +3681,7 @@ fn find_matching_rule<'a>(
                         resolution: UrlResolution::StripPrefix(prefix.clone()),
                         route_scripts: rule.scripts.clone(),
                         auth: rule.auth.clone(),
+                        auth_exempt: rule.auth_exempt.clone(),
                         load_balancing: &rule.load_balancing,
                         host: host.to_string(),
                         rule_idx: i,
@@ -3681,6 +3697,7 @@ fn find_matching_rule<'a>(
                     resolution: UrlResolution::Identity,
                     route_scripts: rule.scripts.clone(),
                     auth: rule.auth.clone(),
+                    auth_exempt: rule.auth_exempt.clone(),
                     load_balancing: &rule.load_balancing,
                     host: host.to_string(),
                     rule_idx: i,
@@ -3700,6 +3717,7 @@ fn find_matching_rule<'a>(
                     resolution: UrlResolution::Identity,
                     route_scripts: rule.scripts.clone(),
                     auth: rule.auth.clone(),
+                    auth_exempt: rule.auth_exempt.clone(),
                     load_balancing: &rule.load_balancing,
                     host: host.to_string(),
                     rule_idx: i,
@@ -4090,6 +4108,7 @@ mod tests {
             resolution: UrlResolution::AppendPath,
             route_scripts: vec![],
             auth: vec![],
+            auth_exempt: vec![],
             load_balancing: &strategy,
             host: "example.com".to_string(),
             rule_idx: 0,

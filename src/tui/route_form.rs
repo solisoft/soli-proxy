@@ -13,7 +13,7 @@ pub const MATCHER_TYPES: &[&str] = &[
 ];
 pub const LB_STRATEGIES: &[&str] = &["round-robin", "weighted", "failover"];
 
-const FIELD_COUNT: usize = 6;
+const FIELD_COUNT: usize = 7;
 
 // ── Auth sub-state ────────────────────────────────────
 
@@ -39,6 +39,8 @@ pub struct RouteForm {
     pub matcher_type: usize,
     pub matcher_value: String,
     pub targets: String,
+    /// Comma-separated paths served without Basic Auth (`@noauth:`).
+    pub auth_exempt: String,
     pub scripts: String,
     pub lb_strategy: usize,
     pub active_field: usize,
@@ -60,6 +62,7 @@ impl RouteForm {
             matcher_type: 0,
             matcher_value: String::new(),
             targets: String::new(),
+            auth_exempt: String::new(),
             scripts: String::new(),
             lb_strategy: 0,
             active_field: 0,
@@ -100,6 +103,8 @@ impl RouteForm {
             })
             .collect();
 
+        let auth_exempt = rule.auth_exempt.join(", ");
+
         let scripts = rule.scripts.join(", ");
 
         let lb_strategy = match rule.load_balancing {
@@ -112,6 +117,7 @@ impl RouteForm {
             matcher_type,
             matcher_value,
             targets,
+            auth_exempt,
             scripts,
             lb_strategy,
             active_field: 0,
@@ -137,7 +143,8 @@ impl RouteForm {
                 AuthMode::AddPassword => Some(&mut self.auth_new_password),
                 AuthMode::List => None,
             },
-            4 => Some(&mut self.scripts),
+            4 => Some(&mut self.auth_exempt),
+            5 => Some(&mut self.scripts),
             _ => None,
         }
     }
@@ -151,13 +158,14 @@ impl RouteForm {
                 AuthMode::AddPassword => Some(&self.auth_new_password),
                 AuthMode::List => None,
             },
-            4 => Some(&self.scripts),
+            4 => Some(&self.auth_exempt),
+            5 => Some(&self.scripts),
             _ => None,
         }
     }
 
     pub fn is_select_field(&self) -> bool {
-        matches!(self.active_field, 0 | 5)
+        matches!(self.active_field, 0 | 6)
     }
 
     /// True when the Auth field is in add-credential sub-mode.
@@ -176,7 +184,7 @@ impl RouteForm {
                 let len = MATCHER_TYPES.len() as i32;
                 self.matcher_type = ((self.matcher_type as i32 + dir).rem_euclid(len)) as usize;
             }
-            5 => {
+            6 => {
                 let len = LB_STRATEGIES.len() as i32;
                 self.lb_strategy = ((self.lb_strategy as i32 + dir).rem_euclid(len)) as usize;
             }
@@ -355,6 +363,13 @@ impl RouteForm {
             })
             .collect();
 
+        let auth_exempt: Vec<String> = self
+            .auth_exempt
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
         let scripts: Vec<String> = self
             .scripts
             .split(',')
@@ -374,6 +389,7 @@ impl RouteForm {
             headers: Vec::new(),
             scripts,
             auth,
+            auth_exempt,
             load_balancing,
         })
     }
@@ -386,8 +402,9 @@ impl RouteForm {
             1 => "Matcher Value",
             2 => "Targets",
             3 => "Auth",
-            4 => "Scripts",
-            5 => "Load Balancing",
+            4 => "No-Auth Paths",
+            5 => "Scripts",
+            6 => "Load Balancing",
             _ => "",
         }
     }
@@ -407,8 +424,9 @@ impl RouteForm {
                     names.join(", ")
                 }
             }
-            4 => self.scripts.clone(),
-            5 => format!("<  {}  >", LB_STRATEGIES[self.lb_strategy]),
+            4 => self.auth_exempt.clone(),
+            5 => self.scripts.clone(),
+            6 => format!("<  {}  >", LB_STRATEGIES[self.lb_strategy]),
             _ => String::new(),
         }
     }
@@ -431,8 +449,9 @@ impl RouteForm {
                 AuthMode::AddUsername => "type username, then Tab",
                 AuthMode::AddPassword => "type password, then Enter to save",
             },
-            4 => "comma-separated .lua files",
-            5 => "Left/Right to change",
+            4 => "paths exempt from Auth, e.g. /hooks/stripe,/health",
+            5 => "comma-separated .lua files",
+            6 => "Left/Right to change",
             _ => "",
         }
     }

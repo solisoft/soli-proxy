@@ -1367,6 +1367,192 @@ mod route_script_e2e_tests {
     }
 }
 
+// ---- Basic Auth carve-out (@noauth) end-to-end ----
+
+mod auth_exempt_e2e_tests {
+    use soli_proxy::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
+    use soli_proxy::{
+        new_challenge_store, new_metrics, ConfigManager, ProxyServer, ShutdownCoordinator,
+    };
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tempfile::tempdir;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Minimal HTTP/1.1 backend: answers every request with `ok`.
+    async fn spawn_ok_backend() -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut tmp = [0u8; 4096];
+                    loop {
+                        let n = match sock.read(&mut tmp).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => n,
+                        };
+                        buf.extend_from_slice(&tmp[..n]);
+                        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    let _ = sock
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                        )
+                        .await;
+                });
+            }
+        });
+        port
+    }
+
+    async fn wait_for_port(port: u16) {
+        for _ in 0..100 {
+            if tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port))
+                .await
+                .is_ok()
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("proxy did not start on port {} within 2 seconds", port);
+    }
+
+    /// Send a request line verbatim and return the response status.
+    ///
+    /// `reqwest` builds its URL through the `url` crate, which resolves `..`
+    /// segments client-side — a real attacker does not. This puts the raw path
+    /// on the wire so the proxy is the one deciding what it means.
+    async fn raw_status(port: u16, raw_path: &str) -> u16 {
+        let mut sock = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port))
+            .await
+            .unwrap();
+        let req = format!(
+            "GET {} HTTP/1.1\r\nHost: app.example.com\r\nConnection: close\r\n\r\n",
+            raw_path
+        );
+        sock.write_all(req.as_bytes()).await.unwrap();
+        let mut resp = Vec::new();
+        sock.read_to_end(&mut resp).await.unwrap();
+        let head = String::from_utf8_lossy(&resp);
+        head.split_whitespace()
+            .nth(1)
+            .and_then(|c| c.parse().ok())
+            .unwrap_or_else(|| panic!("no status line in response: {head:?}"))
+    }
+
+    /// A password-protected domain rule with `@noauth` carve-outs: the webhook
+    /// endpoint must be reachable without credentials while everything else on
+    /// the same domain still answers 401.
+    #[tokio::test]
+    async fn noauth_paths_bypass_basic_auth_on_a_protected_domain() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
+        let backend_port = spawn_ok_backend().await;
+        let proxy_port = portpicker::pick_unused_port().unwrap();
+        let dir = tempdir().unwrap();
+        let conf_path = dir.path().join("proxy.conf");
+
+        // bcrypt hash of "s3cret".
+        let hash = soli_proxy::auth::generate_hash("s3cret");
+        std::fs::write(
+            &conf_path,
+            format!(
+                "app.example.com -> http://127.0.0.1:{}/ @auth:admin:{} \
+                 @noauth:/webhooks/stripe,/hooks/*\n",
+                backend_port, hash
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            format!(
+                "[server]\nbind = \"127.0.0.1:{}\"\nhttps_port = 443\n",
+                proxy_port
+            ),
+        )
+        .unwrap();
+
+        let manager = Arc::new(ConfigManager::new(conf_path.to_str().unwrap()).unwrap());
+        let shutdown = ShutdownCoordinator::new();
+        let server = ProxyServer::new(
+            manager,
+            shutdown.clone(),
+            new_metrics(),
+            new_challenge_store(),
+            None,
+            Arc::new(CircuitBreaker::new(CircuitBreakerConfig::default())),
+            None,
+            None,
+        )
+        .unwrap();
+        tokio::spawn(async move {
+            let _ = server.run().await;
+        });
+        wait_for_port(proxy_port).await;
+
+        let client = reqwest::Client::new();
+        let call = |path: &str| {
+            let url = format!("http://127.0.0.1:{}{}", proxy_port, path);
+            let client = client.clone();
+            async move {
+                client
+                    .get(url)
+                    .header("host", "app.example.com")
+                    .send()
+                    .await
+                    .unwrap()
+                    .status()
+                    .as_u16()
+            }
+        };
+
+        // Exempt: exact path and prefix subtree, no credentials sent.
+        assert_eq!(call("/webhooks/stripe").await, 200);
+        assert_eq!(call("/hooks/github").await, 200);
+        assert_eq!(call("/hooks").await, 200);
+
+        // Everything else on the domain is still protected.
+        assert_eq!(call("/").await, 401);
+        assert_eq!(call("/admin").await, 401);
+        // An exact carve-out does not extend to its children.
+        assert_eq!(call("/webhooks/stripe/inner").await, 401);
+        // Traversal and encoding must not walk out of the carve-out: the
+        // backend could resolve these to a protected path. Sent raw, because
+        // an HTTP client would normalize them away before they reach us.
+        // Either answer is acceptable — 400 when the request target is
+        // rejected outright, 401 when it reaches routing and finds the
+        // carve-out does not apply. What must never happen is a 200.
+        for raw in ["/hooks/../admin", "/hooks/%2e%2e/admin", "/hooks/%2fadmin"] {
+            let status = raw_status(proxy_port, raw).await;
+            assert!(
+                status == 400 || status == 401,
+                "{raw} was served with status {status} and no credentials"
+            );
+        }
+        // The carve-out itself still works when sent the same way.
+        assert_eq!(raw_status(proxy_port, "/hooks/github").await, 200);
+
+        // Valid credentials still work on a protected path.
+        let status = client
+            .get(format!("http://127.0.0.1:{}/admin", proxy_port))
+            .header("host", "app.example.com")
+            .basic_auth("admin", Some("s3cret"))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, 200);
+
+        shutdown.initiate();
+        std::mem::forget(dir);
+    }
+}
+
 // ---- Admin API tests ----
 
 mod admin_tests {
@@ -1813,6 +1999,62 @@ mod admin_tests {
         .await;
         assert_eq!(status, 400, "{body}");
         assert_eq!(reparse(&mgr).rules[1].auth[0].hash, HASH_B);
+    }
+
+    /// The admin API takes rules as JSON and never runs the `.conf` parser
+    /// that filters `@noauth` patterns, so it must reject the same ones
+    /// itself — otherwise a pattern that cannot be matched literally lands on
+    /// disk and means something different after the next reload.
+    #[tokio::test]
+    async fn route_auth_exempt_is_validated_and_persisted() {
+        const HASH: &str = "$2b$12$aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let (port, mgr) = start_admin("default -> http://localhost:3000\n").await;
+
+        let route = |exempt: serde_json::Value| {
+            serde_json::json!({
+                "matcher": { "type": "domain", "value": "app.example.com" },
+                "targets": [{ "url": "http://localhost:8080/", "weight": 100 }],
+                "headers": [],
+                "scripts": [],
+                "auth": [{ "username": "admin", "hash": HASH }],
+                "auth_exempt": exempt
+            })
+        };
+
+        for bad in ["hooks", "/a/../b", "/c%2f", "*"] {
+            let (status, body) = post(
+                port,
+                "/api/v1/routes",
+                &route(serde_json::json!([bad])).to_string(),
+            )
+            .await;
+            assert_eq!(status, 400, "{bad:?} was accepted: {body}");
+        }
+        // Nothing was written by the rejected attempts.
+        assert_eq!(reparse(&mgr).rules.len(), 1);
+
+        let (status, body) = post(
+            port,
+            "/api/v1/routes",
+            &route(serde_json::json!(["/webhooks/stripe", "/hooks/*"])).to_string(),
+        )
+        .await;
+        assert_eq!(status, 201, "{body}");
+
+        // It survives the write/reparse round trip through proxy.conf...
+        let on_disk = reparse(&mgr);
+        assert_eq!(
+            on_disk.rules[1].auth_exempt,
+            vec!["/webhooks/stripe", "/hooks/*"]
+        );
+        // ...and comes back out of the API, so the UI can show it.
+        let (status, body) = get(port, "/api/v1/routes").await;
+        assert_eq!(status, 200);
+        let routes: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            routes["data"][1]["auth_exempt"],
+            serde_json::json!(["/webhooks/stripe", "/hooks/*"])
+        );
     }
 
     #[tokio::test]

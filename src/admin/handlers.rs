@@ -644,6 +644,9 @@ pub fn post_route(state: &Arc<AdminState>, body: &str) -> Response<BoxBody> {
     if let Err(e) = rule.carry_forward_auth_hashes(None) {
         return error_response(400, &e.to_string());
     }
+    if let Err(e) = rule.validate_auth_exempt() {
+        return error_response(400, &e.to_string());
+    }
 
     match state.config_manager.add_route(rule) {
         Ok(()) => {
@@ -667,6 +670,9 @@ pub fn put_route(state: &Arc<AdminState>, index: usize, body: &str) -> Response<
     // never returns hashes, so this is how the UI re-submits existing users.
     let cfg = state.config_manager.get_config();
     if let Err(e) = rule.carry_forward_auth_hashes(cfg.rules.get(index)) {
+        return error_response(400, &e.to_string());
+    }
+    if let Err(e) = rule.validate_auth_exempt() {
         return error_response(400, &e.to_string());
     }
 
@@ -741,6 +747,9 @@ pub fn put_config(state: &Arc<AdminState>, body: &str) -> Response<BoxBody> {
             .filter(|old| old.matcher == rule.matcher)
             .or_else(|| cfg.rules.iter().find(|old| old.matcher == rule.matcher));
         if let Err(e) = rule.carry_forward_auth_hashes(existing) {
+            return error_response(400, &format!("rule {}: {}", index, e));
+        }
+        if let Err(e) = rule.validate_auth_exempt() {
             return error_response(400, &format!("rule {}: {}", index, e));
         }
     }

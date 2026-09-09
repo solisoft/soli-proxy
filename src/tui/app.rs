@@ -1538,7 +1538,7 @@ impl TuiApp {
         let area = f.area();
         // Dynamic height: base 20 + extra lines for auth entries
         let extra_auth = form.auth_render_height();
-        let modal_height = (22 + extra_auth).min(area.height.saturating_sub(2));
+        let modal_height = (24 + extra_auth).min(area.height.saturating_sub(2));
         let modal_width = (area.width).clamp(40, 76);
         let x = (area.width.saturating_sub(modal_width)) / 2;
         let y = (area.height.saturating_sub(modal_height)) / 2;
@@ -1566,7 +1566,7 @@ impl TuiApp {
             modal_area.height.saturating_sub(2),
         );
 
-        let field_count = 6;
+        let field_count = 7;
         let mut y_offset = 0u16;
 
         for i in 0..field_count {

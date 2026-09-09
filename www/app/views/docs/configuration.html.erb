@@ -255,6 +255,33 @@
                         </div>
                     </div>
 
+                    <!-- Basic Auth -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-3">HTTP Basic Auth</h3>
+                        <p class="text-gray-400 text-sm mb-3">Append <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@auth:user:hash</code> to protect a route with HTTP Basic Auth. Repeat it for several accounts. Generate the bcrypt hash with <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">soli-proxy hash-password</code>.</p>
+                        <p class="text-gray-400 text-sm mb-3"><code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@noauth:</code> lists request paths served <em>without</em> credentials on an otherwise protected route &mdash; the escape hatch for machine-to-machine callers such as a Stripe webhook or a health probe. Entries are comma-separated and each is either an exact path (<code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">/webhooks/stripe</code>) or a prefix ending in <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">*</code> (<code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">/hooks/*</code>, which also matches the bare <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">/hooks</code>). Paths are matched against the URL as the client sent it, before any prefix stripping. <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@noauth</code> without <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@auth</code> does nothing.</p>
+                        <p class="text-gray-400 text-sm mb-3">The exemption is deliberately literal: a path carrying percent-encoding or a <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">..</code> segment is never exempt, so a request cannot walk out of the carve-out into a protected path that a normalising backend would resolve differently. Anything ambiguous keeps asking for the password.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">proxy.conf</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tc"># Password-protect a whole domain</span>
+<span class="tf">secure.example.com</span> <span class="tk">-></span> <span class="ts">http://localhost:9000</span> <span class="tt">@auth:admin:$2b$12$...</span>
+
+<span class="tc"># Several accounts on one route</span>
+<span class="tf">staging.example.com</span> <span class="tk">-></span> <span class="ts">http://app:8080</span> <span class="tt">@auth:admin:$2b$12$...</span> <span class="tt">@auth:qa:$2b$12$...</span>
+
+<span class="tc"># Protected domain, but the payment webhook and the health</span>
+<span class="tc"># probe must reach the backend without credentials</span>
+<span class="tf">app.example.com</span> <span class="tk">-></span> <span class="ts">http://app:8080</span> <span class="tt">@auth:admin:$2b$12$...</span> \
+                  <span class="tt">@noauth:/webhooks/stripe,/hooks/*,/healthz</span></code></pre>
+                        </div>
+                    </div>
+
                     <!-- Global scripts -->
                     <div class="mb-8 ml-11">
                         <h3 class="text-lg font-semibold text-white mb-3">Global Scripts</h3>

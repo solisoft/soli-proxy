@@ -523,6 +523,14 @@ pub struct ProxyRule {
     pub scripts: Vec<String>,
     #[serde(default)]
     pub auth: Vec<BasicAuth>,
+    /// Request paths on this rule that are served without Basic Auth.
+    ///
+    /// Only meaningful when `auth` is non-empty: a whole-domain rule can be
+    /// password-protected while a machine-to-machine endpoint on it (a Stripe
+    /// webhook, a health check) stays reachable. Each entry is either an exact
+    /// path (`/hooks/stripe`) or a prefix ending in `*` (`/hooks/*`).
+    #[serde(default)]
+    pub auth_exempt: Vec<String>,
     #[serde(default)]
     pub load_balancing: LoadBalancingStrategy,
 }
@@ -552,6 +560,102 @@ impl ProxyRule {
         }
         Ok(())
     }
+
+    /// True when `path` is one of this rule's Basic Auth carve-outs.
+    pub fn is_auth_exempt(&self, path: &str) -> bool {
+        path_is_auth_exempt(&self.auth_exempt, path)
+    }
+
+    /// Reject `auth_exempt` patterns that cannot be matched literally.
+    ///
+    /// The `.conf` parser drops such entries with a warning, but a rule
+    /// arriving as JSON through the admin API never goes through it — without
+    /// this, `auth_exempt: ["/"]` or a `..` pattern would be written to disk
+    /// and silently mean something different after the next reload.
+    pub fn validate_auth_exempt(&self) -> Result<()> {
+        for pattern in &self.auth_exempt {
+            if validate_auth_exempt_path(pattern).is_none() {
+                anyhow::bail!(
+                    "invalid auth_exempt path {:?}: expected an absolute path such as \
+                     /hooks/stripe or /hooks/*, with no '..' segment and no percent-encoding",
+                    pattern
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+/// True when `path` matches one of the `@noauth:` patterns.
+///
+/// Patterns are either an exact path (`/hooks/stripe`) or a prefix ending in
+/// `*` (`/hooks/*`, which also matches the bare `/hooks`, mirroring how
+/// `Prefix` route matchers behave).
+///
+/// This function decides whether to *skip* authentication, so it fails closed
+/// on anything it cannot compare literally: a path carrying percent-encoding
+/// or a `..` segment is never exempt, even if it textually matches. Otherwise
+/// `/hooks/stripe/%2e%2e/admin` — which the backend may well resolve to
+/// `/admin` — would walk out of the carve-out with the password check skipped.
+pub fn path_is_auth_exempt(patterns: &[String], path: &str) -> bool {
+    if patterns.is_empty() {
+        return false;
+    }
+    if path.contains('%') || path.split('/').any(|seg| seg == ".." || seg == ".") {
+        return false;
+    }
+    patterns
+        .iter()
+        .any(|pattern| match pattern.strip_suffix('*') {
+            Some(prefix) => path.starts_with(prefix) || path == prefix.trim_end_matches('/'),
+            None => path == pattern,
+        })
+}
+
+/// Validate one `@noauth:` pattern: absolute path, no null bytes, no `..`.
+///
+/// Returns `None` for anything else — a pattern that cannot be compared
+/// literally must not silently widen into an auth bypass.
+pub(crate) fn validate_auth_exempt_path(pattern: &str) -> Option<String> {
+    if !pattern.starts_with('/') || pattern.contains('\0') {
+        return None;
+    }
+    if pattern.contains('%') || pattern.split('/').any(|seg| seg == ".." || seg == ".") {
+        return None;
+    }
+    Some(pattern.to_string())
+}
+
+/// Extract `@noauth:/a/*,/b` from a string, returning (remaining_str, paths).
+fn extract_auth_exempt(s: &str) -> (String, Vec<String>) {
+    let Some(idx) = s.find("@noauth:") else {
+        return (s.to_string(), Vec::new());
+    };
+    let before = &s[..idx];
+    let after = &s[idx + "@noauth:".len()..];
+    let end_idx = after
+        .find(|c: char| c.is_whitespace())
+        .unwrap_or(after.len());
+    let paths: Vec<String> = after[..end_idx]
+        .split(',')
+        .map(|p| p.trim())
+        .filter(|p| !p.is_empty())
+        .filter_map(|p| {
+            let valid = validate_auth_exempt_path(p);
+            if valid.is_none() {
+                // Dropping it means the path stays behind Basic Auth (safe),
+                // but the operator's intent was silently lost — say so.
+                tracing::warn!(
+                    "Ignoring malformed @noauth path {:?} (expected an absolute path \
+                     such as /hooks/stripe or /hooks/*); it will still require credentials",
+                    p
+                );
+            }
+            valid
+        })
+        .collect();
+    let rest = &after[end_idx..];
+    (format!("{}{}", before, rest).trim().to_string(), paths)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1059,6 +1163,7 @@ realm = "Restricted"
         // to have resolved empty hashes (`carry_forward_auth_hashes`) already;
         // this is the last line of defence.
         for rule in &rules {
+            rule.validate_auth_exempt()?;
             if let Some(entry) = rule.auth.iter().find(|a| a.hash.is_empty()) {
                 anyhow::bail!(
                     "refusing to persist rule {:?}: auth entry for {} has no password hash",
@@ -1265,7 +1370,7 @@ fn extract_load_balancing(s: &str) -> (String, LoadBalancingStrategy) {
     }
 }
 
-fn parse_proxy_config(content: &str) -> Result<(Vec<ProxyRule>, Vec<String>)> {
+pub(crate) fn parse_proxy_config(content: &str) -> Result<(Vec<ProxyRule>, Vec<String>)> {
     let mut rules = Vec::new();
     let mut global_scripts = Vec::new();
 
@@ -1302,6 +1407,8 @@ fn parse_proxy_config(content: &str) -> Result<(Vec<ProxyRule>, Vec<String>)> {
             let (target_str, route_scripts) = extract_scripts(target_str.trim());
             // Extract @auth: entries from the target side
             let (target_str, auth_entries) = extract_auth(target_str);
+            // Extract @noauth: Basic Auth carve-outs
+            let (target_str, auth_exempt) = extract_auth_exempt(&target_str);
             // Extract @lb: load balancing strategy
             let (target_str, load_balancing) = extract_load_balancing(&target_str);
 
@@ -1351,6 +1458,7 @@ fn parse_proxy_config(content: &str) -> Result<(Vec<ProxyRule>, Vec<String>)> {
                 headers: vec![],
                 scripts: route_scripts,
                 auth: auth_entries,
+                auth_exempt,
                 load_balancing,
             });
         }
@@ -1737,7 +1845,88 @@ api_key = "secret123"
             headers: vec![],
             scripts: vec![],
             auth,
+            auth_exempt: vec![],
             load_balancing: LoadBalancingStrategy::default(),
+        }
+    }
+
+    #[test]
+    fn extract_auth_exempt_parses_comma_separated_paths() {
+        let (rest, paths) = extract_auth_exempt(
+            "http://localhost:8080/ @noauth:/hooks/stripe,/health @lb:weighted",
+        );
+        assert_eq!(rest, "http://localhost:8080/  @lb:weighted");
+        assert_eq!(paths, vec!["/hooks/stripe", "/health"]);
+    }
+
+    #[test]
+    fn extract_auth_exempt_drops_patterns_it_cannot_match_literally() {
+        // Relative, traversing and percent-encoded patterns are discarded:
+        // keeping them would mean skipping the password check for a path the
+        // backend may resolve somewhere else entirely.
+        let (_, paths) =
+            extract_auth_exempt("http://x/ @noauth:hooks,/a/../b,/c%2f,/ok/*,/../,/valid");
+        assert_eq!(paths, vec!["/ok/*", "/valid"]);
+    }
+
+    #[test]
+    fn conf_rule_parses_auth_and_noauth_together() {
+        let (rules, _) = parse_proxy_config(
+            "app.example.com -> http://localhost:8080/ @auth:admin:$2b$12$hash \
+             @noauth:/webhooks/stripe,/hooks/*\n",
+        )
+        .unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].auth.len(), 1);
+        assert_eq!(rules[0].auth_exempt, vec!["/webhooks/stripe", "/hooks/*"]);
+        // The directives must not leak into the target URL.
+        assert_eq!(rules[0].targets[0].url.as_str(), "http://localhost:8080/");
+    }
+
+    #[test]
+    fn auth_exempt_matches_exact_paths_and_star_prefixes() {
+        let patterns = vec!["/webhooks/stripe".to_string(), "/hooks/*".to_string()];
+        assert!(path_is_auth_exempt(&patterns, "/webhooks/stripe"));
+        // Exact patterns are exact: no children, no siblings.
+        assert!(!path_is_auth_exempt(&patterns, "/webhooks/stripe/extra"));
+        assert!(!path_is_auth_exempt(&patterns, "/webhooks/stripe2"));
+        // `/hooks/*` covers the subtree and the bare prefix, mirroring how
+        // `Prefix` route matchers behave.
+        assert!(path_is_auth_exempt(&patterns, "/hooks/github"));
+        assert!(path_is_auth_exempt(&patterns, "/hooks/"));
+        assert!(path_is_auth_exempt(&patterns, "/hooks"));
+        assert!(!path_is_auth_exempt(&patterns, "/hooksy"));
+        assert!(!path_is_auth_exempt(&patterns, "/admin"));
+        // No patterns at all means nothing is exempt.
+        assert!(!path_is_auth_exempt(&[], "/hooks/github"));
+    }
+
+    /// The exemption decides whether to SKIP the password check, so a request
+    /// path that does not compare literally must never match — the backend may
+    /// normalize `/hooks/../admin` to `/admin` after the proxy waved it past.
+    #[test]
+    fn auth_exempt_fails_closed_on_traversal_and_encoding() {
+        let patterns = vec!["/hooks/*".to_string()];
+        assert!(!path_is_auth_exempt(&patterns, "/hooks/../admin"));
+        assert!(!path_is_auth_exempt(&patterns, "/hooks/./secret"));
+        assert!(!path_is_auth_exempt(&patterns, "/hooks/%2e%2e/admin"));
+        assert!(!path_is_auth_exempt(&patterns, "/hooks/a%2fb"));
+    }
+
+    #[test]
+    fn validate_auth_exempt_rejects_what_the_parser_would_drop() {
+        // The admin API accepts rules as JSON and never runs the .conf parser,
+        // so the same patterns must be refused there with an error.
+        let mut rule = rule_with_auth(vec![basic("admin", "$2b$12$hash")]);
+        rule.auth_exempt = vec!["/hooks/*".to_string(), "/health".to_string()];
+        assert!(rule.validate_auth_exempt().is_ok());
+
+        for bad in ["hooks", "/a/../b", "/c%2f", "*", ""] {
+            rule.auth_exempt = vec![bad.to_string()];
+            assert!(
+                rule.validate_auth_exempt().is_err(),
+                "{bad:?} must be rejected"
+            );
         }
     }
 

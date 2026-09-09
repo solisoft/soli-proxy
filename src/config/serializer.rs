@@ -34,6 +34,14 @@ pub fn serialize_proxy_conf(rules: &[ProxyRule], global_scripts: &[String]) -> S
             .map(|a| format!(" @auth:{}:{}", a.username, a.hash))
             .collect();
 
+        // Only meaningful alongside @auth; writing it on an unprotected rule
+        // would be noise the parser reads back as a no-op.
+        let noauth_suffix = if rule.auth.is_empty() || rule.auth_exempt.is_empty() {
+            String::new()
+        } else {
+            format!(" @noauth:{}", rule.auth_exempt.join(","))
+        };
+
         let lb_suffix = match rule.load_balancing {
             LoadBalancingStrategy::RoundRobin if rule.targets.len() > 1 => {
                 "  @lb:round-robin".to_string()
@@ -48,8 +56,8 @@ pub fn serialize_proxy_conf(rules: &[ProxyRule], global_scripts: &[String]) -> S
         };
 
         output.push_str(&format!(
-            "{} -> {}{}{}{}\n",
-            matcher_str, targets_joined, scripts_suffix, auth_suffix, lb_suffix
+            "{} -> {}{}{}{}{}\n",
+            matcher_str, targets_joined, scripts_suffix, auth_suffix, noauth_suffix, lb_suffix
         ));
     }
 
@@ -78,6 +86,7 @@ mod tests {
                 headers: vec![],
                 scripts: vec![],
                 auth: vec![],
+                auth_exempt: vec![],
                 load_balancing: LoadBalancingStrategy::default(),
             },
             ProxyRule {
@@ -86,6 +95,7 @@ mod tests {
                 headers: vec![],
                 scripts: vec!["auth.lua".to_string()],
                 auth: vec![],
+                auth_exempt: vec![],
                 load_balancing: LoadBalancingStrategy::default(),
             },
         ];
@@ -103,6 +113,7 @@ mod tests {
             headers: vec![],
             scripts: vec![],
             auth: vec![],
+            auth_exempt: vec![],
             load_balancing: LoadBalancingStrategy::default(),
         }];
 
@@ -120,6 +131,7 @@ mod tests {
                 headers: vec![],
                 scripts: vec![],
                 auth: vec![],
+                auth_exempt: vec![],
                 load_balancing: LoadBalancingStrategy::default(),
             },
             ProxyRule {
@@ -128,6 +140,7 @@ mod tests {
                 headers: vec![],
                 scripts: vec![],
                 auth: vec![],
+                auth_exempt: vec![],
                 load_balancing: LoadBalancingStrategy::default(),
             },
         ];
@@ -138,6 +151,55 @@ mod tests {
     }
 
     #[test]
+    fn test_serialize_auth_exempt_roundtrips() {
+        let rules = vec![ProxyRule {
+            matcher: RuleMatcher::Domain("app.example.com".to_string()),
+            targets: vec![target("http://backend:8080")],
+            headers: vec![],
+            scripts: vec![],
+            auth: vec![crate::auth::BasicAuth {
+                username: "admin".to_string(),
+                hash: "$2b$12$hash".to_string(),
+            }],
+            auth_exempt: vec!["/webhooks/stripe".to_string(), "/hooks/*".to_string()],
+            load_balancing: LoadBalancingStrategy::default(),
+        }];
+
+        let output = serialize_proxy_conf(&rules, &[]);
+        assert!(
+            output.contains("@noauth:/webhooks/stripe,/hooks/*"),
+            "{output}"
+        );
+
+        // What we wrote must parse back to the same rule: the admin API edits
+        // rules through this file, so a lossy round trip silently drops the
+        // carve-outs (or the protection) on the next reload.
+        let (reparsed, _) = crate::config::parse_proxy_config(&output).unwrap();
+        assert_eq!(reparsed.len(), 1);
+        assert_eq!(reparsed[0].auth_exempt, rules[0].auth_exempt);
+        assert_eq!(reparsed[0].auth[0].username, "admin");
+        assert_eq!(reparsed[0].targets[0].url.as_str(), "http://backend:8080/");
+    }
+
+    /// `@noauth` without `@auth` is a no-op the parser would read back as an
+    /// empty carve-out list — writing it would only invite confusion.
+    #[test]
+    fn test_auth_exempt_not_written_without_auth() {
+        let rules = vec![ProxyRule {
+            matcher: RuleMatcher::Domain("open.example.com".to_string()),
+            targets: vec![target("http://backend:8080")],
+            headers: vec![],
+            scripts: vec![],
+            auth: vec![],
+            auth_exempt: vec!["/hooks/*".to_string()],
+            load_balancing: LoadBalancingStrategy::default(),
+        }];
+
+        let output = serialize_proxy_conf(&rules, &[]);
+        assert!(!output.contains("@noauth"), "{output}");
+    }
+
+    #[test]
     fn test_serialize_regex_rule() {
         let rules = vec![ProxyRule {
             matcher: RuleMatcher::Regex(RegexMatcher::new("^/admin/.*$").unwrap()),
@@ -145,6 +207,7 @@ mod tests {
             headers: vec![],
             scripts: vec![],
             auth: vec![],
+            auth_exempt: vec![],
             load_balancing: LoadBalancingStrategy::default(),
         }];
 

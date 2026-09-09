@@ -77,6 +77,12 @@ var RouteManager = {
                 auth = r.auth.map(function(a) {
                     return '<span class="text-xs text-amber-400 font-mono">' + AdminAPI.esc(a.username) + '</span>';
                 }).join('<br>');
+                // Carve-outs only mean anything on a protected route, so they
+                // are shown here rather than in a column of their own.
+                if (r.auth_exempt && r.auth_exempt.length) {
+                    auth += '<br><span class="text-xs text-surface-500 font-mono" title="Served without Basic Auth">open: ' +
+                        AdminAPI.esc(r.auth_exempt.join(', ')) + '</span>';
+                }
             } else {
                 auth = '<span class="text-surface-600">-</span>';
             }
@@ -113,7 +119,7 @@ var RouteManager = {
     },
 
     showAddModal: function() {
-        this._showModal('Add Route', -1, {matcher: {type: 'prefix', value: ''}, targets: [{url: '', weight: 100}], scripts: [], auth: []});
+        this._showModal('Add Route', -1, {matcher: {type: 'prefix', value: ''}, targets: [{url: '', weight: 100}], scripts: [], auth: [], auth_exempt: []});
     },
 
     showEditModal: function(index) {
@@ -154,6 +160,7 @@ var RouteManager = {
         var matcherStr = this._matcherToString(route.matcher);
         var targets = (route.targets || []).map(function(t) { return t.url || ''; }).join('\n');
         var scripts = (route.scripts || []).join('\n');
+        var authExempt = (route.auth_exempt || []).join('\n');
 
         var html = '<div class="p-6">' +
             '<h2 class="text-lg font-semibold text-white mb-6">' + title + '</h2>' +
@@ -168,7 +175,10 @@ var RouteManager = {
                 '<div class="border-t border-white/10 pt-4"><label class="block text-xs font-medium text-amber-400 mb-1.5">Basic Auth (optional)</label>' +
                 '<div class="text-xs text-surface-500 mb-2">Add users to protect this route with HTTP Basic Auth. Existing users keep their password unless you type a new one.</div>' +
                 '<div id="auth-users-container"></div>' +
-                '<button type="button" onclick="RouteManager.addAuthUserRow()" class="px-3 py-1.5 bg-surface-800 border border-white/10 text-surface-400 rounded-lg hover:bg-surface-700 text-xs">+ Add User</button></div>' +
+                '<button type="button" onclick="RouteManager.addAuthUserRow()" class="px-3 py-1.5 bg-surface-800 border border-white/10 text-surface-400 rounded-lg hover:bg-surface-700 text-xs">+ Add User</button>' +
+                '<label class="block text-xs font-medium text-surface-400 mt-4 mb-1.5">Paths without Basic Auth (one per line, optional)</label>' +
+                '<textarea id="route-auth-exempt" rows="2" placeholder="/webhooks/stripe&#10;/hooks/*" class="w-full bg-surface-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-accent-500/50">' + AdminAPI.esc(authExempt) + '</textarea>' +
+                '<div class="text-xs text-surface-600 mt-1">For callers that cannot send credentials (Stripe webhooks, health checks). Exact path, or a prefix ending in <code>*</code>. Ignored when no user is set above.</div></div>' +
             '</div>' +
             '<div class="flex gap-3 mt-6">' +
                 '<button id="route-save-btn" data-route-index="' + index + '" class="flex-1 px-4 py-2 bg-accent-500 hover:bg-accent-600 text-white text-sm font-medium rounded-lg transition-colors">Save</button>' +
@@ -216,6 +226,7 @@ var RouteManager = {
             return {url: l.trim(), weight: 100};
         });
         var scripts = document.getElementById('route-scripts').value.split('\n').filter(function(l){return l.trim()});
+        var authExempt = document.getElementById('route-auth-exempt').value.split('\n').map(function(l){return l.trim()}).filter(function(l){return l});
 
         var matcher = RouteManager._stringToMatcher(document.getElementById('route-value').value);
 
@@ -262,7 +273,7 @@ var RouteManager = {
                     processed++;
                     if (processed === needsHashing.length) {
                         auth.push.apply(auth, hashed);
-                        self._doSaveRoute(index, matcher, targets, scripts, auth);
+                        self._doSaveRoute(index, matcher, targets, scripts, auth, authExempt);
                     }
                 }).catch(function(err) {
                     AdminAPI.setButtonLoading(saveBtn, false);
@@ -270,17 +281,18 @@ var RouteManager = {
                 });
             });
         } else {
-            this._doSaveRoute(index, matcher, targets, scripts, auth);
+            this._doSaveRoute(index, matcher, targets, scripts, auth, authExempt);
         }
     },
 
-    _doSaveRoute: function(index, matcher, targets, scripts, auth) {
+    _doSaveRoute: function(index, matcher, targets, scripts, auth, authExempt) {
         var route = {
             matcher: matcher,
             targets: targets,
             headers: [],
             scripts: scripts,
-            auth: auth
+            auth: auth,
+            auth_exempt: authExempt || []
         };
 
         var saveBtn = document.getElementById('route-save-btn');

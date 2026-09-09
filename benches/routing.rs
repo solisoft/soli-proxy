@@ -50,6 +50,7 @@ fn parse_proxy_config(content: &str) -> Vec<ProxyRule> {
                 headers: vec![],
                 scripts: vec![],
                 auth: vec![],
+                auth_exempt: vec![],
                 load_balancing: LoadBalancingStrategy::default(),
             });
         }
