@@ -2317,6 +2317,16 @@ async fn handle_websocket_request(
         None => {
             if let (Some(ref manager), Some(ref h)) = (app_manager, host) {
                 if let Some(target) = manager.resolve_app_target(h).await {
+                    // Same gate as the HTTP path: an upgrade must not be a way
+                    // around the app's Basic Auth.
+                    if let Some(auth) = manager.auth_for_host(h).await {
+                        if auth.requires_auth(req.uri().path())
+                            && !verify_basic_auth(&req, &auth.users)
+                        {
+                            metrics.inc_errors();
+                            return Ok(create_auth_required_response());
+                        }
+                    }
                     let path = req.uri().path();
                     let query = req
                         .uri()
@@ -3342,6 +3352,18 @@ async fn handle_regular_request(
 
             if let (Some(ref manager), Some(ref h)) = (app_manager, host) {
                 if let Some(target) = manager.resolve_app_target(h).await {
+                    // App domains are routed here, not through `config.rules`
+                    // (`sync_routes` prunes static rules for them), so a
+                    // route's `@auth` can never cover an app. `[auth]` in
+                    // app.infos is where an app declares its own.
+                    if let Some(auth) = manager.auth_for_host(h).await {
+                        if auth.requires_auth(req.uri().path())
+                            && !verify_basic_auth(&req, &auth.users)
+                        {
+                            tracing::debug!("Basic auth failed for app {} {}", h, req.uri().path());
+                            return Ok((create_auth_required_response(), String::new(), vec![]));
+                        }
+                    }
                     let base_url = target.url.to_string();
                     let path = req.uri().path();
                     let query = req

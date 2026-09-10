@@ -301,6 +301,21 @@ var AppManager = {
 
         var errorRate = reqs > 0 ? ((errors / reqs) * 100).toFixed(1) : 0;
 
+        // Basic Auth from the app's [auth] section. The API returns usernames
+        // and the noauth carve-outs, never password hashes.
+        var authCfg = cfg.auth || {};
+        var authUsers = authCfg.usernames || [];
+        var authNoauth = authCfg.noauth || [];
+        var authBadge = '';
+        if (authUsers.length) {
+            var authTitle = 'Basic Auth: ' + authUsers.join(', ') +
+                (authNoauth.length ? ' — open: ' + authNoauth.join(', ') : '');
+            authBadge = '<span class="shrink-0 flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border bg-amber-500/10 text-amber-400 border-amber-500/20" title="' + AdminAPI.esc(authTitle) + '">' +
+                '<svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" /></svg>' +
+                'auth' +
+            '</span>';
+        }
+
         var anyRunning = blueStatus.toLowerCase() === 'running' || greenStatus.toLowerCase() === 'running';
         var anyStarting = blueStatus.toLowerCase() === 'starting' || greenStatus.toLowerCase() === 'starting';
         var healthLabel, healthColor, healthBg, healthBorder, healthDot;
@@ -346,10 +361,13 @@ var AppManager = {
                             (hasTestDomain ? '<a href="http://' + AdminAPI.esc(testDomain) + '" target="_blank" class="shrink-0 text-accent-400 hover:text-accent-300 transition-colors">dev</a>' : '') +
                         '</div>' +
                     '</div>' +
-                    '<span class="shrink-0 flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ' + healthBg + ' ' + healthColor + ' ' + healthBorder + '">' +
-                        '<span class="w-1.5 h-1.5 rounded-full ' + healthDot + '"></span>' +
-                        healthLabel +
-                    '</span>' +
+                    '<div class="shrink-0 flex items-center gap-2">' +
+                        authBadge +
+                        '<span class="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ' + healthBg + ' ' + healthColor + ' ' + healthBorder + '">' +
+                            '<span class="w-1.5 h-1.5 rounded-full ' + healthDot + '"></span>' +
+                            healthLabel +
+                        '</span>' +
+                    '</div>' +
                 '</div>' +
                 '<div class="flex items-center gap-3 bg-surface-800/30 rounded-lg px-3 py-2">' +
                     '<div class="text-xs font-medium ' + (currentSlot === 'blue' ? 'text-accent-400' : 'text-accent-400') + '" data-cpu-current-value data-app-name="' + AdminAPI.esc(name) + '" data-slot="' + AdminAPI.esc(currentSlot) + '">-</div>' +

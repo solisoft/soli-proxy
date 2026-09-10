@@ -304,7 +304,7 @@ Configuration changes are detected automatically:
 
 When apps are managed by the proxy (via the sites directory, e.g. `./www`), each app directory **must be named after its domain** (must contain at least one dot, e.g. `myapp.example.org/`) and may contain an `app.infos` file describing how to run it.
 
-`app.infos` is a **flat TOML file** (no section headers — keys live at the top level). The file is optional; if missing or empty, defaults are used.
+`app.infos` is a **TOML file** whose settings live at the top level; the optional `[auth]` section below is the only nested one. The file itself is optional too — if missing or empty, defaults are used.
 
 ### Example
 
@@ -319,6 +319,13 @@ health_check = "/health"
 graceful_timeout = 30
 port_range_start = 20000
 port_range_end = 30000
+
+# Optional: HTTP Basic Auth on this app's domains.
+[auth]
+noauth = ["/webhooks/stripe", "/hooks/*"]
+
+[auth.users]
+admin = "$2b$12$..."   # generate with: soli-proxy hash-password
 ```
 
 ### Fields
@@ -340,6 +347,15 @@ port_range_end = 30000
 | `docker_image` | string | _none_ | If set, the app runs inside Docker using this image instead of a host process. |
 | `docker_options` | string | _none_ | Extra flags appended to `docker run`. Whitespace-split, no shell. Single-tenant: a denylist rejects `--privileged`, `--cap-add`, `--device`, `--security-opt`, `--userns`, `--volumes-from`, `--env-file`, `--group-add`, joining the `host` or another container's namespaces, and docker-socket / root mounts in every spelling (`-v/:/x`, `--mount type=bind,source=/`, `/./`, `/etc/..`). Multi-tenant: only the allowlist below is accepted. |
 | `docker_network` | string | `"soli-apps"` | Docker network the container joins (created automatically if missing). A plain network name only: `host` and `container:<id>` are refused in every mode, since the value goes straight to `--network`. |
+| `[auth.users]` | table | _empty_ | `username = "bcrypt hash"` entries. When non-empty, every request to this app's domains must present matching HTTP Basic Auth credentials. Generate a hash with `soli-proxy hash-password`. |
+| `[auth] noauth` | list of strings | _empty_ | Paths served without credentials, for callers that cannot send a password (a payment webhook, a health probe). Exact path, or a prefix ending in `*` — the same syntax as the `@noauth:` route directive, and the same fail-closed rule: a path carrying percent-encoding or a `..` segment is never exempt. |
+
+Apps are routed by the app manager rather than by `proxy.conf` rules — `sync_routes` prunes
+static rules for app-managed domains — so a route's `@auth` cannot protect an app. `[auth]` is
+the equivalent for apps, and it covers the app's derived domains (`www.`-stripped, `.test` in
+dev) and any admin-managed alias pointing at it. A `[auth]` section the proxy cannot enforce as
+written (an empty hash, a `noauth` pattern that does not compare literally) makes the app fail
+to load and be skipped, rather than come up unprotected.
 
 ### The app's environment
 

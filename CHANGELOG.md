@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+* **HTTP Basic Auth per app, in `app.infos`.** Apps are routed by the app manager rather than
+  by `proxy.conf` rules — `sync_routes` prunes static rules for app-managed domains — so a
+  route's `@auth` could never protect an app. An app now declares its own:
+
+  ```toml
+  [auth]
+  noauth = ["/webhooks/stripe", "/hooks/*"]
+
+  [auth.users]
+  admin = "$2b$12$..."
+  ```
+
+  `noauth` takes the same syntax as the `@noauth:` route directive (exact path, or a prefix
+  ending in `*`) and the same fail-closed rule: a path carrying percent-encoding or a `..`
+  segment is never exempt. Auth covers the app's derived domains (`www.`-stripped, `.test` in
+  dev) and any admin-managed alias pointing at it, and is enforced on WebSocket upgrades as
+  well as plain requests. A `[auth]` section the proxy cannot enforce as written — an empty
+  hash, a pattern that does not compare literally — makes the app fail to load rather than
+  come up unprotected. `GET /api/v1/apps` reports the configured usernames and carve-outs,
+  never the hashes, and the admin UI shows an `auth` badge on protected apps.
+
+### Fixes
+
+* **`app_name_for_host` settles a contested domain the same way routing does.** It iterated a
+  `HashMap`, so when two apps declared one domain the app it returned could differ from the
+  one `running_app_domains` actually routes to (which picks by name order). Per-app metrics
+  could be attributed to the wrong app; with per-app auth reading the same lookup, it would
+  have meant answering a protected app's traffic with another app's credentials, or none.
+
 ## [0.32.0](https://github.com/solisoft/soli-proxy/compare/v0.31.0...v0.32.0) (2026-09-09)
 
 ### Features

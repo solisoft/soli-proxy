@@ -18,6 +18,105 @@ use crate::metrics::Metrics as AppMetrics;
 pub use deployment::{DeploymentManager, DeploymentStatus, ProcessExit};
 pub use port_manager::{PortAllocator, PortManager};
 
+/// HTTP Basic Auth for an app, from the `[auth]` section of `app.infos`:
+///
+/// ```toml
+/// [auth]
+/// noauth = ["/webhooks/stripe", "/hooks/*"]
+///
+/// [auth.users]
+/// admin = "$2b$12$..."
+/// ```
+///
+/// Apps are routed by `AppManager`, not by `proxy.conf` rules — `sync_routes`
+/// actively prunes static rules for app-managed domains — so a `@auth` rule
+/// cannot protect an app. This is the equivalent, living where the rest of the
+/// app's config already lives.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AppAuth {
+    /// Accounts allowed through, parsed from a `username = "bcrypt hash"`
+    /// table into the same shape route auth uses.
+    #[serde(deserialize_with = "deserialize_auth_users")]
+    pub users: Vec<crate::auth::BasicAuth>,
+    /// Paths served without credentials, same syntax as the `@noauth:`
+    /// directive on a route: an exact path, or a prefix ending in `*`.
+    pub noauth: Vec<String>,
+}
+
+/// Read `[auth.users]` as a `username = "hash"` table.
+///
+/// A `BTreeMap` rather than a `HashMap` so the order is stable: it decides
+/// which duplicate wins nothing here, but it keeps `GET /api/v1/apps` output
+/// and log lines from reshuffling between runs.
+fn deserialize_auth_users<'de, D>(d: D) -> Result<Vec<crate::auth::BasicAuth>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let table = std::collections::BTreeMap::<String, String>::deserialize(d)?;
+    Ok(table
+        .into_iter()
+        .map(|(username, hash)| crate::auth::BasicAuth { username, hash })
+        .collect())
+}
+
+/// Serialized for the admin API, which must never hand back password hashes
+/// (the route-auth API has the same contract). Usernames are emitted so the
+/// UI can show who is configured; `users` is not accepted back on input, so
+/// there is no round trip to break.
+impl Serialize for AppAuth {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(2))?;
+        let usernames: Vec<&str> = self.users.iter().map(|u| u.username.as_str()).collect();
+        map.serialize_entry("usernames", &usernames)?;
+        map.serialize_entry("noauth", &self.noauth)?;
+        map.end()
+    }
+}
+
+impl AppAuth {
+    /// Whether a request for `path` must present credentials.
+    pub fn requires_auth(&self, path: &str) -> bool {
+        !self.users.is_empty() && !crate::config::path_is_auth_exempt(&self.noauth, path)
+    }
+
+    /// Reject a manifest whose auth section cannot be enforced as written.
+    ///
+    /// An empty username or hash would be a silently unusable account, and a
+    /// `noauth` pattern that cannot be compared literally is refused for the
+    /// same reason the route directive refuses it: it must never widen into a
+    /// bypass. Callers treat this as a load failure, so the app is skipped
+    /// rather than served with auth the operator thinks is on.
+    fn validate(&self) -> Result<(), anyhow::Error> {
+        for user in &self.users {
+            if user.username.is_empty() {
+                anyhow::bail!("[auth.users] has an entry with an empty username");
+            }
+            if user.hash.is_empty() {
+                anyhow::bail!(
+                    "[auth.users] entry {:?} has an empty password hash (generate one with \
+                     `soli-proxy hash-password`)",
+                    user.username
+                );
+            }
+        }
+        for pattern in &self.noauth {
+            if crate::config::validate_auth_exempt_path(pattern).is_none() {
+                anyhow::bail!(
+                    "auth.noauth path {:?} is invalid: expected an absolute path such as \
+                     /webhooks/stripe or /hooks/*, with no '..' segment and no percent-encoding",
+                    pattern
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
@@ -36,6 +135,8 @@ pub struct AppConfig {
     pub docker_image: Option<String>,
     pub docker_options: Option<String>,
     pub docker_network: Option<String>,
+    /// HTTP Basic Auth for this app's domains. Empty by default.
+    pub auth: AppAuth,
 }
 
 impl Default for AppConfig {
@@ -56,6 +157,7 @@ impl Default for AppConfig {
             docker_image: None,
             docker_options: None,
             docker_network: None,
+            auth: AppAuth::default(),
         }
     }
 }
@@ -169,6 +271,7 @@ impl AppInfo {
         if let Some(ref health_check) = config.health_check {
             validate_health_check_path(health_check)?;
         }
+        config.auth.validate()?;
 
         if multi_tenant {
             if config.name != app_name {
@@ -877,11 +980,33 @@ impl AppManager {
         domains
     }
 
+    /// Basic Auth configured for the app serving `host`, if any.
+    ///
+    /// `None` — the common case — means the request needs no credential check
+    /// at all, so a request for an unprotected app never clones anything.
+    /// Cluster-pushed routes always answer `None`: their `app.infos` lives on
+    /// the node that actually runs the workload, and that node enforces it.
+    pub async fn auth_for_host(&self, host: &str) -> Option<AppAuth> {
+        let name = self.app_name_for_host(host).await?;
+        let apps = self.apps.lock().await;
+        let auth = &apps.get(&name)?.config.auth;
+        (!auth.users.is_empty()).then(|| auth.clone())
+    }
+
     /// Find the app name for a given host domain.
+    ///
+    /// Apps are visited in name order, the same rule `running_app_domains`
+    /// uses to settle a domain claimed by two apps. Iterating the map directly
+    /// would pick an arbitrary winner, so the app that *serves* a contested
+    /// domain and the app this returns could differ from run to run — and
+    /// since `auth_for_host` builds on this, that would mean answering a
+    /// protected app's traffic with another app's credentials (or none).
     pub async fn app_name_for_host(&self, host: &str) -> Option<String> {
         {
             let apps = self.apps.lock().await;
-            for (name, app) in apps.iter() {
+            let mut ordered: Vec<(&String, &AppInfo)> = apps.iter().collect();
+            ordered.sort_by(|a, b| a.0.cmp(b.0));
+            for (name, app) in ordered {
                 if app.config.domain == host {
                     return Some(name.clone());
                 }
@@ -2401,6 +2526,138 @@ mod tests {
         assert_eq!(ALIASES_FILE, "./run/aliases.json");
     }
 
+    fn write_app(dir: &TempDir, name: &str, manifest: &str) -> std::path::PathBuf {
+        let app_path = dir.path().join(name);
+        std::fs::create_dir_all(&app_path).unwrap();
+        std::fs::write(app_path.join("app.infos"), manifest).unwrap();
+        app_path
+    }
+
+    #[test]
+    fn app_infos_parses_the_auth_section() {
+        let dir = TempDir::new().unwrap();
+        let path = write_app(
+            &dir,
+            "shop.example.com",
+            r#"
+name = "shop.example.com"
+domain = "shop.example.com"
+
+[auth]
+noauth = ["/webhooks/stripe", "/hooks/*"]
+
+[auth.users]
+admin = "$2b$12$adminhash"
+qa = "$2b$12$qahash"
+"#,
+        );
+
+        let info = AppInfo::from_path(&path, false, false).unwrap();
+        let auth = &info.config.auth;
+        // Table order is normalised, so the list is stable across runs.
+        assert_eq!(
+            auth.users
+                .iter()
+                .map(|u| u.username.as_str())
+                .collect::<Vec<_>>(),
+            vec!["admin", "qa"]
+        );
+        assert_eq!(auth.users[0].hash, "$2b$12$adminhash");
+        assert_eq!(auth.noauth, vec!["/webhooks/stripe", "/hooks/*"]);
+    }
+
+    /// An app with no `[auth]` section is unprotected, exactly as before.
+    #[test]
+    fn app_infos_without_auth_requires_no_credentials() {
+        let dir = TempDir::new().unwrap();
+        let path = write_app(
+            &dir,
+            "open.example.com",
+            "name = \"open.example.com\"\ndomain = \"open.example.com\"\n",
+        );
+        let info = AppInfo::from_path(&path, false, false).unwrap();
+        assert!(info.config.auth.users.is_empty());
+        assert!(!info.config.auth.requires_auth("/"));
+    }
+
+    #[test]
+    fn app_auth_exempts_noauth_paths_and_fails_closed() {
+        let auth = AppAuth {
+            users: vec![crate::auth::BasicAuth {
+                username: "admin".to_string(),
+                hash: "$2b$12$hash".to_string(),
+            }],
+            noauth: vec!["/webhooks/stripe".to_string(), "/hooks/*".to_string()],
+        };
+
+        assert!(!auth.requires_auth("/webhooks/stripe"));
+        assert!(!auth.requires_auth("/hooks/github"));
+        assert!(!auth.requires_auth("/hooks"));
+        // Everything else on the app stays protected.
+        assert!(auth.requires_auth("/"));
+        assert!(auth.requires_auth("/admin"));
+        assert!(auth.requires_auth("/webhooks/stripe/inner"));
+        // Same fail-closed rule as the route directive: a path that does not
+        // compare literally is never exempt.
+        assert!(auth.requires_auth("/hooks/../admin"));
+        assert!(auth.requires_auth("/hooks/%2e%2e/admin"));
+    }
+
+    /// A manifest whose auth cannot be enforced as written must fail to load:
+    /// the app is skipped and logged, rather than served wide open while the
+    /// operator believes a password is in place.
+    #[test]
+    fn app_infos_with_unusable_auth_is_rejected() {
+        let dir = TempDir::new().unwrap();
+
+        for (case, section) in [
+            ("empty hash", "[auth.users]\nadmin = \"\"\n"),
+            (
+                "traversing noauth",
+                "noauth = [\"/a/../b\"]\n\n[auth.users]\nadmin = \"$2b$12$h\"\n",
+            ),
+            (
+                "relative noauth",
+                "noauth = [\"hooks\"]\n\n[auth.users]\nadmin = \"$2b$12$h\"\n",
+            ),
+            (
+                "encoded noauth",
+                "noauth = [\"/c%2f\"]\n\n[auth.users]\nadmin = \"$2b$12$h\"\n",
+            ),
+        ] {
+            let path = write_app(
+                &dir,
+                "bad.example.com",
+                &format!(
+                    "name = \"bad.example.com\"\ndomain = \"bad.example.com\"\n\n[auth]\n{}",
+                    section
+                ),
+            );
+            assert!(
+                AppInfo::from_path(&path, false, false).is_err(),
+                "{case} must be rejected"
+            );
+        }
+    }
+
+    /// The admin API must never hand back password hashes — the route-auth
+    /// endpoints have the same contract.
+    #[test]
+    fn serialized_app_auth_carries_usernames_but_no_hashes() {
+        let auth = AppAuth {
+            users: vec![crate::auth::BasicAuth {
+                username: "admin".to_string(),
+                hash: "$2b$12$supersecret".to_string(),
+            }],
+            noauth: vec!["/hooks/*".to_string()],
+        };
+        let json = serde_json::to_string(&auth).unwrap();
+        assert!(json.contains("admin"), "{json}");
+        assert!(json.contains("/hooks/*"), "{json}");
+        assert!(!json.contains("supersecret"), "{json}");
+        assert!(!json.contains("$2b$12$"), "{json}");
+    }
+
     #[tokio::test]
     async fn test_app_info_parsing() {
         let temp_dir = TempDir::new().unwrap();
@@ -2740,6 +2997,68 @@ port_range_end = 30000
 
     /// Two site directories that resolve to one app name (single-tenant, where
     /// `name` is free-form): the second is skipped, and the first entry keeps
+    /// The seam the proxy relies on: the `Host` it routes on must resolve to
+    /// the same app whose `[auth]` it then enforces — including the derived
+    /// `www.`-stripped form and admin-managed aliases, which are routed but
+    /// are not the app's declared domain.
+    #[tokio::test]
+    async fn auth_for_host_resolves_declared_derived_and_aliased_domains() {
+        let temp_dir = TempDir::new().unwrap();
+        let sites = temp_dir.path().join("sites");
+        site_with_app_infos(
+            &sites,
+            "shop.example.com",
+            r#"
+name = "shop.example.com"
+domain = "www.shop.example.com"
+
+[auth]
+noauth = ["/webhooks/stripe"]
+
+[auth.users]
+admin = "$2b$12$adminhash"
+"#,
+        );
+        site_with_app_infos(
+            &sites,
+            "open.example.com",
+            "name = \"open.example.com\"\ndomain = \"open.example.com\"\n",
+        );
+
+        let config_manager = Arc::new(
+            crate::config::ConfigManager::new(temp_dir.path().join("proxy.conf").to_str().unwrap())
+                .unwrap(),
+        );
+        let port_manager =
+            Arc::new(PortManager::new(temp_dir.path().join("run").to_str().unwrap()).unwrap());
+        let manager =
+            AppManager::new(sites.to_str().unwrap(), port_manager, config_manager, false).unwrap();
+        manager.discover_apps_readonly().await.unwrap();
+
+        // Declared domain and its www-stripped twin both carry the auth.
+        for host in ["www.shop.example.com", "shop.example.com"] {
+            let auth = manager
+                .auth_for_host(host)
+                .await
+                .unwrap_or_else(|| panic!("{host} should be protected"));
+            assert_eq!(auth.users[0].username, "admin");
+            assert!(auth.requires_auth("/"));
+            assert!(!auth.requires_auth("/webhooks/stripe"));
+        }
+
+        // An alias is routed to the app, so it inherits the app's auth.
+        manager
+            .set_alias("alias.example.com", "shop.example.com")
+            .await
+            .unwrap();
+        assert!(manager.auth_for_host("alias.example.com").await.is_some());
+
+        // An app with no [auth] costs nothing and stays open, and an unknown
+        // host resolves to no app at all.
+        assert!(manager.auth_for_host("open.example.com").await.is_none());
+        assert!(manager.auth_for_host("nobody.example.com").await.is_none());
+    }
+
     /// its own path and start command instead of inheriting the second's.
     #[tokio::test]
     async fn duplicate_app_name_keeps_first_directory() {
