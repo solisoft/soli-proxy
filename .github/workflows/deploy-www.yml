@@ -155,6 +155,11 @@ jobs:
       url: https://${{ vars.DEPLOY_DOMAIN || 'proxy.solisoft.net' }}
     env:
       HOST: ${{ secrets.DEPLOY_HOST }}
+      # Only whether each key EXISTS is exposed here, never its value: a
+      # secret interpolated into a plain env var is masked in the log but is
+      # still handed to every step of the job.
+      HAVE_KEY: ${{ secrets.SSH_DEPLOY_KEY != '' }}
+      HAVE_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS != '' }}
       USER: ${{ vars.DEPLOY_USER || 'rocky' }}
       SITES_DIR: ${{ vars.DEPLOY_SITES_DIR || '/home/rocky/sites' }}
       # Three separate identities. They happen to be the same string here, but
@@ -194,9 +199,18 @@ jobs:
         id: cfg
         run: |
           set -euo pipefail
-          if [ -z "${HOST:-}" ]; then
+          # All three secrets, not just the host. Checking DEPLOY_HOST alone
+          # meant that setting it first — the natural order, since it is the one
+          # you know off the top of your head — armed the job while it still had
+          # no key to authenticate with, so the next push touching www/ failed
+          # at the ssh step instead of reporting what was missing.
+          missing=""
+          [ -n "${HOST:-}" ] || missing="$missing DEPLOY_HOST"
+          [ "${HAVE_KEY:-false}" = "true" ] || missing="$missing SSH_DEPLOY_KEY"
+          [ "${HAVE_HOSTS:-false}" = "true" ] || missing="$missing SSH_KNOWN_HOSTS"
+          if [ -n "$missing" ]; then
             echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "DEPLOY_HOST is not set, so nothing is deployed."
+            echo "Not deploying — still missing:$missing"
             echo ""
             echo "To turn this on, add to the repository:"
             echo "  secrets:   DEPLOY_HOST, SSH_DEPLOY_KEY, SSH_KNOWN_HOSTS"
