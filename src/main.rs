@@ -854,6 +854,7 @@ async fn run_server(
             m.spawn_health_check();
             m.spawn_process_exit_monitor();
             m.spawn_restart_trigger_watcher();
+            m.spawn_idle_reaper();
             Some(Arc::new(m))
         }
         Err(e) => {

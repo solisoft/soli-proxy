@@ -1741,7 +1741,7 @@ async fn handle_request_inner(
             || find_matching_rule(&req, &config.rules).is_some()
             || match &app_manager {
                 Some(m) => m
-                    .resolve_app_target(raw_host.split(':').next().unwrap_or(raw_host))
+                    .app_name_for_host(raw_host.split(':').next().unwrap_or(raw_host))
                     .await
                     .is_some(),
                 None => false,
@@ -2302,7 +2302,7 @@ async fn handle_websocket_request(
             if matched.from_domain_rule
                 && matches!(matched.resolution, UrlResolution::AppendPath) =>
         {
-            manager.resolve_app_target(h).await.is_some()
+            manager.app_name_for_host(h).await.is_some()
         }
         _ => false,
     };
@@ -2316,7 +2316,12 @@ async fn handle_websocket_request(
         Some((url, _, _, _)) => url,
         None => {
             if let (Some(ref manager), Some(ref h)) = (app_manager, host) {
-                if let Some(target) = manager.resolve_app_target(h).await {
+                manager.note_activity(h).await;
+                let mut target = manager.resolve_app_target(h).await;
+                if target.is_none() && manager.wake_if_asleep(h).await {
+                    target = manager.resolve_app_target(h).await;
+                }
+                if let Some(target) = target {
                     // Same gate as the HTTP path: an upgrade must not be a way
                     // around the app's Basic Auth.
                     if let Some(auth) = manager.auth_for_host(h).await {
@@ -2748,7 +2753,7 @@ async fn handle_regular_request(
             if matched.from_domain_rule
                 && matches!(matched.resolution, UrlResolution::AppendPath) =>
         {
-            manager.resolve_app_target(h).await.is_some()
+            manager.app_name_for_host(h).await.is_some()
         }
         _ => false,
     };
@@ -3351,7 +3356,15 @@ async fn handle_regular_request(
             let app_manager_available = app_manager.is_some();
 
             if let (Some(ref manager), Some(ref h)) = (app_manager, host) {
-                if let Some(target) = manager.resolve_app_target(h).await {
+                manager.note_activity(h).await;
+                let mut target = manager.resolve_app_target(h).await;
+                if target.is_none() && manager.wake_if_asleep(h).await {
+                    // The app was asleep: it has just been started and is
+                    // healthy, so resolve again — this request is the one that
+                    // woke it and it should be served, not told 421.
+                    target = manager.resolve_app_target(h).await;
+                }
+                if let Some(target) = target {
                     // App domains are routed here, not through `config.rules`
                     // (`sync_routes` prunes static rules for them), so a
                     // route's `@auth` can never cover an app. `[auth]` in

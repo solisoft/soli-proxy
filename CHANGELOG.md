@@ -1,5 +1,27 @@
 # Changelog
 
+## [Unreleased]
+
+### Features
+
+* **Scale to zero: `idle_timeout` in `app.infos`.** Most fleets are mostly idle — on a box
+  hosting thirty small sites a day's traffic typically touches a handful, and every other one
+  holds its full runtime in memory for nothing. An app past its threshold is stopped the way
+  `soli-proxy stop` stops it, so the exit is not mistaken for a crash: no failover, no
+  quarantine. The next request for one of its domains is **held** while the app starts on its
+  current slot and is polled for health, then forwarded as usual — the first visitor waits about
+  a second, everyone else finds it running, and concurrent first requests share one start.
+
+  ```toml
+  idle_timeout = 900   # sleep after 15 minutes without a request
+  ```
+
+  A sleeping app keeps its certificate registered and keeps winning over static `proxy.conf`
+  rules for its domains, exactly as a running one does. The default is `0` — never sleep — which
+  is the right value for anything that does work without being asked: cron jobs, background
+  workers, WebSocket rooms, a cache that takes more than a moment to rebuild. `[apps]
+  idle_timeout` in `config.toml` sets a fleet-wide default; `_admin` never sleeps regardless.
+
 ## [0.33.0](https://github.com/solisoft/soli-proxy/compare/v0.32.0...v0.33.0) (2026-09-10)
 
 ### Features

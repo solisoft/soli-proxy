@@ -86,6 +86,10 @@ pub struct AppsTomlConfig {
     pub tenant_cpus: Option<String>,
     /// Uid:gid containers run as. Never root, never the proxy's own uid.
     pub tenant_user: Option<String>,
+    /// Scale to zero: seconds without a request before an app is stopped and
+    /// restarted on demand. The default for apps whose `app.infos` does not
+    /// set `idle_timeout`; `0` (the default) leaves every app running.
+    pub idle_timeout: Option<u64>,
 }
 
 /// Default name of the per-site deploy trigger file.
@@ -103,6 +107,11 @@ impl AppsTomlConfig {
     pub fn restart_trigger_poll_secs(&self) -> u64 {
         self.restart_trigger_poll_secs
             .unwrap_or(DEFAULT_RESTART_TRIGGER_POLL_SECS)
+    }
+
+    /// Fleet-wide idle threshold, in seconds. `0` means apps never sleep.
+    pub fn idle_timeout(&self) -> u64 {
+        self.idle_timeout.unwrap_or(0)
     }
 
     /// Whether apps are untrusted. Defaults to `false` so existing
@@ -944,6 +953,9 @@ burst_size = 2000
 # Detected by polling (inotify cannot see through the symlinks in sites/).
 # restart_trigger_file = "restart.txt"
 # restart_trigger_poll_secs = 2   # 0 disables the trigger entirely
+# idle_timeout = 0                # scale to zero: seconds idle before an app is
+#                                 # stopped and restarted on demand; per-app
+#                                 # `idle_timeout` in app.infos overrides this
 # Untrusted apps: require a docker_image and impose container hardening the
 # app cannot weaken (read-only rootfs, cap-drop ALL, no-new-privileges,
 # pids/memory/cpu limits, non-root uid). Apps without an image fail to deploy
@@ -1485,6 +1497,16 @@ default_user = "rocky"
         let apps = cfg.apps.unwrap_or_default();
         assert_eq!(apps.restart_trigger_file(), "restart.txt");
         assert_eq!(apps.restart_trigger_poll_secs(), 2);
+    }
+
+    #[test]
+    fn apps_idle_timeout_defaults_to_never() {
+        // Scale to zero is opt-in: a config that predates the key must leave
+        // every app running.
+        let cfg: TomlConfig = toml::from_str("[apps]\ndefault_user = \"rocky\"\n").unwrap();
+        assert_eq!(cfg.apps.unwrap_or_default().idle_timeout(), 0);
+        let cfg: TomlConfig = toml::from_str("[apps]\nidle_timeout = 1800\n").unwrap();
+        assert_eq!(cfg.apps.unwrap_or_default().idle_timeout(), 1800);
     }
 
     #[test]

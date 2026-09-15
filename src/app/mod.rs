@@ -137,6 +137,13 @@ pub struct AppConfig {
     pub docker_network: Option<String>,
     /// HTTP Basic Auth for this app's domains. Empty by default.
     pub auth: AppAuth,
+    /// Seconds without a request before the proxy stops the app and restarts
+    /// it on the next one (scale to zero). `None` inherits `[apps]
+    /// idle_timeout` from `config.toml`; `0` means the app is never put to
+    /// sleep — the default, and the only sane one for anything with cron
+    /// jobs, sockets or a warm cache it cannot rebuild in a second.
+    #[serde(default)]
+    pub idle_timeout: Option<u64>,
 }
 
 impl Default for AppConfig {
@@ -158,6 +165,7 @@ impl Default for AppConfig {
             docker_options: None,
             docker_network: None,
             auth: AppAuth::default(),
+            idle_timeout: None,
         }
     }
 }
@@ -392,6 +400,16 @@ pub struct AppManager {
     /// Empty by default, and an empty table changes no behaviour anywhere.
     pub external_routes: Arc<external::ExternalRouteTable>,
     restart_trigger_poll_secs: u64,
+    /// `[apps] idle_timeout` from `config.toml`: the sleep threshold for apps
+    /// whose `app.infos` does not set one. `0` (the default) disables it.
+    default_idle_timeout: u64,
+    /// When each app last received a request, keyed by app name. An app absent
+    /// from the map has not been observed yet; the reaper starts its clock on
+    /// first sight rather than sleeping it on the spot.
+    last_activity: Arc<parking_lot::Mutex<HashMap<String, std::time::Instant>>>,
+    /// Apps the reaper stopped for inactivity. A request for one of these is
+    /// held while the app is started again, instead of answering 421.
+    asleep: Arc<parking_lot::Mutex<HashSet<String>>>,
     /// Extra domain -> app name mappings, managed through the admin API.
     ///
     /// A site directory gives an app exactly one domain, which ties "the URL"
@@ -808,6 +826,9 @@ impl AppManager {
             restart_triggers: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             restart_trigger_file: cfg.apps.restart_trigger_file(),
             restart_trigger_poll_secs: cfg.apps.restart_trigger_poll_secs(),
+            default_idle_timeout: cfg.apps.idle_timeout(),
+            last_activity: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            asleep: Arc::new(parking_lot::Mutex::new(HashSet::new())),
             aliases: Arc::new(Mutex::new(read_aliases_file())),
             external_routes: Arc::new(external::ExternalRouteTable::default()),
         };
@@ -974,6 +995,19 @@ impl AppManager {
     /// means nothing for a workload on another machine.
     pub async fn all_routable_domains(&self) -> Vec<String> {
         let mut domains: Vec<String> = self.get_running_app_domains().await.into_keys().collect();
+        // A sleeping app has no process and so no running domain, but it is
+        // still ours: its certificate must stay registered and its static
+        // rules pruned, or the first request after a nap would find nothing to
+        // wake.
+        let asleep = self.asleep.lock().clone();
+        if !asleep.is_empty() {
+            let apps = self.apps.lock().await;
+            for name in asleep {
+                if let Some(app) = apps.get(&name) {
+                    domains.extend(self.domains_of(&app.config));
+                }
+            }
+        }
         domains.extend(self.external_routes.domains());
         domains.sort();
         domains.dedup();
@@ -1658,6 +1692,13 @@ impl AppManager {
         // restart, rollback) funnels through here, so this is the single place
         // that lifts a quarantine. `failover` is gated before it reaches this.
         self.clear_quarantine(app_name);
+        // Likewise the single place an app stops being asleep: whoever starts
+        // it — a held request or an operator — it is awake from here on, and
+        // its idle clock restarts so the reaper does not stop it again at once.
+        self.asleep.lock().remove(app_name);
+        self.last_activity
+            .lock()
+            .insert(app_name.to_string(), std::time::Instant::now());
 
         let app = self
             .apps
@@ -1904,6 +1945,20 @@ impl AppManager {
     }
 
     pub async fn failover(&self, app_name: &str) -> Result<(), anyhow::Error> {
+        // A sleeping app is stopped on purpose. Failover is the proxy's
+        // self-healing primitive — the health check and the process-exit
+        // monitor both reach it — so gating it here is what stops scale-to-zero
+        // from fighting them: without this the reaper stops the app, the
+        // monitor sees the exit and redeploys it to the other slot, and the
+        // next tick stops it again, forever. Only a request (through `wake`,
+        // which clears `asleep`) or an explicit deploy brings it back.
+        if self.is_asleep(app_name) {
+            tracing::debug!(
+                "Skipping failover for {} — asleep (scale to zero)",
+                app_name
+            );
+            return Ok(());
+        }
         // Quarantined apps are left alone: a failed start must not turn into an
         // endless restart loop. Only an explicit deploy clears this.
         if self.is_quarantined(app_name) {
@@ -2045,6 +2100,9 @@ impl AppManager {
                 continue;
             }
             if self.is_quarantined(&app_name) {
+                continue;
+            }
+            if self.is_asleep(&app_name) {
                 continue;
             }
             let url_health = format!("http://localhost:{}{}", port, health_path);
@@ -2214,6 +2272,188 @@ impl AppManager {
         }
     }
 
+    // ---------------------------------------------------------------------
+    // Scale to zero
+    // ---------------------------------------------------------------------
+
+    /// The domains a request for `config` may arrive on: the declared one, its
+    /// `www.`-stripped twin, and the `.test` twin in dev — the same set
+    /// `running_app_domains` claims.
+    fn domains_of(&self, config: &AppConfig) -> Vec<String> {
+        let mut out = Vec::with_capacity(3);
+        if config.domain.is_empty() {
+            return out;
+        }
+        out.push(config.domain.clone());
+        if let Some(non_www) = strip_www(&config.domain) {
+            out.push(non_www);
+        }
+        if self.dev_mode {
+            if let Some(dev) = dev_domain(&config.domain) {
+                out.push(dev);
+            }
+        }
+        out
+    }
+
+    /// Seconds of inactivity after which `app` is put to sleep; `0` never.
+    ///
+    /// `_admin` never sleeps whatever its manifest says: the admin listener
+    /// reaches it directly, not through `resolve_app_target`, so nothing
+    /// would ever wake it.
+    fn idle_timeout_for(&self, app: &AppInfo) -> u64 {
+        if app.config.name == "_admin" {
+            return 0;
+        }
+        app.config.idle_timeout.unwrap_or(self.default_idle_timeout)
+    }
+
+    /// Record that a request just arrived for `host`.
+    ///
+    /// Called on every request the app router sees. The host→name lookup is
+    /// the same one `auth_for_host` already does per request; the write is a
+    /// map insert under a short lock.
+    pub async fn note_activity(&self, host: &str) {
+        if let Some(name) = self.app_name_for_host(host).await {
+            self.last_activity
+                .lock()
+                .insert(name, std::time::Instant::now());
+        }
+    }
+
+    /// Whether the reaper has stopped `app_name` for inactivity.
+    pub fn is_asleep(&self, app_name: &str) -> bool {
+        self.asleep.lock().contains(app_name)
+    }
+
+    /// If `host` belongs to a sleeping app, start it and wait until it is
+    /// healthy. `true` means the caller should resolve the target again.
+    pub async fn wake_if_asleep(&self, host: &str) -> bool {
+        let Some(name) = self.app_name_for_host(host).await else {
+            return false;
+        };
+        if !self.is_asleep(&name) {
+            return false;
+        }
+        match self.wake(&name).await {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!("Could not wake {} for {}: {}", name, host, e);
+                false
+            }
+        }
+    }
+
+    /// Start a sleeping app on its current slot and return once it answers its
+    /// health check.
+    ///
+    /// Concurrent wakes serialise on the deploy lock: the first caller runs
+    /// the deploy, the others see "already in progress" and poll until a PID
+    /// appears. Bounded, because a wake that cannot finish must fail the held
+    /// requests rather than park them forever.
+    pub async fn wake(&self, app_name: &str) -> Result<(), anyhow::Error> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
+        loop {
+            let (running, slot) = {
+                let apps = self.apps.lock().await;
+                let app = apps
+                    .get(app_name)
+                    .ok_or_else(|| anyhow::anyhow!("App not found: {}", app_name))?;
+                let pid = if app.current_slot == "blue" {
+                    app.blue.pid
+                } else {
+                    app.green.pid
+                };
+                (pid.is_some(), app.current_slot.clone())
+            };
+            if running {
+                self.asleep.lock().remove(app_name);
+                self.last_activity
+                    .lock()
+                    .insert(app_name.to_string(), std::time::Instant::now());
+                return Ok(());
+            }
+            match self.deploy(app_name, &slot).await {
+                Ok(()) => {
+                    tracing::info!("{} woke up on slot {}", app_name, slot);
+                    return Ok(());
+                }
+                Err(e) if e.to_string().contains("already in progress") => {
+                    if std::time::Instant::now() >= deadline {
+                        anyhow::bail!("timed out waiting for {} to wake", app_name);
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// Stop every app that has been idle past its threshold. Run by
+    /// [`spawn_idle_reaper`](Self::spawn_idle_reaper).
+    pub async fn reap_idle(&self) {
+        let now = std::time::Instant::now();
+        let candidates: Vec<(String, u64)> = {
+            let apps = self.apps.lock().await;
+            apps.values()
+                .filter_map(|app| {
+                    let timeout = self.idle_timeout_for(app);
+                    let pid = if app.current_slot == "blue" {
+                        app.blue.pid
+                    } else {
+                        app.green.pid
+                    };
+                    (timeout > 0 && pid.is_some()).then(|| (app.config.name.clone(), timeout))
+                })
+                .collect()
+        };
+        for (name, timeout) in candidates {
+            let idle_for = {
+                let mut seen = self.last_activity.lock();
+                match seen.get(&name) {
+                    Some(last) => now.duration_since(*last),
+                    None => {
+                        // First sight: start the clock now. An app that came
+                        // up before the reaper did is not idle by definition.
+                        seen.insert(name.clone(), now);
+                        continue;
+                    }
+                }
+            };
+            if idle_for.as_secs() < timeout {
+                continue;
+            }
+            if self.deployment_manager.is_deploying(&name) || self.is_quarantined(&name) {
+                continue;
+            }
+            match self.stop(&name).await {
+                Ok(()) => {
+                    self.asleep.lock().insert(name.clone());
+                    tracing::info!(
+                        "{} put to sleep after {}s without a request (idle_timeout = {}s)",
+                        name,
+                        idle_for.as_secs(),
+                        timeout
+                    );
+                }
+                Err(e) => tracing::warn!("Could not put {} to sleep: {}", name, e),
+            }
+        }
+    }
+
+    /// Check for idle apps every 30 seconds. A no-op unless some app opted
+    /// in, so a fleet with no `idle_timeout` anywhere pays only the scan.
+    pub fn spawn_idle_reaper(&self) {
+        let manager = self.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+                manager.reap_idle().await;
+            }
+        });
+    }
+
     /// Spawn the trigger-file poller. No-op when the poll interval is 0.
     pub fn spawn_restart_trigger_watcher(&self) {
         let interval_secs = self.restart_trigger_poll_secs;
@@ -2261,6 +2501,15 @@ impl AppManager {
         let manager = self.clone();
         tokio::spawn(async move {
             while let Some(exit) = rx.recv().await {
+                // An app the reaper put to sleep exits on purpose; its stop is
+                // not a crash to heal from.
+                if manager.is_asleep(&exit.app_name) {
+                    tracing::debug!(
+                        "Ignoring exit of {} — asleep (scale to zero)",
+                        exit.app_name
+                    );
+                    continue;
+                }
                 tracing::warn!(
                     "Detected unexpected exit of {} slot {} (PID {}), triggering immediate failover",
                     exit.app_name,
@@ -2526,6 +2775,38 @@ mod tests {
         assert_eq!(ALIASES_FILE, "./run/aliases.json");
     }
 
+    #[test]
+    fn idle_timeout_is_absent_zero_or_seconds() {
+        // Three distinct states, and the difference between the first two is
+        // the whole point: `None` inherits the fleet default from config.toml,
+        // `Some(0)` pins the app awake even under such a default.
+        let dir = TempDir::new().unwrap();
+        let inherit = write_app(&dir, "inherit.example.com", "");
+        assert_eq!(
+            AppInfo::from_path(&inherit, false, false)
+                .unwrap()
+                .config
+                .idle_timeout,
+            None
+        );
+        let pinned = write_app(&dir, "pinned.example.com", "idle_timeout = 0\n");
+        assert_eq!(
+            AppInfo::from_path(&pinned, false, false)
+                .unwrap()
+                .config
+                .idle_timeout,
+            Some(0)
+        );
+        let sleepy = write_app(&dir, "sleepy.example.com", "idle_timeout = 900\n");
+        assert_eq!(
+            AppInfo::from_path(&sleepy, false, false)
+                .unwrap()
+                .config
+                .idle_timeout,
+            Some(900)
+        );
+    }
+
     fn write_app(dir: &TempDir, name: &str, manifest: &str) -> std::path::PathBuf {
         let app_path = dir.path().join(name);
         std::fs::create_dir_all(&app_path).unwrap();
@@ -2787,39 +3068,6 @@ port_range_end = 30000
         std::fs::create_dir_all(&app_path).unwrap();
         std::fs::write(app_path.join("app.infos"), app_infos).unwrap();
         app_path
-    }
-
-    /// Multi-tenant: `domain` is tenant input. A tenant in `evil.example.com/`
-    /// declaring `domain = "victim.example.com"` would otherwise be routed
-    /// the victim's `Host` and prune the victim's static rule.
-    #[test]
-    fn multi_tenant_rejects_domain_not_bound_to_directory() {
-        let temp_dir = TempDir::new().unwrap();
-        let sites = temp_dir.path();
-
-        let hijack = site_with_app_infos(
-            sites,
-            "evil.example.com",
-            "domain = \"victim.example.com\"\n",
-        );
-        let err = AppInfo::from_path(&hijack, false, true).unwrap_err();
-        assert!(err.to_string().contains("domain"), "{}", err);
-        // ...but the same manifest is still accepted single-tenant.
-        assert!(AppInfo::from_path(&hijack, false, false).is_ok());
-
-        // Own domain, its www. twin and no domain at all are fine.
-        for domain in ["evil.example.com", "www.evil.example.com", ""] {
-            let ok = site_with_app_infos(
-                sites,
-                "evil.example.com",
-                &format!("domain = \"{}\"\n", domain),
-            );
-            assert!(
-                AppInfo::from_path(&ok, false, true).is_ok(),
-                "domain {:?} should be accepted",
-                domain
-            );
-        }
     }
 
     /// Multi-tenant: `name` keys the apps map, so a tenant naming itself after

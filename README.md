@@ -347,6 +347,7 @@ admin = "$2b$12$..."   # generate with: soli-proxy hash-password
 | `docker_image` | string | _none_ | If set, the app runs inside Docker using this image instead of a host process. |
 | `docker_options` | string | _none_ | Extra flags appended to `docker run`. Whitespace-split, no shell. Single-tenant: a denylist rejects `--privileged`, `--cap-add`, `--device`, `--security-opt`, `--userns`, `--volumes-from`, `--env-file`, `--group-add`, joining the `host` or another container's namespaces, and docker-socket / root mounts in every spelling (`-v/:/x`, `--mount type=bind,source=/`, `/./`, `/etc/..`). Multi-tenant: only the allowlist below is accepted. |
 | `docker_network` | string | `"soli-apps"` | Docker network the container joins (created automatically if missing). A plain network name only: `host` and `container:<id>` are refused in every mode, since the value goes straight to `--network`. |
+| `idle_timeout` | int (seconds) | `[apps].idle_timeout` from `config.toml`, itself `0` | Scale to zero: after this many seconds without a request the proxy stops the app and starts it again on the next one, holding that request until the app is healthy. `0` means the app never sleeps. See [Scale to zero](#scale-to-zero). |
 | `[auth.users]` | table | _empty_ | `username = "bcrypt hash"` entries. When non-empty, every request to this app's domains must present matching HTTP Basic Auth credentials. Generate a hash with `soli-proxy hash-password`. |
 | `[auth] noauth` | list of strings | _empty_ | Paths served without credentials, for callers that cannot send a password (a payment webhook, a health probe). Exact path, or a prefix ending in `*` — the same syntax as the `@noauth:` route directive, and the same fail-closed rule: a path carrying percent-encoding or a `..` segment is never exempt. |
 
@@ -356,6 +357,47 @@ the equivalent for apps, and it covers the app's derived domains (`www.`-strippe
 dev) and any admin-managed alias pointing at it. A `[auth]` section the proxy cannot enforce as
 written (an empty hash, a `noauth` pattern that does not compare literally) makes the app fail
 to load and be skipped, rather than come up unprotected.
+
+### Scale to zero
+
+Most fleets are mostly idle: on a box hosting thirty small sites, a day's traffic
+typically touches a handful, and every one of the others holds its full runtime
+in memory for nothing. `idle_timeout` lets the proxy put such an app to sleep —
+stop its process — and start it again on the next request.
+
+```toml
+# app.infos
+idle_timeout = 900   # sleep after 15 minutes without a request
+```
+
+What happens:
+
+- Every request the proxy routes to an app resets that app's idle clock.
+- A reaper runs every 30 s. An app past its threshold is stopped the same way
+  `soli-proxy stop` stops it, so the exit is not mistaken for a crash — no
+  failover, no quarantine.
+- The next request for one of its domains is **held** while the app is started
+  on its current slot and polled for health, then forwarded as usual. A Soli app
+  boots in a few hundred milliseconds, so the first visitor waits about a
+  second; everyone else finds it running. Concurrent first requests share one
+  start.
+- A sleeping app keeps its certificate registered and keeps winning over
+  static `proxy.conf` rules for its domains, exactly as a running one does.
+- `soli-proxy restart <app>` or a deploy wakes it too, and resets the clock.
+
+The default is `0` — never sleep — and that is the right value for anything
+that does work without being asked: cron jobs, background workers, WebSocket
+rooms, a warm cache that takes more than a moment to rebuild. Set a threshold
+only on apps whose whole life is answering requests. `_admin` never sleeps
+regardless of its manifest. A fleet-wide default goes in `config.toml`:
+
+```toml
+[apps]
+idle_timeout = 1800   # apps that don't say otherwise sleep after 30 minutes
+```
+
+An app that must stay up under a fleet-wide default says so with
+`idle_timeout = 0` in its own `app.infos`.
 
 ### The app's environment
 
