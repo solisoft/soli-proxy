@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.35.0](https://github.com/solisoft/soli-proxy/compare/v0.34.0...v0.35.0) (2026-09-15)
+
+### Bug Fixes
+
+* **A path carve-out is no longer deleted from `proxy.conf`.** `sync_routes` prunes static
+  rules for app-managed domains so they cannot shadow blue-green routing, and it matched
+  `host/path/* -> …` as well as `host -> …`. A carve-out shadows nothing — it claims one
+  prefix, and the router already relies on that: `override_with_app` defers to the
+  `AppManager` only for whole-domain rules, precisely so an explicit path rule still wins.
+  The pruner was deleting the rules the router documents as intentional.
+
+  The cost was quiet and recurring. Pruning rewrites `proxy.conf`, and `sync_routes` runs
+  from three places — adding an alias, app auto-start (**every restart**) and the traffic
+  switch (**every deploy**). So a hand-written route vanished, most often mid-deploy, with
+  only an info line to say why; re-adding it worked until the next deploy, which is what
+  disguised it as anything other than a proxy behaviour.
+
+  ```
+  # Deleted on every deploy before this release; kept now.
+  site.example.com/_eui/* -> https://backend.example.com/_eui/
+  ```
+
+  Whole-domain rules are still pruned, unchanged: those really do shadow an app.
+
 ## [0.34.0](https://github.com/solisoft/soli-proxy/compare/v0.33.0...v0.34.0) (2026-09-15)
 
 ### Features
