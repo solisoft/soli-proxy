@@ -170,6 +170,144 @@ impl Default for AppConfig {
     }
 }
 
+/// The environment overlay sections an `app.infos` may carry. Which one is
+/// folded in is decided by the proxy's `--dev` flag — the same flag that
+/// already appends `--dev` to an auto-detected Soli start script and registers
+/// each app's `.test` alias — so an app has one manifest and the environment
+/// it runs in picks the values, instead of dev and prod drifting apart in two
+/// files nobody diffs.
+///
+/// Both sections are optional and a manifest carrying neither parses exactly
+/// as it did before they existed.
+const ENV_SECTIONS: [&str; 2] = ["development", "production"];
+
+/// Every root key `AppConfig` understands.
+///
+/// Serde ignores what it does not recognise here, without a word: `worker = 4`
+/// has always run the app with one worker and said nothing. Ignoring stays the
+/// behaviour — refusing the manifest would take a running app off the routing
+/// table over a stray key — but discovery now logs what it skipped, which is
+/// the difference between a five-minute puzzle and a five-hour one. The
+/// overlay sections make the stakes higher: a key that lands in the wrong
+/// section is ignored just as quietly.
+///
+/// `known_root_keys_match_app_config` fails if a field is added to
+/// `AppConfig` without being listed here.
+const KNOWN_ROOT_KEYS: [&str; 17] = [
+    "name",
+    "domain",
+    "start_script",
+    "stop_script",
+    "health_check",
+    "graceful_timeout",
+    "drain_delay",
+    "port_range_start",
+    "port_range_end",
+    "workers",
+    "user",
+    "group",
+    "docker_image",
+    "docker_options",
+    "docker_network",
+    "auth",
+    "idle_timeout",
+];
+
+/// Parse an `app.infos`, folding in the overlay for the environment this proxy
+/// runs as.
+///
+/// ```toml
+/// workers = 4
+/// idle_timeout = 1800
+///
+/// [development]
+/// workers = 1          # one worker and no sleeping while developing
+/// idle_timeout = 0
+/// ```
+///
+/// The active section is applied key by key over the top-level table, and a
+/// nested table merges into its counterpart rather than replacing it — so
+/// `[production.auth.users]` adds accounts without discarding the `noauth`
+/// list written at the top level. The inactive section is dropped unread:
+/// `[production]` may name settings this proxy build has never heard of, and a
+/// developer's machine will not refuse to start over them.
+///
+/// `label` names the app in log lines, and is the site directory name.
+fn parse_app_infos(content: &str, dev_mode: bool, label: &str) -> Result<AppConfig, anyhow::Error> {
+    let mut root: toml::Table = toml::from_str(content)?;
+    let active = if dev_mode {
+        "development"
+    } else {
+        "production"
+    };
+
+    let mut overlay = None;
+    for section in ENV_SECTIONS {
+        let Some(value) = root.remove(section) else {
+            continue;
+        };
+        let found = value.type_str();
+        let toml::Value::Table(table) = value else {
+            anyhow::bail!("[{section}] in app.infos must be a section, found a {found}");
+        };
+        if section == active {
+            overlay = Some(table);
+        }
+    }
+
+    warn_unknown_keys(&root, label, None);
+
+    let Some(overlay) = overlay else {
+        // No overlay to apply: deserialize the source text itself rather than
+        // the table we parsed to look for sections. Identical result, and it
+        // keeps the line and column spans `toml` attaches to a type error —
+        // which is most manifests, so most error messages.
+        return Ok(toml::from_str(content)?);
+    };
+
+    warn_unknown_keys(&overlay, label, Some(active));
+    merge_into(&mut root, overlay);
+    Ok(toml::Value::Table(root).try_into()?)
+}
+
+/// Apply `overlay` onto `base`, recursing so a table present on both sides
+/// merges key by key instead of replacing wholesale.
+fn merge_into(base: &mut toml::Table, overlay: toml::Table) {
+    for (key, value) in overlay {
+        match (base.get_mut(&key), value) {
+            (Some(toml::Value::Table(base_table)), toml::Value::Table(overlay_table)) => {
+                merge_into(base_table, overlay_table);
+            }
+            (_, value) => {
+                base.insert(key, value);
+            }
+        }
+    }
+}
+
+/// Log the keys of `table` that `AppConfig` will silently drop. `section` is
+/// the overlay the table came from, or `None` for the manifest's top level.
+fn warn_unknown_keys(table: &toml::Table, label: &str, section: Option<&str>) {
+    for key in table.keys() {
+        if KNOWN_ROOT_KEYS.contains(&key.as_str()) {
+            continue;
+        }
+        match section {
+            Some(section) => tracing::warn!(
+                "app.infos for {}: unknown setting {:?} in [{}] — ignored",
+                label,
+                key,
+                section
+            ),
+            None => tracing::warn!(
+                "app.infos for {}: unknown setting {:?} — ignored",
+                label,
+                key
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppInstance {
     pub name: String,
@@ -246,7 +384,7 @@ impl AppInfo {
             if content.trim().is_empty() {
                 AppConfig::default()
             } else {
-                toml::from_str(&content)?
+                parse_app_infos(&content, dev_mode, folder_name)?
             }
         } else {
             AppConfig::default()
@@ -3068,6 +3206,222 @@ port_range_end = 30000
         std::fs::create_dir_all(&app_path).unwrap();
         std::fs::write(app_path.join("app.infos"), app_infos).unwrap();
         app_path
+    }
+
+    /// One manifest, two environments: `--dev` takes `[development]` and
+    /// everything else takes `[production]`.
+    #[test]
+    fn env_overlay_follows_dev_mode() {
+        let manifest = r#"
+name = "app.example.com"
+workers = 4
+idle_timeout = 1800
+
+[development]
+workers = 1
+idle_timeout = 0
+
+[production]
+workers = 8
+"#;
+
+        let dev = parse_app_infos(manifest, true, "app.example.com").unwrap();
+        assert_eq!(dev.workers, 1);
+        assert_eq!(dev.idle_timeout, Some(0));
+
+        let prod = parse_app_infos(manifest, false, "app.example.com").unwrap();
+        assert_eq!(prod.workers, 8);
+        // Untouched by `[production]`, so the top-level value stands.
+        assert_eq!(prod.idle_timeout, Some(1800));
+        // And neither section leaks into the other.
+        assert_eq!(prod.name, "app.example.com");
+    }
+
+    /// Every manifest written before the sections existed must parse to
+    /// exactly what it parsed to before — the overlay is opt-in or it is a
+    /// migration.
+    #[test]
+    fn manifest_without_env_sections_is_unchanged() {
+        let manifest = r#"
+name = "app.example.com"
+domain = "app.example.com"
+start_script = "soli serve . --port $PORT --workers $WORKERS"
+workers = 2
+health_check = "/health"
+graceful_timeout = 30
+port_range_start = 20000
+port_range_end = 30000
+"#;
+
+        for dev_mode in [true, false] {
+            let config = parse_app_infos(manifest, dev_mode, "app.example.com").unwrap();
+            assert_eq!(config.workers, 2);
+            assert_eq!(config.graceful_timeout, 30);
+            assert_eq!(config.health_check.as_deref(), Some("/health"));
+            assert_eq!(config.port_range_start, 20000);
+            assert_eq!(config.idle_timeout, None);
+        }
+    }
+
+    /// A section merges into its top-level counterpart key by key. Replacing
+    /// it wholesale would mean `[production.auth.users]` silently dropping the
+    /// `noauth` list — an app's webhook path losing its exemption because
+    /// somebody added a password.
+    #[test]
+    fn env_overlay_merges_nested_sections() {
+        let manifest = r#"
+name = "app.example.com"
+
+[auth]
+noauth = ["/webhooks/stripe"]
+
+[production.auth.users]
+admin = "$2b$12$hash"
+"#;
+
+        let prod = parse_app_infos(manifest, false, "app.example.com").unwrap();
+        assert_eq!(prod.auth.noauth, vec!["/webhooks/stripe".to_string()]);
+        assert_eq!(prod.auth.users.len(), 1);
+        assert_eq!(prod.auth.users[0].username, "admin");
+
+        // In dev the section is not applied, so the app has no accounts.
+        let dev = parse_app_infos(manifest, true, "app.example.com").unwrap();
+        assert_eq!(dev.auth.noauth, vec!["/webhooks/stripe".to_string()]);
+        assert!(dev.auth.users.is_empty());
+    }
+
+    /// The inactive section is dropped unread, so a `[production]` written for
+    /// a newer proxy does not stop a developer's machine from starting the
+    /// app.
+    #[test]
+    fn inactive_env_section_is_not_validated() {
+        let manifest = r#"
+name = "app.example.com"
+
+[production]
+some_setting_from_the_future = { nested = true }
+"#;
+        assert!(parse_app_infos(manifest, true, "app.example.com").is_ok());
+    }
+
+    /// `development = 1` is a typo with a plausible shape; saying so beats
+    /// serde's "invalid type" on a key the operator thinks is a section.
+    #[test]
+    fn env_section_must_be_a_table() {
+        let err = parse_app_infos("development = 1\n", true, "app.example.com").unwrap_err();
+        assert!(err.to_string().contains("must be a section"), "{}", err);
+    }
+
+    /// An unrecognised key has always been ignored. It still is — the app
+    /// loads — and the warning is what is new.
+    #[test]
+    fn unknown_keys_are_ignored_not_fatal() {
+        let manifest = r#"
+name = "app.example.com"
+worker = 4
+
+[development]
+typo_here = true
+"#;
+        let config = parse_app_infos(manifest, true, "app.example.com").unwrap();
+        assert_eq!(config.workers, 1);
+    }
+
+    /// `KNOWN_ROOT_KEYS` drives the warning, so a field added to `AppConfig`
+    /// without being listed would make that field itself look unknown.
+    #[test]
+    fn known_root_keys_match_app_config() {
+        // Every `Option` set, so nothing is skipped on the way out. Written as
+        // a full literal on purpose: adding a field to `AppConfig` breaks this
+        // line until the list below is updated too.
+        let config = AppConfig {
+            name: "app.example.com".to_string(),
+            domain: "app.example.com".to_string(),
+            start_script: Some("soli serve .".to_string()),
+            stop_script: Some("true".to_string()),
+            health_check: Some("/up".to_string()),
+            graceful_timeout: 30,
+            drain_delay: 5,
+            port_range_start: 20000,
+            port_range_end: 30000,
+            workers: 1,
+            user: Some("rocky".to_string()),
+            group: Some("rocky".to_string()),
+            docker_image: Some("alpine".to_string()),
+            docker_options: Some("--rm".to_string()),
+            docker_network: Some("soli-apps".to_string()),
+            auth: AppAuth::default(),
+            idle_timeout: Some(0),
+        };
+
+        let toml::Value::Table(table) = toml::Value::try_from(config).unwrap() else {
+            panic!("AppConfig serializes to a table");
+        };
+        let mut serialized: Vec<&str> = table.keys().map(String::as_str).collect();
+        serialized.sort_unstable();
+        let mut known = KNOWN_ROOT_KEYS.to_vec();
+        known.sort_unstable();
+        assert_eq!(serialized, known);
+    }
+
+    /// The overlay reaches apps through discovery, not only through the
+    /// parser — `from_path` passes the mode it was given.
+    #[test]
+    fn from_path_applies_the_env_overlay() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = site_with_app_infos(
+            temp_dir.path(),
+            "app.example.com",
+            "name = \"app.example.com\"\nworkers = 4\n\n[development]\nworkers = 1\n",
+        );
+
+        assert_eq!(
+            AppInfo::from_path(&path, true, false)
+                .unwrap()
+                .config
+                .workers,
+            1
+        );
+        assert_eq!(
+            AppInfo::from_path(&path, false, false)
+                .unwrap()
+                .config
+                .workers,
+            4
+        );
+    }
+
+    /// Multi-tenant: `domain` is tenant input. A tenant in `evil.example.com/`
+    /// declaring `domain = "victim.example.com"` would otherwise be routed
+    /// the victim's `Host` and prune the victim's static rule.
+    #[test]
+    fn multi_tenant_rejects_domain_not_bound_to_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let sites = temp_dir.path();
+
+        let hijack = site_with_app_infos(
+            sites,
+            "evil.example.com",
+            "domain = \"victim.example.com\"\n",
+        );
+        let err = AppInfo::from_path(&hijack, false, true).unwrap_err();
+        assert!(err.to_string().contains("domain"), "{}", err);
+        // ...but the same manifest is still accepted single-tenant.
+        assert!(AppInfo::from_path(&hijack, false, false).is_ok());
+
+        // Own domain, its www. twin and no domain at all are fine.
+        for domain in ["evil.example.com", "www.evil.example.com", ""] {
+            let ok = site_with_app_infos(
+                sites,
+                "evil.example.com",
+                &format!("domain = \"{}\"\n", domain),
+            );
+            assert!(
+                AppInfo::from_path(&ok, false, true).is_ok(),
+                "domain {:?} should be accepted",
+                domain
+            );
+        }
     }
 
     /// Multi-tenant: `name` keys the apps map, so a tenant naming itself after

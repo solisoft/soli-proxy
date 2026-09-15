@@ -304,7 +304,7 @@ Configuration changes are detected automatically:
 
 When apps are managed by the proxy (via the sites directory, e.g. `./www`), each app directory **must be named after its domain** (must contain at least one dot, e.g. `myapp.example.org/`) and may contain an `app.infos` file describing how to run it.
 
-`app.infos` is a **TOML file** whose settings live at the top level; the optional `[auth]` section below is the only nested one. The file itself is optional too — if missing or empty, defaults are used.
+`app.infos` is a **TOML file** whose settings live at the top level. Three optional sections may follow them: `[auth]`, and the `[development]` / `[production]` overlays described below. The file itself is optional too — if missing or empty, defaults are used.
 
 ### Example
 
@@ -357,6 +357,59 @@ the equivalent for apps, and it covers the app's derived domains (`www.`-strippe
 dev) and any admin-managed alias pointing at it. A `[auth]` section the proxy cannot enforce as
 written (an empty hash, a `noauth` pattern that does not compare literally) makes the app fail
 to load and be skipped, rather than come up unprotected.
+
+### Per-environment settings
+
+The same manifest can carry a `[development]` and a `[production]` section. The proxy's `--dev`
+flag — the flag that already appends `--dev` to an auto-detected Soli start script and registers
+each app's `.test` alias — decides which one is folded in:
+
+```toml
+# app.infos
+workers = 4
+idle_timeout = 1800
+
+[development]
+workers = 1          # one worker, and no sleeping, while developing
+idle_timeout = 0
+
+[production]
+workers = 8
+```
+
+Run with `--dev` this app has one worker and never sleeps; run without it, eight workers and a
+30-minute idle timeout. The alternative — a dev copy of `app.infos` and a prod copy — is two
+files nobody diffs until the day they disagree about something that matters.
+
+Rules:
+
+- The selected section is applied **key by key** over the top level. A key the section does not
+  mention keeps its top-level value (above, `idle_timeout` in production).
+- A nested table **merges** into its counterpart rather than replacing it, so
+  `[production.auth.users]` adds accounts without discarding the `noauth` list written under
+  `[auth]`.
+- The section that is **not** selected is dropped unread. A `[production]` block naming a
+  setting only a newer proxy understands will not stop a developer's machine from starting the
+  app.
+- Both sections are optional, and a manifest carrying neither parses exactly as it did before
+  they existed.
+
+Beware the ordinary TOML trap: every key after a `[development]` header belongs to that section
+until the next header. A setting meant for both environments goes **above** the first section.
+
+### Unknown settings
+
+A key `app.infos` does not define is ignored — `worker = 4` runs the app with one worker — but
+discovery logs it:
+
+```
+WARN app.infos for myapp.example.com: unknown setting "worker" — ignored
+```
+
+Ignoring rather than refusing is deliberate: a manifest that fails to load takes a running app
+off the routing table, which is a steep price for a typo. The warning is there so the typo costs
+five minutes instead of five hours. Unknown keys inside `[development]` or `[production]` are
+reported the same way, with the section named.
 
 ### Scale to zero
 

@@ -22,6 +22,33 @@
   workers, WebSocket rooms, a cache that takes more than a moment to rebuild. `[apps]
   idle_timeout` in `config.toml` sets a fleet-wide default; `_admin` never sleeps regardless.
 
+* **`[development]` and `[production]` sections in `app.infos`.** An app has one manifest, and
+  the environment the proxy runs in picks the values — instead of a dev copy and a prod copy
+  drifting apart in two files nobody diffs:
+
+  ```toml
+  workers = 4
+  idle_timeout = 1800
+
+  [development]
+  workers = 1          # one worker, and no sleeping, while developing
+  idle_timeout = 0
+  ```
+
+  `--dev` selects `[development]`; every other run selects `[production]`. The chosen section
+  is applied key by key over the top level, and a nested table merges into its counterpart
+  rather than replacing it, so `[production.auth.users]` adds accounts without discarding the
+  `noauth` list written above it. The section that is not selected is dropped unread, so a
+  `[production]` block written for a newer proxy never stops a developer's machine from
+  starting the app. Both sections are optional and a manifest carrying neither parses exactly
+  as before.
+
+* **Discovery logs the `app.infos` keys it does not recognise.** Serde has always ignored them
+  without a word — `worker = 4` ran the app with one worker and said nothing — and the overlay
+  sections raise the stakes, since a key that lands in the wrong section is ignored just as
+  quietly. Unknown keys are still ignored rather than fatal: refusing the manifest would take a
+  running app off the routing table over a typo.
+
 ## [0.33.0](https://github.com/solisoft/soli-proxy/compare/v0.32.0...v0.33.0) (2026-09-10)
 
 ### Features

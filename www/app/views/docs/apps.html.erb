@@ -92,7 +92,7 @@
         <!-- app.infos Reference -->
         <div class="mb-16">
             <h2 class="text-xl font-bold text-white mb-4">app.infos Reference</h2>
-            <p class="text-gray-400 mb-4">Each app folder may contain an <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">app.infos</code> file (TOML). Settings live at the top level; the optional <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">[auth]</code> section is the only nested one. If the file is missing or empty, defaults are used.</p>
+            <p class="text-gray-400 mb-4">Each app folder may contain an <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">app.infos</code> file (TOML). Settings live at the top level, followed by up to three optional sections: <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">[auth]</code>, and the <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">[development]</code> / <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">[production]</code> overlays. If the file is missing or empty, defaults are used.</p>
             <p class="text-gray-400 mb-6"><strong class="text-white">Folder name rule:</strong> each app folder must be named after a valid domain (must contain at least one dot, e.g. <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">myapp.example.com/</code>). The proxy rejects folders that don't look like a domain.</p>
 
             <div class="rounded-2xl bg-gray-950 ring-1 ring-white/10 overflow-hidden code-window mb-6">
@@ -129,7 +129,14 @@ docker_network = <span class="ts">"soli-apps"</span>               <span class="
 noauth = [<span class="ts">"/webhooks/stripe"</span>, <span class="ts">"/hooks/*"</span>]   <span class="tc"># paths served without credentials</span>
 
 <span class="tk">[auth.users]</span>                             <span class="tc"># username = bcrypt hash</span>
-admin = <span class="ts">"$2b$12$..."</span></code></pre>
+admin = <span class="ts">"$2b$12$..."</span>
+
+<span class="tc"># Per-environment overrides (optional) &mdash; --dev picks [development]</span>
+<span class="tk">[development]</span>
+workers = <span class="tn">1</span>
+
+<span class="tk">[production]</span>
+workers = <span class="tn">8</span></code></pre>
                 </div>
             </div>
 
@@ -161,6 +168,7 @@ admin = <span class="ts">"$2b$12$..."</span></code></pre>
                         <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">[auth.users]</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">A <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">username = "bcrypt hash"</code> table. When non-empty, every request to this app's domains must present matching HTTP Basic Auth credentials. Generate a hash with <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">soli-proxy hash-password</code>. Apps are routed by the app manager rather than by <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">proxy.conf</code> rules, so a route's <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">@auth</code> cannot protect an app &mdash; this is the equivalent.</td></tr>
                         <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">[auth] noauth</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Paths served without credentials &mdash; the escape hatch for callers that cannot send a password (a payment webhook, a health probe). Each entry is an exact path (<code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">/webhooks/stripe</code>) or a prefix ending in <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">*</code> (<code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">/hooks/*</code>, which also matches the bare <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">/hooks</code>), same syntax as the <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">@noauth:</code> route directive. Matched against the URL as the client sent it. Fails closed: a path carrying percent-encoding or a <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">..</code> segment is never exempt. A pattern that cannot be compared literally makes the app fail to load rather than silently widening into a bypass.</td></tr>
                         <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">idle_timeout</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Seconds without a request before the proxy stops the app and starts it again on the next one. <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">0</code> means it never sleeps &mdash; the default. Falls back to <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">[apps].idle_timeout</code> in <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">config.toml</code>. See <a href="#scale-to-zero" class="text-emerald-300 hover:underline">Scale to zero</a>.</td></tr>
+                        <tr class="border-b border-white/5"><td class="px-4 py-3 font-mono text-xs text-cyan-300">[development]<br>[production]</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Per-environment overrides for any of the settings above. The proxy's <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">--dev</code> flag selects <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">[development]</code>; every other run selects <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">[production]</code>. Applied key by key over the top level &mdash; see <a href="#per-environment" class="text-emerald-300 hover:underline">Per-environment settings</a>.</td></tr>
                         <tr><td class="px-4 py-3 font-mono text-xs text-cyan-300">docker_network</td><td class="px-4 py-3"><span class="text-xs font-bold text-gray-400 bg-gray-500/10 px-2 py-0.5 rounded">No</span></td><td class="px-4 py-3 text-gray-400">Docker network to join. Apps on the same network can communicate by container name. A plain network name only: <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">host</code> and <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">container:&lt;id&gt;</code> are refused. Default: <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">soli-apps</code></td></tr>
                     </tbody>
                 </table>
@@ -195,6 +203,52 @@ admin = <span class="ts">"$2b$12$..."</span></code></pre>
             </div>
 
             <p class="text-sm text-gray-500">A fleet-wide default goes in <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">config.toml</code> under <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">[apps] idle_timeout</code>. An app that must stay up under one says so with <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">idle_timeout = 0</code> in its own <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">app.infos</code>.</p>
+        </div>
+
+        <!-- Per-environment settings -->
+        <div class="mb-16" id="per-environment">
+            <h2 class="text-xl font-bold text-white mb-4">Per-environment settings</h2>
+            <p class="text-gray-400 mb-4">One manifest, two environments. The proxy's <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">--dev</code> flag &mdash; the flag that already appends <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">--dev</code> to an auto-detected Soli start script and registers each app's <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">.test</code> alias &mdash; decides which section is folded in. The alternative, a dev copy of <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">app.infos</code> and a prod copy, is two files nobody diffs until the day they disagree about something that matters.</p>
+
+            <div class="rounded-2xl bg-gray-950 ring-1 ring-white/10 overflow-hidden code-window mb-6">
+                <div class="flex items-center justify-between px-4 py-3 border-b border-white/5 bg-white/5">
+                    <span class="text-xs text-gray-500 font-mono">sites/myapp.example.com/app.infos</span>
+                    <button class="text-xs text-gray-500 hover:text-white px-2 py-1 rounded hover:bg-white/10 transition-all" onclick="copyCode(this)">Copy</button>
+                </div>
+                <div class="p-6">
+<pre class="text-sm leading-7"><code>workers = <span class="tn">4</span>
+idle_timeout = <span class="tn">1800</span>
+
+<span class="tk">[development]</span>
+workers = <span class="tn">1</span>                                <span class="tc"># one worker, and no sleeping, while developing</span>
+idle_timeout = <span class="tn">0</span>
+
+<span class="tk">[production]</span>
+workers = <span class="tn">8</span></code></pre>
+                </div>
+            </div>
+
+            <p class="text-gray-400 mb-4">Run with <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">--dev</code> this app has one worker and never sleeps; run without it, eight workers and a 30-minute idle timeout.</p>
+
+            <ul class="space-y-3 text-sm text-gray-400 mb-6">
+                <li class="flex gap-3"><span class="text-emerald-400">&bull;</span><span>The selected section is applied <strong class="text-white">key by key</strong> over the top level. A key the section does not mention keeps its top-level value &mdash; above, <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">idle_timeout</code> in production.</span></li>
+                <li class="flex gap-3"><span class="text-emerald-400">&bull;</span><span>A nested table <strong class="text-white">merges</strong> into its counterpart rather than replacing it, so <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">[production.auth.users]</code> adds accounts without discarding the <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">noauth</code> list written under <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">[auth]</code>.</span></li>
+                <li class="flex gap-3"><span class="text-emerald-400">&bull;</span><span>The section that is <strong class="text-white">not</strong> selected is dropped unread. A <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">[production]</code> block naming a setting only a newer proxy understands will not stop a developer's machine from starting the app.</span></li>
+                <li class="flex gap-3"><span class="text-emerald-400">&bull;</span><span>Both sections are optional, and a manifest carrying neither parses exactly as it did before they existed.</span></li>
+            </ul>
+
+            <div class="rounded-xl bg-amber-500/5 border border-amber-500/20 p-5">
+                <h4 class="font-semibold text-amber-300 text-sm mb-2">The ordinary TOML trap</h4>
+                <p class="text-sm text-gray-400">Every key after a <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">[development]</code> header belongs to that section until the next header. A setting meant for both environments goes <strong class="text-white">above</strong> the first section, not below it.</p>
+            </div>
+        </div>
+
+        <!-- Unknown settings -->
+        <div class="mb-16">
+            <h2 class="text-xl font-bold text-white mb-4">Unknown settings</h2>
+            <p class="text-gray-400 mb-4">A key <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">app.infos</code> does not define is ignored &mdash; <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">worker = 4</code> runs the app with one worker &mdash; but discovery logs it:</p>
+            <pre class="text-xs leading-relaxed overflow-x-auto mb-4 rounded-xl bg-gray-900 border border-white/10 p-5"><code><span class="tc">WARN app.infos for myapp.example.com: unknown setting "worker" &mdash; ignored</span></code></pre>
+            <p class="text-sm text-gray-500">Ignoring rather than refusing is deliberate: a manifest that fails to load takes a running app off the routing table, which is a steep price for a typo. The warning is there so the typo costs five minutes instead of five hours. Unknown keys inside <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">[development]</code> or <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">[production]</code> are reported the same way, with the section named.</p>
         </div>
 
         <!-- start_script Auto-Detection -->
