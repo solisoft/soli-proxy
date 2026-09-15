@@ -29,8 +29,9 @@ pub use port_manager::{PortAllocator, PortManager};
 /// ```
 ///
 /// Apps are routed by `AppManager`, not by `proxy.conf` rules — `sync_routes`
-/// actively prunes static rules for app-managed domains — so a `@auth` rule
-/// cannot protect an app. This is the equivalent, living where the rest of the
+/// actively prunes whole-domain static rules for app-managed domains — so a
+/// `@auth` rule on one cannot protect an app. (A `host/path/*` carve-out
+/// survives, because it shadows nothing; see `shadowing_domain`.) This is the equivalent, living where the rest of the
 /// app's config already lives.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -900,6 +901,23 @@ pub enum AppEvent {
     },
 }
 
+/// The domain a static rule would shadow an app on, if it would shadow one.
+///
+/// Only a whole-domain rule can: it claims every path, so an app-managed
+/// domain that also carries `host -> http://…` never reaches the AppManager
+/// and a blue-green switch moves nothing. A `host/path/* -> …` carve-out
+/// claims one prefix and is *meant* to beat the app there — `override_with_app`
+/// in `server/mod.rs` defers to the AppManager for domain rules precisely so
+/// that a DomainPath still wins. Returning `Some` for one had `sync_routes`
+/// delete it and rewrite proxy.conf, on every restart and every traffic
+/// switch, taking an operator's hand-written route with it.
+fn shadowing_domain(matcher: &super::config::RuleMatcher) -> Option<&str> {
+    match matcher {
+        super::config::RuleMatcher::Domain(d) => Some(d.as_str()),
+        _ => None,
+    }
+}
+
 impl AppManager {
     pub fn new(
         sites_dir: &str,
@@ -1459,19 +1477,15 @@ impl AppManager {
             .collect();
 
         // Remove static proxy.conf rules for app-managed domains so they
-        // don't shadow the dynamic blue-green routing.
+        // don't shadow the dynamic blue-green routing. Whole-domain rules
+        // only — see `shadowing_domain` for why a path carve-out stays.
         let cfg = self.config_manager.get_config();
         let original_len = cfg.rules.len();
         let rules: Vec<_> = cfg
             .rules
             .iter()
             .filter(|rule| {
-                let domain = match &rule.matcher {
-                    super::config::RuleMatcher::Domain(d) => Some(d.as_str()),
-                    super::config::RuleMatcher::DomainPath(d, _) => Some(d.as_str()),
-                    _ => None,
-                };
-                if let Some(d) = domain {
+                if let Some(d) = shadowing_domain(&rule.matcher) {
                     if managed.contains(d) && prunable.contains(d) {
                         tracing::info!("Removing stale static rule for app-managed domain: {}", d);
                         return false;
@@ -2898,6 +2912,49 @@ mod tests {
             aliases.get("a.example.com").map(String::as_str),
             Some("app-one")
         );
+    }
+
+    /// A path carve-out on an app-managed domain must survive `sync_routes`.
+    ///
+    /// This is a regression with a face: `eui.solisoft.net/_eui/* ->
+    /// https://eui-data.solisoft.net/_eui/` is how a page on one site opens an
+    /// EUI session served by another, and it is written by hand because no
+    /// deployment can write it. Pruning DomainPath deleted it on every restart
+    /// and every traffic switch, rewriting proxy.conf without it — so it went
+    /// missing during a deploy, which is both the likeliest moment and the
+    /// hardest one to attribute.
+    #[test]
+    fn a_path_carve_out_on_an_app_domain_is_not_pruned() {
+        use crate::config::RuleMatcher;
+
+        let whole = RuleMatcher::Domain("eui.solisoft.net".to_string());
+        assert_eq!(shadowing_domain(&whole), Some("eui.solisoft.net"));
+
+        let carve_out =
+            RuleMatcher::DomainPath("eui.solisoft.net".to_string(), "/_eui/".to_string());
+        assert_eq!(
+            shadowing_domain(&carve_out),
+            None,
+            "a path carve-out claims one prefix, not the domain, so it shadows no app"
+        );
+    }
+
+    /// The other matchers were never pruned and must stay that way: a bare
+    /// path rule carries no domain to match an app against, and `default`
+    /// exists to catch what nothing else did.
+    #[test]
+    fn rules_without_a_domain_are_never_pruned() {
+        use crate::config::RuleMatcher;
+
+        assert_eq!(
+            shadowing_domain(&RuleMatcher::Prefix("/_eui/".to_string())),
+            None
+        );
+        assert_eq!(
+            shadowing_domain(&RuleMatcher::Exact("/health".to_string())),
+            None
+        );
+        assert_eq!(shadowing_domain(&RuleMatcher::Default), None);
     }
 
     #[test]
