@@ -161,6 +161,23 @@ Two consequences worth internalising:
   recurs after *every* upgrade unless `setcap` is part of the upgrade. This is
   why `install.sh` output is worth re-reading after a version bump.
 
+Because it recurs, `rbuild --install proxy` re-applies it — which means a sudo
+password prompt in the middle of every build. `deploy/soli-proxy-setcap.sudoers`
+removes the prompt without widening anything:
+
+```bash
+sudo install -m 0440 -o root -g root \
+  deploy/soli-proxy-setcap.sudoers /etc/sudoers.d/soli-proxy-setcap
+sudo visudo -c            # refuse to walk away from a syntax error
+```
+
+It grants one exact command with one exact argument on one exact path, not
+`setcap` in general — a blanket grant would let the account hand any capability
+to any binary, which is root-equivalent. The only capability reachable through
+it, `cap_net_bind_service`, buys nothing beyond binding ports below 1024 with
+that one file. Edit the path inside if your binary does not live at
+`/home/soli/.local/bin/soli-proxy`, and the user if you are not `soli`.
+
 ## 3. Browser-trusted certs with mkcert
 
 Generate one wildcard per parent domain and drop it in `certs/`:

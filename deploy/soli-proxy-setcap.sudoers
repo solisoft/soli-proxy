@@ -1,0 +1,12 @@
+# Allow user `soli` to grant cap_net_bind_service to the soli-proxy binary
+# without a password — and ONLY that. The proxy runs as `soli` and binds
+# :80/:443, which needs this capability; `rbuild --install proxy` writes a
+# fresh binary that loses it, so it has to be re-applied on every deploy.
+#
+# Scope is deliberately narrow: one exact command, one exact argument, one
+# exact path. This is NOT a blanket `setcap` grant — that would let `soli`
+# hand any capability to any binary, which is root-equivalent. The single
+# capability reachable here, cap_net_bind_service, only permits binding ports
+# below 1024; a would-be attacker who already controls the `soli` account
+# gains nothing beyond "can bind low ports with this one file".
+soli ALL=(root) NOPASSWD: /usr/bin/setcap cap_net_bind_service=+ep /home/soli/.local/bin/soli-proxy
