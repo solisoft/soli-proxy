@@ -304,6 +304,80 @@ fn parse_sha256_file(content: &str) -> Result<String> {
     Ok(token.to_ascii_lowercase())
 }
 
+/// Whether `getcap`'s report of a file grants the port-binding capability.
+///
+/// Split out from the call so the parsing is testable without a binary that
+/// has one. `getcap` prints nothing at all for a file with no capabilities,
+/// and one line naming them when it has any; the format has changed spelling
+/// between versions (`= cap_net_bind_service+ep` and
+/// `cap_net_bind_service=ep`), so this asks only whether the name appears.
+fn grants_bind_capability(getcap_output: &str) -> bool {
+    getcap_output.contains("cap_net_bind_service")
+}
+
+/// Does the binary at `path` currently carry the capability?
+///
+/// A missing `getcap` — a container, a musl image — answers "no", which is
+/// the safe way round: the worst it costs is advice nobody needed.
+#[cfg(target_os = "linux")]
+fn has_bind_capability(path: &std::path::Path) -> bool {
+    Command::new("getcap")
+        .arg(path)
+        .output()
+        .map(|o| grants_bind_capability(&String::from_utf8_lossy(&o.stdout)))
+        .unwrap_or(false)
+}
+
+/// Put `cap_net_bind_service` back on the freshly installed binary.
+///
+/// Capabilities live on the file and not on the path, so `install` — like
+/// `cp`, `mv` across filesystems, or unpacking a release — drops them. The
+/// proxy then comes back up unable to bind the only two ports it exists to
+/// serve, and says so only at that point: after a restart, with the sites
+/// already down. Re-applying it here is the difference between an upgrade
+/// and an outage.
+///
+/// Three attempts, in order, and no escalation that the operator has not
+/// already authorised:
+///
+///   1. `setcap` directly, which works when the update ran as root;
+///   2. `sudo -n setcap`, which is non-interactive and succeeds only where
+///      `deploy/soli-proxy-setcap.sudoers` has been installed — a grant for
+///      this one command, argument and path, made deliberately in advance;
+///   3. nothing, and the exact command to run printed instead.
+///
+/// It never prompts. A password prompt from inside an update is the sharp
+/// edge this file already refuses to have.
+#[cfg(target_os = "linux")]
+fn restore_bind_capability(path: &std::path::Path) {
+    let arg = "cap_net_bind_service=+ep";
+    let ran = |program: &str, args: &[&str]| -> bool {
+        Command::new(program)
+            .args(args)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    };
+    let shown = path.display();
+    if ran("setcap", &[arg, &shown.to_string()]) {
+        println!("Restored cap_net_bind_service on {shown}.");
+        return;
+    }
+    if ran("sudo", &["-n", "setcap", arg, &shown.to_string()]) {
+        println!("Restored cap_net_bind_service on {shown} (via the sudoers grant).");
+        return;
+    }
+    println!();
+    println!("This binary had cap_net_bind_service and the new one does not:");
+    println!("installing a file drops the capabilities that were on it.");
+    println!("Until it is back, the proxy cannot bind :80 or :443.");
+    println!();
+    println!("  sudo setcap {arg} {shown}");
+    println!();
+    println!("To stop this recurring, install the sudoers grant that lets the");
+    println!("proxy do it for itself — deploy/soli-proxy-setcap.sudoers.");
+}
+
 fn run_update(reinstall: bool, allow_unverified: bool) -> Result<()> {
     let repo = "solisoft/soli-proxy";
     let current_version = env!("CARGO_PKG_VERSION");
@@ -453,6 +527,13 @@ fn run_update(reinstall: bool, allow_unverified: bool) -> Result<()> {
             new_binary
         );
     } else {
+        // Asked before the install, because afterwards there is nothing left
+        // to ask: the file that carried the capability is gone. A binary that
+        // never had one is left alone — this restores what was there, it does
+        // not decide that a proxy ought to have it.
+        #[cfg(target_os = "linux")]
+        let had_capability = has_bind_capability(&install_path);
+
         println!("Installing to {}...", install_path.display());
 
         // Use `install -m 755` like install.sh — atomic replacement, handles running binaries
@@ -478,6 +559,11 @@ fn run_update(reinstall: bool, allow_unverified: bool) -> Result<()> {
         let _ = fs::remove_dir_all(&tmp_dir);
 
         println!("Soli-proxy {} installed successfully!", tag);
+
+        #[cfg(target_os = "linux")]
+        if had_capability {
+            restore_bind_capability(&install_path);
+        }
 
         if reinstall {
             println!("Restarting soli-proxy...");
@@ -1157,6 +1243,26 @@ async fn run_server(
 
 #[cfg(test)]
 mod tests {
+    /// `getcap` has spelled this two ways across versions, and prints nothing
+    /// at all for a file with no capabilities — which is the common case and
+    /// must read as "no" rather than as a parse failure.
+    #[test]
+    fn the_bind_capability_is_recognised_however_getcap_spells_it() {
+        use super::grants_bind_capability;
+
+        assert!(grants_bind_capability(
+            "/home/soli/.local/bin/soli-proxy = cap_net_bind_service+ep\n"
+        ));
+        assert!(grants_bind_capability(
+            "/home/soli/.local/bin/soli-proxy cap_net_bind_service=ep\n"
+        ));
+        // A file with no capabilities: `getcap` says nothing.
+        assert!(!grants_bind_capability(""));
+        // A different capability is not this one. Restoring what was not
+        // there would be this function deciding policy, which is not its job.
+        assert!(!grants_bind_capability("/usr/bin/ping = cap_net_raw+ep\n"));
+    }
+
     use super::*;
 
     #[test]
