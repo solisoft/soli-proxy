@@ -3,12 +3,50 @@
     <p class="text-sm text-surface-400">Release history for soli-proxy. Mirrors <span class="font-mono text-surface-300">CHANGELOG.md</span> in the repository.</p>
 </div>
 
+<!-- 0.34.0 -->
+<div class="bg-surface-900/60 border border-white/5 rounded-xl overflow-hidden mb-5">
+    <div class="px-5 py-4 border-b border-white/5 flex items-baseline justify-between gap-3 flex-wrap">
+        <div class="flex items-baseline gap-3">
+            <h3 class="text-base font-semibold text-white font-mono">v0.34.0</h3>
+            <span class="px-2 py-0.5 rounded-full text-xs font-medium bg-accent-500/10 text-accent-400 border border-accent-500/20">latest</span>
+        </div>
+        <span class="text-xs text-surface-500">2026-09-15</span>
+    </div>
+
+    <ul class="divide-y divide-white/5">
+        <li class="px-5 py-4 flex gap-3">
+            <span class="shrink-0 mt-0.5 px-2 py-0.5 rounded text-xs font-semibold bg-accent-500/10 text-accent-400 border border-accent-500/20">feature</span>
+            <div class="min-w-0">
+                <div class="text-sm font-medium text-white">Scale to zero</div>
+                <p class="text-sm text-surface-400 mt-1"><span class="font-mono text-surface-300">idle_timeout = 900</span> in <span class="font-mono text-surface-300">app.infos</span> stops an app after fifteen quiet minutes and starts it again on the next request, which is held while it boots &mdash; about a second for the first visitor, nothing for everyone after. The stop goes through the same path as <span class="font-mono text-surface-300">soli-proxy stop</span>, so it is not read as a crash: no failover, no quarantine. A sleeping app keeps its certificate and keeps winning over static rules for its domains.</p>
+                <p class="text-sm text-surface-400 mt-2">The default is <span class="font-mono text-surface-300">0</span> &mdash; never sleep &mdash; and that is the right value for anything with cron jobs, background workers or WebSocket rooms. <span class="font-mono text-surface-300">[apps] idle_timeout</span> in <span class="font-mono text-surface-300">config.toml</span> sets a fleet-wide default; <span class="font-mono text-surface-300">_admin</span> never sleeps.</p>
+            </div>
+        </li>
+
+        <li class="px-5 py-4 flex gap-3">
+            <span class="shrink-0 mt-0.5 px-2 py-0.5 rounded text-xs font-semibold bg-accent-500/10 text-accent-400 border border-accent-500/20">feature</span>
+            <div class="min-w-0">
+                <div class="text-sm font-medium text-white">Per-environment sections in app.infos</div>
+                <p class="text-sm text-surface-400 mt-1">A manifest may carry <span class="font-mono text-surface-300">[development]</span> and <span class="font-mono text-surface-300">[production]</span> sections, and <span class="font-mono text-surface-300">--dev</span> picks one &mdash; the same flag that already appends <span class="font-mono text-surface-300">--dev</span> to an auto-detected Soli start script and registers each app's <span class="font-mono text-surface-300">.test</span> alias. One file instead of a dev copy and a prod copy that nobody diffs.</p>
+                <p class="text-sm text-surface-400 mt-2">Applied key by key over the top level, with nested tables merging rather than replacing, so <span class="font-mono text-surface-300">[production.auth.users]</span> adds accounts without discarding the <span class="font-mono text-surface-300">noauth</span> list. The unselected section is dropped unread. A manifest with neither parses exactly as before.</p>
+            </div>
+        </li>
+
+        <li class="px-5 py-4 flex gap-3">
+            <span class="shrink-0 mt-0.5 px-2 py-0.5 rounded text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">fix</span>
+            <div class="min-w-0">
+                <div class="text-sm font-medium text-white">Unknown app.infos keys are logged</div>
+                <p class="text-sm text-surface-400 mt-1">An unrecognised key was dropped silently &mdash; <span class="font-mono text-surface-300">worker = 4</span> ran the app with one worker and said nothing. Startup now names it. Still ignored rather than fatal: refusing the manifest would take a running app off the routing table over a typo.</p>
+            </div>
+        </li>
+    </ul>
+</div>
+
 <!-- 0.33.0 -->
 <div class="bg-surface-900/60 border border-white/5 rounded-xl overflow-hidden mb-5">
     <div class="px-5 py-4 border-b border-white/5 flex items-baseline justify-between gap-3 flex-wrap">
         <div class="flex items-baseline gap-3">
             <h3 class="text-base font-semibold text-white font-mono">v0.33.0</h3>
-            <span class="px-2 py-0.5 rounded-full text-xs font-medium bg-accent-500/10 text-accent-400 border border-accent-500/20">latest</span>
         </div>
         <span class="text-xs text-surface-500">2026-09-10</span>
     </div>

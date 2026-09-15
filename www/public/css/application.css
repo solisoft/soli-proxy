@@ -1820,6 +1820,10 @@ video {
   text-transform: uppercase;
 }
 
+.not-italic {
+  font-style: normal;
+}
+
 .leading-6 {
   line-height: 1.5rem;
 }

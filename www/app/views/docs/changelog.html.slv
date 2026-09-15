@@ -46,11 +46,81 @@
                     </p>
                 </div>
 
+                <!-- 0.34.0 -->
+                <div class="mb-10 reveal-on-scroll">
+                    <div class="flex items-center gap-3 mb-5 flex-wrap">
+                        <h2 class="text-2xl font-bold text-white font-mono">v0.34.0</h2>
+                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
+                        <span class="text-sm text-gray-500">2026-09-15</span>
+                    </div>
+
+                    <div class="space-y-4">
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">feature</span>
+                                <h3 class="text-base font-semibold text-white">Scale to zero &mdash; sleep an idle app, wake it on the next request</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                Most fleets are mostly idle. On a box hosting thirty small sites a day's traffic typically touches a handful, and every one of the
+                                others holds its full runtime in memory for nothing. <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">idle_timeout = 900</code> in
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">app.infos</code> stops such an app after fifteen quiet minutes and starts it again when
+                                someone asks for it. A reaper sweeps every 30&nbsp;s; the stop goes through the same path as
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">soli-proxy stop</code>, so the exit is not read as a crash &mdash; no failover, no quarantine.
+                            </p>
+                            <p class="text-gray-400 leading-relaxed mt-3">
+                                The next request for one of its domains is <em class="text-white not-italic font-medium">held</em> while the app starts on its current slot and is polled for health,
+                                then forwarded as usual: the first visitor waits about a second, everyone else finds it running, and concurrent first requests share
+                                one start. A sleeping app keeps its certificate registered and keeps winning over static
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">proxy.conf</code> rules for its domains, exactly as a running one does. The default is
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">0</code> &mdash; never sleep &mdash; which is the right value for anything that works
+                                without being asked: cron jobs, background workers, WebSocket rooms, a cache that cannot be rebuilt in a moment.
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">[apps] idle_timeout</code> in <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">config.toml</code> sets a
+                                fleet-wide default; <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">_admin</code> never sleeps regardless.
+                            </p>
+                        </div>
+
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">feature</span>
+                                <h3 class="text-base font-semibold text-white">Per-environment sections in <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">app.infos</code></h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                One manifest, two environments. A manifest may carry <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">[development]</code> and
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">[production]</code> sections, and the proxy's
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">--dev</code> flag picks one &mdash; the same flag that already appends
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">--dev</code> to an auto-detected Soli start script and registers each app's
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">.test</code> alias. The alternative, a dev copy of the file and a prod copy, is two
+                                files nobody diffs until the day they disagree about something that matters.
+                            </p>
+                            <p class="text-gray-400 leading-relaxed mt-3">
+                                The selected section is applied key by key over the top level, so a key it does not mention keeps the value written above, and a nested
+                                table merges into its counterpart rather than replacing it &mdash; <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">[production.auth.users]</code>
+                                adds accounts without discarding the <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">noauth</code> list under
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">[auth]</code>. The section that is not selected is dropped unread, so a
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">[production]</code> block written for a newer proxy never stops a developer's machine
+                                from starting the app. A manifest carrying neither section parses exactly as before.
+                            </p>
+                        </div>
+
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">fix</span>
+                                <h3 class="text-base font-semibold text-white">Discovery says which <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">app.infos</code> keys it did not understand</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                An unrecognised key was dropped without a word &mdash; <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">worker = 4</code> ran the app with one
+                                worker and said nothing &mdash; and the new overlay sections raise the stakes, since a key that lands in the wrong section is ignored just as
+                                quietly. Unknown keys are now logged at startup. They stay ignored rather than fatal: refusing the manifest would take a running app off
+                                the routing table over a typo.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- 0.33.0 -->
                 <div class="mb-10 reveal-on-scroll">
                     <div class="flex items-center gap-3 mb-5 flex-wrap">
                         <h2 class="text-2xl font-bold text-white font-mono">v0.33.0</h2>
-                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
                         <span class="text-sm text-gray-500">2026-09-10</span>
                     </div>
 
