@@ -638,21 +638,51 @@ fn verify_basic_auth(req: &Request<Incoming>, auth_entries: &[crate::auth::Basic
     let creds = String::from_utf8_lossy(&decoded);
 
     if let Some((username, password)) = creds.split_once(':') {
-        let username_bytes = username.as_bytes();
-        // Locate the matching account without breaking early, so the loop's
-        // timing doesn't depend on which entry (if any) matched.
-        let mut matched_hash: Option<&str> = None;
-        for entry in auth_entries {
-            if constant_time_eq(entry.username.as_bytes(), username_bytes) {
-                matched_hash = Some(entry.hash.as_str());
+        // ⚠️ **Une vérification par identifiant, pas par requête.**
+        //
+        // bcrypt coûte ~300 ms au facteur 12, par conception. Rejoué sur chaque
+        // requête, il le fait payer à la page, puis à sa feuille de style, puis
+        // à chacune de ses images : mesuré sur un site protégé, 15 ms d'app
+        // pour 360 ms de portier. Seuls les succès sont mémorisés — un mot de
+        // passe faux repaie le prix fort, et c'est ce qui rend l'attaque par
+        // force brute toujours aussi chère. Voir `auth::verify_once`.
+        let fingerprint: Vec<u8> = auth_entries
+            .iter()
+            .flat_map(|entry| {
+                let mut bytes = entry.username.as_bytes().to_vec();
+                bytes.push(0);
+                bytes.extend_from_slice(entry.hash.as_bytes());
+                bytes.push(0);
+                bytes
+            })
+            .collect();
+
+        return auth::verify_once(&fingerprint, header_value, || {
+            let username_bytes = username.as_bytes();
+            // Locate the matching account without breaking early, so the loop's
+            // timing doesn't depend on which entry (if any) matched.
+            let mut matched_hash: Option<&str> = None;
+            for entry in auth_entries {
+                if constant_time_eq(entry.username.as_bytes(), username_bytes) {
+                    matched_hash = Some(entry.hash.as_str());
+                }
             }
-        }
-        // Always run exactly one bcrypt verify — against the matched hash, or a
-        // dummy when the username is unknown — so a wrong username and a wrong
-        // password take the same time (no user enumeration via timing).
-        let hash = matched_hash.unwrap_or_else(|| auth::dummy_hash());
-        let password_ok = auth::verify_password(password, hash);
-        return matched_hash.is_some() && password_ok;
+            // Always run exactly one bcrypt verify — against the matched hash,
+            // or a dummy when the username is unknown — so a wrong username and
+            // a wrong password take the same time (no user enumeration via
+            // timing). The dummy follows the accounts' own cost, otherwise
+            // lowering a gate's cost would make the unknown-user path slower
+            // than the known one and give the enumeration back.
+            let fallback = auth::dummy_hash_at(
+                auth_entries
+                    .first()
+                    .map(|entry| auth::cost_of(&entry.hash))
+                    .unwrap_or(bcrypt::DEFAULT_COST),
+            );
+            let hash = matched_hash.unwrap_or(fallback.as_str());
+            let password_ok = auth::verify_password(password, hash);
+            matched_hash.is_some() && password_ok
+        });
     }
 
     false
