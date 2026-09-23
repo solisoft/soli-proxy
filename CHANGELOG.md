@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.35.1](https://github.com/solisoft/soli-proxy/compare/v0.35.0...v0.35.1) (2026-09-23)
+
+### Performance Improvements
+
+* **A credential is verified once, not once per request.** bcrypt at cost 12 takes ~300 ms
+  by design — that slowness is what makes guessing passwords expensive. The Basic-auth gate
+  ran it on *every* request, so a page paid it, then its stylesheet paid it, then each of
+  its images. Measured on a protected production site: **15 ms of application behind 360 ms
+  of doorman**, and the same page served through Cloudflare took 470 ms end to end.
+
+  `auth::verify_once` now remembers a verdict for five minutes, keyed by a SHA-256 of the
+  `Authorization` header **and** of the accounts configured on the route — so rotating a
+  password invalidates what was remembered instead of leaving the old one working. Digesting
+  also keeps the plaintext credential out of the process memory.
+
+  ```
+  right password:  483 ms, then 3.9 ms · 5.0 ms · 4.5 ms
+  wrong password:  237 ms · 232 ms, still 401
+  ```
+
+  ⚠️ **Only successes are remembered, and that is the whole design.** Caching failures would
+  hand an attacker a fast path to millions of guesses. A wrong password still pays full
+  price, every time.
+
+### Bug Fixes
+
+* **The timing equalizer follows the accounts' cost.** `dummy_hash()` was pinned to
+  `DEFAULT_COST` while its own comment required it to match the configured hashes. An
+  operator lowering a gate to cost 8 — a staging password needs no key stretching — would
+  have made an unknown username measurably *slower* than a known one, handing back the user
+  enumeration the equalizer exists to prevent. `dummy_hash_at(cost)` reads the cost from the
+  accounts and memoizes one dummy per cost.
+
+### Features
+
+* **`hash-password --cost N`** (4–31, default 12), without which no operator could lower
+  that cost in the first place.
+
 ## [0.35.0](https://github.com/solisoft/soli-proxy/compare/v0.34.0...v0.35.0) (2026-09-15)
 
 ### Bug Fixes
