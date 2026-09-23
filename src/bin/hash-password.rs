@@ -56,7 +56,10 @@ fn main() {
 /// illisible ou hors des bornes de bcrypt, que l'appelant refuse.
 fn parse_cost(args: &[String]) -> Option<u32> {
     let position = args.iter().position(|arg| arg == "--cost")?;
-    match args.get(position + 1).and_then(|raw| raw.parse::<u32>().ok()) {
+    match args
+        .get(position + 1)
+        .and_then(|raw| raw.parse::<u32>().ok())
+    {
         Some(cost) if (4..=31).contains(&cost) => Some(cost),
         _ => Some(0),
     }

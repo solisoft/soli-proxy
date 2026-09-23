@@ -102,7 +102,11 @@ const CACHE_CAPACITY: usize = 4096;
 /// configured on the route, so rotating a password invalidates what was
 /// remembered instead of leaving the old one working for another five minutes.
 /// Digesting also means the plaintext credential is not what we keep in memory.
-pub fn verify_once(accounts_fingerprint: &[u8], authorization: &str, verify: impl FnOnce() -> bool) -> bool {
+pub fn verify_once(
+    accounts_fingerprint: &[u8],
+    authorization: &str,
+    verify: impl FnOnce() -> bool,
+) -> bool {
     static SEEN: std::sync::LazyLock<parking_lot::Mutex<HashMap<[u8; 32], Instant>>> =
         std::sync::LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
 
