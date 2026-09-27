@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.35.2](https://github.com/solisoft/soli-proxy/compare/v0.35.1...v0.35.2) (2026-09-27)
+
+### Bug Fixes
+
+* **A route pushed by the cluster is balanced across its instances.** It served its first
+  target, always: a second replica took no traffic, and a dead first one took all of it until
+  the cluster recomputed the table. Pushed routes now use the weighted round-robin the proxy's
+  own routes use, and pass over a target whose circuit breaker is open, so a replica that stops
+  answering is skipped on the next request rather than the next push.
+
+  ```
+  20 requests, two replicas:  10 · 10   (they went 30 · 0)
+  ```
+
+* **Plain HTTP for a pushed domain is redirected, not refused.** With `force_https` the proxy
+  redirects only the hosts it recognises, and that check knew its own apps and rules but not the
+  table the cluster pushes — so `http://` for a cluster domain answered **400** instead of its
+  **308** to the HTTPS side that serves it.
+
+### Build
+
+* **Linux release binaries are built on `ubuntu-24.04`**, pinned rather than `ubuntu-latest`:
+  glibc 2.39, which is Rocky Linux 10's, where soli-one repackages the binary as an RPM. A build
+  on a newer runner would need a newer glibc and not start there.
+
 ## [0.35.1](https://github.com/solisoft/soli-proxy/compare/v0.35.0...v0.35.1) (2026-09-23)
 
 ### Performance Improvements
