@@ -46,14 +46,50 @@ impl ExternalRoutes {
         self.table.keys()
     }
 
-    /// The first healthy-looking target for a host.
+    /// The first target for a host, with no balancing and no health check.
     ///
-    /// Weight is carried but not yet used to balance: one backend is the common
-    /// case today, and a load-balancing policy that nobody has exercised is
-    /// worse than an obvious first-match. It is here so the *format* does not
-    /// have to change when the policy arrives.
+    /// What the pushed table was served by before [`ExternalRouteTable::pick`]:
+    /// kept for the callers that only need to know a host is routed.
     pub fn target(&self, host: &str) -> Option<Target> {
         self.table.get(host)?.first().cloned()
+    }
+
+    /// The target at `turn` for a host, by weight, skipping unavailable ones.
+    ///
+    /// Weighted round-robin — the proxy's own `Weighted` policy — over the
+    /// pushed targets, starting where `turn` lands and walking on past any
+    /// target `is_available` refuses. When every target is refused the one
+    /// the turn landed on is returned anyway: a request tried and answered 502
+    /// says what is wrong, where "no target" would answer 421 for a domain that
+    /// is routed.
+    pub fn pick(
+        &self,
+        host: &str,
+        turn: usize,
+        is_available: &(dyn Fn(&str) -> bool + Sync),
+    ) -> Option<Target> {
+        let targets = self.table.get(host)?;
+        if targets.is_empty() {
+            return None;
+        }
+        // A weight of zero still gets a turn: the pusher sends 1 for every
+        // instance, and a zero would otherwise remove it without saying so.
+        let total: usize = targets.iter().map(|t| usize::from(t.weight.max(1))).sum();
+        let slot = turn % total;
+        let mut cumulative = 0;
+        let mut first = 0;
+        for (i, target) in targets.iter().enumerate() {
+            cumulative += usize::from(target.weight.max(1));
+            if slot < cumulative {
+                first = i;
+                break;
+            }
+        }
+        (0..targets.len())
+            .map(|k| &targets[(first + k) % targets.len()])
+            .find(|t| is_available(t.url.as_str()))
+            .or_else(|| targets.get(first))
+            .cloned()
     }
 }
 
@@ -61,6 +97,10 @@ impl ExternalRoutes {
 #[derive(Debug, Default)]
 pub struct ExternalRouteTable {
     inner: parking_lot::RwLock<ExternalRoutes>,
+    /// Advanced on every pick, so consecutive requests rotate across a
+    /// domain's instances. Shared by all domains: the order within one domain
+    /// is still a rotation, and one counter is one atomic on the hot path.
+    turn: std::sync::atomic::AtomicUsize,
 }
 
 impl ExternalRouteTable {
@@ -95,6 +135,18 @@ impl ExternalRouteTable {
 
     pub fn target(&self, host: &str) -> Option<Target> {
         self.inner.read().target(host)
+    }
+
+    /// The next target for a host, rotating across its instances and skipping
+    /// those `is_available` refuses — the circuit breaker, on the request path.
+    pub fn pick(&self, host: &str, is_available: &(dyn Fn(&str) -> bool + Sync)) -> Option<Target> {
+        let turn = self.turn.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.inner.read().pick(host, turn, is_available)
+    }
+
+    /// Whether the cluster routes this host.
+    pub fn serves(&self, host: &str) -> bool {
+        self.inner.read().table.contains_key(host)
     }
 
     pub fn domains(&self) -> Vec<String> {
@@ -207,5 +259,84 @@ mod tests {
             )]),
         });
         assert_eq!(table.snapshot().table["x.soli.app"].len(), 2);
+    }
+
+    fn two(weights: [u8; 2]) -> ExternalRoutes {
+        ExternalRoutes {
+            index: 1,
+            table: [(
+                "x.soli.app".to_string(),
+                vec![
+                    Target {
+                        url: Url::parse("http://10.0.0.1:20001").unwrap(),
+                        weight: weights[0],
+                    },
+                    Target {
+                        url: Url::parse("http://10.0.0.2:20001").unwrap(),
+                        weight: weights[1],
+                    },
+                ],
+            )]
+            .into(),
+        }
+    }
+
+    fn host_of(t: Option<Target>) -> String {
+        t.unwrap().url.host_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn a_domain_with_two_instances_is_served_by_both_in_turn() {
+        // It used to be the first instance, always: a second replica took no
+        // traffic, and a dead first one took all of it.
+        let routes = two([1, 1]);
+        let all = |_: &str| true;
+        let seen: Vec<String> = (0..4)
+            .map(|turn| host_of(routes.pick("x.soli.app", turn, &all)))
+            .collect();
+        assert_eq!(seen, ["10.0.0.1", "10.0.0.2", "10.0.0.1", "10.0.0.2"]);
+    }
+
+    #[test]
+    fn an_instance_whose_circuit_is_open_is_passed_over() {
+        let routes = two([1, 1]);
+        let not_first = |url: &str| !url.contains("10.0.0.1");
+        for turn in 0..4 {
+            assert_eq!(
+                host_of(routes.pick("x.soli.app", turn, &not_first)),
+                "10.0.0.2"
+            );
+        }
+        // Every circuit open: the turn's own target is still tried, so the
+        // answer is a 502 from a routed domain rather than a 421.
+        let none = |_: &str| false;
+        assert_eq!(host_of(routes.pick("x.soli.app", 1, &none)), "10.0.0.2");
+    }
+
+    #[test]
+    fn weights_share_the_turns_and_a_zero_still_gets_one() {
+        let routes = two([3, 1]);
+        let all = |_: &str| true;
+        let firsts = (0..4)
+            .filter(|turn| host_of(routes.pick("x.soli.app", *turn, &all)) == "10.0.0.1")
+            .count();
+        assert_eq!(firsts, 3);
+        let zero = two([0, 1]);
+        let seen: Vec<String> = (0..2)
+            .map(|turn| host_of(zero.pick("x.soli.app", turn, &all)))
+            .collect();
+        assert!(seen.contains(&"10.0.0.1".to_string()), "{seen:?}");
+    }
+
+    #[test]
+    fn the_table_rotates_across_requests_and_knows_what_it_serves() {
+        let table = ExternalRouteTable::default();
+        assert!(table.push(two([1, 1])));
+        assert!(table.serves("x.soli.app"));
+        assert!(!table.serves("y.soli.app"));
+        let all = |_: &str| true;
+        let a = host_of(table.pick("x.soli.app", &all));
+        let b = host_of(table.pick("x.soli.app", &all));
+        assert_ne!(a, b, "two requests in a row went to the same instance");
     }
 }

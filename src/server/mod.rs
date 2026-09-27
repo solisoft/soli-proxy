@@ -1767,13 +1767,16 @@ async fn handle_request_inner(
         // A host counts as served if it's localhost/an IP, if any routing rule
         // matches (Domain/DomainPath/Exact/Prefix/Regex/Default — so path-based
         // and catch-all routes still redirect), or if it's a managed app domain.
+        // Cluster-pushed domains count too. Without them a plain-HTTP request
+        // for a domain the cluster routes was answered 400 here, before the
+        // redirect to the HTTPS side that serves it.
         let host_ok = is_configured_host(raw_host, &config)
             || find_matching_rule(&req, &config.rules).is_some()
             || match &app_manager {
-                Some(m) => m
-                    .app_name_for_host(raw_host.split(':').next().unwrap_or(raw_host))
-                    .await
-                    .is_some(),
+                Some(m) => {
+                    let bare = raw_host.split(':').next().unwrap_or(raw_host);
+                    m.app_name_for_host(bare).await.is_some() || m.external_routes.serves(bare)
+                }
                 None => false,
             };
         let host_for_redirect = if host_ok {
@@ -3387,12 +3390,15 @@ async fn handle_regular_request(
 
             if let (Some(ref manager), Some(ref h)) = (app_manager, host) {
                 manager.note_activity(h).await;
-                let mut target = manager.resolve_app_target(h).await;
+                // The circuit breaker is keyed by the target's URL as written,
+                // which is what `base_url` below records failures under.
+                let available = |url: &str| circuit_breaker.is_available(url);
+                let mut target = manager.resolve_app_target_with(h, &available).await;
                 if target.is_none() && manager.wake_if_asleep(h).await {
                     // The app was asleep: it has just been started and is
                     // healthy, so resolve again — this request is the one that
                     // woke it and it should be served, not told 421.
-                    target = manager.resolve_app_target(h).await;
+                    target = manager.resolve_app_target_with(h, &available).await;
                 }
                 if let Some(target) = target {
                     // App domains are routed here, not through `config.rules`

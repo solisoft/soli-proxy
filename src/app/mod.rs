@@ -1123,6 +1123,17 @@ impl AppManager {
     }
 
     pub async fn resolve_app_target(&self, host: &str) -> Option<super::config::Target> {
+        self.resolve_app_target_with(host, &|_| true).await
+    }
+
+    /// [`Self::resolve_app_target`], with the circuit breaker's opinion of each
+    /// cluster target: consecutive requests rotate across a pushed domain's
+    /// instances, and one whose circuit is open is passed over.
+    pub async fn resolve_app_target_with(
+        &self,
+        host: &str,
+        is_available: &(dyn Fn(&str) -> bool + Sync),
+    ) -> Option<super::config::Target> {
         let app_domains = self.get_running_app_domains().await;
         tracing::debug!(
             "resolve_app_target: host={}, available_domains={:?}",
@@ -1140,7 +1151,7 @@ impl AppManager {
         // sides, and the node that actually holds the process has to win.
         // Preferring the pushed table would hand traffic to a workload that may
         // not have started yet.
-        self.external_routes.target(host)
+        self.external_routes.pick(host, is_available)
     }
 
     /// Every domain this proxy will answer for — its own apps plus pushed ones.
