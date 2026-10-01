@@ -3213,7 +3213,7 @@ impl AppManager {
                     } else {
                         (app.green.port, app.green.pid)
                     };
-                    let health_path = app.config.health_check.as_deref().unwrap_or("/");
+                    let health_path = app.config.health_check.as_deref().unwrap_or("/health");
                     if port > 0 && pid.is_some() {
                         Some((name.clone(), port, health_path.to_string()))
                     } else {
