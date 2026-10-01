@@ -3601,10 +3601,10 @@ async fn handle_websocket_request(
 
 /// The `Sec-WebSocket-Accept` and `Sec-WebSocket-Protocol` values of a
 /// backend's raw 101 response, as header values for the client's 101 — or
-/// `None` when either carries bytes a header value cannot hold (the response
-/// is decoded lossily, so any non-ASCII byte arrives as U+FFFD). They used to
-/// go into `Response::builder()` as strings, and a backend's bad byte
-/// panicked the connection on the final `.unwrap()`.
+/// `None` when either carries bytes a header value cannot hold (a control
+/// character, a lone CR, DEL). They used to go into `Response::builder()` as
+/// strings, and such a byte from the backend panicked the connection on the
+/// final `.unwrap()`.
 pub(crate) fn ws_upgrade_response_headers(
     response_str: &str,
 ) -> Option<(HeaderValue, Option<HeaderValue>)> {
@@ -4765,12 +4765,10 @@ mod tests {
         let (accept, proto) = ws_upgrade_response_headers(ok).unwrap();
         assert_eq!(accept, "abc=");
         assert_eq!(proto.unwrap(), "chat");
-        // A backend byte that is not valid in a header (lossy-decoded to
-        // U+FFFD, or DEL) makes the upgrade fail cleanly.
-        let bad =
-            String::from_utf8_lossy(b"HTTP/1.1 101 x\r\nSec-WebSocket-Accept: a\xffb\r\n\r\n")
-                .to_string();
-        assert!(ws_upgrade_response_headers(&bad).is_none());
+        // A backend byte that is not valid in a header (a control character,
+        // a lone CR, DEL) makes the upgrade fail cleanly.
+        let bad = "HTTP/1.1 101 x\r\nSec-WebSocket-Accept: a\rb\x01\r\n\r\n";
+        assert!(ws_upgrade_response_headers(bad).is_none());
         let del = "HTTP/1.1 101 x\r\nSec-WebSocket-Protocol: a\x7fb\r\n\r\n";
         assert!(ws_upgrade_response_headers(del).is_none());
         // No accept header: an empty value, as before.
