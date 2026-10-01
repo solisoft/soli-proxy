@@ -181,6 +181,20 @@ impl ConnLease {
             _per_ip: per_ip,
         }))
     }
+
+    /// Add the per-IP slot to a lease taken without one: on a PROXY-protocol
+    /// listener the client is only known once the header is read. The lease
+    /// has not been shared yet at that point, so the unwrap cannot fail; if it
+    /// somehow did, the connection would simply go uncounted per IP.
+    fn with_per_ip(self, per_ip: Option<PerIpGuard>) -> Self {
+        let Some(per_ip) = per_ip else {
+            return self;
+        };
+        match Arc::try_unwrap(self.0) {
+            Ok(guard) => ConnLease::new(guard._permit, Some(per_ip)),
+            Err(shared) => Self(shared),
+        }
+    }
 }
 
 /// Response body type for everything the proxy answers.
@@ -1243,9 +1257,14 @@ pub fn build_rate_limiter(config: &ConfigManager) -> Option<Arc<IpRateLimiter>> 
 /// `Sec-WebSocket-*` framing headers are also skipped because the caller
 /// emits them explicitly. Output ends with each line CRLF-terminated; the
 /// caller appends the final blank-line terminator.
+///
+/// For a client behind a trusted proxy, `X-Forwarded-For` and
+/// `X-Forwarded-Proto` are the ones the door built (`headers` is the request
+/// after `set_forwarding_headers_for`): that proxy's chain with its address
+/// appended, and the scheme it saw.
 fn build_ws_extra_headers(
     headers: &hyper::HeaderMap,
-    peer_addr: Option<SocketAddr>,
+    client: Option<&crate::edge::ClientInfo>,
     is_tls: bool,
     host_header: &str,
 ) -> String {
@@ -1294,14 +1313,37 @@ fn build_ws_extra_headers(
         }
     }
 
-    if let Some(peer) = peer_addr {
-        out.push_str(&format!("X-Forwarded-For: {}\r\n", peer.ip()));
-        out.push_str(&format!("X-Real-IP: {}\r\n", peer.ip()));
+    let mut proto = if is_tls { "https" } else { "http" };
+    if let Some(who) = client {
+        let mut chain = String::new();
+        if who.trusted_peer {
+            for v in headers.get_all("x-forwarded-for") {
+                match v.to_str() {
+                    Ok(v) if !contains_crlf(v) && !v.trim().is_empty() => {
+                        if !chain.is_empty() {
+                            chain.push_str(", ");
+                        }
+                        chain.push_str(v.trim());
+                    }
+                    _ => {}
+                }
+            }
+            match headers
+                .get("x-forwarded-proto")
+                .and_then(|v| v.to_str().ok())
+            {
+                Some("https") => proto = "https",
+                Some("http") => proto = "http",
+                _ => {}
+            }
+        }
+        if chain.is_empty() {
+            chain = who.ip.to_string();
+        }
+        out.push_str(&format!("X-Forwarded-For: {}\r\n", chain));
+        out.push_str(&format!("X-Real-IP: {}\r\n", who.ip));
     }
-    out.push_str(&format!(
-        "X-Forwarded-Proto: {}\r\n",
-        if is_tls { "https" } else { "http" }
-    ));
+    out.push_str(&format!("X-Forwarded-Proto: {}\r\n", proto));
     if !contains_crlf(host_header) {
         out.push_str(&format!("X-Forwarded-Host: {}\r\n", host_header));
     }
@@ -1594,6 +1636,78 @@ async fn admit(
     Some(ConnLease::new(permit, per_ip))
 }
 
+/// Per-connection edge decisions taken at accept time, before the TCP peer's
+/// first byte is read: the listener's PROXY protocol mode, and whether the
+/// peer is a trusted proxy. `None` means the connection must be closed — a
+/// PROXY-protocol listener only takes connections from trusted proxies.
+///
+/// The per-IP connection cap is keyed on the TCP peer here, since no request
+/// header has been read yet: a client behind a trusted proxy that does not
+/// speak PROXY protocol is never capped individually. The trusted proxy
+/// itself is exempt — it carries everyone's connections — and stays bounded
+/// by `max_connections`. With PROXY protocol on, the cap is applied to the
+/// address the header carries, in `read_proxy_protocol`.
+fn edge_accept(
+    config: &ConfigManager,
+    listener: crate::edge::Listener,
+    peer: SocketAddr,
+) -> Option<(Option<crate::edge::ProxyProtocolMode>, bool)> {
+    let cfg = config.get_config();
+    let edge = &cfg.server.edge;
+    let pp = edge.proxy_protocol_for(listener);
+    let trusted = edge.trusts(peer.ip());
+    if pp.is_some() && !trusted {
+        tracing::debug!(
+            "refusing connection from {}: PROXY protocol is only accepted from trusted_proxies",
+            peer.ip()
+        );
+        return None;
+    }
+    Some((pp, trusted))
+}
+
+/// On a PROXY-protocol listener, read the header and make the address it
+/// carries the connection's peer — for the per-IP cap (taken here), the rate
+/// limiter, forwarding headers, logs. `None`: close the connection (no valid
+/// header in time, or the carried client is over its per-IP cap).
+async fn read_proxy_protocol(
+    mut stream: TcpStream,
+    peer: SocketAddr,
+    lease: ConnLease,
+    mode: Option<crate::edge::ProxyProtocolMode>,
+    config: &ConfigManager,
+    per_ip_limit: Option<&Arc<PerIpLimiter>>,
+) -> Option<(TcpStream, SocketAddr, ConnLease)> {
+    let Some(mode) = mode else {
+        return Some((stream, peer, lease));
+    };
+    let source = match crate::edge::read_proxy_header(&mut stream, mode).await {
+        Ok(Some(source)) => source,
+        // LOCAL / UNKNOWN: the balancer speaking for itself (a health check).
+        Ok(None) => return Some((stream, peer, lease)),
+        Err(e) => {
+            tracing::debug!("closing connection from {}: {}", peer.ip(), e);
+            return None;
+        }
+    };
+    let exempt = config.get_config().server.edge.trusts(source.ip());
+    let per_ip = match per_ip_limit.filter(|_| !exempt) {
+        Some(limiter) => match limiter.try_acquire(source.ip()) {
+            Some(guard) => Some(guard),
+            None => {
+                tracing::debug!(
+                    "refusing connection from {} (via {}): max_connections_per_ip reached",
+                    source.ip(),
+                    peer.ip()
+                );
+                return None;
+            }
+        },
+        None => None,
+    };
+    Some((stream, source, lease.with_per_ip(per_ip)))
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_http_server(
     addr: SocketAddr,
@@ -1625,9 +1739,13 @@ async fn run_http_server(
                 }
             },
         };
+        let Some((pp, trusted)) = edge_accept(&config, crate::edge::Listener::Http, peer) else {
+            continue;
+        };
+        let ip_cap = per_ip_limit.as_ref().filter(|_| !trusted && pp.is_none());
         let lease = tokio::select! {
             _ = shutdown_rx.recv() => break,
-            lease = admit(connection_limit.as_ref(), per_ip_limit.as_ref(), peer) => lease,
+            lease = admit(connection_limit.as_ref(), ip_cap, peer) => lease,
         };
         let Some(lease) = lease else {
             continue; // refused: dropping the stream closes it
@@ -1643,12 +1761,18 @@ async fn run_http_server(
         let lb = load_balancer.clone();
         let sd = shutdown.clone();
         let rl = rate_limiter.clone();
+        let ip_limit = per_ip_limit.clone();
         tokio::spawn(async move {
+            let Some((stream, peer, lease)) =
+                read_proxy_protocol(stream, peer, lease, pp, &config, ip_limit.as_ref()).await
+            else {
+                return;
+            };
             // The lease (permit + per-IP slot) lives in the
             // connection's service; a WebSocket tunnel takes its
             // own clone, so it outlives this task when needed.
             if let Err(e) = handle_http11_connection(
-                stream, client, config, metrics, cs, lua, cb, am, lb, sd, rl, lease,
+                stream, peer, client, config, metrics, cs, lua, cb, am, lb, sd, rl, lease,
             )
             .await
             {
@@ -1693,11 +1817,15 @@ async fn run_https_server(
                 }
             },
         };
+        let Some((pp, trusted)) = edge_accept(&config, crate::edge::Listener::Https, peer) else {
+            continue;
+        };
+        let ip_cap = per_ip_limit.as_ref().filter(|_| !trusted && pp.is_none());
         // The permit covers the TLS handshake too, so a flood of bogus
         // ClientHellos can't bypass the cap by stalling in handshake.
         let lease = tokio::select! {
             _ = shutdown_rx.recv() => break,
-            lease = admit(connection_limit.as_ref(), per_ip_limit.as_ref(), peer) => lease,
+            lease = admit(connection_limit.as_ref(), ip_cap, peer) => lease,
         };
         let Some(lease) = lease else {
             continue; // refused: dropping the stream closes it
@@ -1714,7 +1842,14 @@ async fn run_https_server(
         let lb = load_balancer.clone();
         let sd = shutdown.clone();
         let rl = rate_limiter.clone();
+        let ip_limit = per_ip_limit.clone();
         tokio::spawn(async move {
+            // The PROXY header comes before the TLS ClientHello.
+            let Some((stream, peer, lease)) =
+                read_proxy_protocol(stream, peer, lease, pp, &config, ip_limit.as_ref()).await
+            else {
+                return;
+            };
             // Held through the handshake; then handed to the
             // connection's service (see run_http_server).
             const TLS_HANDSHAKE_TIMEOUT: tokio::time::Duration =
@@ -1723,7 +1858,8 @@ async fn run_https_server(
                 Ok(Ok(tls_stream)) => {
                     metrics.inc_tls_connections();
                     if let Err(e) = handle_https2_connection(
-                        tls_stream, client, config, metrics, cs, lua, cb, am, lb, sd, rl, lease,
+                        tls_stream, peer, client, config, metrics, cs, lua, cb, am, lb, sd, rl,
+                        lease,
                     )
                     .await
                     {
@@ -1900,6 +2036,8 @@ async fn serve_http1<I>(
 #[allow(clippy::too_many_arguments)]
 async fn handle_http11_connection(
     stream: tokio::net::TcpStream,
+    // The TCP peer, or the client a PROXY protocol header named.
+    peer: SocketAddr,
     client: ProxyClient,
     config: Arc<ConfigManager>,
     metrics: SharedMetrics,
@@ -1912,7 +2050,7 @@ async fn handle_http11_connection(
     rate_limiter: Option<Arc<IpRateLimiter>>,
     lease: ConnLease,
 ) -> Result<()> {
-    let peer_addr = stream.peer_addr().ok();
+    let peer_addr = Some(peer);
     serve_http1(
         TokioIo::new(stream),
         "HTTP/1.1",
@@ -1937,6 +2075,8 @@ async fn handle_http11_connection(
 #[allow(clippy::too_many_arguments)]
 async fn handle_https2_connection(
     stream: tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+    // The TCP peer, or the client a PROXY protocol header named.
+    peer: SocketAddr,
     client: ProxyClient,
     config: Arc<ConfigManager>,
     metrics: SharedMetrics,
@@ -1951,7 +2091,7 @@ async fn handle_https2_connection(
 ) -> Result<()> {
     let is_h2 = stream.get_ref().1.alpn_protocol() == Some(b"h2");
 
-    let peer_addr = stream.get_ref().0.peer_addr().ok();
+    let peer_addr = Some(peer);
     let io = TokioIo::new(stream);
 
     if !is_h2 {
@@ -2152,6 +2292,10 @@ fn build_lua_request<B>(req: &Request<B>) -> LuaRequest {
         headers: extract_headers(req),
         host,
         content_length,
+        client_ip: crate::edge::client_ip(req.extensions()).map(|ip| ip.to_string()),
+        request_id: crate::edge::request_id(req.extensions())
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string),
     }
 }
 
@@ -2171,15 +2315,17 @@ fn extract_response_headers(
         .collect()
 }
 
-/// Entry point for every served request. When `[logging].log_endpoints` is
-/// true it wraps the handler to emit one structured log line per request —
-/// covering all return paths (proxied responses, rate-limit/size rejections,
-/// timeouts, health/metrics, Lua denials, websockets). Otherwise it delegates
-/// straight to `handle_request_inner` with no added work. The flag is read
-/// from the current config on each request, so hot reloads take effect.
+/// Entry point for every served request: the door (see `crate::edge`).
+///
+/// Before anything else looks at the request it decides who the client is
+/// (`ClientInfo`, in the extensions: the peer, or — from a trusted proxy —
+/// the address its forwarding headers name) and gives the request its ID.
+/// After, it returns the ID on the response and, with `[logging] access_log`
+/// on, hands the response to the access log, which writes its line when the
+/// body has been sent.
 #[allow(clippy::too_many_arguments)]
 async fn handle_request(
-    req: Request<Incoming>,
+    mut req: Request<Incoming>,
     client: ProxyClient,
     config_manager: Arc<ConfigManager>,
     metrics: SharedMetrics,
@@ -2195,6 +2341,72 @@ async fn handle_request(
     // The config is loaded once per request and handed down, rather than
     // re-loaded (an `ArcSwap` load plus an `Arc` clone) at each layer.
     let config = config_manager.get_config();
+    let edge = &config.server.edge;
+    let mut trusted_peer = false;
+    if let Some(peer) = peer_addr {
+        let who = crate::edge::ClientInfo::resolve(peer.ip(), req.headers(), edge);
+        crate::edge::strip_untrusted_real_ip(req.headers_mut(), &who, edge);
+        trusted_peer = who.trusted_peer;
+        req.extensions_mut().insert(who);
+    }
+    let request_id = edge.request_id_header.0.as_ref().map(|name| {
+        let id = crate::edge::stamp_request_id(req.headers_mut(), name, trusted_peer);
+        req.extensions_mut()
+            .insert(crate::edge::RequestId(id.clone()));
+        (name.clone(), id)
+    });
+    let access = crate::access_log::begin(&req, is_tls);
+
+    let mut result = serve_request(
+        req,
+        client,
+        config,
+        metrics,
+        challenge_store,
+        lua_engine,
+        circuit_breaker,
+        app_manager,
+        load_balancer,
+        is_tls,
+        peer_addr,
+        rate_limiter,
+    )
+    .await;
+
+    if let (Ok(resp), Some((name, id))) = (&mut result, request_id) {
+        resp.headers_mut().insert(name, id);
+    }
+    match (result, access) {
+        (Ok(resp), Some(line)) => Ok(crate::access_log::finish(resp, line)),
+        (Err(e), Some(line)) => {
+            crate::access_log::failed(line);
+            Err(e)
+        }
+        (result, None) => result,
+    }
+}
+
+/// Serve one request once the door has seen it. When `[logging].log_endpoints`
+/// is true it wraps the handler to emit one structured log line per request —
+/// covering all return paths (proxied responses, rate-limit/size rejections,
+/// timeouts, health/metrics, Lua denials, websockets). Otherwise it delegates
+/// straight to `handle_request_inner` with no added work. The flag is read
+/// from the current config on each request, so hot reloads take effect.
+#[allow(clippy::too_many_arguments)]
+async fn serve_request(
+    req: Request<Incoming>,
+    client: ProxyClient,
+    config: Arc<crate::config::Config>,
+    metrics: SharedMetrics,
+    challenge_store: ChallengeStore,
+    lua_engine: OptionalLuaEngine,
+    circuit_breaker: SharedCircuitBreaker,
+    app_manager: Option<Arc<AppManager>>,
+    load_balancer: Arc<LoadBalancerState>,
+    is_tls: bool,
+    peer_addr: Option<SocketAddr>,
+    rate_limiter: Option<Arc<IpRateLimiter>>,
+) -> Result<Response<BoxBody>, hyper::Error> {
     let log_endpoints = config.logging.log_endpoints.unwrap_or(false);
     if !log_endpoints {
         let result = handle_request_inner(
@@ -2230,7 +2442,9 @@ async fn handle_request(
         })
         .unwrap_or_default();
     let scheme = if is_tls { "https" } else { "http" };
-    let client_ip = peer_addr.map(|a| a.ip().to_string()).unwrap_or_default();
+    let client_ip = crate::edge::client_ip(req.extensions())
+        .map(|ip| ip.to_string())
+        .unwrap_or_default();
     let start = std::time::Instant::now();
 
     let result = handle_request_inner(
@@ -2313,6 +2527,12 @@ async fn handle_request_inner(
     let start_time = std::time::Instant::now();
     // Decrements on every way out of this function, WebSocket paths included.
     let _in_flight = metrics.in_flight_guard();
+    // Who the client is, as decided at the door (`handle_request`): the peer,
+    // or the client a trusted proxy named. Every per-client decision below —
+    // rate limit, metrics access, forwarding headers — is taken on it.
+    let client_info = crate::edge::client_info(req.extensions())
+        .copied()
+        .or_else(|| peer_addr.map(|a| crate::edge::ClientInfo::direct(a.ip())));
 
     // Requests with no routable path, CONNECT, duplicate or conflicting Host:
     // refused before anything — ACME, rate limiting, routing — looks at them.
@@ -2332,8 +2552,8 @@ async fn handle_request_inner(
     // by a noisy neighbour, and before all routing so denied requests
     // never touch upstream connection pools or Lua hooks. Requests with
     // no observable peer (UNIX socket, error path) skip the check.
-    if let (Some(limiter), Some(peer)) = (rate_limiter.as_ref(), peer_addr) {
-        if limiter.check_key(&client_key(peer.ip())).is_err() {
+    if let (Some(limiter), Some(who)) = (rate_limiter.as_ref(), client_info) {
+        if limiter.check_key(&client_key(who.ip)).is_err() {
             let duration = start_time.elapsed();
             metrics.record_request(0, 0, 429, duration);
             let body = full(Bytes::from_static(b"Rate limit exceeded"));
@@ -2462,7 +2682,7 @@ async fn handle_request_inner(
         &req,
         config.metrics.endpoint.as_deref().unwrap_or("/metrics"),
     ) {
-        let is_loopback = peer_addr.map(|a| a.ip().is_loopback()).unwrap_or(false);
+        let is_loopback = client_info.is_some_and(|who| who.ip.is_loopback());
         if !is_loopback {
             let duration = start_time.elapsed();
             metrics.record_request(0, 0, 403, duration);
@@ -2512,12 +2732,23 @@ async fn handle_request_inner(
     {
         let host = original_host(&req);
         crate::proxy_headers::strip_hop_by_hop(req.headers_mut());
-        crate::proxy_headers::set_forwarding_headers(
+        crate::proxy_headers::set_forwarding_headers_for(
             req.headers_mut(),
-            peer_addr.map(|a| a.ip()),
+            client_info.as_ref(),
             is_tls,
             host.as_deref(),
         );
+        // A client naming the request-ID header in `Connection` must not
+        // get it stripped on the way upstream.
+        if let (Some(name), Some(id)) = (
+            config.server.edge.request_id_header.0.as_ref(),
+            crate::edge::request_id(req.extensions()),
+        ) {
+            if !req.headers().contains_key(name) {
+                let id = id.clone();
+                req.headers_mut().insert(name.clone(), id);
+            }
+        }
     }
 
     // --- Lua on_request hook ---
@@ -2666,7 +2897,13 @@ async fn handle_request_inner(
                 counters.push(metrics.app_bytes_sent_counter(name));
             }
 
-            let (parts, body) = response.into_parts();
+            let (mut parts, body) = response.into_parts();
+            if crate::access_log::enabled() {
+                parts.extensions.insert(crate::access_log::Upstream {
+                    target: _target_url,
+                    app: app_name,
+                });
+            }
             let boxed = body.map_err(BoxError::from).boxed();
             let counted = BodyExt::boxed(CountingBody::new(boxed, counters));
             Ok(Response::from_parts(parts, counted))
@@ -3338,7 +3575,11 @@ async fn handle_websocket_request(
         crate::proxy_headers::rewrite_same_origin(req.headers_mut(), &client_host, &backend_origin);
     }
 
-    let extra_headers = build_ws_extra_headers(req.headers(), peer_addr, is_tls, &client_host);
+    let client_info = crate::edge::client_info(req.extensions())
+        .copied()
+        .or_else(|| peer_addr.map(|a| crate::edge::ClientInfo::direct(a.ip())));
+    let extra_headers =
+        build_ws_extra_headers(req.headers(), client_info.as_ref(), is_tls, &client_host);
 
     // debug-level: per-message upgrade chatter floods info logs (see
     // `[logging].log_endpoints` for per-request access logging instead)
@@ -3878,11 +4119,13 @@ async fn handle_regular_request(
             // the forwarding headers normalised above.
             let header_rules = &config.rules[matched_route.rule_idx].headers;
             if !header_rules.is_empty() {
+                let client_ip =
+                    crate::edge::client_ip(request.extensions()).or(peer_addr.map(|a| a.ip()));
                 crate::config::apply_header_rules(
                     request.headers_mut(),
                     header_rules,
                     &crate::config::HeaderVars {
-                        client_ip: peer_addr.map(|a| a.ip()),
+                        client_ip,
                         scheme: if is_tls { "https" } else { "http" },
                         host: &matched_route.host,
                     },
@@ -5332,7 +5575,8 @@ mod tests {
         h.insert("x-forwarded-proto", "https".parse().unwrap());
         h.insert("x-forwarded-host", "evil.example".parse().unwrap());
         let peer: SocketAddr = "9.9.9.9:54321".parse().unwrap();
-        let out = build_ws_extra_headers(&h, Some(peer), false, "real.example");
+        let who = crate::edge::ClientInfo::direct(peer.ip());
+        let out = build_ws_extra_headers(&h, Some(&who), false, "real.example");
         assert_eq!(xff_count(&out), 1, "exactly one X-Forwarded-For line");
         assert_eq!(header_value(&out, "X-Forwarded-For"), Some("9.9.9.9"));
         assert_eq!(header_value(&out, "X-Forwarded-Proto"), Some("http"));
@@ -5343,10 +5587,32 @@ mod tests {
     fn ws_extra_headers_injects_when_client_sent_none() {
         let h = hyper::HeaderMap::new();
         let peer: SocketAddr = "10.0.0.1:1000".parse().unwrap();
-        let out = build_ws_extra_headers(&h, Some(peer), true, "api.example");
+        let who = crate::edge::ClientInfo::direct(peer.ip());
+        let out = build_ws_extra_headers(&h, Some(&who), true, "api.example");
         assert_eq!(header_value(&out, "X-Forwarded-For"), Some("10.0.0.1"));
         assert_eq!(header_value(&out, "X-Forwarded-Proto"), Some("https"));
         assert_eq!(header_value(&out, "X-Forwarded-Host"), Some("api.example"));
+    }
+
+    #[test]
+    fn ws_extra_headers_keep_a_trusted_proxys_chain_and_scheme() {
+        // As the door leaves them for a request through a trusted proxy.
+        let mut h = hyper::HeaderMap::new();
+        h.insert("x-forwarded-for", "1.2.3.4, 10.0.0.1".parse().unwrap());
+        h.insert("x-forwarded-proto", "https".parse().unwrap());
+        let who = crate::edge::ClientInfo {
+            ip: "1.2.3.4".parse().unwrap(),
+            peer: "10.0.0.1".parse().unwrap(),
+            trusted_peer: true,
+        };
+        let out = build_ws_extra_headers(&h, Some(&who), false, "real.example");
+        assert_eq!(xff_count(&out), 1);
+        assert_eq!(
+            header_value(&out, "X-Forwarded-For"),
+            Some("1.2.3.4, 10.0.0.1")
+        );
+        assert_eq!(header_value(&out, "X-Real-IP"), Some("1.2.3.4"));
+        assert_eq!(header_value(&out, "X-Forwarded-Proto"), Some("https"));
     }
 
     #[test]
@@ -5714,7 +5980,8 @@ mod tests {
         h.insert("x-forwarded-port", "443".parse().unwrap());
         h.insert("x-forwarded-prefix", "/admin".parse().unwrap());
         let peer: SocketAddr = "9.9.9.9:1".parse().unwrap();
-        let out = build_ws_extra_headers(&h, Some(peer), false, "real.example");
+        let who = crate::edge::ClientInfo::direct(peer.ip());
+        let out = build_ws_extra_headers(&h, Some(&who), false, "real.example");
         assert!(header_value(&out, "Forwarded").is_none());
         assert!(header_value(&out, "X-Forwarded-Port").is_none());
         assert!(header_value(&out, "X-Forwarded-Prefix").is_none());
@@ -5755,6 +6022,7 @@ mod tests {
                 .collect(),
             host: String::new(),
             content_length: 0,
+            ..Default::default()
         }
     }
 

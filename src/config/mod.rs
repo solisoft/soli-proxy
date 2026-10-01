@@ -349,6 +349,11 @@ pub struct ServerConfig {
     /// `%2F` (`..%2F`) are still rejected.
     #[serde(default)]
     pub allow_encoded_slash: Option<bool>,
+    /// `trusted_proxies`, `real_ip_header`, `proxy_protocol` and
+    /// `request_id_header`: who the client is and which request this is (see
+    /// `crate::edge`). Hot-reloaded, read per connection and per request.
+    #[serde(flatten)]
+    pub edge: crate::edge::EdgeConfig,
 }
 
 impl ServerConfig {
@@ -378,6 +383,7 @@ impl Default for ServerConfig {
             https_port: 443,
             worker_threads: None,
             allow_encoded_slash: None,
+            edge: Default::default(),
         }
     }
 }
@@ -602,6 +608,12 @@ pub struct LoggingConfig {
     /// When true, emit one structured log line per served request (method,
     /// path, host, status, latency). Honoured on hot reload. Default false.
     pub log_endpoints: Option<bool>,
+    /// Access log: `off` (the default), `stdout`, `stderr` or a file path
+    /// (rotated like `output`, by `max_size`/`max_files`). Read at startup.
+    pub access_log: Option<String>,
+    /// `json` (the default) or `combined` (Apache/nginx combined, with the
+    /// proxy's fields appended as `key=value`). Read at startup.
+    pub access_log_format: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
@@ -1173,6 +1185,7 @@ hook_timeout_ms = 10
         let toml_config: TomlConfig = toml::from_str(&toml_content).map_err(|e| {
             anyhow::anyhow!("failed to parse {}: {}", config_toml_path.display(), e)
         })?;
+        toml_config.server.edge.validate()?;
         let dotenv = read_dotenv_credentials(config_dir)?;
         // The process environment wins over the `.env` file.
         let env = |key: &str| std::env::var(key).ok().or_else(|| dotenv.get(key).cloned());

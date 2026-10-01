@@ -1,9 +1,11 @@
+pub mod access_log;
 pub mod acme;
 pub mod admin;
 pub mod app;
 pub mod auth;
 pub mod circuit_breaker;
 pub mod config;
+pub mod edge;
 pub mod logging;
 pub mod metrics;
 pub mod pool;

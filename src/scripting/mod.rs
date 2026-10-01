@@ -6,13 +6,19 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Represents a request as seen by Lua scripts.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct LuaRequest {
     pub method: String,
     pub path: String,
     pub headers: HashMap<String, String>,
     pub host: String,
     pub content_length: u64,
+    /// `req.client_ip`: the client as the proxy decided at the door — the
+    /// peer, or the address a trusted proxy named (see `crate::edge`). `nil`
+    /// when unknown. Read-only: writing it back changes nothing.
+    pub client_ip: Option<String>,
+    /// `req.request_id`: this request's ID, `nil` when request IDs are off.
+    pub request_id: Option<String>,
 }
 
 /// Result of calling on_request — either continue or deny early.
@@ -1130,6 +1136,8 @@ impl LuaEngine {
         table.set("path", req.path.as_str())?;
         table.set("host", req.host.as_str())?;
         table.set("content_length", req.content_length)?;
+        table.set("client_ip", req.client_ip.as_deref())?;
+        table.set("request_id", req.request_id.as_deref())?;
 
         let headers_table = lua.create_table()?;
         for (k, v) in &req.headers {
@@ -1236,6 +1244,7 @@ mod tests {
             headers: HashMap::new(),
             host: "h".into(),
             content_length: 0,
+            ..Default::default()
         }
     }
 

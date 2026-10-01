@@ -808,10 +808,9 @@ async fn run_server(
 ) -> Result<()> {
     // `[logging]` is read ahead of the rest of the config so that errors in
     // the rest are reported in the configured format and place.
-    soli_proxy::logging::init(
-        &soli_proxy::config::read_logging_config(config_path),
-        daemon_mode,
-    )?;
+    let logging_config = soli_proxy::config::read_logging_config(config_path);
+    soli_proxy::logging::init(&logging_config, daemon_mode)?;
+    soli_proxy::access_log::init(&logging_config, daemon_mode)?;
 
     if daemon_mode {
         eprintln!("Started in daemon mode. PID: {}", std::process::id());

@@ -129,6 +129,21 @@ fn log_filter(level: Option<&str>) -> Result<EnvFilter> {
         .map_err(|e| anyhow::anyhow!("invalid [logging] level {:?}: {}", directive, e))
 }
 
+/// File rotation from `[logging]`: (`max_size` in bytes, `max_files`). Shared
+/// by the proxy's log and the access log.
+pub(crate) fn rotation(cfg: &LoggingConfig) -> Result<(u64, usize)> {
+    let max_size = match cfg.max_size.as_deref() {
+        Some(s) => parse_size(s)
+            .ok_or_else(|| anyhow::anyhow!("invalid [logging] max_size {:?}", s))?
+            as u64,
+        None => DEFAULT_MAX_SIZE,
+    };
+    Ok((
+        max_size,
+        cfg.max_files.map_or(DEFAULT_MAX_FILES, |n| n as usize),
+    ))
+}
+
 /// Keeps the background writer alive; dropping it flushes what is queued.
 static GUARD: Mutex<Option<WorkerGuard>> = Mutex::new(None);
 
@@ -137,13 +152,7 @@ pub fn init(cfg: &LoggingConfig, daemon: bool) -> Result<()> {
     let filter = log_filter(cfg.level.as_deref())?;
     let format = log_format(cfg.format.as_deref())?;
     let output = LogOutput::resolve(cfg.output.as_deref(), daemon)?;
-    let max_size = match cfg.max_size.as_deref() {
-        Some(s) => parse_size(s)
-            .ok_or_else(|| anyhow::anyhow!("invalid [logging] max_size {:?}", s))?
-            as u64,
-        None => DEFAULT_MAX_SIZE,
-    };
-    let max_files = cfg.max_files.map_or(DEFAULT_MAX_FILES, |n| n as usize);
+    let (max_size, max_files) = rotation(cfg)?;
 
     let (ansi, (writer, guard)) = match &output {
         LogOutput::Stdout => {
@@ -185,6 +194,7 @@ pub fn init(cfg: &LoggingConfig, daemon: bool) -> Result<()> {
 pub fn flush() {
     let guard = GUARD.lock().unwrap_or_else(|e| e.into_inner()).take();
     drop(guard);
+    crate::access_log::flush();
 }
 
 /// A log file that rotates by size: past `max_bytes`, `proxy.log` becomes
