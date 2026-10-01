@@ -1,9 +1,34 @@
 # Soli Proxy Configuration
 # Server settings
 [server]
-bind = "0.0.0.0:80"
-https_port = 443
+bind = "0.0.0.0:80"   # HTTP listener; "[::]:80" listens on IPv6 and IPv4 (dual-stack)
+https_port = 443      # HTTPS listener, on the same address as `bind`
 worker_threads = "auto"
+# On SIGTERM/SIGINT: stop accepting, then give in-flight requests up to this
+# many seconds to finish (the wait ends with the last one). Default 10.
+# shutdown_grace_period = 10
+# Behind a CDN or load balancer: the peers whose forwarding headers are
+# believed. From one of them, the client is found by walking X-Forwarded-For
+# right to left past trusted hops; it is then used for rate limits, logs,
+# X-Real-IP, $client_ip and Lua's req.client_ip, and the chain is appended to.
+# CIDRs, addresses, or the presets "cloudflare" (compiled-in published ranges),
+# "private" (RFC 1918 + fc00::/7) and "loopback". Empty = trust nobody.
+# A forwarded loopback/link-local/unspecified address is never believed (the
+# peer is taken instead). With [apps] multi_tenant, never trust loopback or the
+# Docker ranges (172.16.0.0/12, 192.168.0.0/16): tenants connect from there.
+# trusted_proxies = ["cloudflare"]
+# Where a trusted peer names the client: "X-Forwarded-For" (default), or a
+# single-address header such as "CF-Connecting-IP", "X-Real-IP", "True-Client-IP"
+# (removed from requests by untrusted peers).
+# real_ip_header = "X-Forwarded-For"
+# PROXY protocol (v1 text / v2 binary) from a TCP balancer, read before
+# TLS/HTTP: "off" (default), "v1", "v2", "any", or per listener
+# { http = "off", https = "v2" }. Only from trusted_proxies (others are
+# closed); the carried address is the peer, max_connections_per_ip included.
+# proxy_protocol = "off"
+# Request ID header, forwarded upstream and returned to the client. Kept from a
+# trusted peer when 1-128 visible ASCII chars, otherwise generated. "" = off.
+# request_id_header = "X-Request-Id"
 
 # TLS Configuration
 [tls]
@@ -14,6 +39,11 @@ cache_dir = "./certs"
 # hsts_max_age_seconds = 63072000
 # Set to false on shared parent domains where independent subdomains exist.
 # hsts_include_subdomains = true
+# Plaintext requests for hosts the proxy serves get a 308 to https://.
+# force_https = true
+# Lowest TLS version accepted: "1.2" (default) or "1.3". Session resumption
+# (TLS 1.3 tickets, a 32k-entry TLS 1.2 session cache) is always enabled.
+# min_version = "1.2"
 
 # Let's Encrypt (for production)
 [letsencrypt]
@@ -21,15 +51,23 @@ staging = false
 email = "admin@example.com"
 terms_agreed = true
 
-# Logging Configuration
+# Logging Configuration (level/format/output/max_* are read at startup only)
 [logging]
-level = "info"
-format = "json"
-output = "stdout"  # or "file:/var/log/soli-proxy.log"
+level = "info"     # trace|debug|info|warn|error, or a filter: "info,soli_proxy::server=debug"
+format = "json"    # or "text"; the TUI's error screen needs json
+output = "stdout"  # "stderr", or "file:/var/log/soli-proxy/proxy.log"
+# File output rotates by size: proxy.log -> proxy.log.1 -> ... New files are 0640.
+# max_size = "100MB"   # "0" disables rotation
+# max_files = 5        # rotated files kept
 # Body logging flags are reserved for future use and currently have no effect.
 include_request_body = false
 include_response_body = false
 log_endpoints = true  # log one line per request (method, path, host, status, latency)
+# Access log, one line per completed request (client IP, method, host, path,
+# status, bytes in/out, duration, upstream, app, request ID, UA, referer, TLS):
+# "off" (default), "stdout", "stderr" or a file path (rotated by max_size/max_files).
+# access_log = "/var/log/soli-proxy/access.log"
+# access_log_format = "json"   # or "combined" (Apache/nginx, proxy fields appended)
 
 # Metrics Configuration
 [metrics]
@@ -44,10 +82,18 @@ readiness_path = "/health/ready"
 
 # Limits Configuration
 [limits]
-max_connections = 10000
-max_request_size = "10MB"
-keep_alive_timeout = 30
-request_timeout = 60
+max_connections = 10000      # concurrent client connections; extra ones wait up to 10 s for a slot
+# Simultaneous connections per client address (IPv6: per /64), across HTTP and
+# HTTPS. Excess connections are closed on accept. Default 256; 0 disables.
+# Keyed on the TCP peer (or the PROXY protocol address); trusted_proxies are exempt.
+# max_connections_per_ip = 256
+max_request_size = "10MB"    # request bodies above this get 413
+keep_alive_timeout = 30      # HTTP/1 header read (bounds idle keep-alives); HTTP/2 idle timeout
+request_timeout = 60         # seconds for the upstream exchange before a 504 (@timeout:120s per route)
+# Forwarded WebSockets:
+# websocket_idle_timeout_secs = 300            # close if both directions are silent this long
+# websocket_max_lifetime_secs = 3600           # absolute cap per connection
+# websocket_max_bytes_per_direction = 1073741824
 
 # Rate Limiting Configuration (in-process token bucket; redis_url is unused)
 [rate_limiting]
@@ -61,6 +107,17 @@ burst_size = 2000
 [apps]
 # default_user = "rocky"
 # default_group = "rocky"
+# health_failure_threshold = 3   # consecutive failed health checks before failover
+# port_range_start = 20000       # slot ports (the only range used when multi_tenant)
+# port_range_end = 30000
+# multi_tenant = true            # untrusted apps; see the README's Multi-Tenant section
+# tenant_proxy_env = false       # forward HTTP(S)_PROXY into tenant containers
+# tenant_proxy_env_credentials = false  # ...even when it carries user:password@
+# Apps keep running when the proxy stops or restarts, and the next proxy adopts
+# them (README: "Restarts and upgrades"). true = stop them with the proxy, as
+# earlier versions did; it is the default under --dev. `soli-proxy stop --all`
+# stops them on demand.
+# stop_on_shutdown = false
 
 # Circuit Breaker Configuration
 # Tracks backend health and stops sending traffic to failing backends.
@@ -71,10 +128,39 @@ recovery_timeout_secs = 30          # seconds before probing an open backend
 success_threshold = 2               # successful probes to close breaker
 failure_status_codes = [502, 503, 504]  # HTTP codes that count as failures
 
+# Upstream retries
+# A request whose attempt fails before any response byte is retried on the
+# rule's next available target (for an app: its other slot, while a
+# blue/green deploy has one running). A connect failure is always safe to
+# retry, body and all — nothing reached the backend. Anything else is retried
+# only for idempotent methods (GET HEAD OPTIONS PUT DELETE TRACE) without a
+# body. Every failed attempt still counts in the circuit breaker.
+# Per route: @retries:N in proxy.conf.
+[upstream]
+retries = 1                         # extra attempts, each on another target; 0 = off
+retry_on = ["connect", "error"]     # add "502", "503", "504" or "500" to retry those statuses
+# try_duration = "5s"               # stop retrying this long after the first attempt
+
+# Active health checks for proxy.conf targets (managed apps have their own).
+# A rule opts in with @health:/path (and @health_interval:10s); default_path
+# checks every rule except those saying @health:off. A target failing
+# unhealthy_threshold probes in a row is skipped (like an open circuit
+# breaker) until it passes healthy_threshold in a row. Any answer below 500
+# counts as up. State: GET /api/v1/circuit-breaker ("health": "up"/"down").
+# [health_checks]
+# default_path = "/healthz"
+# interval = "10s"
+# timeout = "2s"
+# unhealthy_threshold = 3
+# healthy_threshold = 2
+
 # Admin REST API Configuration
 # Default binds to loopback only. Exposing on a non-loopback address
 # requires `api_key` or `username`+`password_hash` — the proxy refuses
-# to start the admin API otherwise.
+# to start the admin API otherwise. Without a credential, the API only
+# answers requests whose Host is localhost / a loopback IP (DNS-rebinding
+# guard). Failed logins are limited to 10 per client IP per minute (429).
+# ADMIN_PASSWORD_HASH must be a bcrypt hash at cost 4..=13 (`hash-password`).
 [admin]
 enabled = true
 bind = "127.0.0.1:9090"
@@ -82,7 +168,8 @@ bind = "127.0.0.1:9090"
 
 # Lua Scripting Configuration
 # When enabled, scripts are loaded from scripts_dir.
-# Scripts can be assigned globally or per-route in proxy.conf:
+# Scripts can be assigned globally or per-route in proxy.conf
+# (cors.lua, logging.lua and rate_limit.lua ship in scripts/lua/):
 #   [global] @script:cors.lua,logging.lua
 #   /api/* -> http://localhost:3000  @script:auth.lua,rate_limit.lua
 # Built-in modules: log, base64, crypto, env, time, shared
@@ -90,15 +177,66 @@ bind = "127.0.0.1:9090"
 enabled = false
 scripts_dir = "./scripts/lua"
 hook_timeout_ms = 10  # Max execution time per hook call in milliseconds
+# Environment variables Lua's `env` module may read; everything else reads nil.
+# exposed_env = ["API_BACKEND_TOKEN"]
 
-# Authentication Configuration
-[auth]
-enabled = false
-auth_type = "basic"
-realm = "Restricted"
-# Uncomment and configure for production
+# Response compression (gzip, brotli, zstd) of backends' responses, when the
+# client accepts it and the backend did not compress. Off by default: it costs
+# 10-100x the CPU of passthrough per text byte, changes caching headers (Vary,
+# weak ETags), and compressing pages that reflect input next to secrets is
+# what BREACH exploits. Per route: @compress:on|off; per app: compress = false.
+# [compression]
 # enabled = true
-# auth_type = "jwt"
-# issuer = "https://auth.example.com"
-# audience = "soli-proxy"
-# jwks_url = "https://auth.example.com/.well-known/jwks.json"
+# algorithms = ["br", "zstd", "gzip"]   # preference order on a tie
+# gzip_level = 5                        # 1-9
+# brotli_level = 4                      # 0-11
+# zstd_level = 3                        # 1-19
+# min_length = 1024                     # bytes; smaller responses are left alone
+# types = ["text/*", "application/json", "application/javascript", "image/svg+xml", "*+json", "*+xml"]
+
+# Custom HTML pages for the proxy's own errors (502, 503, 504, 421, 401, 413,
+# 429...), for clients whose Accept lists text/html. Files: <status>.html,
+# 4xx.html, 5xx.html, default.html, maintenance.html; variables {{status}},
+# {{reason}}, {{host}}, {{request_id}} (escaped). Read at load/reload, 64 KiB
+# max each. Apps may add their own in <site>/error_pages/.
+# [error_pages]
+# dir = "/etc/soli-proxy/errors"
+# intercept_upstream_errors = false     # true: also replace backends' 4xx/5xx
+
+# Maintenance mode policy. The on/off switch is runtime state, not config:
+# PUT /api/v1/maintenance or /api/v1/apps/<name>/maintenance on the admin API
+# (persisted to run/maintenance.json), or touch sites/<domain>/maintenance.flag.
+# [maintenance]
+# retry_after = 300                     # seconds
+# allow_ips = ["10.0.0.0/8"]            # IPs / CIDRs served normally
+# allow_paths = ["/up"]                 # exact paths, or prefixes ending in *
+
+# Authentication
+# There is no [auth] section. HTTP Basic auth is set where it applies —
+#   * per route in proxy.conf:      app.example.com -> http://... @auth:user:<bcrypt>
+#   * per app in its app.infos:     [auth.users] user = "<bcrypt>"
+#   * for the admin API:            [admin] api_key, or ADMIN_USER + ADMIN_PASSWORD_HASH
+# Hashes come from `soli-proxy hash-password`.
+#
+# Forward authentication delegates the decision to an SSO service
+# (oauth2-proxy, Authelia, Authentik, ...): before each request the proxy sends
+# it a GET with the client's Cookie/Authorization and X-Forwarded-Method/-Uri/
+# -Host/-Proto/-For. 2xx lets the request through (copying the named response
+# headers upstream), anything else is relayed to the client (401, 302 to the
+# login page...), no answer is a 503. Set per route or per app —
+#   * proxy.conf:  app.example.com -> http://... @forward_auth:http://127.0.0.1:4180/ \
+#                      @forward_auth_headers:X-Auth-Request-User,X-Auth-Request-Email
+#   * app.infos:   [auth] forward = "http://127.0.0.1:4180/"
+#                         forward_headers = ["X-Auth-Request-User"]
+# JWT / API-key validation inside the proxy is not implemented: delegate it to
+# such a service, or do it in a Lua on_request hook or in the backend.
+[forward_auth]
+# Seconds the auth service has to answer (connect, headers, body of a denial).
+# Unset or 0 = 5. Applied on the next request after a reload.
+timeout_secs = 5
+# multi_tenant mode only: the auth URLs an app's `[auth] forward` may name —
+# the proxy fetches that URL, so a tenant must not be able to point it at
+# 169.254.169.254 or an internal admin port. An entry ending in "/" allows any
+# path below it, otherwise exactly that path (query string not compared).
+# Empty (the default): tenants cannot use forward-auth. Ignored otherwise.
+# allowed_urls = ["http://127.0.0.1:4180/", "http://127.0.0.1:9091/api/authz/forward-auth"]

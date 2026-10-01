@@ -337,11 +337,13 @@
                         <pre class="p-4 text-sm font-mono overflow-x-auto"><code><span class="tc"># Round-robin load balancing (default)</span>
 <span class="tf">api.example.com</span> -> <span class="ts">http://backend-1:3000</span>, <span class="ts">http://backend-2:3000</span>
 
-<span class="tc"># Weighted load balancing</span>
-<span class="tf">example.com/api/*</span> -> <span class="ts">http://api-primary:8080</span>, <span class="ts">http://api-secondary:8080</span>  <span class="tc"># @lb:weighted</span>
+<span class="tc"># Weighted load balancing: 3 requests in 4 to the primary, interleaved.</span>
+<span class="tc"># A target's `weight:` alone selects @lb:weighted; weight:0 drains it.</span>
+<span class="tf">example.com/api/*</span> -> weight:3 <span class="ts">http://api-primary:8080</span>, weight:1 <span class="ts">http://api-secondary:8080</span>
 
 <span class="tc"># Failover: use second target only if first fails</span>
-<span class="tf">example.com/backup/*</span> -> <span class="ts">http://primary:8080</span>, <span class="ts">http://backup:8080</span>  <span class="tc"># @lb:failover</span></code></pre>
+<span class="tc"># (directives follow the targets; proxy.conf has no end-of-line comments)</span>
+<span class="tf">example.com/backup/*</span> -> <span class="ts">http://primary:8080</span>, <span class="ts">http://backup:8080</span> @lb:failover</code></pre>
                     </div>
 
                     <!-- API Endpoints -->
@@ -589,14 +591,16 @@
                                 <svg class="w-4 h-4 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                                 Slowloris Protection
                             </h3>
-                            <p class="text-gray-400 text-sm mb-4">The <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">keep_alive_timeout</code> setting limits how long a client can take to send headers. This prevents slowloris attacks where clients hold connections open indefinitely by sending headers one byte at a time.</p>
+                            <p class="text-gray-400 text-sm mb-4">The <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">keep_alive_timeout</code> setting (default 30 s) limits how long a client can take to send headers, and how long an idle connection is kept. This prevents slowloris attacks where clients hold connections open indefinitely by sending headers one byte at a time. HTTP/2 connections get the same bound: one with no request in flight for that long is sent GOAWAY, one that never sends a request is closed, and a peer that stops answering PINGs is dropped after 50 s.</p>
+                            <p class="text-gray-400 text-sm mb-4"><code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">max_connections_per_ip</code> (default 256, <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">0</code> = off) keeps a single client address &mdash; an IPv6 /64 &mdash; from taking every one of the <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">max_connections</code> slots. Both caps keep counting a WebSocket for as long as its tunnel is open. The per-IP cap is checked on accept, so it is keyed on the TCP peer, or on the address a PROXY protocol header carries; a <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">trusted_proxies</code> peer is exempt (it carries everyone's connections), and the clients behind it are rate limited per request instead.</p>
                             <div class="code-window rounded-lg border border-white/10 bg-black/30 overflow-hidden">
                                 <div class="flex items-center justify-between px-4 py-2 bg-black/30 border-b border-white/5">
                                     <span class="text-xs text-gray-500">config.toml</span>
                                     <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors px-2 py-1">Copy</button>
                                 </div>
                                 <pre class="p-4 text-sm leading-relaxed overflow-x-auto"><code>[<span class="tk">limits</span>]
-<span class="tf">keep_alive_timeout</span> = <span class="tn">30</span>   <span class="tc"># seconds to complete header transmission</span></code></pre>
+<span class="tf">keep_alive_timeout</span> = <span class="tn">30</span>   <span class="tc"># seconds to complete header transmission</span>
+<span class="tf">max_connections_per_ip</span> = <span class="tn">256</span></code></pre>
                             </div>
                         </div>
 
@@ -640,7 +644,7 @@
                                 <svg class="w-4 h-4 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
                                 Rate Limiting (via Lua)
                             </h3>
-                            <p class="text-gray-400 text-sm mb-4">Soli Proxy does not ship a built-in rate limiter, but the Lua scripting API exposes everything needed to implement one: process-shared atomic counters (<code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">shared.incr</code>), a millisecond clock (<code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">time.now_ms</code>), header access, and early denial via <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">req:deny</code>. The fixed-window per-IP limiter below allows 100 requests per minute per client.</p>
+                            <p class="text-gray-400 text-sm mb-4">Besides the built-in per-client token bucket (<code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">[rate_limiting]</code>, keyed on the same client address), the Lua scripting API exposes everything needed for a limiter of your own: process-shared atomic counters (<code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">shared.incr</code>), a millisecond clock (<code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">time.now_ms</code>), header access, and early denial via <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">req:deny</code>. The fixed-window per-IP limiter below allows 100 requests per minute per client.</p>
                             <div class="code-window rounded-lg border border-white/10 bg-black/30 overflow-hidden">
                                 <div class="flex items-center justify-between px-4 py-2 bg-black/30 border-b border-white/5">
                                     <span class="text-xs text-gray-500">rate_limit.lua</span>
@@ -648,7 +652,7 @@
                                 </div>
                                 <pre class="p-4 text-sm leading-relaxed overflow-x-auto"><code><span class="tc">-- Fixed-window per-IP rate limiter: 100 requests per minute</span>
 <span class="tk">function</span> <span class="fn">on_request</span>(req)
-    <span class="tk">local</span> ip = req:header(<span class="ts">"x-forwarded-for"</span>) <span class="tk">or</span> <span class="ts">"unknown"</span>
+    <span class="tk">local</span> ip = req.client_ip <span class="tk">or</span> <span class="ts">"unknown"</span>
     <span class="tk">local</span> window = math.floor(time.now_ms() / <span class="tn">1000</span> / <span class="tn">60</span>)
     <span class="tk">local</span> key = <span class="ts">"rl:"</span> .. ip .. <span class="ts">":"</span> .. window
     <span class="tk">local</span> count = shared.incr(key)
@@ -662,7 +666,7 @@
                                 <ul class="text-sm text-gray-400 space-y-1 list-disc list-inside">
                                     <li><code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">shared</code> state is in-memory and per-process — counters are not synchronized across multiple proxy instances.</li>
                                     <li>Shared keys have no automatic TTL. Bucketing by time window (as above) prevents unbounded growth in practice, but stale buckets are not reaped.</li>
-                                    <li><code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">X-Forwarded-For</code> is only trustworthy behind a proxy you control; otherwise clients can spoof the header to evade limits.</li>
+                                    <li><code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">req.client_ip</code> is the client as the proxy decided it: the connecting address, never a header an untrusted client sent. Behind a CDN or load balancer, list it in <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">[server] trusted_proxies</code> (or use PROXY protocol), or that address is the balancer's for every client.</li>
                                 </ul>
                             </div>
                         </div>

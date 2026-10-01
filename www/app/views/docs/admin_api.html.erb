@@ -98,7 +98,16 @@
                         When <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">api_key</code> is set in the config, all requests must include the <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">X-Api-Key</code> header. Requests without a valid key receive a <code class="text-red-300 text-xs bg-red-500/10 px-1.5 py-0.5 rounded">401 Unauthorized</code> response.
                     </p>
                     <p class="text-gray-400 mb-6 leading-relaxed">
+                        HTTP Basic auth is the alternative: set <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">ADMIN_USER</code> and <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">ADMIN_PASSWORD_HASH</code> (from <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">soli-proxy hash-password</code>) in the environment, or in a <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">.env</code> file in the directory holding <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">proxy.conf</code>. Only that one file is read (never a parent directory's), only these admin keys are taken from it, and nothing from it is exported to the proxy's environment.
+                    </p>
+                    <p class="text-gray-400 mb-6 leading-relaxed">
                         Mutating requests (anything but <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">GET</code>) that do not carry <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">X-Api-Key</code> &mdash; Basic auth, or the no-auth loopback default &mdash; must also send an <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">X-Requested-With</code> header with any value, or they receive <code class="text-red-300 text-xs bg-red-500/10 px-1.5 py-0.5 rounded">403</code>. An HTML form cannot set that header, which is what stops a page the operator visits from driving the API with the browser's cached credentials.
+                    </p>
+                    <p class="text-gray-400 mb-6 leading-relaxed">
+                        Without a credential configured, the API answers only requests whose <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">Host</code> is <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">localhost</code>, a loopback IP or the bound address (any port), and <code class="text-red-300 text-xs bg-red-500/10 px-1.5 py-0.5 rounded">403</code> otherwise &mdash; the defence against DNS rebinding, where a page whose hostname re-resolves to <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">127.0.0.1</code> would otherwise reach it as a same-origin request.
+                    </p>
+                    <p class="text-gray-400 mb-6 leading-relaxed">
+                        Each client IP gets ten failed authentications per minute, then <code class="text-red-300 text-xs bg-red-500/10 px-1.5 py-0.5 rounded">429</code> with <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">Retry-After</code> until the minute is up, before any bcrypt runs. Only requests carrying a credential count and a correct one never does, so the TUI and CLI can poll freely. Basic credentials are verified off the request workers and remembered for five minutes once correct; when every bcrypt slot stays busy the answer is <code class="text-red-300 text-xs bg-red-500/10 px-1.5 py-0.5 rounded">503</code> with <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">Retry-After: 1</code>.
                     </p>
 
                     <div class="rounded-2xl bg-gray-900 border border-white/10 overflow-hidden">
@@ -268,10 +277,30 @@
                                     <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/apps/{name}/stop</td>
                                     <td class="px-6 py-4 text-gray-400">Stop app</td>
                                 </tr>
+                                <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-yellow-500/10 text-yellow-400 border border-yellow-500/20">POST</span></td>
+                                    <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/apps/stop-all</td>
+                                    <td class="px-6 py-4 text-gray-400">Stop every app, both slots; the proxy keeps running (apps otherwise outlive a proxy restart)</td>
+                                </tr>
                                 <tr class="hover:bg-white/[0.02] transition-colors">
                                     <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">GET</span></td>
                                     <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/apps/{name}/logs</td>
                                     <td class="px-6 py-4 text-gray-400">Get deployment logs</td>
+                                </tr>
+                                <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">PUT</span></td>
+                                    <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/apps/{name}/maintenance</td>
+                                    <td class="px-6 py-4 text-gray-400">Maintenance mode for one app: <code>{"enabled": true, "retry_after": 600, "message": "..."}</code>; persisted to <code>run/maintenance.json</code></td>
+                                </tr>
+                                <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">GET</span></td>
+                                    <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/maintenance</td>
+                                    <td class="px-6 py-4 text-gray-400">What is in maintenance: the global window, per-app windows, and apps closed by a <code>maintenance.flag</code> file</td>
+                                </tr>
+                                <tr class="hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">PUT</span></td>
+                                    <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/maintenance</td>
+                                    <td class="px-6 py-4 text-gray-400">Maintenance mode for the whole proxy (same body): 503 with <code>Retry-After</code> and the maintenance page, except for <code>[maintenance] allow_ips</code> / <code>allow_paths</code></td>
                                 </tr>
                             </tbody>
                         </table>
@@ -303,12 +332,124 @@
                                 <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
                                     <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">GET</span></td>
                                     <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/circuit-breaker</td>
-                                    <td class="px-6 py-4 text-gray-400">View state per backend</td>
+                                    <td class="px-6 py-4 text-gray-400">View state per backend (with <code>health</code>: <code>up</code>/<code>down</code> for targets an active health check covers)</td>
                                 </tr>
                                 <tr class="hover:bg-white/[0.02] transition-colors">
                                     <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-yellow-500/10 text-yellow-400 border border-yellow-500/20">POST</span></td>
                                     <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/circuit-breaker/reset</td>
-                                    <td class="px-6 py-4 text-gray-400">Reset all to closed</td>
+                                    <td class="px-6 py-4 text-gray-400">Reset all to closed (health-check verdicts stay)</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- ============================================================ -->
+                <!-- PLATFORM ENDPOINTS -->
+                <!-- ============================================================ -->
+                <div class="mb-16 ">
+                    <h2 class="text-2xl font-bold text-white mb-6 flex items-center gap-3">
+                        <span class="w-8 h-8 rounded-lg bg-teal-500/10 flex items-center justify-center text-teal-400 text-sm">7</span>
+                        Metrics, Aliases &amp; Cluster
+                    </h2>
+                    <p class="text-gray-400 mb-6 leading-relaxed">
+                        Per-app metrics, live events, domain aliases, certificates, and the endpoints a cluster controller uses to push routes and ACME challenges. Paths that match none of the endpoints are served by the bundled <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">_admin</code> UI app, when one is installed.
+                    </p>
+
+                    <div class="rounded-2xl bg-gray-900 border border-white/10 overflow-hidden">
+                        <table class="w-full text-sm">
+                            <thead>
+                                <tr class="border-b border-white/10 text-left">
+                                    <th class="px-6 py-4 text-xs font-semibold text-gray-400 uppercase tracking-wider">Method</th>
+                                    <th class="px-6 py-4 text-xs font-semibold text-gray-400 uppercase tracking-wider">Path</th>
+                                    <th class="px-6 py-4 text-xs font-semibold text-gray-400 uppercase tracking-wider">Description</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">GET</span></td>
+                                    <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/app-metrics</td>
+                                    <td class="px-6 py-4 text-gray-400">Per-app traffic (requests, bytes, latency, errors) and process memory/CPU, keyed by app name</td>
+                                </tr>
+                                <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">GET</span></td>
+                                    <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/app-metrics/system</td>
+                                    <td class="px-6 py-4 text-gray-400">Per-app memory and CPU read from <code>/proc</code></td>
+                                </tr>
+                                <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">GET</span></td>
+                                    <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/apps/{name}/metrics</td>
+                                    <td class="px-6 py-4 text-gray-400">The same for one app</td>
+                                </tr>
+                                <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">GET</span></td>
+                                    <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/events/apps</td>
+                                    <td class="px-6 py-4 text-gray-400">Server-Sent Events stream of app lifecycle events (deploys, status changes, quarantine)</td>
+                                </tr>
+                                <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">GET</span></td>
+                                    <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/apps/by-domain</td>
+                                    <td class="px-6 py-4 text-gray-400">Apps keyed by the domains they serve</td>
+                                </tr>
+                                <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">GET</span></td>
+                                    <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/aliases</td>
+                                    <td class="px-6 py-4 text-gray-400">Domain aliases (domain &rarr; app)</td>
+                                </tr>
+                                <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-yellow-500/10 text-yellow-400 border border-yellow-500/20">POST</span></td>
+                                    <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/apps/{name}/aliases</td>
+                                    <td class="px-6 py-4 text-gray-400">Point a domain at an app: <code>{"domain": "www.example.com"}</code></td>
+                                </tr>
+                                <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-red-500/10 text-red-400 border border-red-500/20">DELETE</span></td>
+                                    <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/apps/{name}/aliases/{domain}</td>
+                                    <td class="px-6 py-4 text-gray-400">Remove an alias</td>
+                                </tr>
+                                <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-yellow-500/10 text-yellow-400 border border-yellow-500/20">POST</span></td>
+                                    <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/certs/reload</td>
+                                    <td class="px-6 py-4 text-gray-400">Rescan <code>certs/</code> and install new or renewed certificates without a restart</td>
+                                </tr>
+                                <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">GET</span></td>
+                                    <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/routing-table</td>
+                                    <td class="px-6 py-4 text-gray-400">The routing table last pushed by the cluster</td>
+                                </tr>
+                                <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-blue-500/10 text-blue-400 border border-blue-500/20">PUT</span></td>
+                                    <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/routing-table</td>
+                                    <td class="px-6 py-4 text-gray-400">Replace it: the complete set, with an <code>index</code> that must increase (a stale push answers 409)</td>
+                                </tr>
+                                <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">GET</span></td>
+                                    <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/acme-challenges</td>
+                                    <td class="px-6 py-4 text-gray-400">HTTP-01 challenge tokens currently served</td>
+                                </tr>
+                                <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-blue-500/10 text-blue-400 border border-blue-500/20">PUT</span></td>
+                                    <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/acme-challenges</td>
+                                    <td class="px-6 py-4 text-gray-400">Replace them (for an external ACME orderer)</td>
+                                </tr>
+                                <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-yellow-500/10 text-yellow-400 border border-yellow-500/20">POST</span></td>
+                                    <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/hash-password</td>
+                                    <td class="px-6 py-4 text-gray-400"><code>{"password": "..."}</code> &rarr; a bcrypt hash</td>
+                                </tr>
+                                <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-yellow-500/10 text-yellow-400 border border-yellow-500/20">POST</span></td>
+                                    <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/config/validate</td>
+                                    <td class="px-6 py-4 text-gray-400"><code>{"proxy_conf": "...", "config_toml": "..."}</code> (either optional; the live file fills in) &rarr; <code>valid</code>, <code>errors</code>, <code>warnings</code>, <code>problems</code> with file, line, severity and message. Applies nothing &mdash; the checks of <code>soli-proxy check</code>, sites aside</td>
+                                </tr>
+                                <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">GET</span></td>
+                                    <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/settings</td>
+                                    <td class="px-6 py-4 text-gray-400">Admin UI settings (theme)</td>
+                                </tr>
+                                <tr class="hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-blue-500/10 text-blue-400 border border-blue-500/20">PUT</span></td>
+                                    <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/settings</td>
+                                    <td class="px-6 py-4 text-gray-400">Update them: <code>{"theme": "ocean"}</code></td>
                                 </tr>
                             </tbody>
                         </table>
@@ -378,8 +519,11 @@
   -H <span class="ts">"X-Api-Key: your-secret-api-key"</span> \
   -H <span class="ts">"Content-Type: application/json"</span> \
   -d <span class="ts">'{
-    "from": "api.example.com/v2/*",
-    "to": "http://127.0.0.1:8080"
+    "matcher": { "type": "domain_path", "domain": "api.example.com", "path": "/v2/" },
+    "targets": [{ "url": "http://127.0.0.1:8080/", "weight": 100 }],
+    "headers": [],
+    "scripts": [],
+    "forward_auth": { "url": "http://127.0.0.1:4180/", "headers": ["X-Auth-Request-User"] }
   }'</span></code></pre>
                         </div>
                     </div>

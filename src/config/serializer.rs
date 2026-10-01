@@ -1,4 +1,4 @@
-use super::{LoadBalancingStrategy, ProxyRule, RuleMatcher};
+use super::{LoadBalancingStrategy, ProxyRule, RuleMatcher, DEFAULT_TARGET_WEIGHT};
 
 /// Serialize proxy rules and global scripts back to the proxy.conf text format.
 pub fn serialize_proxy_conf(rules: &[ProxyRule], global_scripts: &[String]) -> String {
@@ -19,7 +19,22 @@ pub fn serialize_proxy_conf(rules: &[ProxyRule], global_scripts: &[String]) -> S
             RuleMatcher::DomainPath(domain, path) => format!("{}{}", domain, path),
         };
 
-        let targets_str: Vec<String> = rule.targets.iter().map(|t| t.url.to_string()).collect();
+        // Weights are written whenever they mean something (a weighted rule)
+        // or differ from the default, so what the admin API stored survives
+        // the next reload — they used to be dropped, and every target came
+        // back at 100.
+        let weighted = rule.load_balancing == LoadBalancingStrategy::Weighted;
+        let targets_str: Vec<String> = rule
+            .targets
+            .iter()
+            .map(|t| {
+                if weighted || t.weight != DEFAULT_TARGET_WEIGHT {
+                    format!("weight:{} {}", t.weight, t.url)
+                } else {
+                    t.url.to_string()
+                }
+            })
+            .collect();
         let targets_joined = targets_str.join(", ");
 
         let scripts_suffix = if rule.scripts.is_empty() {
@@ -34,31 +49,73 @@ pub fn serialize_proxy_conf(rules: &[ProxyRule], global_scripts: &[String]) -> S
             .map(|a| format!(" @auth:{}:{}", a.username, a.hash))
             .collect();
 
-        // Only meaningful alongside @auth; writing it on an unprotected rule
-        // would be noise the parser reads back as a no-op.
-        let noauth_suffix = if rule.auth.is_empty() || rule.auth_exempt.is_empty() {
+        // Only meaningful alongside @auth or @forward_auth; writing it on an
+        // unprotected rule would be noise the parser reads back as a no-op.
+        let noauth_suffix = if (rule.auth.is_empty() && rule.forward_auth.is_none())
+            || rule.auth_exempt.is_empty()
+        {
             String::new()
         } else {
             format!(" @noauth:{}", rule.auth_exempt.join(","))
         };
 
-        let lb_suffix = match rule.load_balancing {
-            LoadBalancingStrategy::RoundRobin if rule.targets.len() > 1 => {
-                "  @lb:round-robin".to_string()
+        let forward_auth_suffix = match &rule.forward_auth {
+            None => String::new(),
+            Some(fa) if fa.copy_headers().is_empty() => format!(" @forward_auth:{}", fa.url()),
+            Some(fa) => {
+                let names: Vec<&str> = fa.copy_headers().iter().map(|h| h.as_str()).collect();
+                format!(
+                    " @forward_auth:{} @forward_auth_headers:{}",
+                    fa.url(),
+                    names.join(",")
+                )
             }
-            LoadBalancingStrategy::Weighted if rule.targets.len() > 1 => {
-                "  @lb:weighted".to_string()
-            }
-            LoadBalancingStrategy::Failover if rule.targets.len() > 1 => {
-                "  @lb:failover".to_string()
-            }
-            _ => String::new(),
+        };
+
+        // Written for any multi-target rule, and for a single-target rule
+        // whose strategy is not the default (a written `weight:` would
+        // otherwise read back as weighted).
+        let lb_suffix =
+            if rule.targets.len() > 1 || rule.load_balancing != LoadBalancingStrategy::default() {
+                match rule.load_balancing {
+                    LoadBalancingStrategy::RoundRobin => "  @lb:round-robin",
+                    LoadBalancingStrategy::Weighted => "  @lb:weighted",
+                    LoadBalancingStrategy::Failover => "  @lb:failover",
+                }
+            } else {
+                ""
+            };
+
+        let compress_suffix = match rule.compress {
+            Some(true) => "  @compress:on",
+            Some(false) => "  @compress:off",
+            None => "",
         };
 
         output.push_str(&format!(
-            "{} -> {}{}{}{}{}\n",
-            matcher_str, targets_joined, scripts_suffix, auth_suffix, noauth_suffix, lb_suffix
+            "{} -> {}{}{}{}{}{}{}{}\n",
+            matcher_str,
+            targets_joined,
+            scripts_suffix,
+            auth_suffix,
+            noauth_suffix,
+            forward_auth_suffix,
+            lb_suffix,
+            compress_suffix,
+            rule.upstream.directives()
         ));
+
+        if !rule.headers.is_empty() {
+            output.push_str("headers {\n");
+            for header in &rule.headers {
+                if header.remove {
+                    output.push_str(&format!("    -{}\n", header.name));
+                } else {
+                    output.push_str(&format!("    {}: {}\n", header.name, header.value));
+                }
+            }
+            output.push_str("}\n");
+        }
     }
 
     output
@@ -88,6 +145,9 @@ mod tests {
                 auth: vec![],
                 auth_exempt: vec![],
                 load_balancing: LoadBalancingStrategy::default(),
+                forward_auth: None,
+                compress: None,
+                upstream: Default::default(),
             },
             ProxyRule {
                 matcher: RuleMatcher::Prefix("/api/".to_string()),
@@ -97,6 +157,9 @@ mod tests {
                 auth: vec![],
                 auth_exempt: vec![],
                 load_balancing: LoadBalancingStrategy::default(),
+                forward_auth: None,
+                compress: None,
+                upstream: Default::default(),
             },
         ];
 
@@ -115,6 +178,9 @@ mod tests {
             auth: vec![],
             auth_exempt: vec![],
             load_balancing: LoadBalancingStrategy::default(),
+            forward_auth: None,
+            compress: None,
+            upstream: Default::default(),
         }];
 
         let output =
@@ -133,6 +199,9 @@ mod tests {
                 auth: vec![],
                 auth_exempt: vec![],
                 load_balancing: LoadBalancingStrategy::default(),
+                forward_auth: None,
+                compress: None,
+                upstream: Default::default(),
             },
             ProxyRule {
                 matcher: RuleMatcher::DomainPath("api.example.com".to_string(), "/v1/".to_string()),
@@ -142,6 +211,9 @@ mod tests {
                 auth: vec![],
                 auth_exempt: vec![],
                 load_balancing: LoadBalancingStrategy::default(),
+                forward_auth: None,
+                compress: None,
+                upstream: Default::default(),
             },
         ];
 
@@ -159,10 +231,13 @@ mod tests {
             scripts: vec![],
             auth: vec![crate::auth::BasicAuth {
                 username: "admin".to_string(),
-                hash: "$2b$12$hash".to_string(),
+                hash: "$2b$04$abcdefghijklmnopqrstuvABCDEFGHIJKLMNOPQRSTUVWXYZ0123X".to_string(),
             }],
             auth_exempt: vec!["/webhooks/stripe".to_string(), "/hooks/*".to_string()],
             load_balancing: LoadBalancingStrategy::default(),
+            forward_auth: None,
+            compress: None,
+            upstream: Default::default(),
         }];
 
         let output = serialize_proxy_conf(&rules, &[]);
@@ -193,10 +268,149 @@ mod tests {
             auth: vec![],
             auth_exempt: vec!["/hooks/*".to_string()],
             load_balancing: LoadBalancingStrategy::default(),
+            forward_auth: None,
+            compress: None,
+            upstream: Default::default(),
         }];
 
         let output = serialize_proxy_conf(&rules, &[]);
         assert!(!output.contains("@noauth"), "{output}");
+    }
+
+    /// Weights and `headers { }` blocks were dropped on the way back to disk,
+    /// so the first admin-API edit of any rule erased them.
+    #[test]
+    fn test_weights_and_headers_roundtrip() {
+        let conf = "\
+/api/* -> weight:70 http://heavy:8080/, weight:30 http://light:8080/  @lb:weighted
+headers {
+    X-Real-IP: $client_ip
+    -Cookie
+}
+/solo/* -> weight:7 http://solo:8080/
+~^/u/(\\d+)$ -> http://u:8080/users/$1
+";
+        let (rules, scripts) = crate::config::parse_proxy_config(conf).unwrap();
+        let output = serialize_proxy_conf(&rules, &scripts);
+        assert!(output.contains("weight:70 http://heavy:8080/"), "{output}");
+        assert!(output.contains("    X-Real-IP: $client_ip\n"), "{output}");
+        assert!(output.contains("    -Cookie\n"), "{output}");
+
+        let (reparsed, _) = crate::config::parse_proxy_config(&output).unwrap();
+        assert_eq!(reparsed.len(), rules.len());
+        for (a, b) in rules.iter().zip(&reparsed) {
+            assert_eq!(a.matcher, b.matcher);
+            assert_eq!(a.load_balancing, b.load_balancing, "{output}");
+            let w = |r: &ProxyRule| {
+                r.targets
+                    .iter()
+                    .map(|t| (t.url.to_string(), t.weight))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(w(a), w(b));
+            let h = |r: &ProxyRule| {
+                r.headers
+                    .iter()
+                    .map(|h| (h.name.clone(), h.value.clone(), h.remove))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(h(a), h(b));
+        }
+        // A lone weighted target keeps its strategy and its weight.
+        assert_eq!(reparsed[1].load_balancing, LoadBalancingStrategy::Weighted);
+        assert_eq!(reparsed[1].targets[0].weight, 7);
+    }
+
+    /// `@forward_auth` (with its copied headers and `@noauth` carve-outs,
+    /// which it makes meaningful on its own) survives an admin-API rewrite.
+    #[test]
+    fn test_forward_auth_roundtrips() {
+        let conf = "\
+app.example.com -> http://backend:8080/ @forward_auth:http://auth.internal:4180/oauth2/auth \
+@forward_auth_headers:X-Auth-User,X-Auth-Email @noauth:/hooks/*
+open.example.com -> http://backend:8080/ @forward_auth:https://sso.internal/verify?x=1
+";
+        let (rules, scripts) = crate::config::parse_proxy_config(conf).unwrap();
+        let output = serialize_proxy_conf(&rules, &scripts);
+        assert!(
+            output.contains(
+                "@forward_auth:http://auth.internal:4180/oauth2/auth \
+                 @forward_auth_headers:x-auth-user,x-auth-email"
+            ),
+            "{output}"
+        );
+        assert!(output.contains("@noauth:/hooks/*"), "{output}");
+        assert!(!output.contains("@forward_auth_headers:\n"), "{output}");
+
+        let (reparsed, _) = crate::config::parse_proxy_config(&output).unwrap();
+        assert_eq!(reparsed.len(), 2);
+        for (a, b) in rules.iter().zip(&reparsed) {
+            assert_eq!(a.forward_auth, b.forward_auth, "{output}");
+            assert_eq!(a.auth_exempt, b.auth_exempt, "{output}");
+        }
+        assert_eq!(
+            reparsed[1].forward_auth.as_ref().unwrap().url(),
+            "https://sso.internal/verify?x=1"
+        );
+    }
+
+    /// `@compress:on|off` survives a parse → serialize → parse round trip;
+    /// a rule without it writes nothing.
+    #[test]
+    fn compress_directive_round_trips() {
+        let conf = "\
+a.example -> http://a:8080  @compress:off
+/b/* -> http://b:8080  @compress:on
+c.example -> http://c:8080
+";
+        let (rules, scripts) = crate::config::parse_proxy_config(conf).unwrap();
+        assert_eq!(
+            rules.iter().map(|r| r.compress).collect::<Vec<_>>(),
+            vec![Some(false), Some(true), None]
+        );
+        let output = serialize_proxy_conf(&rules, &scripts);
+        assert_eq!(output.matches("@compress:").count(), 2, "{output}");
+        let (reparsed, _) = crate::config::parse_proxy_config(&output).unwrap();
+        assert_eq!(
+            reparsed.iter().map(|r| r.compress).collect::<Vec<_>>(),
+            vec![Some(false), Some(true), None]
+        );
+        for bad in [
+            "a.example -> http://a  @compress:yes\n",
+            "a.example -> http://a  @compress:on @compress:off\n",
+        ] {
+            assert!(crate::config::parse_proxy_config(bad).is_err(), "{bad}");
+        }
+    }
+
+    /// Every upstream directive survives the trip to disk and back, so an
+    /// admin-API edit of an unrelated rule cannot strip a route's `@tls_ca`
+    /// (which would fail it closed) or its `@h2` (which would break gRPC).
+    #[test]
+    fn test_upstream_directives_roundtrip() {
+        let conf = "\
+grpc.example.com -> h2c://grpc-a:50051, h2c://grpc-b:50051 @retries:2 @timeout:5m @health:/healthz @health_interval:3s
+internal.example.com -> https://10.0.0.5:8443 @h2 @tls_ca:/etc/pki/internal-ca.pem @tls_sni:svc.internal @tls_client_cert:/etc/pki/c.pem,/etc/pki/k.pem @connect_timeout:1500ms
+legacy.example.com -> https://10.0.0.6 @tls_insecure @health:off
+sock.example.com -> unix:/run/app.sock
+";
+        let (rules, scripts) = crate::config::parse_proxy_config(conf).unwrap();
+        assert_eq!(rules[0].upstream.retries, Some(2));
+        assert!(rules[1].upstream.h2 && rules[2].upstream.tls_insecure);
+        let output = serialize_proxy_conf(&rules, &scripts);
+        assert!(output.contains("unix:/run/app.sock\n"), "{output}");
+        assert!(
+            output.contains("h2c://grpc-a:50051, h2c://grpc-b:50051"),
+            "{output}"
+        );
+        let (reparsed, _) = crate::config::parse_proxy_config(&output).unwrap();
+        for (a, b) in rules.iter().zip(&reparsed) {
+            assert_eq!(a.upstream, b.upstream, "{output}");
+            assert_eq!(a.targets.len(), b.targets.len());
+            for (x, y) in a.targets.iter().zip(&b.targets) {
+                assert_eq!(x.url, y.url);
+            }
+        }
     }
 
     #[test]
@@ -209,6 +423,9 @@ mod tests {
             auth: vec![],
             auth_exempt: vec![],
             load_balancing: LoadBalancingStrategy::default(),
+            forward_auth: None,
+            compress: None,
+            upstream: Default::default(),
         }];
 
         let output = serialize_proxy_conf(&rules, &[]);

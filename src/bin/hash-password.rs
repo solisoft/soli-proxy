@@ -7,7 +7,11 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let cost = parse_cost(&args);
     if cost == Some(0) {
-        eprintln!("Error: --cost attend un entier entre 4 et 31\n");
+        eprintln!(
+            "Error: --cost attend un entier entre {} et {}\n",
+            soli_proxy::auth::MIN_COST,
+            soli_proxy::auth::MAX_COST
+        );
         print_help();
         return;
     }
@@ -53,14 +57,18 @@ fn main() {
 }
 
 /// `--cost N`, où qu'il soit sur la ligne. `Some(0)` signale une valeur
-/// illisible ou hors des bornes de bcrypt, que l'appelant refuse.
+/// illisible ou hors des bornes que le proxy accepte (4 à 13, voir
+/// `auth::MAX_COST`), que l'appelant refuse : un hash au facteur 14 ou plus
+/// serait refusé au chargement de toute façon.
 fn parse_cost(args: &[String]) -> Option<u32> {
     let position = args.iter().position(|arg| arg == "--cost")?;
     match args
         .get(position + 1)
         .and_then(|raw| raw.parse::<u32>().ok())
     {
-        Some(cost) if (4..=31).contains(&cost) => Some(cost),
+        Some(cost) if (soli_proxy::auth::MIN_COST..=soli_proxy::auth::MAX_COST).contains(&cost) => {
+            Some(cost)
+        }
         _ => Some(0),
     }
 }
@@ -112,15 +120,16 @@ fn parse_password(args: &[String]) -> Option<String> {
 
 fn print_help() {
     println!("Usage:");
-    println!("  soli-proxy hash-password");
+    println!("  hash-password");
     println!();
     println!("Options:");
     println!("  (no arguments)     Secure interactive prompt (recommended)");
     println!("  --unsafe-cli-password PASSWORD  Pass password via CLI (NOT recommended)");
-    println!("  --cost N           Facteur bcrypt (4-31). Defaut : 12.");
+    println!("  --cost N           Facteur bcrypt (4-13). Defaut : 12.");
     println!("  --help, -h                        Show this help message");
     println!();
     println!("Examples:");
-    println!("  soli-proxy hash-password");
-    println!("  soli-proxy hash-password --unsafe-cli-password mysecret123");
+    println!("  hash-password");
+    println!("  hash-password --cost 10");
+    println!("  hash-password --unsafe-cli-password mysecret123");
 }

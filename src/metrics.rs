@@ -140,6 +140,16 @@ fn nonzero(ms: u64) -> Option<u64> {
     (ms != 0).then_some(ms)
 }
 
+/// See [`Metrics::in_flight_guard`].
+#[must_use = "the request stops counting as in flight when the guard is dropped"]
+pub struct InFlightGuard(Arc<AtomicUsize>);
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 /// Status code array size: covers HTTP codes 100-599
 const STATUS_ARRAY_SIZE: usize = 512;
 
@@ -189,6 +199,9 @@ impl Metrics {
     /// entry if needed). Used by the streaming response-body counter, which
     /// outlives the request handler.
     pub fn app_bytes_sent_counter(&self, app_name: &str) -> Arc<AtomicU64> {
+        if let Some(m) = self.app_metrics.read().get(app_name) {
+            return m.bytes_sent.clone();
+        }
         let mut apps = self.app_metrics.write();
         apps.entry(app_name.to_string())
             .or_default()
@@ -382,18 +395,7 @@ impl Metrics {
         duration: std::time::Duration,
         success: bool,
     ) {
-        let app_name = app_name.to_string();
-        {
-            let mut apps = self.app_metrics.write();
-            apps.entry(app_name.clone()).or_default();
-        }
-
-        let app_metrics = {
-            let apps = self.app_metrics.read();
-            apps.get(&app_name).cloned()
-        };
-
-        if let Some(metrics) = app_metrics {
+        let record = |metrics: &AppMetrics| {
             metrics.requests_total.fetch_add(1, Ordering::Relaxed);
             // Stored, not maxed: the clock can step backwards over NTP, and a
             // monotone-only field would then freeze an app's last-request time at
@@ -412,7 +414,18 @@ impl Metrics {
             if !success {
                 metrics.errors_total.fetch_add(1, Ordering::Relaxed);
             }
+        };
+
+        // Every proxied app request lands here. The counters are atomics, so
+        // a shared read lock is all an app already seen needs; the write lock
+        // (which every other request would queue behind) is taken once per
+        // app, the first time. This used to take it on every request.
+        if let Some(metrics) = self.app_metrics.read().get(app_name) {
+            record(metrics);
+            return;
         }
+        let mut apps = self.app_metrics.write();
+        record(apps.entry(app_name.to_string()).or_default());
     }
 
     pub fn inc_in_flight(&self) {
@@ -421,6 +434,19 @@ impl Metrics {
 
     pub fn dec_in_flight(&self) {
         self.requests_in_flight.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    /// Count one request in flight until the returned guard is dropped.
+    ///
+    /// The request handler used to pair `inc_in_flight` with a
+    /// `dec_in_flight` on each of its two dozen return paths, and several
+    /// (WebSocket failures among them) had none: every such request left the
+    /// gauge one higher, forever. The guard decrements on every exit — early
+    /// return, `?`, a panic, or hyper dropping the handler because the client
+    /// went away.
+    pub fn in_flight_guard(&self) -> InFlightGuard {
+        self.inc_in_flight();
+        InFlightGuard(self.requests_in_flight.clone())
     }
 
     pub fn inc_tls_connections(&self) {

@@ -84,6 +84,7 @@
                     <div class="mb-8 ml-11">
                         <h3 class="text-lg font-semibold text-white mb-3">External HTTPS Backends</h3>
                         <p class="text-gray-400 text-sm mb-3">Targets can be <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">https://</code> origins. The proxy rewrites <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Host</code> to the target's own authority (matching the TLS SNI, so vhosts/CDNs accept the request) and aligns a same-origin <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Origin</code> header with it, so backends that CSRF-check Origin against the request authority keep working. Cross-site Origins are forwarded untouched. The client's host reaches the backend via <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">X-Forwarded-Host</code>.</p>
+                        <p class="text-gray-400 text-sm mb-3">Every proxied request &mdash; rule, app or WebSocket &mdash; carries <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">X-Forwarded-For</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">X-Real-IP</code> (the connecting address), <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">X-Forwarded-Proto</code> and <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">X-Forwarded-Host</code> (the Host the client asked for), set by the proxy. Any <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Forwarded</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">X-Forwarded-*</code> or <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">X-Real-IP</code> header the client sent is dropped first: the proxy is the edge, and a client's claim about its own address is never passed on. The exception is a peer listed in <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">[server] trusted_proxies</code> (a CDN, a load balancer): its <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">X-Forwarded-For</code> chain is kept and appended to, its <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">X-Forwarded-Proto</code> kept, and <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">X-Real-IP</code> names the client found in that chain. Every request also carries an <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">X-Request-Id</code>, returned to the client too; W3C <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">traceparent</code> passes through untouched.</p>
                         <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
                             <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
                                 <div class="flex items-center gap-2">
@@ -177,6 +178,21 @@
 <span class="tc"># Match UUID-based resource paths</span>
 <span class="tf">~^/resources/[0-9a-f]{8}-[0-9a-f]{4}-.*$</span> <span class="tk">-></span> <span class="ts">http://resources:8092</span></code></pre>
                         </div>
+                        <p class="text-gray-400 text-sm mt-3 mb-3">A regex rule's target may use the pattern's capture groups &mdash; <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">$1</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">${1}</code>, or <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">${name}</code> for <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">(?P&lt;name&gt;...)</code> &mdash; in its path and query; the client's query string is appended. A group that did not take part in the match expands to nothing, and naming a group the pattern does not have is a load error. Captures never reach the scheme or host, which are taken verbatim from the target.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">proxy.conf</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tc"># /users/42?tab=posts -> http://user-service:8080/users/42?tab=posts</span>
+<span class="tf">~^/users/(\d+)$</span> <span class="tk">-></span> <span class="ts">http://user-service:8080/users/$1</span>
+
+<span class="tc"># Named groups</span>
+<span class="tf">~^/u/(?P&lt;id&gt;\d+)/(?P&lt;tab&gt;\w+)$</span> <span class="tk">-></span> <span class="ts">http://user-service:8080/users/${id}/${tab}</span></code></pre>
+                        </div>
                     </div>
 
                     <!-- HTML URL Rewriting -->
@@ -229,6 +245,74 @@
           <span class="ts">http://backend2:8080</span>, \
           <span class="ts">http://backend3:8080</span></code></pre>
                         </div>
+                        <p class="text-gray-400 text-sm mt-3 mb-3">Prefix a target with <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">weight:N</code> (0&ndash;255, default 100) for weighted balancing; a rule with any weight uses <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@lb:weighted</code> unless it names another strategy. Weights are reduced by their common divisor and interleaved &mdash; 70:30 sends A B A A B A A B A A rather than 70 requests then 30. <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">weight:0</code> drains a target: it takes no traffic while another weighted target is up, and serves only as a last resort. <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@lb:round-robin</code> (the default) and <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@lb:failover</code> (first available target) are the other strategies; every strategy skips a target whose circuit breaker is open.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">proxy.conf</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tc"># 70% / 30%</span>
+<span class="tf">/api/heavy</span> <span class="tk">-></span> weight:70 <span class="ts">http://heavy:8080</span>, weight:30 <span class="ts">http://light:8080</span>
+
+<span class="tc"># Drain the old backend before removing it</span>
+<span class="tf">/app/*</span> <span class="tk">-></span> weight:0 <span class="ts">http://old:8080</span>, weight:1 <span class="ts">http://new:8080</span>
+
+<span class="tc"># All traffic to the first target that is up</span>
+<span class="tf">/db/*</span> <span class="tk">-></span> <span class="ts">http://primary:8080</span>, <span class="ts">http://replica:8080</span> <span class="tt">@lb:failover</span></code></pre>
+                        </div>
+                    </div>
+
+                    <!-- Upstream options -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-3">Upstream Protocols, TLS and Timeouts</h3>
+                        <p class="text-gray-400 text-sm mb-3">Besides <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">http://</code> and <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">https://</code>, a target may be <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">h2c://host:port</code> (HTTP/2 with prior knowledge, for gRPC) or <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">unix:/absolute/path.sock</code> (a Unix socket; requests keep the client's <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Host</code> and are sent with the path the rule resolves, WebSocket upgrades included). <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@h2</code> makes a whole rule speak HTTP/2: ALPN <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">h2</code> to <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">https://</code> targets, prior knowledge to cleartext and socket ones. gRPC works end to end: <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">TE: trailers</code> reaches the upstream (every other <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">TE</code> value is dropped, and HTTP/1.1 upstreams get none) and response trailers reach the client &mdash; over HTTP/2, or over HTTP/1.1 when the upstream announces them in <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Trailer</code>. On an HTTP/2 upstream the client's <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Host</code> travels as <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">X-Forwarded-Host</code>, since <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Host</code> may not contradict <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">:authority</code>.</p>
+                        <p class="text-gray-400 text-sm mb-3"><code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@tls_ca:/path/ca.pem</code> trusts that CA bundle <em>instead of</em> the public roots, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@tls_sni:name</code> sends that name as SNI and verifies the certificate against it (for targets addressed by IP), and <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@tls_client_cert:/cert.pem,/key.pem</code> presents a client certificate (mTLS). <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@tls_insecure</code> skips certificate verification entirely &mdash; anyone on the network path can then read and alter the traffic; the proxy logs a warning each time it loads such a rule. Files are read when the configuration loads: a missing or invalid one is a load error (a route saved through the admin API is then refused and nothing is written). Each must be a regular file of at most 1 MiB; the error names the file, and the reason goes to the log only, so the admin API cannot be used to probe the filesystem. Paths cannot hold whitespace or control characters. Rules with the same options share one client and its connection pool, and WebSocket upgrades to the rule's <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">https://</code> target use the same TLS settings (over HTTP/1.1, whatever <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@h2</code> says).</p>
+                        <p class="text-gray-400 text-sm mb-3"><code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@timeout:120s</code> replaces <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">[limits] request_timeout</code> (time to the response headers) for the rule; <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@connect_timeout:2s</code> replaces the 5&nbsp;s connect timeout. Durations take a unit: <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">500ms</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">2s</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">5m</code>.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">proxy.conf</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tc"># gRPC over cleartext HTTP/2, two instances, probed every 5 s</span>
+<span class="tf">grpc.example.com</span> <span class="tk">-></span> <span class="ts">h2c://10.0.0.7:50051</span>, <span class="ts">h2c://10.0.0.8:50051</span> <span class="tt">@health:/healthz</span> <span class="tt">@health_interval:5s</span>
+
+<span class="tc"># Internal PKI, addressed by IP, with a client certificate</span>
+<span class="tf">billing.example.com</span> <span class="tk">-></span> <span class="ts">https://10.0.0.9:8443</span> <span class="tt">@tls_ca:/etc/soli-proxy/internal-ca.pem</span> \
+                      <span class="tt">@tls_sni:billing.internal</span> <span class="tt">@tls_client_cert:/etc/soli-proxy/proxy.pem,/etc/soli-proxy/proxy.key</span>
+
+<span class="tc"># An app listening on a Unix socket; slow reports get two minutes</span>
+<span class="tf">app.example.com</span> <span class="tk">-></span> <span class="ts">unix:/run/app/puma.sock</span>
+<span class="tf">app.example.com/reports/*</span> <span class="tk">-></span> <span class="ts">unix:/run/app/puma.sock</span> <span class="tt">@timeout:2m</span></code></pre>
+                        </div>
+                        <div class="mt-3 overflow-x-auto">
+                            <table class="w-full text-sm text-left">
+                                <thead><tr class="border-b border-white/10 text-gray-400">
+                                    <th class="py-2 pr-4 font-medium">Directive</th>
+                                    <th class="py-2 pr-4 font-medium">Value</th>
+                                    <th class="py-2 pr-4 font-medium">Default</th>
+                                    <th class="py-2 font-medium">Description</th>
+                                </tr></thead>
+                                <tbody class="text-gray-300">
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">@retries:N</td><td class="py-2 pr-4">0&ndash;10</td><td class="py-2 pr-4 text-gray-500">[upstream] retries</td><td class="py-2">Extra attempts on another target after a failure that is safe to replay.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">@timeout:D</td><td class="py-2 pr-4">duration</td><td class="py-2 pr-4 text-gray-500">request_timeout</td><td class="py-2">Time to the response headers.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">@connect_timeout:D</td><td class="py-2 pr-4">duration</td><td class="py-2 pr-4 text-gray-500">5s</td><td class="py-2">Time to establish the connection (TCP, or the socket).</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">@h2</td><td class="py-2 pr-4">flag</td><td class="py-2 pr-4 text-gray-500">off</td><td class="py-2">Speak HTTP/2 to every target of the rule.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">@tls_ca:/path</td><td class="py-2 pr-4">file</td><td class="py-2 pr-4 text-gray-500">public roots</td><td class="py-2">CA bundle (PEM) that replaces the public roots.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">@tls_sni:name</td><td class="py-2 pr-4">DNS name or IP</td><td class="py-2 pr-4 text-gray-500">target host</td><td class="py-2">SNI sent and name verified.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">@tls_client_cert:/c,/k</td><td class="py-2 pr-4">two files</td><td class="py-2 pr-4 text-gray-500">none</td><td class="py-2">Client certificate and key (PEM) for mTLS.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">@tls_insecure</td><td class="py-2 pr-4">flag</td><td class="py-2 pr-4 text-gray-500">off</td><td class="py-2">No certificate verification. Avoid.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">@health:/path</td><td class="py-2 pr-4">path or off</td><td class="py-2 pr-4 text-gray-500">[health_checks] default_path</td><td class="py-2">Probe each target at this path; <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">off</code> opts out of the default.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">@health_interval:D</td><td class="py-2 pr-4">duration</td><td class="py-2 pr-4 text-gray-500">[health_checks] interval</td><td class="py-2">Time between probes.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <p class="text-gray-400 text-sm mt-3">Every directive is written back as-is when the admin API rewrites <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">proxy.conf</code>. A Lua <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">on_route</code> override may send a request to an <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">h2c://</code> URL, never to a <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">unix:</code> socket: a socket is only reachable as a configured target.</p>
                     </div>
 
                     <!-- Per-route Lua scripts -->
@@ -258,8 +342,9 @@
                     <!-- Basic Auth -->
                     <div class="mb-8 ml-11">
                         <h3 class="text-lg font-semibold text-white mb-3">HTTP Basic Auth</h3>
-                        <p class="text-gray-400 text-sm mb-3">Append <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@auth:user:hash</code> to protect a route with HTTP Basic Auth. Repeat it for several accounts. Generate the bcrypt hash with <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">soli-proxy hash-password</code>.</p>
-                        <p class="text-gray-400 text-sm mb-3"><code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@noauth:</code> lists request paths served <em>without</em> credentials on an otherwise protected route &mdash; the escape hatch for machine-to-machine callers such as a Stripe webhook or a health probe. Entries are comma-separated and each is either an exact path (<code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">/webhooks/stripe</code>) or a prefix ending in <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">*</code> (<code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">/hooks/*</code>, which also matches the bare <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">/hooks</code>). Paths are matched against the URL as the client sent it, before any prefix stripping. <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@noauth</code> without <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@auth</code> does nothing.</p>
+                        <p class="text-gray-400 text-sm mb-3">Append <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@auth:user:hash</code> to protect a route with HTTP Basic Auth. Repeat it for several accounts. Generate the bcrypt hash with the <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">hash-password</code> binary shipped next to <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">soli-proxy</code>. Only bcrypt hashes at cost 4 to 13 are accepted; an entry outside that range is a load error: fatal at startup, and on a reload the previous configuration stays in force. bcrypt runs on a bounded pool off the request workers: a credential that cannot be checked within a second is answered <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">503</code> with <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Retry-After</code>, and successes are remembered for five minutes.</p>
+                        <p class="text-gray-400 text-sm mb-3"><code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@noauth:</code> lists request paths served <em>without</em> credentials on an otherwise protected route &mdash; the escape hatch for machine-to-machine callers such as a Stripe webhook or a health probe. Entries are comma-separated and each is either an exact path (<code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">/webhooks/stripe</code>) or a prefix ending in <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">*</code> (<code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">/hooks/*</code>, which also matches the bare <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">/hooks</code>). Paths are matched before any prefix stripping, in the same canonical form rules are matched in (see below). <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@noauth</code> without <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@auth</code> or <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@forward_auth:</code> does nothing; with both, it skips both.</p>
+                        <p class="text-gray-400 text-sm mb-3">Rules &mdash; and their <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@auth</code> / <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@noauth</code> &mdash; match a canonical form of the request path: percent-encoded unreserved characters (letters, digits, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">- . _ ~</code>) are decoded and runs of <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">/</code> collapse to one, so <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">//admin/x</code> and <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">/%61dmin/x</code> meet an <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">/admin/*</code> rule exactly as <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">/admin/x</code> does. Reserved characters stay encoded and case is not folded. The backend still receives the path as sent (a prefix rule strips its prefix from the canonical form).</p>
                         <p class="text-gray-400 text-sm mb-3">The exemption is deliberately literal: a path carrying percent-encoding or a <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">..</code> segment is never exempt, so a request cannot walk out of the carve-out into a protected path that a normalising backend would resolve differently. Anything ambiguous keeps asking for the password.</p>
                         <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
                             <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
@@ -280,6 +365,56 @@
 <span class="tf">app.example.com</span> <span class="tk">-></span> <span class="ts">http://app:8080</span> <span class="tt">@auth:admin:$2b$12$...</span> \
                   <span class="tt">@noauth:/webhooks/stripe,/hooks/*,/healthz</span></code></pre>
                         </div>
+                    </div>
+
+                    <!-- Forward Auth -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-3">Forward Authentication</h3>
+                        <p class="text-gray-400 text-sm mb-3"><code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@forward_auth:URL</code> lets one SSO service &mdash; oauth2-proxy, Authelia, Authentik, a Soli app &mdash; gate any route, the way Traefik's ForwardAuth, nginx's <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">auth_request</code> and Caddy's <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">forward_auth</code> do. Before proxying, the proxy sends the auth service a body-less <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">GET</code> to that URL carrying the client's <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Cookie</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Authorization</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Accept</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">User-Agent</code> and <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">X-Requested-With</code>, the proxy's own <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">X-Forwarded-For</code>/<code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">-Proto</code>/<code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">-Host</code>, and <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">X-Forwarded-Method</code> / <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">X-Forwarded-Uri</code> describing the request.</p>
+                        <ul class="text-gray-400 text-sm mb-3 space-y-1 list-disc ml-5">
+                            <li><strong class="text-white">2xx</strong>: the request goes through. The headers named in <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@forward_auth_headers:A,B</code> are copied from the answer onto the upstream request.</li>
+                            <li><strong class="text-white">Anything else</strong> (401, 403, a 302 to the login page): the answer &mdash; status, headers such as <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Location</code> and <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Set-Cookie</code>, body up to 64&nbsp;KiB &mdash; goes to the client, and the upstream is never contacted.</li>
+                            <li><strong class="text-white">No answer</strong> within <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">[forward_auth] timeout_secs</code> (default 5&nbsp;s): <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">503</code>. Fail closed, never a pass.</li>
+                        </ul>
+                        <p class="text-gray-400 text-sm mb-3">The headers named in <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@forward_auth_headers:</code> are <strong class="text-white">always stripped from the client's request first</strong> &mdash; on every request, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@noauth</code> paths included &mdash; so a client cannot forge <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">X-Auth-User</code>. Nothing is cached: a revoked session stops working on the next request. With <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@auth</code> on the same rule, Basic Auth runs first and both must pass (the <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Authorization</code> header then stays with the proxy). WebSocket upgrades are gated the same way. Apps use <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">[auth] forward</code> in <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">app.infos</code>; in multi-tenant mode its URL must be listed in <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">[forward_auth] allowed_urls</code>, since the proxy fetches it.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">proxy.conf</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tc"># oauth2-proxy (--upstream=static://202 --set-xauthrequest) on :4180</span>
+<span class="tf">auth.example.com</span> <span class="tk">-></span> <span class="ts">http://127.0.0.1:4180</span>
+
+<span class="tf">grafana.example.com</span> <span class="tk">-></span> <span class="ts">http://127.0.0.1:3000</span> \
+    <span class="tt">@forward_auth:http://127.0.0.1:4180/</span> \
+    <span class="tt">@forward_auth_headers:X-Auth-Request-User,X-Auth-Request-Email</span> \
+    <span class="tt">@noauth:/api/health</span></code></pre>
+                        </div>
+                    </div>
+
+                    <!-- Request headers -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-3">Request Headers</h3>
+                        <p class="text-gray-400 text-sm mb-3">A <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">headers {</code> block applies to the <em>rule right above it</em> and ends with <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">}</code> on its own line. <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Name: value</code> sets a header on the request sent upstream, replacing what the client sent; <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">-Name</code> removes one. The block runs after the proxy has set <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">X-Forwarded-For</code>/<code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">-Proto</code>/<code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">-Host</code>, so it can override those too. Values may use <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">$client_ip</code> (the TCP peer, or the client a trusted proxy names; never an untrusted client's header), <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">$scheme</code> and <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">$host</code>; <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">$$</code> is a literal dollar. Hop-by-hop and framing headers (<code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Connection</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Transfer-Encoding</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Content-Length</code>&hellip;) cannot be set. Blocks apply to WebSocket upgrades too (an upgrade is an ordinary request until the backend&rsquo;s 101); app-managed domains are not affected.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">proxy.conf</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tf">api.example.com</span> <span class="tk">-></span> <span class="ts">http://api:3000</span>
+<span class="tk">headers {</span>
+    X-Real-IP: $client_ip
+    X-Forwarded-Proto: $scheme
+    -X-Debug-Token
+<span class="tk">}</span></code></pre>
+                        </div>
+                        <p class="text-gray-400 text-sm mt-3">Any line the parser does not understand &mdash; an unknown directive, a bad <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">weight:</code>, a malformed <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@auth</code>, an unclosed block &mdash; is an error naming its line number: fatal at startup, and on a hot reload the previous rules stay in force. Earlier versions skipped such lines.</p>
                     </div>
 
                     <!-- Global scripts -->
@@ -409,7 +544,12 @@
 <span class="tf">bind</span> = <span class="ts">"0.0.0.0:80"</span>            <span class="tc"># HTTP listen address</span>
 <span class="tf">https_port</span> = <span class="tn">443</span>               <span class="tc"># HTTPS listen port</span>
 <span class="tf">worker_threads</span> = <span class="ts">"auto"</span>        <span class="tc"># "auto" = num CPUs, or a number</span>
-<span class="tf">allow_encoded_slash</span> = <span class="tk">false</span>     <span class="tc"># let %2F through (GitLab-style API paths)</span></code></pre>
+<span class="tf">allow_encoded_slash</span> = <span class="tk">false</span>     <span class="tc"># let %2F through (GitLab-style API paths)</span>
+<span class="tf">shutdown_grace_period</span> = <span class="tn">10</span>      <span class="tc"># seconds in-flight requests get on stop/restart</span>
+<span class="tf">trusted_proxies</span> = [<span class="ts">"cloudflare"</span>]  <span class="tc"># whose X-Forwarded-For to believe</span>
+<span class="tf">real_ip_header</span> = <span class="ts">"X-Forwarded-For"</span>  <span class="tc"># or "CF-Connecting-IP", "X-Real-IP"</span>
+<span class="tf">proxy_protocol</span> = <span class="ts">"off"</span>        <span class="tc"># "v1", "v2", "any", or { https = "v2" }</span>
+<span class="tf">request_id_header</span> = <span class="ts">"X-Request-Id"</span>  <span class="tc"># "" = off</span></code></pre>
                         </div>
                         <div class="mt-3 overflow-x-auto">
                             <table class="w-full text-sm text-left">
@@ -421,9 +561,14 @@
                                 </tr></thead>
                                 <tbody class="text-gray-300">
                                     <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">bind</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"0.0.0.0:80"</td><td class="py-2">Address and port for HTTP</td></tr>
-                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">https_port</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">443</td><td class="py-2">Port for HTTPS/TLS listener</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">https_port</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">443</td><td class="py-2">Port for the HTTPS/TLS listener, on the same address as <code class="text-cyan-300 text-xs">bind</code>. <code class="text-cyan-300 text-xs">bind = "[::]:80"</code> gives dual-stack (IPv6 and IPv4) listeners on both ports.</td></tr>
                                     <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">worker_threads</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"auto"</td><td class="py-2">Tokio worker thread count</td></tr>
                                     <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">allow_encoded_slash</td><td class="py-2 pr-4">bool</td><td class="py-2 pr-4 text-gray-500">false</td><td class="py-2">Request paths with a dot segment (<code class="text-cyan-300 text-xs">/api/../admin</code>, <code class="text-cyan-300 text-xs">%2e%2e</code>, <code class="text-cyan-300 text-xs">..;</code>, <code class="text-cyan-300 text-xs">..\</code>) are answered 400 before any rule matches, and so is an encoded slash (<code class="text-cyan-300 text-xs">%2F</code>) anywhere. Set to <code class="text-cyan-300 text-xs">true</code> for backends whose API paths carry <code class="text-cyan-300 text-xs">%2F</code> as data (GitLab's <code class="text-cyan-300 text-xs">group%2Fproject</code>, S3-style keys); <code class="text-cyan-300 text-xs">..%2F</code> stays rejected.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">shutdown_grace_period</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">10</td><td class="py-2">On SIGTERM/SIGINT the proxy stops accepting, closes idle connections (HTTP/2 gets GOAWAY) and gives in-flight requests up to this many seconds to finish &mdash; the wait ends with the last one. Then it exits, leaving managed apps running for the next proxy to adopt unless <code class="text-cyan-300 text-xs">[apps] stop_on_shutdown = true</code> (the default under <code class="text-cyan-300 text-xs">--dev</code>). At most 3600. A second signal exits at once.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">trusted_proxies</td><td class="py-2 pr-4">array</td><td class="py-2 pr-4 text-gray-500">[]</td><td class="py-2">Peers whose forwarding headers are believed: CIDRs, addresses, or the presets <code class="text-cyan-300 text-xs">"cloudflare"</code> (Cloudflare's published ranges, compiled in), <code class="text-cyan-300 text-xs">"private"</code> (RFC 1918, <code class="text-cyan-300 text-xs">fc00::/7</code>) and <code class="text-cyan-300 text-xs">"loopback"</code>. From such a peer the client is found by walking <code class="text-cyan-300 text-xs">X-Forwarded-For</code> right to left past trusted hops; it is then used for rate limits, logs, <code class="text-cyan-300 text-xs">X-Real-IP</code>, <code class="text-cyan-300 text-xs">$client_ip</code> and Lua's <code class="text-cyan-300 text-xs">req.client_ip</code>, the chain is appended to and its <code class="text-cyan-300 text-xs">X-Forwarded-Proto</code> kept. A forwarded loopback, link-local or unspecified address is never believed: the peer is the client then. <code class="text-cyan-300 text-xs">/metrics</code> is judged on the connection, never on a forwarded claim. With <code class="text-cyan-300 text-xs">multi_tenant</code> on, do not list loopback or Docker's <code class="text-cyan-300 text-xs">172.16.0.0/12</code> / <code class="text-cyan-300 text-xs">192.168.0.0/16</code> (the <code class="text-cyan-300 text-xs">"private"</code> and <code class="text-cyan-300 text-xs">"loopback"</code> presets): tenants connect from there, and <code class="text-cyan-300 text-xs">soli-proxy check</code> warns. Other peers: unchanged. Trusted peers are exempt from <code class="text-cyan-300 text-xs">max_connections_per_ip</code>. Follows hot reloads.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">real_ip_header</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"X-Forwarded-For"</td><td class="py-2">Where a trusted peer names the client: the <code class="text-cyan-300 text-xs">X-Forwarded-For</code> chain, or a single-address header such as <code class="text-cyan-300 text-xs">CF-Connecting-IP</code>, <code class="text-cyan-300 text-xs">X-Real-IP</code>, <code class="text-cyan-300 text-xs">True-Client-IP</code> (removed from requests by untrusted peers).</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">proxy_protocol</td><td class="py-2 pr-4">string or table</td><td class="py-2 pr-4 text-gray-500">"off"</td><td class="py-2">PROXY protocol on the listeners: <code class="text-cyan-300 text-xs">"v1"</code>, <code class="text-cyan-300 text-xs">"v2"</code>, <code class="text-cyan-300 text-xs">"any"</code>, or per listener <code class="text-cyan-300 text-xs">{ http = "off", https = "v2" }</code>. Read before TLS/HTTP (5 s, 1 KiB at most), only from <code class="text-cyan-300 text-xs">trusted_proxies</code> &mdash; any other connection is closed. The carried address is the connection's peer, <code class="text-cyan-300 text-xs">max_connections_per_ip</code> included. Needs a non-empty <code class="text-cyan-300 text-xs">trusted_proxies</code>.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">request_id_header</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"X-Request-Id"</td><td class="py-2">Header carrying the request ID, sent upstream, returned to the client, in the access log and Lua's <code class="text-cyan-300 text-xs">req.request_id</code>. Kept from a trusted peer when 1&ndash;128 visible ASCII characters, otherwise 32 random hex digits. <code class="text-cyan-300 text-xs">""</code> turns request IDs off.</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -449,7 +594,8 @@
 <span class="tf">cache_dir</span> = <span class="ts">"./certs"</span>               <span class="tc"># Directory to store certificates</span>
 <span class="tf">force_https</span> = <span class="tn">true</span>                  <span class="tc"># Redirect HTTP→HTTPS with 308</span>
 <span class="tf">hsts_max_age_seconds</span> = <span class="tn">63072000</span>     <span class="tc"># HSTS max-age (default 2y, 0 disables)</span>
-<span class="tf">hsts_include_subdomains</span> = <span class="tn">true</span>      <span class="tc"># Append `; includeSubDomains` directive</span></code></pre>
+<span class="tf">hsts_include_subdomains</span> = <span class="tn">true</span>      <span class="tc"># Append `; includeSubDomains` directive</span>
+<span class="tf">min_version</span> = <span class="ts">"1.2"</span>                 <span class="tc"># or "1.3"</span></code></pre>
                         </div>
                         <div class="mt-3 overflow-x-auto">
                             <table class="w-full text-sm text-left">
@@ -465,6 +611,7 @@
                                     <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">force_https</td><td class="py-2 pr-4">bool</td><td class="py-2 pr-4 text-gray-500">true</td><td class="py-2">Send a 308 to <code class="text-cyan-300 text-xs">https://</code> for plaintext requests.</td></tr>
                                     <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">hsts_max_age_seconds</td><td class="py-2 pr-4">u64</td><td class="py-2 pr-4 text-gray-500">63072000</td><td class="py-2">HSTS <code class="text-cyan-300 text-xs">max-age</code>. Set to 0 to omit the header entirely.</td></tr>
                                     <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">hsts_include_subdomains</td><td class="py-2 pr-4">bool</td><td class="py-2 pr-4 text-gray-500">true</td><td class="py-2">Set to <code class="text-cyan-300 text-xs">false</code> on apex domains that serve independent subdomains.</td></tr>
+<tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">min_version</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"1.2"</td><td class="py-2">Lowest TLS version accepted, <code class="text-cyan-300 text-xs">"1.2"</code> or <code class="text-cyan-300 text-xs">"1.3"</code>. Session resumption is always on: TLS 1.3 session tickets (keys rotate every 6 hours, in memory only) and a 32k-entry TLS 1.2 session cache, so returning clients skip the full handshake.</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -580,6 +727,82 @@
                         </div>
                     </div>
 
+                    <!-- [upstream] -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-1 flex items-center gap-2">
+                            <span class="text-emerald-400 font-mono text-sm">[upstream]</span>
+                        </h3>
+                        <p class="text-gray-400 text-sm mb-3">Retrying a request on another target when an attempt fails before any response byte. A <strong>connect failure</strong> (refused, unreachable, connect timeout, TLS handshake) is always safe &mdash; nothing reached the backend &mdash; so any request is retried, its body included. <strong>Any other failure</strong> (a reset, a connection closed mid-request), or a status listed in <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">retry_on</code>, is retried only for idempotent methods (<code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">GET HEAD OPTIONS PUT DELETE TRACE</code>) without a body. The retry goes to the rule's next available target in rule order; for a managed app, to its other slot while a blue/green deploy has one running (and the failed slot is failed over at once); for a cluster-pushed domain, to another instance. A request a Lua hook routed is never retried elsewhere. Every failed attempt still counts in the circuit breaker. A rule with several targets keeps a copy of the request head for a possible retry; <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">retries = 0</code> (or <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@retries:0</code>) avoids that cost.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">config.toml</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tk">[upstream]</span>
+<span class="tf">retries</span> = <span class="tn">1</span>                       <span class="tc"># 0 = off; @retries:N per route</span>
+<span class="tf">retry_on</span> = [<span class="ts">"connect"</span>, <span class="ts">"error"</span>]   <span class="tc"># may add "500", "502", "503", "504"</span>
+<span class="tf">try_duration</span> = <span class="ts">"5s"</span>              <span class="tc"># no new attempt after this long</span></code></pre>
+                        </div>
+                        <div class="mt-3 overflow-x-auto">
+                            <table class="w-full text-sm text-left">
+                                <thead><tr class="border-b border-white/10 text-gray-400">
+                                    <th class="py-2 pr-4 font-medium">Key</th>
+                                    <th class="py-2 pr-4 font-medium">Type</th>
+                                    <th class="py-2 pr-4 font-medium">Default</th>
+                                    <th class="py-2 font-medium">Description</th>
+                                </tr></thead>
+                                <tbody class="text-gray-300">
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">retries</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">1</td><td class="py-2">Further attempts, each on a different target (at most 10).</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">retry_on</td><td class="py-2 pr-4">array</td><td class="py-2 pr-4 text-gray-500">["connect", "error"]</td><td class="py-2">Failures that are retried: <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">connect</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">error</code> (alias <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">reset</code>), and statuses <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">500</code>/<code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">502</code>/<code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">503</code>/<code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">504</code>.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">try_duration</td><td class="py-2 pr-4">duration</td><td class="py-2 pr-4 text-gray-500">none</td><td class="py-2">Stop retrying this long after the first attempt; the request timeout bounds it anyway.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- [health_checks] -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-1 flex items-center gap-2">
+                            <span class="text-emerald-400 font-mono text-sm">[health_checks]</span>
+                        </h3>
+                        <p class="text-gray-400 text-sm mb-3">Active checks for <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">proxy.conf</code> targets (managed apps have their own monitor). A rule opts in with <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@health:/path</code>; <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">default_path</code> checks every rule except those saying <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@health:off</code>. A background task probes each distinct target (<code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">GET</code> with <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">User-Agent: soli-proxy-health-check</code>, through the rule's own TLS/HTTP/2/socket settings); any answer below 500 counts as up. A target that fails <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">unhealthy_threshold</code> probes in a row is skipped by every strategy, like an open circuit breaker, until it passes <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">healthy_threshold</code> in a row. The probes follow every reload: removed checks stop, and their targets' verdicts are forgotten. <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">GET /api/v1/circuit-breaker</code> reports <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">"health": "up"</code> or <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">"down"</code> for checked targets.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">config.toml</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tk">[health_checks]</span>
+<span class="tf">default_path</span> = <span class="ts">"/healthz"</span>    <span class="tc"># omit: only rules with @health: are checked</span>
+<span class="tf">interval</span> = <span class="ts">"10s"</span>
+<span class="tf">timeout</span> = <span class="ts">"2s"</span>
+<span class="tf">unhealthy_threshold</span> = <span class="tn">3</span>
+<span class="tf">healthy_threshold</span> = <span class="tn">2</span></code></pre>
+                        </div>
+                        <div class="mt-3 overflow-x-auto">
+                            <table class="w-full text-sm text-left">
+                                <thead><tr class="border-b border-white/10 text-gray-400">
+                                    <th class="py-2 pr-4 font-medium">Key</th>
+                                    <th class="py-2 pr-4 font-medium">Type</th>
+                                    <th class="py-2 pr-4 font-medium">Default</th>
+                                    <th class="py-2 font-medium">Description</th>
+                                </tr></thead>
+                                <tbody class="text-gray-300">
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">default_path</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">none</td><td class="py-2">Health path probed on every rule's targets.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">interval</td><td class="py-2 pr-4">duration</td><td class="py-2 pr-4 text-gray-500">10s</td><td class="py-2">Time between probes (<code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@health_interval</code> per rule).</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">timeout</td><td class="py-2 pr-4">duration</td><td class="py-2 pr-4 text-gray-500">2s</td><td class="py-2">A probe without an answer by then failed.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">unhealthy_threshold</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">3</td><td class="py-2">Consecutive failed probes before a target is taken out.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">healthy_threshold</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">2</td><td class="py-2">Consecutive good probes before it is put back.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
                     <!-- [scripting] -->
                     <div class="mb-8 ml-11">
                         <h3 class="text-lg font-semibold text-white mb-1 flex items-center gap-2">
@@ -597,7 +820,8 @@
                             <pre class="p-4 text-sm overflow-x-auto"><code><span class="tk">[scripting]</span>
 <span class="tf">enabled</span> = <span class="tn">true</span>                <span class="tc"># Enable Lua scripting engine</span>
 <span class="tf">scripts_dir</span> = <span class="ts">"./scripts/lua"</span>  <span class="tc"># Directory containing Lua scripts</span>
-<span class="tf">hook_timeout_ms</span> = <span class="tn">10</span>         <span class="tc"># Max execution time per hook (ms)</span></code></pre>
+<span class="tf">hook_timeout_ms</span> = <span class="tn">10</span>         <span class="tc"># Max execution time per hook (ms)</span>
+<span class="tf">exposed_env</span> = [<span class="ts">"BACKEND_TOKEN"</span>] <span class="tc"># Variables Lua's env module may read</span></code></pre>
                         </div>
                         <div class="mt-3 overflow-x-auto">
                             <table class="w-full text-sm text-left">
@@ -611,6 +835,7 @@
                                     <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">enabled</td><td class="py-2 pr-4">bool</td><td class="py-2 pr-4 text-gray-500">false</td><td class="py-2">Enable or disable scripting engine</td></tr>
                                     <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">scripts_dir</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"./scripts/lua"</td><td class="py-2">Path to Lua script files</td></tr>
                                     <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">hook_timeout_ms</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">10</td><td class="py-2">Max execution time per hook call</td></tr>
+<tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">exposed_env</td><td class="py-2 pr-4">array</td><td class="py-2 pr-4 text-gray-500">[]</td><td class="py-2">Environment variables the Lua <code class="text-cyan-300 text-xs">env</code> module may read; any other name reads <code class="text-cyan-300 text-xs">nil</code>. Scripts are loaded at startup; changing them needs a restart.</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -621,7 +846,7 @@
                         <h3 class="text-lg font-semibold text-white mb-1 flex items-center gap-2">
                             <span class="text-emerald-400 font-mono text-sm">[logging]</span>
                         </h3>
-                        <p class="text-gray-400 text-sm mb-3">Structured logging configuration.</p>
+                        <p class="text-gray-400 text-sm mb-3">The proxy's own log. Every line is written by a background thread (<code class="text-cyan-300 text-xs">tracing_appender::non_blocking</code>), so a slow disk never stalls a request; if that thread falls far behind, lines are dropped rather than blocking. <code class="text-cyan-300 text-xs">level</code>, <code class="text-cyan-300 text-xs">format</code> and <code class="text-cyan-300 text-xs">output</code> are read at startup; <code class="text-cyan-300 text-xs">log_endpoints</code> follows hot reloads.</p>
                         <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
                             <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
                                 <div class="flex items-center gap-2">
@@ -631,9 +856,14 @@
                                 <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
                             </div>
                             <pre class="p-4 text-sm overflow-x-auto"><code><span class="tk">[logging]</span>
-<span class="tf">level</span> = <span class="ts">"info"</span>                <span class="tc"># trace, debug, info, warn, error</span>
-<span class="tf">format</span> = <span class="ts">"json"</span>               <span class="tc"># "json" or "pretty"</span>
-<span class="tf">output</span> = <span class="ts">"stdout"</span>             <span class="tc"># "stdout" or "file:/var/log/soli-proxy.log"</span></code></pre>
+<span class="tf">level</span> = <span class="ts">"info"</span>                <span class="tc"># trace, debug, info, warn, error, or a filter</span>
+<span class="tf">format</span> = <span class="ts">"json"</span>               <span class="tc"># "json" or "text"</span>
+<span class="tf">output</span> = <span class="ts">"stdout"</span>             <span class="tc"># "stdout", "stderr" or "file:/var/log/soli-proxy/proxy.log"</span>
+<span class="tf">max_size</span> = <span class="ts">"100MB"</span>            <span class="tc"># file output: rotate past this size ("0" = never)</span>
+<span class="tf">max_files</span> = <span class="tn">5</span>                 <span class="tc"># file output: rotated files kept</span>
+<span class="tf">log_endpoints</span> = <span class="tn">true</span>          <span class="tc"># one line per request</span>
+<span class="tf">access_log</span> = <span class="ts">"/var/log/soli-proxy/access.log"</span>  <span class="tc"># "off", "stdout", "stderr" or a path</span>
+<span class="tf">access_log_format</span> = <span class="ts">"json"</span>    <span class="tc"># or "combined"</span></code></pre>
                         </div>
                         <div class="mt-3 overflow-x-auto">
                             <table class="w-full text-sm text-left">
@@ -644,9 +874,14 @@
                                     <th class="py-2 font-medium">Description</th>
                                 </tr></thead>
                                 <tbody class="text-gray-300">
-                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">level</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"info"</td><td class="py-2">Log verbosity level</td></tr>
-                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">format</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"json"</td><td class="py-2">Output format (json or pretty)</td></tr>
-                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">output</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"stdout"</td><td class="py-2">Output target (stdout or file path)</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">level</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"info"</td><td class="py-2">Verbosity: <code class="text-cyan-300 text-xs">trace</code>&hellip;<code class="text-cyan-300 text-xs">error</code>, or a <code class="text-cyan-300 text-xs">tracing</code> filter such as <code class="text-cyan-300 text-xs">info,soli_proxy::server=debug</code>. When unset, <code class="text-cyan-300 text-xs">RUST_LOG</code> is used, then <code class="text-cyan-300 text-xs">info</code>. An invalid value stops startup.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">format</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"json"</td><td class="py-2"><code class="text-cyan-300 text-xs">json</code> (one object per line; the TUI error screen reads it) or <code class="text-cyan-300 text-xs">text</code>.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">output</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"stdout"</td><td class="py-2"><code class="text-cyan-300 text-xs">stdout</code>, <code class="text-cyan-300 text-xs">stderr</code> or <code class="text-cyan-300 text-xs">file:/path</code>. With <code class="text-cyan-300 text-xs">-d</code>, stdout/stderr mean <code class="text-cyan-300 text-xs">${SOLI_LOG_DIR:-.}/proxy.log</code>.</td></tr>
+<tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">max_size</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"100MB"</td><td class="py-2">File output: when the file would exceed this, <code class="text-cyan-300 text-xs">proxy.log</code> becomes <code class="text-cyan-300 text-xs">proxy.log.1</code>, <code class="text-cyan-300 text-xs">.1</code> becomes <code class="text-cyan-300 text-xs">.2</code>&hellip; <code class="text-cyan-300 text-xs">"0"</code> disables rotation. New files are created <code class="text-cyan-300 text-xs">0640</code>.</td></tr>
+<tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">max_files</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">5</td><td class="py-2">File output: rotated files kept; the oldest beyond this is deleted.</td></tr>
+<tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">log_endpoints</td><td class="py-2 pr-4">bool</td><td class="py-2 pr-4 text-gray-500">false</td><td class="py-2">Log one line per request (method, host, path, status, latency).</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">access_log</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"off"</td><td class="py-2">One line per request, written once the response body is sent (or abandoned): time, client IP (the real one, see <code class="text-cyan-300 text-xs">trusted_proxies</code>), method, host, path and query, protocol, status, bytes in (<code class="text-cyan-300 text-xs">Content-Length</code>) and out, duration, upstream, app, request ID, user agent, referer, TLS. <code class="text-cyan-300 text-xs">stdout</code>, <code class="text-cyan-300 text-xs">stderr</code> or a file path, rotated by <code class="text-cyan-300 text-xs">max_size</code>/<code class="text-cyan-300 text-xs">max_files</code>. Through a non-blocking writer that drops lines rather than slow traffic. Read at startup.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">access_log_format</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"json"</td><td class="py-2"><code class="text-cyan-300 text-xs">json</code> (one object per line) or <code class="text-cyan-300 text-xs">combined</code> (Apache/nginx combined, followed by <code class="text-cyan-300 text-xs">host= rt= rid= upstream= app= tls= in=</code>).</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -668,9 +903,13 @@
                             </div>
                             <pre class="p-4 text-sm overflow-x-auto"><code><span class="tk">[limits]</span>
 <span class="tf">max_connections</span> = <span class="tn">10000</span>      <span class="tc"># Maximum concurrent connections</span>
+<span class="tf">max_connections_per_ip</span> = <span class="tn">256</span> <span class="tc"># Per client address (IPv6: per /64); 0 = off</span>
 <span class="tf">max_request_size</span> = <span class="ts">"10MB"</span>    <span class="tc"># Maximum request body size</span>
-<span class="tf">keep_alive_timeout</span> = <span class="tn">30</span>     <span class="tc"># Keep-alive timeout in seconds</span>
-<span class="tf">request_timeout</span> = <span class="tn">60</span>        <span class="tc"># Total request timeout in seconds</span></code></pre>
+<span class="tf">keep_alive_timeout</span> = <span class="tn">30</span>     <span class="tc"># Header read / idle connection timeout (seconds)</span>
+<span class="tf">request_timeout</span> = <span class="tn">60</span>        <span class="tc"># Seconds to the response headers (@timeout per route)</span>
+<span class="tf">websocket_idle_timeout_secs</span> = <span class="tn">300</span>
+<span class="tf">websocket_max_lifetime_secs</span> = <span class="tn">3600</span>
+<span class="tf">websocket_max_bytes_per_direction</span> = <span class="tn">1073741824</span></code></pre>
                         </div>
                         <div class="mt-3 overflow-x-auto">
                             <table class="w-full text-sm text-left">
@@ -681,10 +920,14 @@
                                     <th class="py-2 font-medium">Description</th>
                                 </tr></thead>
                                 <tbody class="text-gray-300">
-                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">max_connections</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">10000</td><td class="py-2">Max concurrent connections</td></tr>
-                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">max_request_size</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"10MB"</td><td class="py-2">Max request body size</td></tr>
-                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">keep_alive_timeout</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">30</td><td class="py-2">Keep-alive timeout (seconds)</td></tr>
-                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">request_timeout</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">60</td><td class="py-2">Total request timeout (seconds)</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">max_connections</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">none</td><td class="py-2">Simultaneous client connections across HTTP and HTTPS. When none is free, an accepted connection waits up to 10 s for one (then is closed) and further connections wait in the listen backlog. Read at startup.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">max_connections_per_ip</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">256</td><td class="py-2">Max simultaneous connections from one client address, across HTTP and HTTPS. IPv6 clients count per /64. A connection over the cap is closed on accept. Keyed on the TCP peer (or the PROXY protocol address); a <code class="text-cyan-300 text-xs">trusted_proxies</code> peer is exempt. <code class="text-cyan-300 text-xs">0</code> disables the cap. Read at startup.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">max_request_size</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">none</td><td class="py-2">Request bodies above this are refused with 413 (<code class="text-cyan-300 text-xs">KB</code>/<code class="text-cyan-300 text-xs">MB</code>/<code class="text-cyan-300 text-xs">GB</code> suffixes).</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">keep_alive_timeout</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">none</td><td class="py-2">Seconds allowed to receive a request's headers; also closes idle keep-alive connections.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">request_timeout</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">60</td><td class="py-2">Seconds for the upstream exchange before the client gets 504. A rule's <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@timeout</code> replaces it.</td></tr>
+<tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">websocket_idle_timeout_secs</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">300</td><td class="py-2">Close a forwarded WebSocket when both directions have been silent this long.</td></tr>
+<tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">websocket_max_lifetime_secs</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">3600</td><td class="py-2">Absolute lifetime of a forwarded WebSocket.</td></tr>
+<tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">websocket_max_bytes_per_direction</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">1073741824</td><td class="py-2">Close a forwarded WebSocket once either direction has carried this many bytes.</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -723,6 +966,123 @@
                                     <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">strategy</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"token_bucket"</td><td class="py-2">Rate limiting algorithm</td></tr>
                                     <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">requests_per_second</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">1000</td><td class="py-2">Sustained request rate per second</td></tr>
                                     <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">burst_size</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">2000</td><td class="py-2">Max burst above sustained rate</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- [compression] -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-1 flex items-center gap-2">
+                            <span class="text-emerald-400 font-mono text-sm">[compression]</span>
+                        </h3>
+                        <p class="text-gray-400 text-sm mb-3">Compresses backends&rsquo; responses with gzip, brotli or zstd when the client asks for it (<code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Accept-Encoding</code>, q-values honoured, ties broken by <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">algorithms</code> order) and the response is eligible: no <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Content-Encoding</code> already, not 1xx/204/206/304, a <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Content-Type</code> in <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">types</code> other than <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">text/event-stream</code>, at least <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">min_length</code> bytes when its length is known, and no <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Cache-Control: no-transform</code>. Compressed responses lose <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Content-Length</code> and <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Accept-Ranges</code>, strong ETags become weak, and every eligible response carries <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Vary: Accept-Encoding</code>. HEAD requests and WebSockets are never compressed.</p>
+                        <p class="text-gray-400 text-sm mb-3"><strong>Off by default.</strong> Compression costs one to two orders of magnitude more CPU per text byte than passthrough, changes what caches see, and compressing pages that reflect input next to secrets is what BREACH exploits &mdash; it is a decision, not an upgrade side effect. Per route, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@compress:on</code> / <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@compress:off</code> in proxy.conf override <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">enabled</code>; per app, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">compress = false</code> in app.infos opts out. Encoding runs in 64&nbsp;KiB slices per poll and is flushed whenever the backend pauses, so streamed responses stay live. On a path-prefix mount the HTML rewrite happens first.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">config.toml</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tk">[compression]</span>
+<span class="tf">enabled</span> = <span class="tn">true</span>                       <span class="tc"># default false</span>
+<span class="tf">algorithms</span> = [<span class="ts">"br"</span>, <span class="ts">"zstd"</span>, <span class="ts">"gzip"</span>]  <span class="tc"># preference on a tie</span>
+<span class="tf">gzip_level</span> = <span class="tn">5</span>
+<span class="tf">brotli_level</span> = <span class="tn">4</span>
+<span class="tf">zstd_level</span> = <span class="tn">3</span>
+<span class="tf">min_length</span> = <span class="tn">1024</span>
+<span class="tf">types</span> = [<span class="ts">"text/*"</span>, <span class="ts">"application/json"</span>, <span class="ts">"*+json"</span>, <span class="ts">"image/svg+xml"</span>]</code></pre>
+                        </div>
+                        <div class="mt-3 overflow-x-auto">
+                            <table class="w-full text-sm text-left">
+                                <thead><tr class="border-b border-white/10 text-gray-400">
+                                    <th class="py-2 pr-4 font-medium">Key</th>
+                                    <th class="py-2 pr-4 font-medium">Type</th>
+                                    <th class="py-2 pr-4 font-medium">Default</th>
+                                    <th class="py-2 font-medium">Description</th>
+                                </tr></thead>
+                                <tbody class="text-gray-300">
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">enabled</td><td class="py-2 pr-4">bool</td><td class="py-2 pr-4 text-gray-500">false</td><td class="py-2">Compress eligible responses on routes and apps that do not opt out.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">algorithms</td><td class="py-2 pr-4">list</td><td class="py-2 pr-4 text-gray-500">["br", "zstd", "gzip"]</td><td class="py-2">Codings offered, in order of preference when a client accepts several equally.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">gzip_level</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">5</td><td class="py-2">1&ndash;9.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">brotli_level</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">4</td><td class="py-2">0&ndash;11. Levels above ~5 cost several times more CPU for a few percent.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">zstd_level</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">3</td><td class="py-2">1&ndash;19.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">min_length</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">1024</td><td class="py-2">Responses with a smaller Content-Length are sent as they are.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">types</td><td class="py-2 pr-4">list</td><td class="py-2 pr-4 text-gray-500">text, JSON, JS, XML, SVG, wasm, icons, ttf/otf</td><td class="py-2">Media types compressed: exact, <code>type/*</code>, or a suffix such as <code>*+json</code>.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- [error_pages] -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-1 flex items-center gap-2">
+                            <span class="text-emerald-400 font-mono text-sm">[error_pages]</span>
+                        </h3>
+                        <p class="text-gray-400 text-sm mb-3">HTML pages for the errors the proxy itself generates (502, 503, 504, 421, 401, 413, 429&hellip;), served to clients whose <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Accept</code> lists <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">text/html</code>; everyone else keeps the plain text. Files in <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">dir</code>: <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">502.html</code> for one status, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">4xx.html</code> / <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">5xx.html</code> for a class, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">default.html</code>, and <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">maintenance.html</code>. Templates may use <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">{{status}}</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">{{reason}}</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">{{host}}</code> and <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">{{request_id}}</code>, all HTML-escaped. Pages are read at load and on reload, never per request, 64&nbsp;KiB each.</p>
+                        <p class="text-gray-400 text-sm mb-3">A backend&rsquo;s own error page, a forward-auth service&rsquo;s denial (its login form) and the body of a Lua <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">deny</code> are never replaced, unless <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">intercept_upstream_errors</code> is on. An app may bring its own pages in <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">&lt;site&gt;/error_pages/</code>, used first for the requests it serves (not for an apex its derived claim yields to an operator&rsquo;s rule or a pushed route); in multi-tenant mode neither the directory nor a page may be a symlink.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">config.toml</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tk">[error_pages]</span>
+<span class="tf">dir</span> = <span class="ts">"/etc/soli-proxy/errors"</span>
+<span class="tf">intercept_upstream_errors</span> = <span class="tn">false</span></code></pre>
+                        </div>
+                        <div class="mt-3 overflow-x-auto">
+                            <table class="w-full text-sm text-left">
+                                <thead><tr class="border-b border-white/10 text-gray-400">
+                                    <th class="py-2 pr-4 font-medium">Key</th>
+                                    <th class="py-2 pr-4 font-medium">Type</th>
+                                    <th class="py-2 pr-4 font-medium">Default</th>
+                                    <th class="py-2 font-medium">Description</th>
+                                </tr></thead>
+                                <tbody class="text-gray-300">
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">dir</td><td class="py-2 pr-4">path</td><td class="py-2 pr-4 text-gray-500">unset</td><td class="py-2">Directory holding the pages. A missing directory or a page over 64&nbsp;KiB is a configuration error.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">intercept_upstream_errors</td><td class="py-2 pr-4">bool</td><td class="py-2 pr-4 text-gray-500">false</td><td class="py-2">Also replace 4xx/5xx responses that came from a backend.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- [maintenance] -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-1 flex items-center gap-2">
+                            <span class="text-emerald-400 font-mono text-sm">[maintenance]</span>
+                        </h3>
+                        <p class="text-gray-400 text-sm mb-3">In maintenance, requests get <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">503</code> with <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Retry-After</code> and the <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">maintenance.html</code> page (the app&rsquo;s, then the global one, then a built-in page). Switch it with the admin API &mdash; <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">PUT /api/v1/maintenance</code> for everything, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">PUT /api/v1/apps/{name}/maintenance</code> for one app, body <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">{"enabled": true, "retry_after": 600, "message": "..."}</code>, persisted to <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">run/maintenance.json</code> &mdash; or by creating <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">sites/&lt;domain&gt;/maintenance.flag</code>, which deploy scripts can do without admin credentials.</p>
+                        <p class="text-gray-400 text-sm mb-3">This section only holds policy. Clients in <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">allow_ips</code>, paths in <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">allow_paths</code>, ACME challenges and the proxy&rsquo;s own health and metrics endpoints are served as usual.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">config.toml</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tk">[maintenance]</span>
+<span class="tf">retry_after</span> = <span class="tn">300</span>
+<span class="tf">allow_ips</span> = [<span class="ts">"10.0.0.0/8"</span>, <span class="ts">"203.0.113.7"</span>]
+<span class="tf">allow_paths</span> = [<span class="ts">"/up"</span>, <span class="ts">"/status/*"</span>]</code></pre>
+                        </div>
+                        <div class="mt-3 overflow-x-auto">
+                            <table class="w-full text-sm text-left">
+                                <thead><tr class="border-b border-white/10 text-gray-400">
+                                    <th class="py-2 pr-4 font-medium">Key</th>
+                                    <th class="py-2 pr-4 font-medium">Type</th>
+                                    <th class="py-2 pr-4 font-medium">Default</th>
+                                    <th class="py-2 font-medium">Description</th>
+                                </tr></thead>
+                                <tbody class="text-gray-300">
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">retry_after</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">300</td><td class="py-2">Retry-After when a toggle does not set one (seconds, at most a week).</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">allow_ips</td><td class="py-2 pr-4">list</td><td class="py-2 pr-4 text-gray-500">[]</td><td class="py-2">IPs or CIDRs (v4 or v6) served normally. Judged on the TCP peer address.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">allow_paths</td><td class="py-2 pr-4">list</td><td class="py-2 pr-4 text-gray-500">[]</td><td class="py-2">Exact paths, or prefixes ending in <code>*</code>, served normally. Compared literally: percent-encoded or dot-segment spellings are not let through.</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -772,10 +1132,13 @@
 <span class="tk">[logging]</span>
 <span class="tf">level</span> = <span class="ts">"info"</span>
 <span class="tf">format</span> = <span class="ts">"json"</span>
-<span class="tf">output</span> = <span class="ts">"stdout"</span>
+<span class="tf">output</span> = <span class="ts">"file:/var/log/soli-proxy/proxy.log"</span>
+<span class="tf">max_size</span> = <span class="ts">"100MB"</span>
+<span class="tf">max_files</span> = <span class="tn">5</span>
 
 <span class="tk">[limits]</span>
 <span class="tf">max_connections</span> = <span class="tn">10000</span>
+<span class="tf">max_connections_per_ip</span> = <span class="tn">256</span>
 <span class="tf">max_request_size</span> = <span class="ts">"10MB"</span>
 <span class="tf">keep_alive_timeout</span> = <span class="tn">30</span>
 <span class="tf">request_timeout</span> = <span class="tn">60</span>
@@ -798,7 +1161,10 @@
                         Hot Reloading
                     </h2>
                     <p class="text-gray-400 mb-8 ml-11">
-                        Configuration changes are applied without restarting the proxy or dropping active connections. There are three ways to trigger a reload.
+                        Configuration changes are applied without restarting the proxy or dropping active connections. There are three ways to trigger a reload. Both files are parsed into a new configuration that replaces the old one in one atomic swap: requests already in flight finish under the old rules, the next request sees the new ones, and nothing is drained or closed. If either file fails to parse, the previous configuration stays in force and the error is logged.
+                    </p>
+                    <p class="text-gray-400 mb-8 ml-11">
+                        A reload does <em>not</em> change what is set up at startup: listener addresses (<code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">bind</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">https_port</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">worker_threads</code>), the admin API's <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">enabled</code>/<code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">bind</code>, TLS certificates (use <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">POST /api/v1/certs/reload</code>) and <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">min_version</code>, the Lua engine and its scripts, the rate limiter, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">max_connections</code>, and <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">[logging]</code> level/format/output/access_log. Those need a restart. <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">trusted_proxies</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">real_ip_header</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">request_id_header</code> and <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">proxy_protocol</code> apply to the next request or connection. The file watcher only watches <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">proxy.conf</code>; after editing <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">config.toml</code>, send SIGUSR1 or call the admin endpoint.
                     </p>
 
                     <!-- Three methods grid -->
@@ -824,7 +1190,7 @@
                                 <h4 class="font-semibold text-white">Admin API</h4>
                             </div>
                             <p class="text-sm text-gray-400 mb-3">HTTP endpoint for programmatic reload from scripts or CI/CD.</p>
-                            <code class="text-xs text-cyan-300 bg-cyan-500/10 px-2 py-1 rounded block">POST http://localhost:9090/reload</code>
+                            <code class="text-xs text-cyan-300 bg-cyan-500/10 px-2 py-1 rounded block">POST http://localhost:9090/api/v1/reload</code>
                         </div>
 
                         <!-- File Watcher -->
@@ -872,11 +1238,12 @@
                                 </div>
                                 <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
                             </div>
-                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tc"># Without API key</span>
-<span class="tf">curl</span> <span class="tk">-X POST</span> <span class="ts">http://localhost:9090/reload</span>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tc"># Without API key (loopback only): mutations need X-Requested-With</span>
+<span class="tf">curl</span> <span class="tk">-X POST</span> <span class="ts">http://localhost:9090/api/v1/reload</span> \
+  <span class="tk">-H</span> <span class="ts">"X-Requested-With: curl"</span>
 
 <span class="tc"># With API key authentication</span>
-<span class="tf">curl</span> <span class="tk">-X POST</span> <span class="ts">http://localhost:9090/reload</span> \
+<span class="tf">curl</span> <span class="tk">-X POST</span> <span class="ts">http://localhost:9090/api/v1/reload</span> \
   <span class="tk">-H</span> <span class="ts">"X-API-Key: your-secret-key"</span></code></pre>
                         </div>
                     </div>

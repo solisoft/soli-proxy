@@ -1,11 +1,13 @@
 pub mod handlers;
+mod maintenance;
+mod ops;
 
 use crate::app::AppManager;
 use crate::circuit_breaker::SharedCircuitBreaker;
 use crate::config::ConfigManager;
 use crate::metrics::SharedMetrics;
 use crate::proxy_headers::strip_hop_by_hop;
-use crate::server::IpRateLimiter;
+use crate::server::{client_key, IpRateLimiter};
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use http_body_util::BodyExt;
@@ -21,7 +23,8 @@ use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-type BoxBody = http_body_util::combinators::BoxBody<Bytes, std::convert::Infallible>;
+use crate::pool::BoxError;
+use crate::server::{empty, full, BoxBody};
 
 pub struct AdminState {
     pub config_manager: Arc<ConfigManager>,
@@ -65,7 +68,7 @@ fn json_response(status: u16, body: serde_json::Value) -> Response<BoxBody> {
     Response::builder()
         .status(status)
         .header("Content-Type", "application/json")
-        .body(http_body_util::Full::new(bytes).boxed())
+        .body(full(bytes))
         .unwrap()
 }
 
@@ -78,10 +81,7 @@ fn created_response(data: serde_json::Value) -> Response<BoxBody> {
 }
 
 fn no_content_response() -> Response<BoxBody> {
-    Response::builder()
-        .status(204)
-        .body(http_body_util::Full::new(Bytes::new()).boxed())
-        .unwrap()
+    Response::builder().status(204).body(empty()).unwrap()
 }
 
 fn error_response(status: u16, message: &str) -> Response<BoxBody> {
@@ -89,7 +89,7 @@ fn error_response(status: u16, message: &str) -> Response<BoxBody> {
 }
 
 fn unauthorized_response(use_basic_auth: bool) -> Response<BoxBody> {
-    let body = http_body_util::Full::new(Bytes::from("Unauthorized")).boxed();
+    let body = full(Bytes::from("Unauthorized"));
     let mut builder = Response::builder()
         .status(401)
         .header("Content-Type", "application/json");
@@ -124,61 +124,214 @@ enum AuthMethod {
     Basic,
 }
 
+/// What `check_auth` concluded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AuthOutcome {
+    Allowed(AuthMethod),
+    /// No credential, or a wrong one.
+    Denied,
+    /// The bcrypt pool stayed saturated: the credential was not checked.
+    Busy,
+    /// The client is over its failed-attempt budget and the credential could
+    /// not be accepted without running bcrypt (see `AuthFailures`).
+    Throttled,
+}
+
+/// Authenticate an admin request.
+///
+/// Not an `async fn`: everything it needs is copied out of the request first,
+/// so the returned future borrows nothing — the request's body type need not be
+/// `Sync` for the handler's future to stay `Send`. The API key is compared
+/// right here (it is a plain constant-time compare); only the Basic path
+/// awaits, because it runs bcrypt on the bounded blocking pool and remembers
+/// successes, exactly like route auth (`auth::verify_basic`). It used to run
+/// bcrypt inline on a tokio worker on every request — a polling TUI paid
+/// ~250 ms per refresh, and a password-guessing loop could stall the runtime
+/// the whole proxy shares.
+///
+/// `throttled` is set for a client over its failure budget: bcrypt is then not
+/// run at all, but a matching API key or a Basic credential still in the
+/// success cache is let through — an operator who is already logged in keeps
+/// working while someone else hammers the same address (every client looks
+/// like `127.0.0.1` when the admin API is published through a local route).
 fn check_auth<B>(
     req: &Request<B>,
     api_key: &Option<String>,
     username: &Option<String>,
     password_hash: &Option<String>,
-) -> Option<AuthMethod> {
+    throttled: bool,
+) -> impl std::future::Future<Output = AuthOutcome> + Send + 'static {
     // The same notion of "configured" as the bind-time guard: config loading
     // drops empty credentials, and this keeps the two in step regardless.
-    if !admin_auth_configured(api_key, username, password_hash) {
-        return Some(AuthMethod::Open);
-    }
+    let configured = admin_auth_configured(api_key, username, password_hash);
 
-    if let Some(key) = api_key {
-        if !key.is_empty()
+    let key_ok = api_key.as_deref().is_some_and(|key| {
+        !key.is_empty()
             && req
                 .headers()
                 .get("X-Api-Key")
                 .and_then(|v| v.to_str().ok())
                 .is_some_and(|v| constant_time_eq(v.as_bytes(), key.as_bytes()))
+    });
+
+    let account = match (username, password_hash) {
+        (Some(user), Some(hash)) if !user.is_empty() && !hash.is_empty() => {
+            Some(crate::auth::BasicAuth {
+                username: user.clone(),
+                hash: hash.clone(),
+            })
+        }
+        _ => None,
+    };
+    let authorization = req
+        .headers()
+        .get(hyper::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+
+    async move {
+        if !configured {
+            return AuthOutcome::Allowed(AuthMethod::Open);
+        }
+        if key_ok {
+            return AuthOutcome::Allowed(AuthMethod::ApiKey);
+        }
+        let Some(account) = account else {
+            return if throttled {
+                AuthOutcome::Throttled
+            } else {
+                AuthOutcome::Denied
+            };
+        };
+        if throttled {
+            let remembered = authorization.as_deref().is_some_and(|header| {
+                crate::auth::is_remembered(std::slice::from_ref(&account), header)
+            });
+            return if remembered {
+                AuthOutcome::Allowed(AuthMethod::Basic)
+            } else {
+                AuthOutcome::Throttled
+            };
+        }
+        match crate::auth::verify_basic(std::slice::from_ref(&account), authorization.as_deref())
+            .await
         {
-            return Some(AuthMethod::ApiKey);
+            crate::auth::Verdict::Granted => AuthOutcome::Allowed(AuthMethod::Basic),
+            crate::auth::Verdict::Denied => AuthOutcome::Denied,
+            crate::auth::Verdict::Busy => AuthOutcome::Busy,
+        }
+    }
+}
+
+/// Whether the request carried a credential at all. Only those count as
+/// failed attempts: a browser's first, credential-less hit (the one that gets
+/// the 401 and opens the password prompt) is not a guess.
+fn presents_credential<B>(req: &Request<B>) -> bool {
+    req.headers().contains_key(hyper::header::AUTHORIZATION)
+        || req.headers().contains_key("X-Api-Key")
+}
+
+/// Failed admin authentications allowed per client IP within one window.
+const MAX_AUTH_FAILURES: u32 = 10;
+/// The window `MAX_AUTH_FAILURES` is counted over, and how long an IP that
+/// exhausted it waits.
+const AUTH_FAILURE_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+/// Tracked IPs above which expired entries are swept (and, if that is not
+/// enough, everything is forgotten — the cheapest sane answer to a flood from
+/// spoofed-looking address space).
+const AUTH_FAILURE_CAPACITY: usize = 10_000;
+
+/// Per-IP budget of **failed** admin authentications.
+///
+/// The general `[rate_limiting]` limiter is shared with the proxy, sized for
+/// traffic (1000 rps by default) and off unless configured, so it never stood
+/// between a password guesser and the admin credential. This one is always on
+/// and counts only failures: a correct credential never consumes it, so the
+/// TUI and CLI can poll as fast as they like, while a guessing loop gets
+/// `MAX_AUTH_FAILURES` tries a minute — and is answered 429 *before* bcrypt
+/// runs, so the guesses stop costing CPU too.
+struct AuthFailures {
+    by_ip: parking_lot::Mutex<std::collections::HashMap<std::net::IpAddr, (u32, Instant)>>,
+}
+
+impl AuthFailures {
+    fn global() -> &'static AuthFailures {
+        static FAILURES: std::sync::LazyLock<AuthFailures> =
+            std::sync::LazyLock::new(|| AuthFailures {
+                by_ip: parking_lot::Mutex::new(std::collections::HashMap::new()),
+            });
+        &FAILURES
+    }
+
+    /// Seconds until `ip` may try again, or `None` when it may now.
+    fn blocked_for(&self, ip: std::net::IpAddr, now: Instant) -> Option<u64> {
+        let by_ip = self.by_ip.lock();
+        let (count, since) = by_ip.get(&ip)?;
+        let elapsed = now.saturating_duration_since(*since);
+        if *count >= MAX_AUTH_FAILURES && elapsed < AUTH_FAILURE_WINDOW {
+            Some((AUTH_FAILURE_WINDOW - elapsed).as_secs().max(1))
+        } else {
+            None
         }
     }
 
-    if let (Some(user), Some(hash)) = (username, password_hash) {
-        if let Some(auth_header) = req.headers().get("authorization") {
-            if let Ok(header_value) = auth_header.to_str() {
-                if let Some(encoded) = header_value.strip_prefix("Basic ") {
-                    if let Ok(decoded) =
-                        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
-                    {
-                        let creds = String::from_utf8_lossy(&decoded);
-                        if let Some((u, p)) = creds.split_once(':') {
-                            let user_ok = constant_time_eq(u.as_bytes(), user.as_bytes());
-                            // Always run exactly one bcrypt verify — against the
-                            // real hash when the username matches, otherwise a
-                            // dummy — so response timing doesn't reveal whether
-                            // the admin username is correct (user enumeration).
-                            let verify_hash = if user_ok {
-                                hash.as_str()
-                            } else {
-                                crate::auth::dummy_hash()
-                            };
-                            let pass_ok = crate::auth::verify_password(p, verify_hash);
-                            if user_ok && pass_ok {
-                                return Some(AuthMethod::Basic);
-                            }
-                        }
-                    }
-                }
+    fn record(&self, ip: std::net::IpAddr, now: Instant) {
+        let mut by_ip = self.by_ip.lock();
+        if by_ip.len() >= AUTH_FAILURE_CAPACITY {
+            by_ip.retain(|_, (_, since)| {
+                now.saturating_duration_since(*since) < AUTH_FAILURE_WINDOW
+            });
+            if by_ip.len() >= AUTH_FAILURE_CAPACITY {
+                by_ip.clear();
             }
         }
+        let entry = by_ip.entry(ip).or_insert((0, now));
+        if now.saturating_duration_since(entry.1) >= AUTH_FAILURE_WINDOW {
+            *entry = (0, now);
+        }
+        entry.0 = entry.0.saturating_add(1);
     }
+}
 
-    None
+/// Whether `host` (a `Host` header value) names this loopback listener.
+///
+/// **DNS rebinding.** With no credential configured, the admin API trusts
+/// whatever reaches `127.0.0.1:9090` — and a web page can reach it: its
+/// attacker-controlled hostname first resolves to the attacker's server, then,
+/// once the page is loaded, to `127.0.0.1`. The browser treats both as the
+/// same origin, so the page can read and write the admin API with no
+/// credential to steal. What it cannot change is the `Host` header, which
+/// still carries the attacker's name. So the open admin API answers only
+/// requests addressed to a loopback name: `localhost`, a loopback IP literal
+/// (`127.0.0.1`, `[::1]`), or the bound address, each with an optional port.
+/// A request with no `Host` at all (HTTP/1.0 tooling; never a browser) passes.
+fn is_loopback_host(host: &str, bound: SocketAddr) -> bool {
+    let name = if let Some(rest) = host.strip_prefix('[') {
+        // `[v6]` or `[v6]:port`
+        match rest.split_once(']') {
+            Some((ip, port)) if port.is_empty() || is_port_suffix(port) => ip,
+            _ => return false,
+        }
+    } else {
+        match host.rsplit_once(':') {
+            Some((name, port)) if is_port_suffix(&format!(":{port}")) => name,
+            Some(_) => return false,
+            None => host,
+        }
+    };
+    if name.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    match name.parse::<std::net::IpAddr>() {
+        Ok(ip) => ip.is_loopback() || ip == bound.ip(),
+        Err(_) => false,
+    }
+}
+
+/// `:` followed by one to five digits.
+fn is_port_suffix(s: &str) -> bool {
+    s.strip_prefix(':')
+        .is_some_and(|p| !p.is_empty() && p.len() <= 5 && p.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Cross-site request check for Basic-authenticated mutations.
@@ -225,20 +378,36 @@ fn extract_route_index(path: &str) -> Option<usize> {
         .and_then(|s| s.parse::<usize>().ok())
 }
 
-/// Inject `X-Forwarded-{For,Proto,Host}` so the bundled `_admin` Rails app
-/// sees the real client IP and can render correct URLs. Always sets
-/// `X-Forwarded-Proto: http` because the admin server itself is plaintext;
-/// operators who terminate TLS in front of it can rewrite at the terminator.
-fn inject_forwarding_headers(headers: &mut hyper::HeaderMap, peer: Option<SocketAddr>) {
-    use hyper::header::HeaderValue;
-    let xff = peer.map(|a| a.ip().to_string()).unwrap_or_default();
-    if let Ok(v) = HeaderValue::from_str(&xff) {
-        headers.insert("X-Forwarded-For", v);
-    }
-    headers.insert("X-Forwarded-Proto", HeaderValue::from_static("http"));
-    if let Some(host) = headers.get("host").cloned() {
-        headers.insert("X-Forwarded-Host", host);
-    }
+/// Give the bundled `_admin` app the proxy's view of the client, through the
+/// same `set_forwarding_headers` the public proxy uses: every client-supplied
+/// `Forwarded` / `X-Forwarded-*` / `X-Real-IP` is dropped (this function used
+/// to overwrite three of them and relay `X-Real-IP` and the rest verbatim),
+/// then `X-Forwarded-For`, `X-Real-IP`, `X-Forwarded-Proto` and
+/// `X-Forwarded-Host` are set. The proto is `http` because the admin server
+/// itself is plaintext — unless the request came through a proxy listed in
+/// `[server] trusted_proxies` (the public proxy itself, typically, when the
+/// admin API is published through a route), whose chain and scheme are kept
+/// (see `set_forwarding_headers_for`).
+fn inject_forwarding_headers(
+    headers: &mut hyper::HeaderMap,
+    client: Option<&crate::edge::ClientInfo>,
+) {
+    let host = headers
+        .get(hyper::header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .map(str::to_owned);
+    crate::proxy_headers::set_forwarding_headers_for(headers, client, false, host.as_deref());
+}
+
+/// Who the client is (see `crate::edge::ClientInfo`), as `handle_admin_request`
+/// decided, or the peer.
+fn admin_client(
+    ext: &http::Extensions,
+    peer_addr: Option<SocketAddr>,
+) -> Option<crate::edge::ClientInfo> {
+    crate::edge::client_info(ext)
+        .copied()
+        .or_else(|| peer_addr.map(|a| crate::edge::ClientInfo::direct(a.ip())))
 }
 
 /// Reject oversized or chunked-encoded requests before we forward them to
@@ -261,7 +430,7 @@ fn enforce_admin_body_size_limit(
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(0);
     if content_length > max {
-        let body = http_body_util::Full::new(Bytes::from("Payload Too Large")).boxed();
+        let body = full(Bytes::from("Payload Too Large"));
         return Some(
             Response::builder()
                 .status(413)
@@ -273,18 +442,41 @@ fn enforce_admin_body_size_limit(
     None
 }
 
+/// Decide who the client is, and apply the same door as the proxy's
+/// listeners: an untrusted client's `CF-Connecting-IP` (or whatever
+/// `real_ip_header` names) is removed, or it reached the `_admin` app through
+/// the passthrough as if the proxy had vouched for it.
+fn admin_door(
+    headers: &mut hyper::HeaderMap,
+    peer: std::net::IpAddr,
+    edge: &crate::edge::EdgeConfig,
+) -> crate::edge::ClientInfo {
+    let who = crate::edge::ClientInfo::resolve(peer, headers, edge);
+    crate::edge::strip_untrusted_real_ip(headers, &who, edge);
+    who
+}
+
 async fn handle_admin_request(
-    req: Request<Incoming>,
+    mut req: Request<Incoming>,
     state: Arc<AdminState>,
     peer_addr: Option<SocketAddr>,
     bound_addr: SocketAddr,
 ) -> Result<Response<BoxBody>, std::convert::Infallible> {
+    // The client is the peer, or — when the admin API is reached through a
+    // proxy listed in `[server] trusted_proxies` — the client that proxy
+    // names. Budgets below are charged to it.
+    if let Some(peer) = peer_addr {
+        let config = state.config_manager.get_config();
+        let who = admin_door(req.headers_mut(), peer.ip(), &config.server.edge);
+        req.extensions_mut().insert(who);
+    }
+    let client_info = admin_client(req.extensions(), peer_addr);
+
     // Per-IP rate limit applied BEFORE auth so a rejected client can't
     // burn bcrypt rounds by replaying a wrong password under the limit.
-    if let (Some(limiter), Some(peer)) = (state.rate_limiter.as_ref(), peer_addr) {
-        if limiter.check_key(&peer.ip()).is_err() {
-            let body =
-                http_body_util::Full::new(Bytes::from_static(b"Rate limit exceeded")).boxed();
+    if let (Some(limiter), Some(who)) = (state.rate_limiter.as_ref(), client_info) {
+        if limiter.check_key(&client_key(who.ip)).is_err() {
+            let body = full(Bytes::from_static(b"Rate limit exceeded"));
             return Ok(Response::builder()
                 .status(429)
                 .header("Retry-After", "1")
@@ -313,8 +505,73 @@ async fn handle_admin_request(
         return Ok(error_response(503, "admin auth not configured"));
     }
 
-    let Some(auth_method) = check_auth(&req, &api_key, &username, &password_hash) else {
-        return Ok(unauthorized_response(use_basic_auth));
+    // DNS rebinding: see `is_loopback_host`. Only the open (credential-less)
+    // API needs it — with a credential configured, a rebinding page has none
+    // to send, since the browser keys cached Basic credentials by origin and
+    // never invents an `X-Api-Key`. Applying it there too would break an
+    // operator who publishes a protected admin API through a named route.
+    if bound_addr.ip().is_loopback() && !admin_auth_configured(&api_key, &username, &password_hash)
+    {
+        let host_ok = match req.headers().get(hyper::header::HOST) {
+            None => true,
+            Some(host) => host
+                .to_str()
+                .is_ok_and(|host| is_loopback_host(host, bound_addr)),
+        };
+        if !host_ok {
+            return Ok(error_response(
+                403,
+                "the unauthenticated admin API only answers requests addressed to localhost",
+            ));
+        }
+    }
+
+    // Failed-credential budget, checked before bcrypt runs (see `AuthFailures`).
+    // Keyed like every other per-client budget: an IPv6 client per /64, or a
+    // guesser would get a fresh budget from each of its 2^64 addresses.
+    let client = client_info.map(|who| client_key(who.ip));
+    let blocked_for = client.and_then(|ip| AuthFailures::global().blocked_for(ip, Instant::now()));
+
+    let auth_method = match check_auth(
+        &req,
+        &api_key,
+        &username,
+        &password_hash,
+        blocked_for.is_some(),
+    )
+    .await
+    {
+        AuthOutcome::Allowed(method) => method,
+        AuthOutcome::Denied => {
+            if let Some(ip) = client {
+                if presents_credential(&req) {
+                    AuthFailures::global().record(ip, Instant::now());
+                }
+            }
+            return Ok(unauthorized_response(use_basic_auth));
+        }
+        AuthOutcome::Throttled => {
+            let body = full(Bytes::from_static(
+                b"Too many failed authentication attempts",
+            ));
+            return Ok(Response::builder()
+                .status(429)
+                .header("Retry-After", blocked_for.unwrap_or(1).to_string())
+                .header("Content-Type", "text/plain")
+                .body(body)
+                .unwrap());
+        }
+        AuthOutcome::Busy => {
+            let body = full(Bytes::from_static(
+                b"Authentication temporarily unavailable",
+            ));
+            return Ok(Response::builder()
+                .status(503)
+                .header("Retry-After", "1")
+                .header("Content-Type", "text/plain")
+                .body(body)
+                .unwrap());
+        }
     };
 
     if is_cross_site_mutation(&req, auth_method) {
@@ -344,6 +601,11 @@ async fn handle_admin_request(
         (Method::POST, "/api/v1/reload") => handlers::post_reload(&state).await,
         (Method::POST, "/api/v1/certs/reload") => handlers::post_certs_reload(&state),
         (Method::GET, "/api/v1/settings") => handlers::get_settings(&state),
+        (Method::GET, "/api/v1/maintenance") => maintenance::get(&state).await,
+        (Method::PUT, "/api/v1/maintenance") => match read_body(req).await {
+            Ok(body) => maintenance::put_global(&state, &body),
+            Err(e) => error_response(413, e),
+        },
 
         // App management endpoints
         (Method::GET, "/api/v1/apps") => handlers::get_apps(&state).await,
@@ -358,6 +620,11 @@ async fn handle_admin_request(
         (Method::PUT, "/api/v1/acme-challenges") => match read_body(req).await {
             Ok(body) => handlers::put_acme_challenges(&state, &body).await,
             Err(e) => error_response(400, e),
+        },
+        (Method::POST, "/api/v1/apps/stop-all") => ops::post_stop_all_apps(&state).await,
+        (Method::POST, "/api/v1/config/validate") => match read_body(req).await {
+            Ok(body) => ops::post_config_validate(&state, body).await,
+            Err(e) => return Ok(error_response(413, e)),
         },
         (_, p) if p.starts_with("/api/v1/apps/") => {
             let app_name = p.strip_prefix("/api/v1/apps/").unwrap_or("");
@@ -381,6 +648,19 @@ async fn handle_admin_request(
                     error_response(400, "Invalid app name or alias domain")
                 } else {
                     handlers::delete_app_alias(&state, name, domain).await
+                }
+            } else if method == Method::PUT && app_name.ends_with("/maintenance") {
+                let name = app_name
+                    .strip_suffix("/maintenance")
+                    .unwrap_or("")
+                    .to_string();
+                if name.is_empty() || name.contains('/') {
+                    error_response(400, "Invalid app name")
+                } else {
+                    match read_body(req).await {
+                        Ok(body) => maintenance::put_app(&state, &name, &body).await,
+                        Err(e) => error_response(413, e),
+                    }
                 }
             } else if method == Method::GET && !app_name.is_empty() && !app_name.contains('/') {
                 handlers::get_app(&state, app_name).await
@@ -484,7 +764,7 @@ async fn handle_admin_request(
                 Ok(b) => b,
                 Err(e) => return Ok(error_response(413, e)),
             };
-            handlers::post_hash_password(&state, &body)
+            handlers::post_hash_password(&state, &body).await
         }
 
         // Everything else → proxy to _admin app (UI, static assets, etc.)
@@ -545,7 +825,8 @@ async fn proxy_to_admin_app(
     // same shape the public proxy applies on outbound requests.
     strip_hop_by_hop(&mut parts.headers);
     crate::proxy_headers::coalesce_cookies(&mut parts.headers);
-    inject_forwarding_headers(&mut parts.headers, peer_addr);
+    let client_info = admin_client(&parts.extensions, peer_addr);
+    inject_forwarding_headers(&mut parts.headers, client_info.as_ref());
 
     // Buffer with a hard cap so chunked / missing-CL bodies cannot blow memory.
     let max = max_request_size.unwrap_or(MAX_ADMIN_REQUEST_BODY_SIZE);
@@ -556,7 +837,7 @@ async fn proxy_to_admin_app(
             return Response::builder()
                 .status(413)
                 .header("Content-Type", "text/plain")
-                .body(http_body_util::Full::new(Bytes::from("Payload Too Large")).boxed())
+                .body(full(Bytes::from("Payload Too Large")))
                 .unwrap();
         }
     };
@@ -571,7 +852,7 @@ async fn proxy_to_admin_app(
     match client.request(proxy_req).await {
         Ok(resp) => {
             let (parts, body) = resp.into_parts();
-            let mapped = body.map_err(|_| -> std::convert::Infallible { unreachable!() });
+            let mapped = body.map_err(BoxError::from);
             Response::from_parts(parts, mapped.boxed())
         }
         Err(e) => {
@@ -664,13 +945,12 @@ async fn proxy_websocket_to_admin_app(
             | "sec-websocket-version"
             | "sec-websocket-protocol"
             | "authorization"
-            | "x-api-key"
-            | "x-forwarded-for"
-            | "x-forwarded-proto"
-            | "x-forwarded-host" => continue,
+            | "x-api-key" => continue,
             _ => {}
         }
-        if connection_listed.iter().any(|n| n == name_str) {
+        if crate::proxy_headers::is_forwarding_header(name_str)
+            || connection_listed.iter().any(|n| n == name_str)
+        {
             continue;
         }
         if let Ok(v) = value.to_str() {
@@ -678,13 +958,29 @@ async fn proxy_websocket_to_admin_app(
         }
     }
 
-    // Inject forwarding identity for the bundled _admin Rails app.
-    if let Some(peer) = peer_addr {
-        extra_headers.push_str(&format!("X-Forwarded-For: {}\r\n", peer.ip()));
+    // Inject forwarding identity for the bundled _admin Rails app — the same
+    // set as a plain request (see `inject_forwarding_headers`).
+    let mut forwarding = hyper::HeaderMap::new();
+    if let Some(host) = req.headers().get(hyper::header::HOST) {
+        forwarding.insert(hyper::header::HOST, host.clone());
     }
-    extra_headers.push_str("X-Forwarded-Proto: http\r\n");
-    if let Some(host) = req.headers().get("host").and_then(|v| v.to_str().ok()) {
-        extra_headers.push_str(&format!("X-Forwarded-Host: {}\r\n", host));
+    let client_info = admin_client(req.extensions(), peer_addr);
+    if client_info.is_some_and(|who| who.trusted_peer) {
+        // A trusted proxy's chain and scheme are kept (and appended to).
+        for name in ["x-forwarded-for", "x-forwarded-proto"] {
+            for v in req.headers().get_all(name) {
+                forwarding.append(name, v.clone());
+            }
+        }
+    }
+    inject_forwarding_headers(&mut forwarding, client_info.as_ref());
+    for (name, value) in &forwarding {
+        if name == hyper::header::HOST {
+            continue;
+        }
+        if let Ok(v) = value.to_str() {
+            extra_headers.push_str(&format!("{}: {}\r\n", name, v));
+        }
     }
 
     // Connect to the backend
@@ -756,22 +1052,12 @@ async fn proxy_websocket_to_admin_app(
     }
 
     // Extract headers from backend 101 response to forward to client
-    let mut accept_key = String::new();
-    let mut resp_protocol = None;
-    for line in response_str.lines().skip(1) {
-        if line.trim().is_empty() {
-            break;
-        }
-        if let Some((name, value)) = line.split_once(':') {
-            let name_lower = name.trim().to_lowercase();
-            let value = value.trim().to_string();
-            if name_lower == "sec-websocket-accept" {
-                accept_key = value;
-            } else if name_lower == "sec-websocket-protocol" {
-                resp_protocol = Some(value);
-            }
-        }
-    }
+    let Some((accept_key, resp_protocol)) =
+        crate::server::ws_upgrade_response_headers(&response_str)
+    else {
+        tracing::error!("_admin sent WebSocket upgrade headers that are not valid header values");
+        return error_response(502, "Backend rejected WebSocket upgrade");
+    };
 
     // Check for trailing WebSocket data after the HTTP response headers
     let trailing_data = response_buf[..n]
@@ -842,8 +1128,7 @@ async fn proxy_websocket_to_admin_app(
     if let Some(proto) = resp_protocol {
         resp = resp.header("Sec-WebSocket-Protocol", proto);
     }
-    resp.body(http_body_util::Full::new(Bytes::new()).boxed())
-        .unwrap()
+    resp.body(empty()).unwrap()
 }
 
 const MAX_ADMIN_REQUEST_BODY_SIZE: usize = 1024 * 1024; // 1MB
@@ -860,7 +1145,7 @@ async fn read_body(req: Request<Incoming>) -> Result<String, &'static str> {
 
 /// True when at least one credential is configured (non-empty key or
 /// both username + password_hash). Empty strings count as unset.
-fn admin_auth_configured(
+pub(crate) fn admin_auth_configured(
     api_key: &Option<String>,
     username: &Option<String>,
     password_hash: &Option<String>,
@@ -925,6 +1210,18 @@ pub async fn run_admin_server(state: Arc<AdminState>) -> Result<()> {
         );
     }
 
+    // A hash bcrypt should not run (malformed, or a cost outside 4..=13) is
+    // never verified, so Basic login would fail with no explanation. Say why.
+    if let Some(hash) = admin_cfg.password_hash.as_deref().filter(|h| !h.is_empty()) {
+        if let Err(e) = crate::auth::validate_hash(hash) {
+            tracing::error!(
+                "ADMIN_PASSWORD_HASH is unusable ({}); Basic login to the admin API will be \
+                 refused. Regenerate it with `hash-password`.",
+                e
+            );
+        }
+    }
+
     let listener = TcpListener::bind(addr)
         .await
         .with_context(|| format!("failed to bind admin API to {addr}"))?;
@@ -961,6 +1258,27 @@ pub async fn run_admin_server(state: Arc<AdminState>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The admin listener's door strips an untrusted client's real-IP
+    /// header, like the proxy's: the `_admin` passthrough used to relay it.
+    #[test]
+    fn admin_door_strips_an_untrusted_real_ip_header() {
+        let edge: crate::edge::EdgeConfig = toml::from_str(
+            "trusted_proxies = [\"10.0.0.0/8\"]\nreal_ip_header = \"CF-Connecting-IP\"\n",
+        )
+        .unwrap();
+        let mut h = hyper::HeaderMap::new();
+        h.insert("cf-connecting-ip", "6.6.6.6".parse().unwrap());
+        let who = admin_door(&mut h, "203.0.113.1".parse().unwrap(), &edge);
+        assert!(h.get("cf-connecting-ip").is_none());
+        assert_eq!(who.ip, "203.0.113.1".parse::<std::net::IpAddr>().unwrap());
+        // From a trusted proxy it is kept, and names the client.
+        let mut h = hyper::HeaderMap::new();
+        h.insert("cf-connecting-ip", "198.51.100.7".parse().unwrap());
+        let who = admin_door(&mut h, "10.0.0.1".parse().unwrap(), &edge);
+        assert!(h.get("cf-connecting-ip").is_some());
+        assert_eq!(who.ip, "198.51.100.7".parse::<std::net::IpAddr>().unwrap());
+    }
 
     #[test]
     fn constant_time_eq_matches_equal_inputs() {
@@ -1020,44 +1338,175 @@ mod tests {
         builder.body(()).unwrap()
     }
 
-    #[test]
-    fn check_auth_reports_which_credential_matched() {
+    #[tokio::test]
+    async fn check_auth_reports_which_credential_matched() {
         let key = Some("k".to_string());
         assert_eq!(
-            check_auth(&request("GET", &[]), &None, &None, &None),
-            Some(AuthMethod::Open)
+            check_auth(&request("GET", &[]), &None, &None, &None, false).await,
+            AuthOutcome::Allowed(AuthMethod::Open)
         );
         assert_eq!(
-            check_auth(&request("GET", &[("X-Api-Key", "k")]), &key, &None, &None),
-            Some(AuthMethod::ApiKey)
+            check_auth(
+                &request("GET", &[("X-Api-Key", "k")]),
+                &key,
+                &None,
+                &None,
+                false
+            )
+            .await,
+            AuthOutcome::Allowed(AuthMethod::ApiKey)
         );
         assert_eq!(
-            check_auth(&request("GET", &[("X-Api-Key", "x")]), &key, &None, &None),
-            None
+            check_auth(
+                &request("GET", &[("X-Api-Key", "x")]),
+                &key,
+                &None,
+                &None,
+                false
+            )
+            .await,
+            AuthOutcome::Denied
         );
+    }
+
+    #[tokio::test]
+    async fn check_auth_verifies_basic_credentials_at_their_own_cost() {
+        let user = Some("admin".to_string());
+        let hash = Some(crate::auth::hash_password("pw", 4));
+        let header = |creds: &str| {
+            format!(
+                "Basic {}",
+                base64::Engine::encode(&base64::engine::general_purpose::STANDARD, creds)
+            )
+        };
+        let good = header("admin:pw");
+        let bad = header("admin:nope");
+        let check = |authorization: &str, throttled: bool| {
+            check_auth(
+                &request("GET", &[("Authorization", authorization)]),
+                &None,
+                &user,
+                &hash,
+                throttled,
+            )
+        };
+
+        // Throttled before any success: bcrypt does not run, nothing gets in.
+        assert_eq!(check(&good, true).await, AuthOutcome::Throttled);
+        assert_eq!(
+            check(&good, false).await,
+            AuthOutcome::Allowed(AuthMethod::Basic)
+        );
+        assert_eq!(check(&bad, false).await, AuthOutcome::Denied);
+        // Throttled after a success: the remembered session keeps working,
+        // the guess is refused without bcrypt.
+        assert_eq!(
+            check(&good, true).await,
+            AuthOutcome::Allowed(AuthMethod::Basic)
+        );
+        assert_eq!(check(&bad, true).await, AuthOutcome::Throttled);
     }
 
     /// An empty credential is "unset" for `check_auth` exactly as it is for
     /// `admin_auth_configured`: `api_key = ""` must not produce a server that
     /// logs "no authentication configured" and then 401s every request, and
     /// an empty user/hash pair must not accept `Basic Og==`.
-    #[test]
-    fn check_auth_treats_empty_credentials_as_unset() {
+    #[tokio::test]
+    async fn check_auth_treats_empty_credentials_as_unset() {
         let empty = Some(String::new());
         assert_eq!(
-            check_auth(&request("GET", &[]), &empty, &None, &None),
-            Some(AuthMethod::Open)
+            check_auth(&request("GET", &[]), &empty, &None, &None, false).await,
+            AuthOutcome::Allowed(AuthMethod::Open)
         );
         assert_eq!(
-            check_auth(&request("GET", &[]), &empty, &empty, &empty),
-            Some(AuthMethod::Open)
+            check_auth(&request("GET", &[]), &empty, &empty, &empty, false).await,
+            AuthOutcome::Allowed(AuthMethod::Open)
         );
         // Only a complete Basic pair counts, and an empty key never matches.
         let key = Some("k".to_string());
         assert_eq!(
-            check_auth(&request("GET", &[("X-Api-Key", "")]), &key, &empty, &None),
-            None
+            check_auth(
+                &request("GET", &[("X-Api-Key", "")]),
+                &key,
+                &empty,
+                &None,
+                false
+            )
+            .await,
+            AuthOutcome::Denied
         );
+    }
+
+    #[test]
+    fn only_loopback_names_reach_the_open_admin_api() {
+        let bound: SocketAddr = "127.0.0.1:9090".parse().unwrap();
+        for ok in [
+            "127.0.0.1",
+            "127.0.0.1:9090",
+            "localhost",
+            "LOCALHOST:9090",
+            "[::1]",
+            "[::1]:9090",
+            "127.0.0.2:80",
+        ] {
+            assert!(is_loopback_host(ok, bound), "{ok}");
+        }
+        // Ce que montre une page en rebinding DNS : son propre nom.
+        for bad in [
+            "attacker.example",
+            "attacker.example:9090",
+            "localhost.attacker.example",
+            "127.0.0.1.nip.io:9090",
+            "10.0.0.1:9090",
+            "[::1]x",
+            "localhost:abc",
+            "",
+        ] {
+            assert!(!is_loopback_host(bad, bound), "{bad}");
+        }
+        // The bound address itself, even when it is not 127.0.0.1.
+        let other: SocketAddr = "[::1]:9090".parse().unwrap();
+        assert!(is_loopback_host("[::1]:9090", other));
+    }
+
+    #[test]
+    fn admin_passthrough_forwarding_headers_are_the_proxys() {
+        let mut h = hyper::HeaderMap::new();
+        h.insert("host", "admin.example:9090".parse().unwrap());
+        h.insert("x-real-ip", "127.0.0.1".parse().unwrap());
+        h.insert("forwarded", "for=127.0.0.1".parse().unwrap());
+        h.insert("x-forwarded-for", "127.0.0.1".parse().unwrap());
+        h.insert("x-forwarded-port", "443".parse().unwrap());
+        let peer: SocketAddr = "198.51.100.9:5555".parse().unwrap();
+        inject_forwarding_headers(&mut h, Some(&crate::edge::ClientInfo::direct(peer.ip())));
+        assert_eq!(h["x-forwarded-for"], "198.51.100.9");
+        assert_eq!(h["x-real-ip"], "198.51.100.9");
+        assert_eq!(h["x-forwarded-proto"], "http");
+        assert_eq!(h["x-forwarded-host"], "admin.example:9090");
+        assert!(h.get("forwarded").is_none());
+        assert!(h.get("x-forwarded-port").is_none());
+        assert_eq!(h.get_all("x-forwarded-for").iter().count(), 1);
+    }
+
+    #[test]
+    fn failed_attempts_are_budgeted_per_ip_and_forgotten_after_the_window() {
+        let failures = AuthFailures {
+            by_ip: parking_lot::Mutex::new(std::collections::HashMap::new()),
+        };
+        let ip: std::net::IpAddr = "192.0.2.7".parse().unwrap();
+        let other: std::net::IpAddr = "192.0.2.8".parse().unwrap();
+        let t0 = Instant::now();
+        for _ in 0..MAX_AUTH_FAILURES - 1 {
+            failures.record(ip, t0);
+        }
+        assert_eq!(failures.blocked_for(ip, t0), None);
+        failures.record(ip, t0);
+        assert!(failures.blocked_for(ip, t0).is_some());
+        assert_eq!(failures.blocked_for(other, t0), None, "per IP, not global");
+        let later = t0 + AUTH_FAILURE_WINDOW;
+        assert_eq!(failures.blocked_for(ip, later), None);
+        failures.record(ip, later);
+        assert_eq!(failures.blocked_for(ip, later), None, "the count restarted");
     }
 
     #[test]

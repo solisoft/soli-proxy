@@ -1,3 +1,41 @@
+# Soli Proxy routing rules. The full reference is the "Proxy Rules" section of
+# README.md. Any line the parser does not understand is an error naming its
+# line number: fatal at startup, and on a hot reload the previous rules stay.
+
 default -> http://localhost:8080/
 /api/* -> http://localhost:8888/
 /ws -> ws://localhost:8888/
+
+# Several targets: round-robin by default, or weighted when any target has a
+# `weight:` (0-255, default 100; weight:0 drains a target).
+# /app/* -> weight:70 http://10.0.0.10:8080, weight:30 http://10.0.0.11:8080
+# /app/* -> http://10.0.0.10:8080, http://10.0.0.11:8080 @lb:failover
+
+# Response compression per route: @compress:on compresses even when
+# [compression] enabled = false in config.toml, @compress:off never does
+# (already-compressed media, BREACH-sensitive pages).
+# static.example.com -> http://localhost:9001 @compress:on
+# /reports/* -> http://localhost:9002 @compress:off
+
+# Regex rules can substitute their capture groups ($1, ${name}) into the
+# target's path and query; the client's query string is appended.
+# ~^/users/(\d+)$ -> http://user-service:8080/users/$1
+
+# A `headers {` block applies to the rule right above it: `Name: value` sets
+# a request header sent upstream, `-Name` removes one. Variables: $client_ip,
+# $scheme, $host ($$ for a literal $).
+# api.example.com -> http://localhost:9000
+# headers {
+#     X-Real-IP: $client_ip
+#     -X-Debug-Token
+# }
+
+# Forward authentication: an SSO service (oauth2-proxy, Authelia, ...) is asked
+# before every request. 2xx lets it through, copying the listed response headers
+# upstream (they are always stripped from the client's request first); any
+# other answer (401, 302 to the login page) goes to the client; no answer is a
+# 503. With @auth on the same rule, Basic runs first; @noauth skips both.
+# dashboard.example.com -> http://localhost:3000 \
+#     @forward_auth:http://127.0.0.1:4180/ \
+#     @forward_auth_headers:X-Auth-Request-User,X-Auth-Request-Email \
+#     @noauth:/up

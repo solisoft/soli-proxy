@@ -1,5 +1,5 @@
 use super::{
-    created_response, error_response, no_content_response, ok_response, AdminState, BoxBody,
+    created_response, error_response, full, no_content_response, ok_response, AdminState, BoxBody,
 };
 use crate::auth;
 use crate::config::ProxyRule;
@@ -37,6 +37,13 @@ pub async fn get_apps(state: &Arc<AdminState>) -> Response<BoxBody> {
         Some(manager) => {
             let mut apps = manager.list_apps().await;
             apps.sort_by(|a, b| a.config.domain.cmp(&b.config.domain));
+            // `maintenance` is the flag file's; a window opened through the
+            // API counts too.
+            let maintenance = state.config_manager.maintenance.snapshot();
+            for app in &mut apps {
+                app.maintenance |=
+                    maintenance.global.is_some() || maintenance.apps.contains_key(&app.config.name);
+            }
             match serde_json::to_value(&apps) {
                 Ok(val) => ok_response(val),
                 Err(e) => error_response(500, &format!("Failed to serialize apps: {}", e)),
@@ -195,15 +202,30 @@ pub async fn get_aliases(state: &Arc<AdminState>) -> Response<BoxBody> {
 ///
 /// ```json
 /// { "index": 42,
-///   "routes": { "x.soli.app": [ { "url": "http://10.0.0.12:20001", "weight": 100 } ] } }
+///   "routes": { "x.soli.app": [ { "url": "http://10.0.0.12:20001", "weight": 100 } ] },
+///   "auth":   { "x.soli.app": { "users": { "admin": "$2b$12$..." },
+///                               "noauth": ["/webhooks/*"] } } }
 /// ```
 ///
+/// Each target is an `http`/`https` URL with a host — the same rule as a
+/// static route's target — and a `weight` of 0..=255 (default 100). Anything
+/// else is refused rather than reinterpreted: `weight: 256` used to wrap to 0.
+///
+/// `auth` is optional, and keyed by domains present in `routes`. It is the
+/// app's `[auth]` section, in the same shape and under the same validation as
+/// in `app.infos` (bcrypt hashes at cost 4..=13). **This proxy is what enforces
+/// it**: a pushed target is the workload's raw port, with nothing in front of
+/// it on the node that runs it, so a protected app pushed without its `auth`
+/// is served open.
+///
 /// **Complete set, not a delta.** A missed push then self-corrects on the next
-/// one, and removing a route needs no separate call. The `index` must increase:
-/// a retry overtaking the write that superseded it would otherwise reinstate
-/// routes that were deliberately removed, which looks exactly like a rollback
-/// nobody asked for. A stale push answers 409 rather than being silently
-/// ignored, so the pusher can tell "refused" from "applied".
+/// one, and removing a route needs no separate call. The `index` must increase
+/// strictly — any index is accepted for the first table after a start, then
+/// each push must exceed the one in place, 0 included: a retry overtaking the
+/// write that superseded it would otherwise reinstate routes that were
+/// deliberately removed, which looks exactly like a rollback nobody asked for.
+/// A stale push answers 409 rather than being silently ignored, so the pusher
+/// can tell "refused" from "applied".
 pub async fn put_routing_table(state: &Arc<AdminState>, body: &str) -> Response<BoxBody> {
     use crate::app::external::ExternalRoutes;
 
@@ -234,22 +256,74 @@ pub async fn put_routing_table(state: &Arc<AdminState>, body: &str) -> Response<
             // Parsed here, not at use. A malformed URL rejected at push time is
             // one error message for the pusher; the same URL rejected at
             // request time is a 502 for a real user with no explanation.
-            let Ok(url) = raw.parse() else {
+            let Ok(url) = raw.parse::<url::Url>() else {
                 return error_response(
                     400,
                     &format!("routes[{}] has an invalid url: {}", host, raw),
                 );
             };
-            let weight = target.get("weight").and_then(|v| v.as_u64()).unwrap_or(100) as u8;
+            // The same rule a static route's target obeys: the proxy speaks
+            // HTTP to it, so `file://`, `unix:` or a host-less URL is a
+            // mistake (or an attempt) to refuse now, not a 502 to explain later.
+            if !matches!(url.scheme(), "http" | "https") || url.host().is_none() {
+                return error_response(
+                    400,
+                    &format!(
+                        "routes[{}] target {} must be an http:// or https:// URL with a host",
+                        host, raw
+                    ),
+                );
+            }
+            let weight = match target.get("weight") {
+                None => 100,
+                Some(w) => match w.as_u64().and_then(|w| u8::try_from(w).ok()) {
+                    Some(w) => w,
+                    None => {
+                        return error_response(
+                            400,
+                            &format!(
+                                "routes[{}] target {} has weight {}, expected an integer 0..=255",
+                                host, raw, w
+                            ),
+                        )
+                    }
+                },
+            };
             parsed_targets.push(crate::config::Target { url, weight });
         }
         table.insert(host.to_lowercase(), parsed_targets);
     }
 
+    let mut auth = std::collections::HashMap::new();
+    if let Some(raw) = parsed.get("auth").filter(|v| !v.is_null()) {
+        let Some(entries) = raw.as_object() else {
+            return error_response(400, "auth must be an object keyed by domain");
+        };
+        for (host, section) in entries {
+            let host = host.to_lowercase();
+            if !table.contains_key(&host) {
+                return error_response(
+                    400,
+                    &format!("auth[{}] names a domain absent from routes", host),
+                );
+            }
+            let section: crate::app::AppAuth = match serde_json::from_value(section.clone()) {
+                Ok(section) => section,
+                Err(e) => return error_response(400, &format!("auth[{}]: {}", host, e)),
+            };
+            if let Err(e) = section.validate() {
+                return error_response(400, &format!("auth[{}]: {}", host, e));
+            }
+            if section.is_active() {
+                auth.insert(host, section);
+            }
+        }
+    }
+
     let count = table.len();
     if manager
         .external_routes
-        .push(ExternalRoutes { index, table })
+        .push(ExternalRoutes { index, table, auth })
     {
         ok_response(serde_json::json!({ "applied": true, "index": index, "domains": count }))
     } else {
@@ -386,7 +460,12 @@ pub async fn get_routing_table(state: &Arc<AdminState>) -> Response<BoxBody> {
             )
         })
         .collect();
-    ok_response(serde_json::json!({ "index": snapshot.index, "routes": routes }))
+    // `AppAuth` serializes usernames, `noauth` and forward-auth, never the hashes.
+    ok_response(serde_json::json!({
+        "index": snapshot.index,
+        "routes": routes,
+        "auth": snapshot.auth,
+    }))
 }
 
 /// `POST /api/v1/apps/{name}/aliases` with `{"domain": "..."}`.
@@ -619,7 +698,7 @@ pub fn get_metrics(state: &Arc<AdminState>) -> Response<BoxBody> {
     Response::builder()
         .status(200)
         .header("Content-Type", "text/plain")
-        .body(http_body_util::Full::new(bytes).boxed())
+        .body(full(bytes))
         .unwrap()
 }
 
@@ -634,6 +713,17 @@ pub async fn post_reload(state: &Arc<AdminState>) -> Response<BoxBody> {
 
 // Phase 2: Mutation endpoints
 
+/// Refuse a rule whose `@auth` hashes bcrypt could not, or should not, verify:
+/// malformed, or at a cost outside 4..=13 (see `auth::validate_hash`). Run
+/// after `carry_forward_auth_hashes`, so kept hashes are checked too.
+fn validate_auth_hashes(rule: &ProxyRule) -> Result<(), String> {
+    for entry in &rule.auth {
+        auth::validate_hash(&entry.hash)
+            .map_err(|e| format!("auth entry for {}: {}", entry.username, e))?;
+    }
+    Ok(())
+}
+
 pub fn post_route(state: &Arc<AdminState>, body: &str) -> Response<BoxBody> {
     let mut rule: ProxyRule = match serde_json::from_str(body) {
         Ok(r) => r,
@@ -644,7 +734,10 @@ pub fn post_route(state: &Arc<AdminState>, body: &str) -> Response<BoxBody> {
     if let Err(e) = rule.carry_forward_auth_hashes(None) {
         return error_response(400, &e.to_string());
     }
-    if let Err(e) = rule.validate_auth_exempt() {
+    if let Err(e) = validate_auth_hashes(&rule) {
+        return error_response(400, &e);
+    }
+    if let Err(e) = rule.validate() {
         return error_response(400, &e.to_string());
     }
 
@@ -672,7 +765,10 @@ pub fn put_route(state: &Arc<AdminState>, index: usize, body: &str) -> Response<
     if let Err(e) = rule.carry_forward_auth_hashes(cfg.rules.get(index)) {
         return error_response(400, &e.to_string());
     }
-    if let Err(e) = rule.validate_auth_exempt() {
+    if let Err(e) = validate_auth_hashes(&rule) {
+        return error_response(400, &e);
+    }
+    if let Err(e) = rule.validate() {
         return error_response(400, &e.to_string());
     }
 
@@ -739,6 +835,9 @@ pub fn put_config(state: &Arc<AdminState>, body: &str) -> Response<BoxBody> {
     // used to sit there (or reject a legitimate deletion). The same-index
     // rule is preferred when its matcher matches, so duplicate matchers
     // still pair up one-to-one.
+    if let Err(e) = crate::config::validate_global_scripts(&update.global_scripts) {
+        return error_response(400, &e.to_string());
+    }
     let cfg = state.config_manager.get_config();
     for (index, rule) in update.rules.iter_mut().enumerate() {
         let existing = cfg
@@ -749,7 +848,10 @@ pub fn put_config(state: &Arc<AdminState>, body: &str) -> Response<BoxBody> {
         if let Err(e) = rule.carry_forward_auth_hashes(existing) {
             return error_response(400, &format!("rule {}: {}", index, e));
         }
-        if let Err(e) = rule.validate_auth_exempt() {
+        if let Err(e) = validate_auth_hashes(rule) {
+            return error_response(400, &format!("rule {}: {}", index, e));
+        }
+        if let Err(e) = rule.validate() {
             return error_response(400, &format!("rule {}: {}", index, e));
         }
     }
@@ -824,7 +926,12 @@ struct HashPasswordRequest {
     password: String,
 }
 
-pub fn post_hash_password(_state: &Arc<AdminState>, body: &str) -> Response<BoxBody> {
+/// `POST /api/v1/hash-password` — bcrypt a password at the default cost (12).
+///
+/// Runs on the bounded bcrypt pool like every credential check: hashing is the
+/// same quarter-second of CPU, and done inline it parked a tokio worker per
+/// call. Answers 503 when the pool stays saturated.
+pub async fn post_hash_password(_state: &Arc<AdminState>, body: &str) -> Response<BoxBody> {
     let req: HashPasswordRequest = match serde_json::from_str(body) {
         Ok(r) => r,
         Err(e) => return error_response(400, &format!("Invalid JSON: {}", e)),
@@ -838,7 +945,10 @@ pub fn post_hash_password(_state: &Arc<AdminState>, body: &str) -> Response<BoxB
         return error_response(400, "Password too long (max 1024 bytes)");
     }
 
-    let hash = auth::generate_hash(&req.password);
+    let password = req.password;
+    let Some(hash) = auth::run_bcrypt(move || auth::generate_hash(&password)).await else {
+        return error_response(503, "password hashing is busy, retry shortly");
+    };
     ok_response(serde_json::json!({
         "hash": hash,
         "format": "bcrypt"
@@ -882,7 +992,7 @@ pub async fn sse_app_events(state: Arc<AdminState>) -> Response<BoxBody> {
 
     impl Body for MpscBody {
         type Data = bytes::Bytes;
-        type Error = std::convert::Infallible;
+        type Error = crate::pool::BoxError;
 
         fn poll_frame(
             mut self: Pin<&mut Self>,
@@ -953,5 +1063,455 @@ mod acme_challenge_tests {
         assert!(plausible_acme_token(&"a".repeat(22)));
         assert!(plausible_acme_token(&"a".repeat(128)));
         assert!(!plausible_acme_token(&"a".repeat(129)));
+    }
+}
+
+#[cfg(test)]
+mod routing_table_tests {
+    use super::*;
+    use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
+    use std::time::Instant;
+
+    /// An admin state with an app manager over empty `sites/`, which is all
+    /// the routing-table endpoints need.
+    fn state(dir: &tempfile::TempDir) -> Arc<AdminState> {
+        let sites = dir.path().join("sites");
+        std::fs::create_dir_all(&sites).unwrap();
+        let conf = dir.path().join("proxy.conf");
+        std::fs::write(&conf, "default -> http://localhost:3000\n").unwrap();
+        let config_manager =
+            Arc::new(crate::config::ConfigManager::new(conf.to_str().unwrap()).unwrap());
+        let port_manager = Arc::new(
+            crate::app::PortManager::new(dir.path().join("run").to_str().unwrap()).unwrap(),
+        );
+        let app_manager = crate::app::AppManager::new(
+            sites.to_str().unwrap(),
+            port_manager,
+            config_manager.clone(),
+            false,
+        )
+        .unwrap();
+        Arc::new(AdminState {
+            config_manager,
+            metrics: crate::metrics::new_metrics(),
+            start_time: Instant::now(),
+            circuit_breaker: Arc::new(CircuitBreaker::new(CircuitBreakerConfig::default())),
+            app_manager: Some(Arc::new(app_manager)),
+            rate_limiter: None,
+            tls_manager: None,
+            challenge_store: None,
+        })
+    }
+
+    fn hash() -> String {
+        crate::auth::hash_password("pw", 4)
+    }
+
+    async fn push(state: &Arc<AdminState>, body: serde_json::Value) -> u16 {
+        put_routing_table(state, &body.to_string())
+            .await
+            .status()
+            .as_u16()
+    }
+
+    #[tokio::test]
+    async fn only_http_targets_with_a_host_are_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(&dir);
+        for url in [
+            "file:///etc/passwd",
+            "unix:/run/app.sock",
+            "ftp://10.0.0.1/",
+            "data:text/plain,hi",
+        ] {
+            let body = serde_json::json!({
+                "index": 1,
+                "routes": { "x.soli.app": [ { "url": url } ] }
+            });
+            assert_eq!(push(&state, body).await, 400, "{url} was accepted");
+        }
+        let body = serde_json::json!({
+            "index": 1,
+            "routes": { "x.soli.app": [ { "url": "https://10.0.0.1:20001" } ] }
+        });
+        assert_eq!(push(&state, body).await, 200);
+    }
+
+    #[tokio::test]
+    async fn a_weight_above_255_is_refused_not_wrapped() {
+        // `as u8` turned 256 into 0 and 300 into 44, silently.
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(&dir);
+        for weight in [
+            serde_json::json!(256),
+            serde_json::json!(-1),
+            serde_json::json!("10"),
+        ] {
+            let body = serde_json::json!({
+                "index": 1,
+                "routes": { "x.soli.app": [ { "url": "http://10.0.0.1:1", "weight": weight } ] }
+            });
+            assert_eq!(
+                push(&state, body).await,
+                400,
+                "weight {weight} was accepted"
+            );
+        }
+        let body = serde_json::json!({
+            "index": 1,
+            "routes": { "x.soli.app": [ { "url": "http://10.0.0.1:1", "weight": 255 } ] }
+        });
+        assert_eq!(push(&state, body).await, 200);
+    }
+
+    #[tokio::test]
+    async fn a_replayed_push_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(&dir);
+        let body = serde_json::json!({
+            "index": 0,
+            "routes": { "x.soli.app": [ { "url": "http://10.0.0.1:1" } ] }
+        });
+        assert_eq!(push(&state, body.clone()).await, 200);
+        assert_eq!(push(&state, body).await, 409);
+    }
+
+    /// The request path asks `resolve_app_request` for a host's target, and
+    /// gates the request on the `auth` that comes back with it: a pushed
+    /// domain that carries auth must get it there, not only from
+    /// `auth_for_host`.
+    #[tokio::test]
+    async fn pushed_auth_comes_back_with_the_pushed_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(&dir);
+        let manager = state.app_manager.clone().unwrap();
+        let body = serde_json::json!({
+            "index": 1,
+            "routes": {
+                "locked.soli.app": [ { "url": "http://10.0.0.1:1" } ],
+                "open.soli.app": [ { "url": "http://10.0.0.2:1" } ]
+            },
+            "auth": { "locked.soli.app": { "users": { "admin": hash() } } }
+        });
+        assert_eq!(push(&state, body).await, 200);
+
+        let locked = manager
+            .resolve_app_request("locked.soli.app", &|_| true)
+            .await
+            .expect("a pushed domain resolves");
+        assert!(
+            locked.app.is_none(),
+            "a pushed route belongs to no local app"
+        );
+        assert_eq!(locked.target.url.host_str(), Some("10.0.0.1"));
+        let auth = locked
+            .auth
+            .expect("the pushed domain's auth must come with its target");
+        assert_eq!(auth.users[0].username, "admin");
+        assert!(auth.requires_auth("/"));
+
+        let open = manager
+            .resolve_app_request("open.soli.app", &|_| true)
+            .await
+            .expect("a pushed domain resolves");
+        assert!(open.auth.is_none(), "a domain pushed without auth is open");
+    }
+
+    /// Every string the serializer writes verbatim is refused when it could
+    /// not come back as the same token: a `\n` in a JSON field used to land
+    /// in proxy.conf as a line of its own — a whole route, injected.
+    #[test]
+    fn admin_route_json_cannot_inject_proxy_conf_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(&dir);
+        let conf = dir.path().join("proxy.conf");
+        let before = std::fs::read_to_string(&conf).unwrap();
+        let injected = "\nevil.example.com -> http://10.0.0.66/";
+        let rule = |matcher: serde_json::Value, extra: serde_json::Value| {
+            let mut rule = serde_json::json!({
+                "matcher": matcher,
+                "targets": [{ "url": "https://localhost:9999/", "weight": 100 }],
+                "headers": [],
+                "scripts": []
+            });
+            for (k, v) in extra.as_object().unwrap() {
+                rule[k] = v.clone();
+            }
+            rule
+        };
+        let prefix = serde_json::json!({ "type": "prefix", "value": "/a/" });
+        let bad = [
+            rule(
+                prefix.clone(),
+                serde_json::json!({ "upstream": { "tls_ca": format!("/etc/ca.pem{injected}") } }),
+            ),
+            rule(
+                prefix.clone(),
+                serde_json::json!({ "upstream": { "tls_ca": "/etc/my ca.pem" } }),
+            ),
+            rule(
+                prefix.clone(),
+                serde_json::json!({ "upstream": { "tls_ca": "/etc/ca.pem\\" } }),
+            ),
+            rule(
+                prefix.clone(),
+                serde_json::json!({ "upstream": { "tls_client_cert": "/c.pem", "tls_client_key": "/k,x.pem" } }),
+            ),
+            rule(
+                prefix.clone(),
+                serde_json::json!({ "upstream": { "tls_sni": format!("a.example{injected}") } }),
+            ),
+            rule(
+                prefix.clone(),
+                serde_json::json!({ "upstream": { "health": format!("/up{injected}") } }),
+            ),
+            rule(
+                serde_json::json!({ "type": "prefix", "value": format!("/b/{injected}") }),
+                serde_json::json!({}),
+            ),
+            rule(
+                serde_json::json!({ "type": "exact", "value": "/c->http://10.0.0.66/" }),
+                serde_json::json!({}),
+            ),
+            rule(
+                serde_json::json!({ "type": "regex", "value": format!("^/d{injected}") }),
+                serde_json::json!({}),
+            ),
+            rule(
+                serde_json::json!({ "type": "domain", "value": "#x.example" }),
+                serde_json::json!({}),
+            ),
+            rule(
+                prefix.clone(),
+                serde_json::json!({
+                    "auth": [{ "username": "a", "hash": hash() }],
+                    "auth_exempt": [format!("/hook{injected}")]
+                }),
+            ),
+            rule(
+                prefix.clone(),
+                serde_json::json!({ "auth": [{ "username": format!("a{injected}"), "hash": hash() }] }),
+            ),
+            rule(
+                prefix.clone(),
+                serde_json::json!({ "scripts": [format!("a.lua{injected} ok.lua")] }),
+            ),
+        ];
+        for rule in &bad {
+            assert_eq!(
+                post_route(&state, &rule.to_string()).status(),
+                400,
+                "accepted {rule}"
+            );
+            let table = serde_json::json!({ "rules": [rule] });
+            assert_eq!(
+                put_config(&state, &table.to_string()).status(),
+                400,
+                "accepted {rule}"
+            );
+        }
+        let scripts =
+            serde_json::json!({ "rules": [], "global_scripts": [format!("g.lua{injected}")] });
+        assert_eq!(put_config(&state, &scripts.to_string()).status(), 400);
+        assert_eq!(std::fs::read_to_string(&conf).unwrap(), before);
+    }
+
+    /// A route whose TLS file cannot be loaded is refused *before* proxy.conf
+    /// is written: it used to be on disk already when the 500 came back, and
+    /// the next reload failed on it.
+    #[test]
+    fn a_route_whose_tls_file_fails_is_not_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(&dir);
+        let conf = dir.path().join("proxy.conf");
+        let before = std::fs::read_to_string(&conf).unwrap();
+        let rule = serde_json::json!({
+            "matcher": { "type": "prefix", "value": "/a/" },
+            "targets": [{ "url": "https://localhost:9999/", "weight": 100 }],
+            "headers": [],
+            "scripts": [],
+            "upstream": { "tls_ca": "/nonexistent/soli-proxy-test-ca.pem" }
+        });
+        let resp = post_route(&state, &rule.to_string());
+        assert!(resp.status().is_client_error() || resp.status().is_server_error());
+        assert_eq!(std::fs::read_to_string(&conf).unwrap(), before);
+        assert_eq!(state.config_manager.get_config().rules.len(), 1);
+    }
+
+    /// A route arriving as JSON is checked like a `proxy.conf` line before it
+    /// is written: a bad `headers` entry or a regex capture the pattern lacks
+    /// is a 400, not a file the next reload refuses.
+    #[test]
+    fn admin_routes_are_fully_validated_before_persisting() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(&dir);
+        let before = state.config_manager.get_config().rules.len();
+        let bad = [
+            serde_json::json!({
+                "matcher": { "type": "prefix", "value": "/a/" },
+                "targets": [{ "url": "http://localhost:9999/", "weight": 100 }],
+                "headers": [{ "name": "Connection", "value": "close" }],
+                "scripts": []
+            }),
+            serde_json::json!({
+                "matcher": { "type": "prefix", "value": "/a/" },
+                "targets": [{ "url": "http://localhost:9999/", "weight": 100 }],
+                "headers": [{ "name": "X-Who", "value": "$nobody" }],
+                "scripts": []
+            }),
+            serde_json::json!({
+                "matcher": { "type": "regex", "value": "^/u/(\\d+)$" },
+                "targets": [{ "url": "http://localhost:9999/users/$2", "weight": 100 }],
+                "headers": [],
+                "scripts": []
+            }),
+        ];
+        for rule in &bad {
+            assert_eq!(
+                post_route(&state, &rule.to_string()).status(),
+                400,
+                "accepted {rule}"
+            );
+            assert_eq!(
+                put_route(&state, 0, &rule.to_string()).status(),
+                400,
+                "accepted {rule}"
+            );
+            let table = serde_json::json!({ "rules": [rule] });
+            assert_eq!(
+                put_config(&state, &table.to_string()).status(),
+                400,
+                "accepted {rule}"
+            );
+        }
+        assert_eq!(state.config_manager.get_config().rules.len(), before);
+
+        let good = serde_json::json!({
+            "matcher": { "type": "regex", "value": "^/u/(\\d+)$" },
+            "targets": [{ "url": "http://localhost:9999/users/$1", "weight": 100 }],
+            "headers": [{ "name": "X-Client", "value": "$client_ip" }],
+            "scripts": []
+        });
+        assert_eq!(post_route(&state, &good.to_string()).status(), 201);
+    }
+
+    #[tokio::test]
+    async fn pushed_auth_is_validated_then_enforced_for_its_domain() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(&dir);
+        let manager = state.app_manager.clone().unwrap();
+        let routes = serde_json::json!({ "x.soli.app": [ { "url": "http://10.0.0.1:1" } ] });
+
+        // Un locataire ne choisit pas le facteur de cout du proxy.
+        let slow = format!("$2b$31${}", "a".repeat(53));
+        for auth in [
+            serde_json::json!({ "x.soli.app": { "users": { "admin": slow } } }),
+            serde_json::json!({ "x.soli.app": { "users": { "admin": "not-a-hash" } } }),
+            serde_json::json!({ "y.soli.app": { "users": { "admin": hash() } } }),
+            serde_json::json!({ "x.soli.app": { "users": { "admin": hash() }, "bogus": 1 } }),
+        ] {
+            let body = serde_json::json!({ "index": 1, "routes": routes, "auth": auth });
+            assert_eq!(push(&state, body).await, 400, "{auth} was accepted");
+        }
+        assert!(manager.auth_for_host("x.soli.app").await.is_none());
+
+        let body = serde_json::json!({
+            "index": 1,
+            "routes": routes,
+            "auth": { "X.soli.app": { "users": { "admin": hash() }, "noauth": ["/hooks/*"] } }
+        });
+        assert_eq!(push(&state, body).await, 200);
+        let auth = manager
+            .auth_for_host("x.soli.app")
+            .await
+            .expect("a pushed domain's auth must be enforced by this proxy");
+        assert_eq!(auth.users[0].username, "admin");
+        assert!(auth.requires_auth("/"));
+        assert!(!auth.requires_auth("/hooks/github"));
+
+        // The read side never returns a hash.
+        let response = get_routing_table(&state).await;
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("\"usernames\":[\"admin\"]"), "{text}");
+        assert!(!text.contains("$2b$"), "{text}");
+    }
+
+    /// A pushed domain may carry forward-auth alone (no Basic accounts): it
+    /// is kept, checked like `app.infos`, and enforced here.
+    #[tokio::test]
+    async fn pushed_forward_auth_is_validated_and_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(&dir);
+        let manager = state.app_manager.clone().unwrap();
+        let routes = serde_json::json!({ "x.soli.app": [ { "url": "http://10.0.0.1:1" } ] });
+
+        for auth in [
+            serde_json::json!({ "x.soli.app": { "forward": "file:///etc/passwd" } }),
+            serde_json::json!({ "x.soli.app": { "forward_headers": ["X-User"] } }),
+            serde_json::json!({ "x.soli.app": {
+                "forward": "http://auth:4180/", "forward_headers": ["Host"] } }),
+        ] {
+            let body = serde_json::json!({ "index": 1, "routes": routes, "auth": auth });
+            assert_eq!(push(&state, body).await, 400, "{auth} was accepted");
+        }
+
+        let body = serde_json::json!({
+            "index": 1,
+            "routes": routes,
+            "auth": { "x.soli.app": {
+                "forward": "http://auth:4180/", "forward_headers": ["X-Auth-Request-User"] } }
+        });
+        assert_eq!(push(&state, body).await, 200);
+        let auth = manager
+            .auth_for_host("x.soli.app")
+            .await
+            .expect("forward-auth alone must be kept");
+        assert_eq!(auth.forward.as_ref().unwrap().url(), "http://auth:4180/");
+        assert!(!auth.requires_auth("/"), "no Basic accounts");
+    }
+
+    /// A route's forward-auth is checked on the way in and survives the
+    /// admin API's rewrite of `proxy.conf`.
+    #[test]
+    fn admin_routes_carry_forward_auth() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(&dir);
+        let rule = |url: &str| {
+            serde_json::json!({
+                "matcher": { "type": "domain", "value": "app.example.com" },
+                "targets": [{ "url": "http://localhost:9999/", "weight": 100 }],
+                "headers": [],
+                "scripts": [],
+                "auth_exempt": ["/up"],
+                "forward_auth": { "url": url, "headers": ["X-Auth-User"] }
+            })
+        };
+        assert_eq!(
+            post_route(&state, &rule("ftp://auth/v").to_string()).status(),
+            400
+        );
+        assert_eq!(
+            post_route(&state, &rule("http://u:p@auth/v").to_string()).status(),
+            400
+        );
+        assert_eq!(
+            post_route(&state, &rule("http://auth:4180/v").to_string()).status(),
+            201
+        );
+
+        let written = std::fs::read_to_string(dir.path().join("proxy.conf")).unwrap();
+        assert!(
+            written.contains(
+                "@noauth:/up @forward_auth:http://auth:4180/v @forward_auth_headers:x-auth-user"
+            ),
+            "{written}"
+        );
+        let cfg = state.config_manager.get_config();
+        let added = cfg.rules.last().unwrap();
+        assert_eq!(
+            added.forward_auth.as_ref().unwrap().url(),
+            "http://auth:4180/v"
+        );
     }
 }

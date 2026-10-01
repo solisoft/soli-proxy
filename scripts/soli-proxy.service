@@ -1,11 +1,60 @@
 [Unit]
 Description=Soli Proxy Server
-After=network.target
+Documentation=https://github.com/solisoft/soli-proxy#systemd-service
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
 
+# ---------------------------------------------------------------------------
+# Identity
+#
+# The proxy runs as a dedicated, unprivileged account. Create it once:
+#
+#   sudo useradd --system --home-dir /var/lib/soli-proxy --shell /usr/sbin/nologin soli-proxy
+#   sudo mkdir -p /etc/soli-proxy /srv/sites
+#   sudo chown -R soli-proxy:soli-proxy /etc/soli-proxy /srv/sites
+#
+# It needs exactly one capability of its own: binding :80 and :443.
+# AmbientCapabilities grants it to the process at start, so no `setcap` on the
+# binary is needed (and an upgrade cannot silently drop it).
+#
+# What this mode supports, and what it does not:
+#
+#   * Routing, TLS/ACME, the admin API, Lua: everything.
+#   * Apps in Docker (`docker_image`, and every app under `[apps] multi_tenant`):
+#     yes, once the account can reach the Docker daemon — uncomment
+#     `SupplementaryGroups=docker` below. Be clear about what that means: the
+#     docker group is root-equivalent on the host, so it hands back much of
+#     what this unit takes away. Prefer rootless Docker or Podman if you can.
+#   * Native apps run as the proxy's own user (no `user` / `default_user`):
+#     yes, but they can then read config.toml and its admin credentials. Fine
+#     when you wrote every app; otherwise use multi_tenant.
+#   * Native apps run as *other* users (`user` in app.infos, `[apps]
+#     default_user`): NO. Switching uid needs CAP_SETUID/CAP_SETGID (and
+#     CAP_KILL to stop them). Do not just add those to AmbientCapabilities:
+#     ambient capabilities are inherited across exec and are NOT cleared by a
+#     uid change between two non-root uids, so every app would start holding
+#     CAP_SETUID — that is, root. For per-user native apps use the root variant
+#     below: a root process that setuid()s to the app's user does lose every
+#     capability on the way.
+User=soli-proxy
+Group=soli-proxy
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+# SupplementaryGroups=docker
+
+# Root variant, for native apps under their own users: comment out the four
+# lines above and uncomment the two below. The hardening further down still
+# applies, and the bounding set keeps root from loading modules, tracing other
+# processes, reconfiguring the network, etc.
+# User=root
+# CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL CAP_CHOWN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_FOWNER
+
+# ---------------------------------------------------------------------------
+# Paths
+#
 # Runtime state is written to PATHS RELATIVE TO THIS DIRECTORY and cannot be
 # relocated by flag or env var:
 #   run/logs/<app>/<blue|green>.log   stdout+stderr of each app slot
@@ -13,13 +62,17 @@ User=root
 #   run/ports.lock                    blue/green port assignments
 #   certs/                            TLS cache, when [tls].cache_dir is "./certs"
 # Without WorkingDirectory systemd starts the process in / and the proxy tries
-# to write /run and /certs.
+# to write /run and /certs. StateDirectory= creates it, owned by User=.
+StateDirectory=soli-proxy
 WorkingDirectory=/var/lib/soli-proxy
+# Creates /var/log/soli-proxy, for
+# `[logging] output = "file:/var/log/soli-proxy/proxy.log"`.
+LogsDirectory=soli-proxy
 
 # --conf points at proxy.conf (the routing file), NOT config.toml.
-# config.toml is picked up automatically from the same directory.
-# --sites-dir is the only way to set the sites location; there is no
-# equivalent key in config.toml.
+# config.toml (and an optional .env with admin credentials) is read from the
+# same directory. --sites-dir is the only way to set the sites location;
+# there is no equivalent key in config.toml.
 ExecStart=/usr/local/bin/soli-proxy \
     --conf /etc/soli-proxy/proxy.conf \
     --sites-dir /srv/sites
@@ -27,8 +80,76 @@ ExecStart=/usr/local/bin/soli-proxy \
 # Do NOT add -d/--daemon here: it forks and detaches, so systemd would lose
 # track of the process and restart it forever. Type=simple wants the proxy in
 # the foreground, and its own log then goes to the journal.
+# `systemctl reload soli-proxy` re-reads proxy.conf and config.toml (SIGUSR1).
+ExecReload=/bin/kill -USR1 $MAINPID
 Restart=always
 RestartSec=5
+LimitNOFILE=65536
+
+# ---------------------------------------------------------------------------
+# Restarts without an app outage
+#
+# On SIGTERM the proxy stops accepting, lets in-flight requests finish (up to
+# `[server] shutdown_grace_period`, 10 s by default) and exits WITHOUT
+# stopping its apps; the next proxy adopts every app it can prove it started
+# (see the README, "Restarts and upgrades"). Native apps are children of the
+# proxy, in this unit's cgroup — and systemd's default, KillMode=control-group,
+# SIGTERMs the whole cgroup on stop/restart, which would take every app down
+# with the proxy and defeat all of that. KillMode=process signals only the
+# proxy itself. (Containers are the Docker daemon's children, never this
+# unit's, and survive either way.)
+#
+# The flip side: `systemctl stop soli-proxy` leaves the apps running too (the
+# journal notes "left-over process" on the next start; that is them, and they
+# are adopted). To take everything down:
+#
+#   soli-proxy stop --all --conf /etc/soli-proxy/proxy.conf   # then
+#   systemctl stop soli-proxy
+#
+# or set `[apps] stop_on_shutdown = true` in config.toml, which restores the
+# old behaviour: every stop/restart stops (and cold-starts) every app.
+#
+# systemd's default TimeoutStopSec (90 s) covers the drain; if you raise
+# shutdown_grace_period (or, with stop_on_shutdown, the apps'
+# graceful_timeout) past it, raise TimeoutStopSec too, or the proxy is
+# SIGKILLed mid-drain.
+KillMode=process
+
+# ---------------------------------------------------------------------------
+# Hardening
+#
+# Native apps are children of the proxy and live inside this same sandbox:
+# whatever is read-only here is read-only for them too. That is the point, but
+# every directory an app must write to has to be listed in ReadWritePaths.
+NoNewPrivileges=yes
+ProtectSystem=strict
+# /etc/soli-proxy: the admin API rewrites proxy.conf, and config.toml is
+#   created there on first start if it is missing.
+# /srv/sites: apps write inside their own site directory (uploads, sqlite...).
+ReadWritePaths=/etc/soli-proxy -/srv/sites
+# Sites under /home (e.g. /home/rocky/sites)? Set ProtectHome=no and list that
+# directory in ReadWritePaths instead.
+ProtectHome=yes
+# No PrivateTmp: apps outlive the unit (KillMode=process above), and systemd
+# deletes a unit's private /tmp when the unit stops — an app adopted across a
+# restart would keep running against a /tmp emptied under it. Apps share the
+# host /tmp instead; give an app a private scratch directory inside its site
+# (or set TMPDIR in its environment) if it needs one.
+PrivateTmp=no
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
+# New files (proxy log, app logs, certs) are not world-readable.
+UMask=0027
 
 Environment="RUST_LOG=info"
 

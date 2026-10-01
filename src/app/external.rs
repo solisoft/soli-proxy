@@ -25,6 +25,7 @@
 //! table silently reinstates routes that were deliberately removed, and it looks
 //! exactly like a rollback nobody asked for.
 
+use super::AppAuth;
 use crate::config::Target;
 use std::collections::HashMap;
 
@@ -35,6 +36,13 @@ pub struct ExternalRoutes {
     /// current one is refused.
     pub index: u64,
     pub table: HashMap<String, Vec<Target>>,
+    /// Basic Auth and forward-auth per pushed domain, enforced by this proxy.
+    ///
+    /// A pushed target is the workload's raw port on another node, with no
+    /// proxy in front of it there, so an app's `[auth]` is enforced here or
+    /// not at all. Pushed with the routes and replaced with them, so a domain
+    /// can never be served under another table's credentials.
+    pub auth: HashMap<String, AppAuth>,
 }
 
 impl ExternalRoutes {
@@ -97,6 +105,12 @@ impl ExternalRoutes {
 #[derive(Debug, Default)]
 pub struct ExternalRouteTable {
     inner: parking_lot::RwLock<ExternalRoutes>,
+    /// Whether any table was applied since start. Kept apart from the index
+    /// because 0 is a legitimate index (a fresh Raft log) and not a "nothing
+    /// yet" sentinel: with `current.index != 0` standing in for this flag, a
+    /// table pushed at index 0 left the guard open, and any later push —
+    /// including a replay of that same index 0 — was applied.
+    applied: std::sync::atomic::AtomicBool,
     /// Advanced on every pick, so consecutive requests rotate across a
     /// domain's instances. Shared by all domains: the order within one domain
     /// is still a rotation, and one counter is one atomic on the hot path.
@@ -111,8 +125,11 @@ impl ExternalRouteTable {
     /// complete set" — which is also what makes a missed push self-correcting
     /// on the next one.
     pub fn push(&self, routes: ExternalRoutes) -> bool {
+        use std::sync::atomic::Ordering;
         let mut current = self.inner.write();
-        if routes.index <= current.index && current.index != 0 {
+        // Read and set under the write lock, so two racing first pushes cannot
+        // both see "nothing applied yet".
+        if self.applied.load(Ordering::Acquire) && routes.index <= current.index {
             tracing::warn!(
                 pushed = routes.index,
                 current = current.index,
@@ -126,7 +143,18 @@ impl ExternalRouteTable {
             "external routing table updated"
         );
         *current = routes;
+        self.applied.store(true, Ordering::Release);
         true
+    }
+
+    /// Auth (Basic and/or forward) pushed for a host, if any.
+    pub fn auth(&self, host: &str) -> Option<AppAuth> {
+        self.inner
+            .read()
+            .auth
+            .get(host)
+            .filter(|auth| auth.is_active())
+            .cloned()
     }
 
     pub fn snapshot(&self) -> ExternalRoutes {
@@ -142,6 +170,12 @@ impl ExternalRouteTable {
     pub fn pick(&self, host: &str, is_available: &(dyn Fn(&str) -> bool + Sync)) -> Option<Target> {
         let turn = self.turn.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.inner.read().pick(host, turn, is_available)
+    }
+
+    /// How many instances the cluster pushed for this host — whether a
+    /// failed request has anywhere else to go.
+    pub fn instances(&self, host: &str) -> usize {
+        self.inner.read().table.get(host).map_or(0, Vec::len)
     }
 
     /// Whether the cluster routes this host.
@@ -177,6 +211,7 @@ mod tests {
                 .iter()
                 .map(|(host, url)| (host.to_string(), vec![target(url)]))
                 .collect(),
+            ..Default::default()
         }
     }
 
@@ -244,6 +279,44 @@ mod tests {
     }
 
     #[test]
+    fn a_push_at_index_zero_cannot_be_replayed() {
+        // Index 0 is a real Raft index on a fresh cluster. It used to double as
+        // "nothing applied yet", so once a table at 0 was in place every later
+        // push was accepted — a replay of that very request included.
+        let table = ExternalRouteTable::default();
+        assert!(table.push(routes(0, &[("x.soli.app", "http://10.0.0.1:1")])));
+        assert!(!table.push(routes(0, &[("x.soli.app", "http://10.0.0.66:1")])));
+        assert_eq!(
+            table.target("x.soli.app").unwrap().url.as_str(),
+            "http://10.0.0.1:1/"
+        );
+        assert!(table.push(routes(1, &[("x.soli.app", "http://10.0.0.2:1")])));
+    }
+
+    #[test]
+    fn pushed_auth_travels_and_is_replaced_with_its_table() {
+        let table = ExternalRouteTable::default();
+        let mut first = routes(1, &[("x.soli.app", "http://10.0.0.1:1")]);
+        first.auth.insert(
+            "x.soli.app".to_string(),
+            AppAuth {
+                users: vec![crate::auth::BasicAuth {
+                    username: "admin".to_string(),
+                    hash: format!("$2b$12${}", "a".repeat(53)),
+                }],
+                noauth: vec![],
+                forward: None,
+            },
+        );
+        assert!(table.push(first));
+        assert_eq!(table.auth("x.soli.app").unwrap().users[0].username, "admin");
+        assert!(table.auth("y.soli.app").is_none());
+        // Le tableau suivant ne la porte plus : elle disparait avec lui.
+        assert!(table.push(routes(2, &[("x.soli.app", "http://10.0.0.1:1")])));
+        assert!(table.auth("x.soli.app").is_none());
+    }
+
+    #[test]
     fn several_targets_for_one_host_are_kept() {
         // Replicas. Only the first is used today, but dropping the rest at push
         // time would make adding a balancing policy a wire-format change.
@@ -257,6 +330,7 @@ mod tests {
                     target("http://10.0.0.12:20001"),
                 ],
             )]),
+            ..Default::default()
         });
         assert_eq!(table.snapshot().table["x.soli.app"].len(), 2);
     }
@@ -278,6 +352,7 @@ mod tests {
                 ],
             )]
             .into(),
+            ..Default::default()
         }
     }
 

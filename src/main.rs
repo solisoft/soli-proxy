@@ -49,16 +49,8 @@ fn get_pid_dir() -> String {
     std::env::var("SOLI_PID_DIR").unwrap_or_else(|_| ".".to_string())
 }
 
-fn get_log_dir() -> String {
-    std::env::var("SOLI_LOG_DIR").unwrap_or_else(|_| ".".to_string())
-}
-
 fn get_pid_path() -> String {
     format!("{}/proxy.pid", get_pid_dir())
-}
-
-fn get_log_path() -> String {
-    format!("{}/proxy.log", get_log_dir())
 }
 
 fn write_pid_file() -> Result<String> {
@@ -81,7 +73,10 @@ fn is_process_running(pid: i32) -> bool {
     }
 }
 
-fn kill_existing_daemon() -> Result<()> {
+/// Stop the daemon `proxy.pid` names, waiting for its drain: `-d` replaces a
+/// running daemon this way. Its apps keep running (unless `[apps]
+/// stop_on_shutdown` says otherwise) and the new daemon adopts them.
+fn kill_existing_daemon(config_path: &str) -> Result<()> {
     let pid_path = get_pid_path();
     if let Ok(content) = fs::read_to_string(&pid_path) {
         if let Ok(pid) = content.trim().parse::<i32>() {
@@ -91,7 +86,10 @@ fn kill_existing_daemon() -> Result<()> {
                     libc::kill(pid, libc::SIGTERM);
                 }
 
-                let max_wait = std::time::Duration::from_secs(10);
+                // The old daemon drains for up to its grace period, then
+                // exits; a little more covers the rest of its shutdown.
+                let max_wait = soli_proxy::config::read_shutdown_grace_period(config_path)
+                    + std::time::Duration::from_secs(5);
                 let start = std::time::Instant::now();
                 let check_interval = std::time::Duration::from_millis(100);
 
@@ -117,48 +115,36 @@ fn kill_existing_daemon() -> Result<()> {
     Ok(())
 }
 
-fn setup_logging(daemon: bool) -> Result<()> {
-    if daemon {
-        let log_path = get_log_path();
-        let log_dir = std::path::Path::new(&log_path).parent().unwrap();
-        fs::create_dir_all(log_dir).ok();
-
-        let file = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)?;
-
-        let subscriber = tracing_subscriber::fmt()
-            .json()
-            .with_max_level(tracing::Level::INFO)
-            .with_writer(file)
-            .finish();
-        tracing::subscriber::set_global_default(subscriber)?;
-    } else {
-        tracing_subscriber::fmt()
-            .json()
-            .with_max_level(tracing::Level::INFO)
-            .init();
-    }
-    Ok(())
-}
-
 #[derive(Parser, Debug)]
 #[command(name = "soli-proxy")]
 #[command(version = env!("CARGO_PKG_VERSION"))]
+#[command(about = "Reverse proxy with automatic HTTPS, Lua scripting and blue-green app deploys")]
 struct Cli {
+    /// Routing rules file. config.toml (and an optional .env) are read from
+    /// the same directory.
     #[arg(short, long, default_value = "./proxy.conf")]
     conf: String,
 
+    /// Fork into the background, writing proxy.pid and proxy.log.
     #[arg(short, long)]
     daemon: bool,
 
+    /// Development mode: .test aliases, one worker, apps started with --dev.
     #[arg(long)]
     dev: bool,
 
-    #[arg(long, default_value = "true")]
+    /// Reload proxy.conf and rescan sites when they change. `--watch false`
+    /// turns it off (a bare `bool` flag could only ever be set to true).
+    #[arg(
+        long,
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
     watch: bool,
 
+    /// Directory holding one sub-directory per app, named after its domain.
     #[arg(long, default_value = "./sites")]
     sites_dir: String,
 
@@ -168,6 +154,7 @@ struct Cli {
 
 #[derive(Parser, Debug)]
 enum Commands {
+    /// Interactive terminal UI.
     Tui {
         #[arg(short, long, default_value = "./proxy.conf")]
         conf: String,
@@ -178,6 +165,7 @@ enum Commands {
         #[arg(long)]
         dev: bool,
     },
+    /// Self-update from the latest GitHub release.
     Update {
         #[arg(long)]
         reinstall: bool,
@@ -188,29 +176,72 @@ enum Commands {
         #[arg(long)]
         allow_unverified: bool,
     },
+    /// Blue-green deploy an app: start the other slot, then switch to it.
     Deploy {
         #[arg(short, long, default_value = "./proxy.conf")]
         conf: String,
 
         app_name: String,
     },
+    /// Restart an app's active slot.
     Restart {
         #[arg(short, long, default_value = "./proxy.conf")]
         conf: String,
 
         app_name: String,
     },
+    /// Stop an app, or with --all every app. The proxy keeps running.
+    ///
+    /// Apps outlive a proxy stop or restart (`[apps] stop_on_shutdown`), and
+    /// the next proxy adopts them: `stop --all` is how to take them all down,
+    /// e.g. before `systemctl stop soli-proxy` on a host being retired.
     Stop {
         #[arg(short, long, default_value = "./proxy.conf")]
         conf: String,
 
-        app_name: String,
+        /// Stop every app (both slots) and every process the proxy recorded
+        /// spawning, through the running daemon — or directly when none runs.
+        #[arg(long, visible_alias = "apps", conflicts_with = "app_name")]
+        all: bool,
+
+        /// Sites directory, for --all when no daemon is running.
+        #[arg(long, default_value = "./sites")]
+        sites_dir: String,
+
+        #[arg(required_unless_present = "all")]
+        app_name: Option<String>,
     },
+    /// Validate config.toml, proxy.conf and every site's app.infos without
+    /// starting anything or binding a port. Prints each problem as
+    /// `file:line: error|warning: message`; exits 1 if there is an error.
+    Check {
+        #[arg(short, long, default_value = "./proxy.conf")]
+        conf: String,
+
+        #[arg(long, default_value = "./sites")]
+        sites_dir: String,
+
+        /// Check as `--dev` would load: the [development] sections of
+        /// app.infos, `soli serve --dev`.
+        #[arg(long)]
+        dev: bool,
+    },
+    /// Print an app's deployment logs (both slots).
     Logs {
         #[arg(short, long, default_value = "./proxy.conf")]
         conf: String,
 
         app_name: String,
+    },
+    /// Print a bcrypt hash for `@auth:user:<hash>`, `[auth.users]` in
+    /// app.infos, or ADMIN_PASSWORD_HASH. The password is prompted for (twice,
+    /// without echo), or read from the first line of stdin when it is not a
+    /// terminal; it is never taken from the command line.
+    HashPassword {
+        /// bcrypt cost factor. Each step doubles the time to verify; 12 takes
+        /// ~0.25 s, and the proxy caches verified credentials.
+        #[arg(long, default_value_t = 12, value_parser = clap::value_parser!(u32).range(4..=13))]
+        cost: u32,
     },
 }
 
@@ -242,12 +273,35 @@ fn main() -> Result<()> {
         return run_app_command(&conf, &app_name, "restart");
     }
 
-    if let Some(Commands::Stop { conf, app_name }) = cli.command {
-        return run_app_command(&conf, &app_name, "stop");
+    if let Some(Commands::Stop {
+        conf,
+        all,
+        sites_dir,
+        app_name,
+    }) = cli.command
+    {
+        if all {
+            return run_stop_all(&conf, &sites_dir);
+        }
+        // clap guarantees a name without --all.
+        return run_app_command(&conf, &app_name.unwrap_or_default(), "stop");
+    }
+
+    if let Some(Commands::Check {
+        conf,
+        sites_dir,
+        dev,
+    }) = cli.command
+    {
+        return run_check(&conf, &sites_dir, dev);
     }
 
     if let Some(Commands::Logs { conf, app_name }) = cli.command {
         return run_app_command(&conf, &app_name, "logs");
+    }
+
+    if let Some(Commands::HashPassword { cost }) = cli.command {
+        return run_hash_password(cost);
     }
 
     if !std::path::Path::new(&cli.conf).exists() {
@@ -259,7 +313,7 @@ fn main() -> Result<()> {
     }
 
     if cli.daemon {
-        kill_existing_daemon()?;
+        kill_existing_daemon(&cli.conf)?;
         daemonize()?;
         let _ = write_pid_file()?;
     }
@@ -274,9 +328,113 @@ fn main() -> Result<()> {
         rt_builder.worker_threads(n);
     }
     let rt = rt_builder.build()?;
-    rt.block_on(async move {
+    let result = rt.block_on(async move {
         run_server(&cli.conf, cli.daemon, cli.dev, cli.watch, &cli.sites_dir).await
+    });
+    // Do not wait on whatever is still running (watchers, a health probe):
+    // the drain is over and the apps are, deliberately, left as they are.
+    rt.shutdown_timeout(std::time::Duration::from_secs(1));
+    result
+}
+
+/// `soli-proxy check`: every problem on stdout, a summary, exit status 1 on
+/// any error.
+fn run_check(conf: &str, sites_dir: &str, dev: bool) -> Result<()> {
+    // The loaders report some findings (unknown app.infos keys, clamped
+    // timeouts) only as log warnings; show them, on stderr, without
+    // timestamps.
+    let _ = tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_max_level(tracing::Level::WARN)
+        .with_target(false)
+        .without_time()
+        .try_init();
+
+    let report = soli_proxy::check::check_installation(
+        std::path::Path::new(conf),
+        std::path::Path::new(sites_dir),
+        dev,
+    );
+    for problem in &report.problems {
+        println!("{}", problem);
+    }
+    let summary = format!(
+        "{} error(s), {} warning(s); {} site(s) checked",
+        report.errors(),
+        report.warnings(),
+        report.sites_checked
+    );
+    if report.has_errors() {
+        eprintln!("check failed: {}", summary);
+        std::process::exit(1);
+    }
+    println!("ok: {}", summary);
+    Ok(())
+}
+
+/// `soli-proxy stop --all`.
+fn run_stop_all(config_path: &str, sites_dir: &str) -> Result<()> {
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async move {
+        let config_ref = Arc::new(ConfigManager::new(config_path)?);
+        match delegate_to_daemon(
+            &config_ref,
+            "/api/v1/apps/stop-all",
+            "stop-all",
+            "every app",
+        )
+        .await
+        {
+            DaemonDelegation::Done(_) => {
+                println!("Every app stopped via daemon");
+                return Ok(());
+            }
+            DaemonDelegation::Refused(err) => return Err(err),
+            DaemonDelegation::NoDaemon => {}
+        }
+
+        // No daemon: what runs was left by one that has exited. Containers
+        // are found by name from the sites, native processes by the spawn
+        // registry — nothing else is signalled.
+        let port_manager = Arc::new(PortManager::new("./run")?);
+        let _ = port_manager.load().await;
+        let app_manager = AppManager::new(sites_dir, port_manager, config_ref, false)?;
+        if let Err(e) = app_manager.discover_apps_readonly().await {
+            tracing::error!("Failed to discover apps: {}", e);
+        }
+        app_manager.stop_all().await;
+        println!("Every app stopped");
+        Ok(())
     })
+}
+
+/// `soli-proxy hash-password`: the hash alone on stdout, so it can be captured
+/// (`HASH=$(soli-proxy hash-password)`); prompts and hints go to stderr.
+fn run_hash_password(cost: u32) -> Result<()> {
+    use std::io::IsTerminal;
+    let password = if std::io::stdin().is_terminal() {
+        let first = rpassword::prompt_password("Password: ")?;
+        let again = rpassword::prompt_password("Confirm:  ")?;
+        if first != again {
+            anyhow::bail!("passwords do not match");
+        }
+        first
+    } else {
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        line.trim_end_matches(['\r', '\n']).to_string()
+    };
+    println!("{}", hash_password_checked(&password, cost)?);
+    eprintln!("Use it as `@auth:<user>:<hash>` in proxy.conf, `<user> = \"<hash>\"` under");
+    eprintln!("[auth.users] in app.infos, or ADMIN_PASSWORD_HASH for the admin API.");
+    Ok(())
+}
+
+fn hash_password_checked(password: &str, cost: u32) -> Result<String> {
+    if password.is_empty() {
+        anyhow::bail!("the password is empty");
+    }
+    Ok(soli_proxy::auth::hash_password(password, cost))
 }
 
 /// Compute the SHA-256 digest of a file as lowercase hex.
@@ -565,13 +723,30 @@ fn run_update(reinstall: bool, allow_unverified: bool) -> Result<()> {
             restore_bind_capability(&install_path);
         }
 
-        if reinstall {
-            println!("Restarting soli-proxy...");
-            std::process::exit(0);
-        }
+        print_upgrade_restart_hint();
     }
 
     Ok(())
+}
+
+/// What to do once the binary is replaced. `update` does not restart the
+/// proxy itself — it cannot know how it was started — but a restart is now
+/// safe to do at any time: the old process drains its in-flight requests
+/// (`[server] shutdown_grace_period`) and exits without stopping a single
+/// app, and the new one adopts every app still running.
+fn print_upgrade_restart_hint() {
+    println!();
+    println!("The running proxy keeps the old version until it is restarted.");
+    println!("Restarting drains in-flight requests and leaves every app running;");
+    println!("the new proxy adopts them, so no app is stopped or cold-started:");
+    println!();
+    println!("  systemd:      sudo systemctl restart soli-proxy");
+    println!(
+        "  daemon (-d):  soli-proxy -d [same flags as before]   (replaces the running daemon)"
+    );
+    println!();
+    println!("Check the configuration against the new version first:");
+    println!("  soli-proxy check --conf <proxy.conf> --sites-dir <sites>");
 }
 
 fn run_app_command(config_path: &str, app_name: &str, action: &str) -> Result<()> {
@@ -585,7 +760,8 @@ fn run_app_command(config_path: &str, app_name: &str, action: &str) -> Result<()
         // AppManager here would target the live slot whenever the daemon last
         // promoted green, and can never replace processes it didn't spawn.
         if matches!(action, "deploy" | "restart" | "stop") {
-            match delegate_to_daemon(&config_ref, app_name, action).await {
+            let path = format!("/api/v1/apps/{}/{}", app_name, action);
+            match delegate_to_daemon(&config_ref, &path, action, app_name).await {
                 DaemonDelegation::Done(message) => {
                     println!("{}", message);
                     return Ok(());
@@ -669,11 +845,13 @@ enum DaemonDelegation {
 }
 
 /// Ask the running daemon to perform `action` on `app_name` via its admin API
-/// (`POST /api/v1/apps/<name>/<action>`), authenticated with `[admin].api_key`.
+/// (`POST <path>`, e.g. `/api/v1/apps/<name>/<action>`), authenticated with
+/// `[admin].api_key`.
 async fn delegate_to_daemon(
     config: &Arc<ConfigManager>,
-    app_name: &str,
+    path: &str,
     action: &str,
+    app_name: &str,
 ) -> DaemonDelegation {
     let cfg = config.get_config();
     if !cfg.admin.enabled.unwrap_or(true) {
@@ -712,10 +890,7 @@ async fn delegate_to_daemon(
         return DaemonDelegation::NoDaemon;
     };
     let mut req = client
-        .post(format!(
-            "http://{}/api/v1/apps/{}/{}",
-            admin_addr, app_name, action
-        ))
+        .post(format!("http://{}{}", admin_addr, path))
         // Marks this as a non-browser mutation for the admin CSRF gate.
         .header("X-Requested-With", "soli-cli");
     if let Some(ref key) = cfg.admin.api_key {
@@ -784,7 +959,11 @@ async fn run_server(
     watch: bool,
     sites_dir: &str,
 ) -> Result<()> {
-    setup_logging(daemon_mode)?;
+    // `[logging]` is read ahead of the rest of the config so that errors in
+    // the rest are reported in the configured format and place.
+    let logging_config = soli_proxy::config::read_logging_config(config_path);
+    soli_proxy::logging::init(&logging_config, daemon_mode)?;
+    soli_proxy::access_log::init(&logging_config, daemon_mode)?;
 
     if daemon_mode {
         eprintln!("Started in daemon mode. PID: {}", std::process::id());
@@ -802,8 +981,14 @@ async fn run_server(
         config_manager.start_watcher()?;
     }
 
+    // Maintenance windows opened through the admin API outlive a restart.
+    config_manager
+        .maintenance
+        .persist_to(soli_proxy::response::maintenance::STATE_FILE)?;
+
     let shutdown = ShutdownCoordinator::new();
     let shutdown_for_signal = shutdown.clone();
+    let shutdown_for_drain = shutdown.clone();
     let config_ref = Arc::new(config_manager);
     let metrics = new_metrics();
     let challenge_store = new_challenge_store();
@@ -960,9 +1145,9 @@ async fn run_server(
 
     let server = match tls_manager.server_config() {
         Some(config) => {
-            let https_addr: SocketAddr = format!("0.0.0.0:{}", cfg.server.https_port).parse()?;
+            let https_addr: SocketAddr = cfg.server.https_addr()?;
             let tls_acceptor = TlsAcceptor::from(config.clone());
-            tracing::info!("HTTPS enabled on port {}", cfg.server.https_port);
+            tracing::info!("HTTPS enabled on {}", https_addr);
             ProxyServer::with_https(
                 config_ref.clone(),
                 shutdown,
@@ -1189,7 +1374,7 @@ async fn run_server(
         });
     }
 
-    let app_manager_for_signal = app_manager;
+    let config_for_shutdown = config_ref.clone();
 
     tokio::spawn(async move {
         let mut sigusr1 = signal::unix::signal(signal::unix::SignalKind::user_defined1()).unwrap();
@@ -1202,7 +1387,6 @@ async fn run_server(
         }
     });
 
-    let daemon_clone = daemon_mode;
     tokio::spawn(async move {
         let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate()).unwrap();
         let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt()).unwrap();
@@ -1210,33 +1394,68 @@ async fn run_server(
             _ = sigterm.recv() => {},
             _ = sigint.recv() => {},
         }
-        tracing::info!("Received shutdown signal, draining connections...");
-
-        // Tell the HTTP/HTTPS servers to stop accepting new connections and
-        // send GOAWAY / Connection: close on the in-flight ones. Without this,
-        // browsers keep the dead HTTP/2 socket cached for ~30s before noticing.
+        tracing::info!(
+            "Received shutdown signal: no longer accepting, draining in-flight requests \
+             (signal again to exit at once)"
+        );
+        // The listeners stop accepting; idle connections close; in-flight
+        // HTTP/1 responses finish with `Connection: close` and HTTP/2 gets
+        // GOAWAY, so browsers drop the socket instead of noticing a dead
+        // peer ~30 s later. `run_server` then waits for the drain.
         shutdown_for_signal.initiate();
 
-        // Give the in-flight connections a moment to flush GOAWAY frames and
-        // any in-progress response bodies.
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-
-        tracing::info!("Stopping all managed apps...");
-        if let Some(manager) = app_manager_for_signal {
-            manager.stop_all().await;
+        // An operator who sends a second signal wants out now.
+        tokio::select! {
+            _ = sigterm.recv() => {},
+            _ = sigint.recv() => {},
         }
-        if daemon_clone {
+        tracing::warn!("Second shutdown signal: exiting without finishing the drain");
+        if daemon_mode {
             cleanup_pid();
         }
-        std::process::exit(0);
+        // exit() skips destructors: flush the queued log lines first.
+        soli_proxy::logging::flush();
+        std::process::exit(130);
     });
 
     tracing::info!("Proxy server starting on {}", cfg.server.bind);
+    // Returns once shutdown is initiated and the accept loops have stopped.
     server.run().await?;
+
+    let cfg = config_for_shutdown.get_config();
+    let grace = cfg.server.shutdown_grace_period();
+    let started = Instant::now();
+    match shutdown_for_drain.drain(grace).await {
+        soli_proxy::shutdown::DrainOutcome::Drained => {
+            tracing::info!("Drained in {} ms", started.elapsed().as_millis())
+        }
+        soli_proxy::shutdown::DrainOutcome::TimedOut(open) => tracing::warn!(
+            "{} connection(s) still open after the {} s grace period \
+             ([server] shutdown_grace_period); closing them",
+            open,
+            grace.as_secs()
+        ),
+    }
+
+    // Apps are not the proxy's to take down on a restart: they keep running
+    // and the next proxy adopts them (see `AppManager::adopt_running`).
+    if let Some(manager) = app_manager {
+        if cfg.apps.stop_on_shutdown(dev_mode) {
+            tracing::info!("Stopping all managed apps ([apps] stop_on_shutdown)...");
+            manager.stop_all().await;
+        } else {
+            tracing::info!(
+                "Leaving apps running for the next proxy to adopt \
+                 ([apps] stop_on_shutdown = false; `soli-proxy stop --all` stops them)"
+            );
+        }
+    }
 
     if daemon_mode {
         cleanup_pid();
     }
+    tracing::info!("Proxy stopped");
+    soli_proxy::logging::flush();
 
     Ok(())
 }
@@ -1264,6 +1483,82 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn hash_password_produces_a_verifiable_bcrypt_hash() {
+        let hash = hash_password_checked("correct horse", 4).unwrap();
+        assert!(hash.starts_with("$2b$04$"), "{hash}");
+        assert!(soli_proxy::auth::verify_password("correct horse", &hash));
+        assert!(hash_password_checked("", 4).is_err());
+    }
+
+    #[test]
+    fn hash_password_is_a_subcommand() {
+        let cli = Cli::try_parse_from(["soli-proxy", "hash-password", "--cost", "10"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::HashPassword { cost: 10 })
+        ));
+        // The password never comes from argv, and the cost is bounded.
+        assert!(Cli::try_parse_from(["soli-proxy", "hash-password", "secret"]).is_err());
+        assert!(Cli::try_parse_from(["soli-proxy", "hash-password", "--cost", "3"]).is_err());
+    }
+
+    #[test]
+    fn stop_takes_an_app_or_all_but_not_both() {
+        let cli = Cli::try_parse_from(["soli-proxy", "stop", "site.example.com"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Stop { all: false, app_name: Some(ref n), .. }) if n == "site.example.com"
+        ));
+        for flag in ["--all", "--apps"] {
+            let cli = Cli::try_parse_from(["soli-proxy", "stop", flag]).unwrap();
+            assert!(matches!(
+                cli.command,
+                Some(Commands::Stop {
+                    all: true,
+                    app_name: None,
+                    ..
+                })
+            ));
+        }
+        assert!(Cli::try_parse_from(["soli-proxy", "stop"]).is_err());
+        assert!(Cli::try_parse_from(["soli-proxy", "stop", "--all", "site.example.com"]).is_err());
+    }
+
+    #[test]
+    fn watch_can_be_turned_off() {
+        assert!(Cli::try_parse_from(["soli-proxy"]).unwrap().watch);
+        assert!(
+            Cli::try_parse_from(["soli-proxy", "--watch"])
+                .unwrap()
+                .watch
+        );
+        assert!(
+            !Cli::try_parse_from(["soli-proxy", "--watch", "false"])
+                .unwrap()
+                .watch
+        );
+    }
+
+    #[test]
+    fn check_accepts_the_main_commands_path_flags() {
+        let cli = Cli::try_parse_from([
+            "soli-proxy",
+            "check",
+            "--conf",
+            "/etc/soli-proxy/proxy.conf",
+            "--sites-dir",
+            "/srv/sites",
+            "--dev",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Check { ref conf, ref sites_dir, dev: true })
+                if conf == "/etc/soli-proxy/proxy.conf" && sites_dir == "/srv/sites"
+        ));
+    }
 
     #[test]
     fn parse_sha256_file_accepts_bare_digest() {
