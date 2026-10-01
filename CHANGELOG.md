@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased
+
+**Authentication and admin API (fix/auth)**
+
+### Security
+
+* **bcrypt no longer runs on the request workers.** Route `@auth`, app `[auth]` and the admin
+  API's Basic credential verified bcrypt inline on a tokio worker, so some 40–50 wrong passwords
+  a second parked every worker and froze the whole proxy, every site included. Checks now run on a
+  blocking pool bounded to half the cores (at least two); a check that cannot start within a
+  second answers **503 with `Retry-After: 1`**. Successes are still remembered for five minutes
+  (and a remembered credential bypasses the pool), failures never. The admin API's Basic
+  credential now shares that cache, so a polling TUI no longer pays bcrypt on every refresh.
+  The timing-equalizer hash is computed once per cost, even under concurrent first requests.
+* **A bcrypt hash is accepted only at cost 4 to 13, and only well-formed.** The cost is a work
+  factor for the proxy's CPU chosen by whoever writes the hash — a tenant, for `app.infos` in
+  multi-tenant mode — and `$2b$31$` made every attempt run for days. An app with such a hash now
+  fails to load; the admin API and cluster pushes answer 400; a `proxy.conf` `@auth` entry is
+  logged and never matches. `hash-password --cost` is bounded the same way. **Hashes above cost
+  13 must be regenerated.**
+* **The open admin API refuses a foreign `Host`.** With no credential configured, only requests
+  addressed to `localhost`, a loopback IP or the bound address are answered (403 otherwise),
+  which defeats DNS rebinding from a web page.
+* **Failed admin logins are budgeted per IP**: ten a minute, then 429 with `Retry-After`, before
+  bcrypt runs. Credential-less requests and correct credentials never count, and an
+  already-verified Basic session is let through while its IP is blocked.
+* **Cluster route pushes are validated.** Targets must be `http`/`https` URLs with a host, weights
+  over 255 are refused instead of wrapping (`256` used to become `0`), and a push at index 0 can
+  no longer be replayed: after any table is applied the index must strictly increase.
+* **Cluster-pushed domains can carry, and get, Basic Auth.** A pushed target is the workload's
+  raw port with nothing in front of it, so an app's `[auth]` was enforced nowhere. The push now
+  accepts an optional `auth` object per domain (the `app.infos` shape and validation), which this
+  proxy enforces; a pushed domain without one is still served open, and the pusher must send it.
+
+### Documentation
+
+* `soli-proxy hash-password` never existed: the hasher is the separate `hash-password` binary
+  (or `POST /api/v1/hash-password`). README, site docs and error messages now say so.
+
 ## [0.35.2](https://github.com/solisoft/soli-proxy/compare/v0.35.1...v0.35.2) (2026-09-27)
 
 ### Bug Fixes
