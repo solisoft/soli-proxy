@@ -324,6 +324,53 @@
   capture the pattern lacks was written to `proxy.conf`, which the next load then refused. They
   now get the same checks as a `proxy.conf` line, and a 400 up front.
 
+**Upstreams: retries, health checks, protocols (gap/upstream)**
+
+### Features
+
+* **A failed attempt is retried on the next target when that is safe.** A request used to get one
+  try and a 502; an app's failover only helped the *next* request. Now an attempt that fails
+  before any response byte goes to the rule's next available target (`[upstream] retries`, default
+  **1**; `@retries:N` per rule; `0` turns it off). A connect failure (refused, unreachable, connect
+  timeout, TLS handshake) is always retried, request body included — the body is handed back
+  unread; any other failure (reset, connection closed), and a status named in `retry_on` (`"500"`,
+  `"502"`, `"503"`, `"504"`; none by default), only for an idempotent method without a body. A
+  managed app retries on its other slot while a blue/green deploy has one running, and the failed
+  slot is failed over at once; a cluster-pushed domain on another instance; a target a Lua
+  `on_route` hook chose is never second-guessed. `try_duration` caps the time spent. Every failed
+  attempt still counts in the circuit breaker. **Operators:** multi-target rules now retry by
+  default; such a rule keeps a copy of the request head per request for it (`retries = 0` avoids
+  that).
+* **Active health checks for `proxy.conf` targets.** `@health:/path` (and `@health_interval:`) on a
+  rule, or `[health_checks] default_path` for every rule (`@health:off` opts out), starts a probe
+  per distinct target, through the rule's own client. `unhealthy_threshold` failures in a row (any
+  answer ≥ 500, a timeout, no answer) take the target out of every strategy until
+  `healthy_threshold` successes; the verdict lives beside the circuit breaker and is reported by
+  `GET /api/v1/circuit-breaker` as `"health": "up"|"down"` (and in the TUI). Probes are rebuilt on
+  every reload — removed checks stop, their verdicts are forgotten — and stop at shutdown.
+* **HTTP/2 to upstreams, and gRPC.** `h2c://host:port` targets (prior knowledge) and `@h2` rules
+  (ALPN `h2` over TLS, prior knowledge in cleartext or on a socket) get a dedicated HTTP/2 client
+  instead of a request forced to HTTP/1.1. `TE: trailers` now survives the hop-by-hop strip (any
+  other `TE` value is still dropped, and HTTP/1.1 upstreams get no `TE` at all), and `Trailer` is
+  no longer stripped — it is an end-to-end field — so gRPC trailers reach the client, over HTTP/1.1
+  too when announced. On an HTTP/2 upstream a `Host` contradicting `:authority` is dropped (the
+  client's host stays in `X-Forwarded-Host`).
+* **Upstream TLS options per rule:** `@tls_ca:/path` (a private CA, replacing the public roots),
+  `@tls_sni:name`, `@tls_client_cert:/cert.pem,/key.pem` (mTLS) and `@tls_insecure` (no
+  verification; warned about on every load). Files are read at load — a missing or invalid one is a
+  load error — and are part of the client's identity, so replacing one takes effect on reload.
+  WebSocket upgrades to the rule's `https://` target use the same settings.
+* **Unix socket upstreams:** `unix:/absolute/path.sock`, the client's `Host` preserved, WebSocket
+  upgrades included, through a small connector of our own over `tokio::net::UnixStream`. A Lua
+  override can never target a socket.
+* **Per-route timeouts:** `@timeout:120s` replaces `[limits] request_timeout` for the rule (longer or
+  shorter); `@connect_timeout:2s` replaces the 5 s connect timeout.
+* Rules with the same upstream options share one client (and connection pool), built when the
+  configuration loads and reused across reloads; a request picks its client with a field read. All
+  new directives are validated by the parser and for admin-API rules, written back by the
+  serializer, and kept by the TUI's route editor. `validate_proxy_target_url` accepts `h2c://` and
+  `unix:` targets.
+
 ## [0.35.2](https://github.com/solisoft/soli-proxy/compare/v0.35.1...v0.35.2) (2026-09-27)
 
 ### Bug Fixes

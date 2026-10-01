@@ -312,12 +312,12 @@
                                 <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
                                     <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">GET</span></td>
                                     <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/circuit-breaker</td>
-                                    <td class="px-6 py-4 text-gray-400">View state per backend</td>
+                                    <td class="px-6 py-4 text-gray-400">View state per backend (with <code>health</code>: <code>up</code>/<code>down</code> for targets an active health check covers)</td>
                                 </tr>
                                 <tr class="hover:bg-white/[0.02] transition-colors">
                                     <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-yellow-500/10 text-yellow-400 border border-yellow-500/20">POST</span></td>
                                     <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/circuit-breaker/reset</td>
-                                    <td class="px-6 py-4 text-gray-400">Reset all to closed</td>
+                                    <td class="px-6 py-4 text-gray-400">Reset all to closed (health-check verdicts stay)</td>
                                 </tr>
                             </tbody>
                         </table>

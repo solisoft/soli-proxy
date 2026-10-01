@@ -9,7 +9,10 @@ reload, Lua scripting, and blue-green deploys for the apps it hosts.
 - **Automatic HTTPS**: Self-signed certificates for development, Let's Encrypt for production
 - **Hot Config Reload**: Routing rules swap atomically, without dropping connections (see [Hot Reload](#hot-reload) for what needs a restart)
 - **Simple Configuration**: Custom config format with comments support
-- **Load Balancing**: Round-robin, weighted and failover, with a per-backend circuit breaker
+- **Load Balancing**: Round-robin, weighted and failover, with a per-backend circuit breaker,
+  retries on the next target when that is safe, and active health checks
+- **Upstream Protocols**: HTTP/1.1, HTTP/2 (`@h2`, `h2c://`) with gRPC trailers, Unix sockets,
+  per-route upstream TLS (private CA, SNI, client certificates) and timeouts
 - **WebSocket Support**: Full WebSocket proxy capabilities, with idle/lifetime/size limits
 - **Middleware**: HTTP Basic auth (per route, per app, admin API), per-IP rate limiting, request header rules, Lua hooks, JSON or text logging
 - **Not included**: JWT/OIDC or API-key auth for proxied routes — use a Lua `on_request` hook or the backend
@@ -147,10 +150,22 @@ burst_size = 2000
 max_connections = 10000   # simultaneous client connections; further ones wait up to 10 s for a slot
 max_request_size = "10MB" # request bodies above this get 413
 keep_alive_timeout = 30   # seconds to receive a request's headers (closes idle keep-alives)
-request_timeout = 60      # seconds for the upstream exchange before a 504 (default 60)
+request_timeout = 60      # seconds for the upstream exchange before a 504 (default 60; @timeout per route)
 websocket_idle_timeout_secs = 300           # close a forwarded WebSocket silent this long
 websocket_max_lifetime_secs = 3600          # absolute cap per WebSocket
 websocket_max_bytes_per_direction = 1073741824
+
+[upstream]
+retries = 1                     # retry a failed attempt on another target, when safe (0 = off)
+retry_on = ["connect", "error"] # may add "500", "502", "503", "504"
+# try_duration = "5s"           # no new attempt this long after the first
+
+[health_checks]                 # active checks of proxy.conf targets (@health:/path per route)
+# default_path = "/healthz"     # check every rule's targets (a rule opts out with @health:off)
+interval = "10s"
+timeout = "2s"
+unhealthy_threshold = 3
+healthy_threshold = 2
 
 [scripting]
 enabled = true
@@ -253,6 +268,14 @@ mirror.example.com -> https://origin.example.net
 # Permanent redirect to a new canonical domain (301, path and query preserved)
 old.example.com -> redirect://new.example.com
 
+# gRPC over cleartext HTTP/2, probed every 5 s; an app on a Unix socket
+grpc.example.com -> h2c://10.0.0.7:50051, h2c://10.0.0.8:50051 @health:/healthz @health_interval:5s
+app.example.com -> unix:/run/app/puma.sock @timeout:2m
+
+# An internal HTTPS service: private CA, SNI for an IP target, mTLS
+billing.example.com -> https://10.0.0.9:8443 @tls_ca:/etc/soli-proxy/internal-ca.pem \
+                       @tls_sni:billing.internal @tls_client_cert:/etc/soli-proxy/proxy.pem,/etc/soli-proxy/proxy.key
+
 # Request headers for the rule right above
 api.example.com -> http://localhost:8080
 headers {
@@ -342,8 +365,10 @@ Domain rules are tried first, then exact/prefix/regex rules in file order, then 
 
 #### Targets (right of `->`)
 
-Comma-separated URLs (`http://`, `https://`, `ws://`, `redirect://`), each optionally preceded by
-`weight:N`. A line ending in `\` continues on the next one. After a stripped prefix, the rest of
+Comma-separated URLs (`http://`, `https://`, `h2c://`, `unix:`, `ws://`, `redirect://`), each
+optionally preceded by `weight:N`. `h2c://host:port` speaks HTTP/2 with prior knowledge;
+`unix:/absolute/path.sock` connects to a Unix socket (the path names the socket — requests carry the
+path the rule resolves and the client's `Host`; see [Upstreams](#upstreams)). A line ending in `\` continues on the next one. After a stripped prefix, the rest of
 the path is always joined to the target as a path (`/api/x` on `/api/* -> http://h/v2` goes to
 `http://h/v2/x`), and a target's own query string gets the client's appended with `&`.
 
@@ -362,9 +387,22 @@ host are taken verbatim from the target.
 | `@script:a.lua,b.lua` | Lua scripts for this route (see `[scripting]`). |
 | `@auth:user:bcrypt-hash` | HTTP Basic Auth; repeat for several users. |
 | `@noauth:/path,/prefix/*` | Paths on a protected rule served without credentials. |
+| `@retries:N` | Retries on another target, 0–10 (default `[upstream] retries`, 1). |
+| `@timeout:120s` | Time to the response headers, instead of `[limits] request_timeout`. |
+| `@connect_timeout:2s` | Connect timeout (default 5 s). |
+| `@h2` | Speak HTTP/2 to every target: ALPN `h2` over TLS, prior knowledge otherwise. |
+| `@tls_ca:/path/ca.pem` | Trust this CA bundle instead of the public roots (`https://` targets). |
+| `@tls_sni:name` | SNI sent, and name the certificate is verified for. |
+| `@tls_client_cert:/cert.pem,/key.pem` | Client certificate for mTLS. |
+| `@tls_insecure` | Do not verify the upstream certificate (logged as a warning on every load). |
+| `@health:/path` / `@health:off` | Probe each target at this path / opt out of `[health_checks] default_path`. |
+| `@health_interval:10s` | Time between probes. |
+
+Durations take a unit: `500ms`, `2s`, `5m`. Paths cannot contain spaces.
 
 Every target is also tracked by the circuit breaker (`[circuit_breaker]`): a target whose
-breaker is open is skipped by every strategy, and a rule whose targets are all open answers 503.
+breaker is open — or that an active health check marked down — is skipped by every strategy, and
+a rule whose targets are all out answers 503.
 
 #### `headers { }` blocks
 
@@ -392,6 +430,61 @@ directive, an invalid `weight:`, a malformed `@auth` entry, an unknown `@lb` str
 name that is not a plain `*.lua` file, an unterminated `headers` block. At startup that is fatal;
 on a hot reload the previous configuration stays in force and the error is logged. (Earlier
 versions skipped such lines, which could silently drop a route or the `@auth` protecting it.)
+
+### Upstreams
+
+**Retries.** When an attempt fails before any response byte, the request goes to the rule's next
+available target, in rule order, up to `retries` times (`[upstream] retries`, default 1;
+`@retries:N` per rule):
+
+- a **connect failure** (refused, unreachable, connect timeout, TLS handshake) is always retried,
+  request body included — nothing reached the backend, and the body was never read;
+- **any other failure** (a reset, a connection closed mid-request), and a status listed in
+  `retry_on`, only for an idempotent method (`GET HEAD OPTIONS PUT DELETE TRACE`) without a body:
+  the backend may have acted on anything else.
+
+Every failed attempt still counts in the circuit breaker. A managed app retries on its other slot
+while a blue/green deploy has one running (and the failed slot is failed over at once, not on the
+next request); a cluster-pushed domain on another instance. A request a Lua `on_route` hook sent
+somewhere is not retried elsewhere. `try_duration` stops retrying once that long has passed. A
+rule with several targets keeps a copy of the request head for a possible retry (one header-map
+clone per request); `retries = 0` avoids it.
+
+**Active health checks.** `@health:/path` probes each of the rule's targets (`GET`, `User-Agent:
+soli-proxy-health-check`, through the rule's own TLS/HTTP-2/socket settings) every
+`@health_interval` or `[health_checks] interval`; `[health_checks] default_path` does it for every
+rule but those saying `@health:off`. Any answer below 500 within `timeout` is a success. After
+`unhealthy_threshold` failures in a row the target is skipped like an open breaker, until
+`healthy_threshold` successes in a row. A target several rules name is probed once. The probes
+follow reloads: a check that disappears stops, and its target's verdict is forgotten.
+`GET /api/v1/circuit-breaker` adds `"health": "up"` / `"down"` for checked targets.
+
+**HTTP/2 and gRPC.** `h2c://` targets and rules with `@h2` speak HTTP/2 to the upstream (`@h2`
+offers only `h2` in ALPN, so a TLS upstream that cannot speak it fails the handshake rather than
+receive HTTP/2 frames). `TE: trailers` reaches the upstream — every other `TE` value is dropped,
+and HTTP/1.1 upstreams get none — and response trailers (`grpc-status`, `grpc-message`) reach the
+client: over HTTP/2 always, over HTTP/1.1 when the upstream announces them in `Trailer`. HTTP/2
+forbids a `Host` that contradicts `:authority`, so on an HTTP/2 upstream the client's host travels
+in `X-Forwarded-Host` only (a Unix-socket upstream gets it as `:authority`). gRPC clients reach the
+proxy over TLS (ALPN `h2`); the plain listener speaks HTTP/1.1. WebSocket upgrades are always
+tunnelled over HTTP/1.1, whatever `@h2` says.
+
+**Upstream TLS.** `@tls_ca` replaces the public roots with the given PEM bundle (an internal PKI);
+`@tls_sni` sets the SNI and the name verified, for targets addressed by IP; `@tls_client_cert`
+presents a client certificate. `@tls_insecure` turns verification off — anyone on the path to the
+upstream can then read and change the traffic, so the proxy warns each time it loads such a rule;
+prefer `@tls_ca`. Files are read when the configuration loads, so a missing or invalid one is a load
+error (fatal at startup, the previous configuration stays on reload), and a replaced file is picked
+up on the next reload. Rules with the same options share one client and its connection pool. A
+WebSocket upgrade to the rule's `https://` target uses the same TLS settings.
+
+**Unix sockets.** `unix:/run/app.sock` must be an absolute path. The request URI is built on a
+placeholder origin (`http://unix.invalid/`), the client's `Host` is forwarded untouched, and
+WebSocket upgrades are tunnelled to the socket too. A Lua `on_route` override can never point a
+request at a socket.
+
+**Timeouts.** `@timeout` replaces `[limits] request_timeout` (time to the response headers, retries
+included) for its rule, longer or shorter; `@connect_timeout` replaces the 5 s connect timeout.
 
 ## Architecture
 
@@ -458,10 +551,11 @@ soli-proxy/
 │   ├── logging.rs            # [logging]: subscriber, non-blocking writer, rotation
 │   ├── circuit_breaker.rs
 │   ├── metrics.rs            # Prometheus-format metrics
-│   ├── pool.rs               # Upstream connection pool
+│   ├── pool.rs               # Shared upstream connection pool
+│   ├── upstream/             # Retries, health checks, HTTP/2, upstream TLS, Unix sockets
 │   ├── proxy_headers.rs      # Hop-by-hop stripping, cookie coalescing, Origin rewrite
 │   └── shutdown.rs           # Graceful shutdown
-├── tests/                    # Integration tests (admin auth, routing, Lua scripts)
+├── tests/                    # Integration tests (admin auth, routing, Lua scripts, upstreams)
 ├── benches/
 │   ├── routing.rs            # Rule matching & scaling benchmarks
 │   ├── components.rs         # Circuit breaker, load balancer, metrics
@@ -529,7 +623,9 @@ listener addresses (`[server] bind`, `https_port`, `worker_threads`), the admin 
 `enabled`/`bind`, TLS certificates (use `POST /api/v1/certs/reload` instead) and
 `[tls] min_version`, the Lua engine and its scripts, the rate limiter, `max_connections`, and
 `[logging]` `level`/`format`/`output`. Per-request settings — routes, `force_https`, HSTS,
-timeouts, body-size limit, `log_endpoints`, admin credentials — take effect on the next request.
+timeouts, body-size limit, `log_endpoints`, admin credentials, `[upstream]` retries and the
+per-route upstream options (`@h2`, `@tls_*`, ...) — take effect on the next request; health
+checks are restarted to match within a second.
 
 ## App Configuration (`app.infos`)
 
@@ -900,7 +996,7 @@ Served on `[admin] bind` (loopback `127.0.0.1:9090` by default); see
 | POST | `/api/v1/apps/{name}/deploy` \| `restart` \| `rollback` \| `stop` | App lifecycle |
 | GET | `/api/v1/apps/{name}/logs` | Deployment logs |
 | GET / POST / DELETE | `/api/v1/aliases`, `/api/v1/apps/{name}/aliases[/{domain}]` | Domain aliases |
-| GET / POST | `/api/v1/circuit-breaker`, `/api/v1/circuit-breaker/reset` | Circuit-breaker state / reset |
+| GET / POST | `/api/v1/circuit-breaker`, `/api/v1/circuit-breaker/reset` | Circuit-breaker state (plus `health`: `up`/`down` for actively checked targets) / reset (health verdicts stay) |
 | GET / PUT | `/api/v1/routing-table` | Cluster-pushed routes (complete set, increasing `index`; a stale push gets 409) |
 | GET / PUT | `/api/v1/acme-challenges` | HTTP-01 tokens pushed by an external ACME orderer |
 | POST | `/api/v1/hash-password` | `{"password": ...}` → bcrypt hash |
