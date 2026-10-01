@@ -1877,7 +1877,8 @@ async fn serve_http1<I>(
         .serve_connection(io, svc)
         .with_upgrades();
     let mut conn = std::pin::pin!(conn);
-    let mut shutdown_rx = shutdown.subscribe();
+    // Counts this connection as in flight for the shutdown drain.
+    let mut shutdown_rx = shutdown.track_connection();
 
     tokio::select! {
         res = conn.as_mut() => {
@@ -1976,7 +1977,7 @@ async fn handle_https2_connection(
         return Ok(());
     }
 
-    let mut shutdown_rx = shutdown.subscribe();
+    let mut shutdown_rx = shutdown.track_connection();
     let idle_timeout = keep_alive_timeout(&config.get_config().limits);
     let activity = Arc::new(H2Activity::new());
     let svc_activity = activity.clone();

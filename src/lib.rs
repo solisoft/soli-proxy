@@ -2,6 +2,7 @@ pub mod acme;
 pub mod admin;
 pub mod app;
 pub mod auth;
+pub mod check;
 pub mod circuit_breaker;
 pub mod config;
 pub mod logging;

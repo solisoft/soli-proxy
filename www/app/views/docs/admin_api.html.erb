@@ -277,6 +277,11 @@
                                     <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/apps/{name}/stop</td>
                                     <td class="px-6 py-4 text-gray-400">Stop app</td>
                                 </tr>
+                                <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-yellow-500/10 text-yellow-400 border border-yellow-500/20">POST</span></td>
+                                    <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/apps/stop-all</td>
+                                    <td class="px-6 py-4 text-gray-400">Stop every app, both slots; the proxy keeps running (apps otherwise outlive a proxy restart)</td>
+                                </tr>
                                 <tr class="hover:bg-white/[0.02] transition-colors">
                                     <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">GET</span></td>
                                     <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/apps/{name}/logs</td>
@@ -415,6 +420,11 @@
                                     <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-yellow-500/10 text-yellow-400 border border-yellow-500/20">POST</span></td>
                                     <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/hash-password</td>
                                     <td class="px-6 py-4 text-gray-400"><code>{"password": "..."}</code> &rarr; a bcrypt hash</td>
+                                </tr>
+                                <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-yellow-500/10 text-yellow-400 border border-yellow-500/20">POST</span></td>
+                                    <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/config/validate</td>
+                                    <td class="px-6 py-4 text-gray-400"><code>{"proxy_conf": "...", "config_toml": "..."}</code> (either optional; the live file fills in) &rarr; <code>valid</code>, <code>errors</code>, <code>warnings</code>, <code>problems</code> with file, line, severity and message. Applies nothing &mdash; the checks of <code>soli-proxy check</code>, sites aside</td>
                                 </tr>
                                 <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
                                     <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">GET</span></td>

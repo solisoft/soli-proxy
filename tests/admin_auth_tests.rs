@@ -195,3 +195,72 @@ async fn a_protected_admin_api_answers_any_host() {
         .unwrap();
     assert_eq!(resp.status().as_u16(), 200);
 }
+
+#[tokio::test]
+async fn config_validate_reports_problems_and_applies_nothing() {
+    let (port, mgr) = start_admin().await;
+    let validate = |body: serde_json::Value| {
+        client()
+            .post(url(port, "/api/v1/config/validate"))
+            .header("X-Api-Key", API_KEY)
+            .json(&body)
+            .send()
+    };
+
+    let resp = validate(serde_json::json!({
+        "proxy_conf": "example.com -> http://127.0.0.1:3000\nnot a rule\n"
+    }))
+    .await
+    .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["data"]["valid"], false, "{body}");
+    assert_eq!(body["data"]["problems"][0]["line"], 2, "{body}");
+    assert_eq!(body["data"]["problems"][0]["severity"], "error", "{body}");
+
+    // A proposed config.toml is checked against the live proxy.conf.
+    let resp = validate(serde_json::json!({
+        "config_toml": "[admin]\nbind = \"0.0.0.0:9999\"\n"
+    }))
+    .await
+    .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    // The credential comes from the environment here, so a public bind is
+    // accepted; only parse-level problems would show.
+    assert_eq!(body["data"]["valid"], true, "{body}");
+
+    // (A proposed config.toml too: the live one binds the admin API to a
+    // random port, which may fall in the default app port range — a real
+    // error `check` would rightly report.)
+    let resp = validate(serde_json::json!({
+        "proxy_conf": "example.com -> http://127.0.0.1:3000\napi.example.com -> http://127.0.0.1:3001\n",
+        "config_toml": "[admin]\nbind = \"127.0.0.1:9999\"\n"
+    }))
+    .await
+    .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["data"]["valid"], true, "{body}");
+    // Validated, not applied.
+    assert_eq!(mgr.get_config().rules.len(), 1);
+
+    let resp = client()
+        .post(url(port, "/api/v1/config/validate"))
+        .header("X-Api-Key", API_KEY)
+        .body("not json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 400);
+}
+
+#[tokio::test]
+async fn stop_all_without_app_management_says_so() {
+    let (port, _mgr) = start_admin().await;
+    let resp = client()
+        .post(url(port, "/api/v1/apps/stop-all"))
+        .header("X-Api-Key", API_KEY)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 501);
+}

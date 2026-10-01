@@ -324,6 +324,71 @@
   capture the pattern lacks was written to `proxy.conf`, which the next load then refused. They
   now get the same checks as a `proxy.conf` line, and a 400 up front.
 
+**Ops & lifecycle (gap/ops)**
+
+### Features
+
+* **A proxy restart no longer takes every app down.** SIGTERM used to send GOAWAY, sleep a fixed
+  2 s and stop every managed app, so each restart, upgrade or crash-and-restart was a fleet-wide
+  outage followed by a cold start of every app. Now the proxy stops accepting, lets in-flight
+  requests finish and exits **leaving its apps running**; the next proxy **adopts** them instead
+  of restarting them. An instance is adopted only when it is provably the proxy's own and
+  unchanged: a native process must be in `run/spawned.json` with a live PID *and* the recorded
+  start time, on the slot's current port, listening on it (or a member of its process group
+  is), and launched with today's exact program, arguments, environment and user (a recorded
+  digest); a container `<app>-<slot>` must be running with the proxy's new labels for that app,
+  container and port and a `docker run` digest equal to what the proxy would run now. Then it
+  must pass its health check (three tries). It goes into the routing table before the listeners
+  open and is supervised as usual. Ours-but-changed, -wrong-port or -unhealthy instances are
+  stopped and started afresh (so a restart still applies a changed command, image, options,
+  user or environment); a leftover from a deploy the restart interrupted is stopped; anything
+  not provably ours is neither adopted nor signalled. The slot that was serving now comes from
+  `run/app_state.json` (it was ignored at startup and every app came back on blue).
+* **Configurable drain: `[server] shutdown_grace_period`** (default 10 s, max 3600) replaces the
+  fixed sleep. The proxy counts the connections it is serving and waits until the last one has
+  finished its response — a restart under normal traffic takes milliseconds — or until the
+  grace period. WebSockets are not waited for. A second SIGTERM/SIGINT exits at once.
+  `soli-proxy -d` replacing a daemon waits for that drain (plus 5 s) instead of 10 s.
+* **`[apps] stop_on_shutdown`** (default `false`; `true` under `--dev`, so ^C still cleans up)
+  restores the old behaviour. **`soli-proxy stop --all`** and **`POST /api/v1/apps/stop-all`**
+  stop every app (both slots) while the proxy keeps running; without a daemon, `stop --all` and
+  `stop <app>` find native processes through the spawn registry — previously a slot started by
+  an exited proxy could not be stopped from the CLI at all.
+* **`soli-proxy check [-c <conf>] [--sites-dir <dir>] [--dev]`** validates `config.toml`
+  (and `.env`), `proxy.conf` with the strict parser and every site's `app.infos` with the
+  discovery rules (multi-tenant ones included), then checks what a start only finds later or
+  only logs: bind/admin addresses, the admin API's refusal to run publicly without a credential,
+  bcrypt hashes and costs, port ranges, Lua script files, and whether each app can be launched
+  (`docker run` options, users). Nothing is started, bound or written. Every problem is printed
+  as `file:line: error|warning: message` — every bad `proxy.conf` line, not only the first — and
+  the exit status is 1 on any error. **`POST /api/v1/config/validate`** runs the same checks on a
+  proposed `{"proxy_conf", "config_toml"}` without applying it.
+* **`soli-proxy update`** no longer prints a fake "Restarting soli-proxy..." (`--reinstall` just
+  exited); it explains the restart, which is now safe at any time, and suggests `check` first.
+
+### Bug Fixes
+
+* **`--watch false` works.** The flag was a bare `bool`, so clap refused any value: the
+  documented way to turn the file watchers off made the proxy exit with a usage error.
+  `--watch false` now disables them; `--watch` alone still means `true`.
+* Docs: the daemon's PID file is `$SOLI_PID_DIR/proxy.pid` (default: the working directory),
+  not `/var/run/soli-proxy/soli-proxy.pid`.
+
+### Operators upgrading
+
+* **The systemd unit sets `KillMode=process`.** The default (`control-group`) SIGTERMs the whole
+  cgroup — every native app — on stop/restart. Copy the new `scripts/soli-proxy.service` (or add
+  the line) and `systemctl daemon-reload`, or apps still die with the proxy. Note that
+  `systemctl stop soli-proxy` now leaves apps running too: `soli-proxy stop --all` first.
+* The first restart *into* this version still restarts the apps: the old binary (or systemd's
+  cgroup kill) stops them, and whatever survives was started without the launch digest and
+  container labels adoption requires, so it is replaced once. Adoption starts with the restart
+  after that.
+* Native apps get `/dev/null` as stdin (they inherited the proxy's); their stdout/stderr already
+  went straight to `run/logs/`, so no app dies of SIGPIPE when the proxy exits.
+* Two proxies side by side (an overlapping blue/green start using `SO_REUSEPORT`) is **not**
+  supported: the admin port is not shared and both would supervise the same apps.
+
 ## [0.35.2](https://github.com/solisoft/soli-proxy/compare/v0.35.1...v0.35.2) (2026-09-27)
 
 ### Bug Fixes

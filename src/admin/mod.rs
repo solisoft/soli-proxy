@@ -1,4 +1,5 @@
 pub mod handlers;
+mod ops;
 
 use crate::app::AppManager;
 use crate::circuit_breaker::SharedCircuitBreaker;
@@ -579,6 +580,11 @@ async fn handle_admin_request(
             Ok(body) => handlers::put_acme_challenges(&state, &body).await,
             Err(e) => error_response(400, e),
         },
+        (Method::POST, "/api/v1/apps/stop-all") => ops::post_stop_all_apps(&state).await,
+        (Method::POST, "/api/v1/config/validate") => match read_body(req).await {
+            Ok(body) => ops::post_config_validate(&state, body).await,
+            Err(e) => return Ok(error_response(413, e)),
+        },
         (_, p) if p.starts_with("/api/v1/apps/") => {
             let app_name = p.strip_prefix("/api/v1/apps/").unwrap_or("");
             // Aliases are matched before the generic app routes so
@@ -1075,7 +1081,7 @@ async fn read_body(req: Request<Incoming>) -> Result<String, &'static str> {
 
 /// True when at least one credential is configured (non-empty key or
 /// both username + password_hash). Empty strings count as unset.
-fn admin_auth_configured(
+pub(crate) fn admin_auth_configured(
     api_key: &Option<String>,
     username: &Option<String>,
     password_hash: &Option<String>,
