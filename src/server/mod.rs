@@ -4294,11 +4294,13 @@ async fn handle_regular_request(
 
 /// How the target URL is resolved from the matched route
 enum UrlResolution<'a> {
-    /// Domain, Default: append full request path
+    /// Domain: append full request path
     AppendPath,
     /// DomainPath, Prefix: strip prefix, append suffix
     StripPrefix(String),
-    /// Exact: use target URL as-is
+    /// Exact, Default: use target URL as-is (the query string is kept).
+    /// `default` appended the path until 0.8.0 (d942bb5), which switched it
+    /// here; the README documents the current behaviour.
     Identity,
     /// Regex: substitute the pattern's capture groups (`$1`, `${name}`) into
     /// the target's path and query
