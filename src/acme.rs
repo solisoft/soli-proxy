@@ -9,6 +9,7 @@ use instant_acme::{
     Account, AccountCredentials, ChallengeType, Identifier, LetsEncrypt, NewAccount, NewOrder,
     OrderStatus,
 };
+use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use std::sync::RwLock;
 use tokio_rustls::rustls::server::ResolvesServerCert;
@@ -438,15 +439,28 @@ pub fn load_certificate(cache_dir: &Path, domain: &str) -> Result<Option<Arc<Cer
     Ok(Some(Arc::new(ck)))
 }
 
+/// Every certificate in a PEM blob, in order.
+///
+/// `rustls-pki-types`' own PEM reader, which replaces the unmaintained
+/// `rustls-pemfile` (RUSTSEC-2025-0134). Non-certificate sections are skipped,
+/// as `rustls_pemfile::certs` did.
+fn parse_cert_chain(
+    pem: &[u8],
+) -> std::result::Result<Vec<CertificateDer<'static>>, rustls_pki_types::pem::Error> {
+    CertificateDer::pem_slice_iter(pem).collect()
+}
+
 /// Parse PEM-encoded cert chain and private key into a CertifiedKey.
 pub fn certified_key_from_pem(cert_pem: &[u8], key_pem: &[u8]) -> Result<CertifiedKey> {
-    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut &*cert_pem)
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .context("Failed to parse certificate PEM")?;
+    let certs = parse_cert_chain(cert_pem).context("Failed to parse certificate PEM")?;
 
-    let key: PrivateKeyDer<'static> = rustls_pemfile::private_key(&mut &*key_pem)
-        .context("Failed to parse private key PEM")?
-        .ok_or_else(|| anyhow::anyhow!("No private key found in PEM"))?;
+    let key = match PrivateKeyDer::from_pem_slice(key_pem) {
+        Ok(key) => key,
+        Err(rustls_pki_types::pem::Error::NoItemsFound) => {
+            anyhow::bail!("No private key found in PEM")
+        }
+        Err(e) => return Err(e).context("Failed to parse private key PEM"),
+    };
 
     let provider = tokio_rustls::rustls::crypto::CryptoProvider::get_default()
         .ok_or_else(|| anyhow::anyhow!("No default CryptoProvider installed"))?;
@@ -462,11 +476,10 @@ pub fn certified_key_from_pem(cert_pem: &[u8], key_pem: &[u8]) -> Result<Certifi
 /// under the parent in the resolver's wildcard map.
 fn cert_contains_wildcard(cert_pem: &[u8], parent: &str) -> bool {
     let want = format!("*.{}", parent);
-    let certs: Vec<CertificateDer<'static>> =
-        match rustls_pemfile::certs(&mut &*cert_pem).collect::<std::result::Result<Vec<_>, _>>() {
-            Ok(c) if !c.is_empty() => c,
-            _ => return false,
-        };
+    let certs: Vec<CertificateDer<'static>> = match parse_cert_chain(cert_pem) {
+        Ok(c) if !c.is_empty() => c,
+        _ => return false,
+    };
     match x509_parser::parse_x509_certificate(&certs[0]) {
         Ok((_, cert)) => {
             if let Ok(Some(sans)) = cert.subject_alternative_name() {
@@ -538,11 +551,10 @@ pub fn load_wildcard_certificate(
 
 /// Check if the certificate's SANs contain the expected domain.
 fn cert_contains_domain(cert_pem: &[u8], domain: &str) -> bool {
-    let certs: Vec<CertificateDer<'static>> =
-        match rustls_pemfile::certs(&mut &*cert_pem).collect::<std::result::Result<Vec<_>, _>>() {
-            Ok(c) if !c.is_empty() => c,
-            _ => return false,
-        };
+    let certs: Vec<CertificateDer<'static>> = match parse_cert_chain(cert_pem) {
+        Ok(c) if !c.is_empty() => c,
+        _ => return false,
+    };
     match x509_parser::parse_x509_certificate(&certs[0]) {
         Ok((_, cert)) => {
             if let Ok(Some(sans)) = cert.subject_alternative_name() {
@@ -588,11 +600,10 @@ pub fn cert_expires_soon(cache_dir: &Path, domain: &str) -> bool {
         Err(_) => return true,
     };
 
-    let certs: Vec<CertificateDer<'static>> =
-        match rustls_pemfile::certs(&mut &*cert_pem).collect::<std::result::Result<Vec<_>, _>>() {
-            Ok(c) if !c.is_empty() => c,
-            _ => return true,
-        };
+    let certs: Vec<CertificateDer<'static>> = match parse_cert_chain(&cert_pem) {
+        Ok(c) if !c.is_empty() => c,
+        _ => return true,
+    };
 
     match x509_parser::parse_x509_certificate(&certs[0]) {
         Ok((_, cert)) => {

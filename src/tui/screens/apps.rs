@@ -2,7 +2,6 @@ use std::collections::HashMap;
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    prelude::Stylize,
     style::{Color, Style},
     widgets::{Block, Borders, Cell, Paragraph, Row, Sparkline, Table},
     Frame,

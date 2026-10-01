@@ -118,6 +118,26 @@ requests_per_second = 1000
 burst_size = 2000
 ```
 
+### Admin credentials
+
+The admin API (`[admin]`, loopback `127.0.0.1:9090` by default) accepts either an API key
+(`[admin].api_key` in `config.toml`, sent as `X-Api-Key`) or HTTP Basic credentials taken from
+the environment:
+
+| Variable | Meaning |
+|---|---|
+| `ADMIN_USER` | Basic-auth user name. |
+| `ADMIN_PASSWORD_HASH` | Its bcrypt hash (`soli-proxy hash-password`). |
+| `ADMIN_PASSWORD` | Legacy: a bcrypt hash, or plaintext that is hashed at startup with a warning. |
+
+The same three keys may instead be put in a `.env` file **in the directory that holds
+`proxy.conf` and `config.toml`**. That one file is read, and only those three keys are taken from
+it — anything else in it is ignored with a warning, and nothing is exported into the proxy's
+environment, so a `.env` can never set `HTTP_PROXY` for the apps the proxy spawns. A variable
+set in the real environment wins over the file. A `.env` that does not parse is a startup error
+(and a no-op on reload), like a malformed `config.toml`. Parent directories are never searched:
+earlier versions did, so a stray `.env` in `/srv` or `$HOME` could supply admin credentials.
+
 ### TLS Certificates
 
 The proxy stores certificates flat in `tls.cache_dir` (default `./certs`).

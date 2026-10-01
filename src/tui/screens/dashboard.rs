@@ -2,7 +2,6 @@ use std::collections::VecDeque;
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    prelude::Stylize,
     style::{Color, Style},
     widgets::{Cell, Paragraph, Row, Sparkline, Table},
     Frame,

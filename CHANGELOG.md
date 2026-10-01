@@ -12,6 +12,17 @@
   carry the configured authority. The same join fixes `http://h/v2` + `/api/x` becoming
   `http://h/v2x` (now `http://h/v2/x`), a target with its own query string getting a second
   `?`, and a panic on an empty request path.
+* **`.env` is read from the config directory only, and never exported.** The proxy used
+  `dotenv` (unmaintained, RUSTSEC-2021-0141), which searched the working directory and every
+  parent for a `.env` and exported all of it — a stray file in `/srv` or `$HOME` could set the
+  admin API's `ADMIN_USER`/`ADMIN_PASSWORD`, or an `HTTP_PROXY` inherited by every spawned app.
+  Now `dotenvy` reads exactly `<config dir>/.env`, takes only `ADMIN_USER`, `ADMIN_PASSWORD` and
+  `ADMIN_PASSWORD_HASH` from it, and leaves the process environment untouched; real environment
+  variables still win. A `.env` that does not parse is now an error instead of being ignored.
+* **`cargo audit --deny warnings` is clean.** `rustls-pemfile` (unmaintained, RUSTSEC-2025-0134)
+  is replaced by the PEM reader in `rustls-pki-types`, and `ratatui` 0.28 → 0.30 (with
+  `crossterm` 0.29) drops the unsound `lru` (RUSTSEC-2026-0002) and the unmaintained `paste` it
+  pulled in. No behaviour change.
 
 ## [0.35.2](https://github.com/solisoft/soli-proxy/compare/v0.35.1...v0.35.2) (2026-09-27)
 

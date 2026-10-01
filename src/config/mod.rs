@@ -244,38 +244,68 @@ impl AdminConfig {
     }
 }
 
+/// Pure defaults. Credentials from the environment (and from the `.env` file
+/// next to the config) are layered on in `load_config`, which is the one place
+/// that knows where the config lives.
 impl Default for AdminConfig {
     fn default() -> Self {
-        let dotenv_loaded = dotenv::dotenv().is_ok();
-        let username = std::env::var("ADMIN_USER").ok();
-        let password_hash = std::env::var("ADMIN_PASSWORD").ok();
-
-        if dotenv_loaded {
-            tracing::debug!("Loaded environment from .env file");
-        }
-
-        let mut admin = Self {
+        Self {
             enabled: Some(true),
             bind: "127.0.0.1:9090".to_string(),
             api_key: None,
-            username,
-            password_hash,
-        };
-        admin.drop_empty_credentials();
-
-        // Hash plaintext at construction time so Default and env-based configs
-        // both store a bcrypt hash (never the raw password).
-        if let Some(ref mut hash) = admin.password_hash {
-            if !looks_like_bcrypt_hash(hash) {
-                tracing::warn!(
-                    "ADMIN_PASSWORD looks like plaintext; hashing at startup. \
-                     Prefer storing a bcrypt hash in ADMIN_PASSWORD_HASH."
-                );
-                *hash = crate::auth::generate_hash(hash);
-            }
+            username: None,
+            password_hash: None,
         }
-        admin
     }
+}
+
+/// The only variables a `.env` file may supply.
+const DOTENV_KEYS: &[&str] = &["ADMIN_USER", "ADMIN_PASSWORD", "ADMIN_PASSWORD_HASH"];
+
+/// Admin credentials from `<config dir>/.env`, read without touching the
+/// process environment.
+///
+/// This used to be `dotenv::dotenv()`, which has two problems. The crate is
+/// unmaintained (RUSTSEC-2021-0141). And it searches the working directory
+/// *and every parent* for a `.env`, then exports whatever it finds: a stray
+/// file in `/srv` or `$HOME` could set `ADMIN_USER`/`ADMIN_PASSWORD` — the
+/// admin API's credentials — or `HTTP_PROXY`, which the proxy passes on to
+/// every app it spawns. Now exactly one file is read, the one beside
+/// `config.toml`, only the three admin keys are taken from it, and nothing is
+/// exported: real environment variables still win, and no other code (Lua's
+/// `env`, app spawning) ever sees `.env` content.
+///
+/// A missing file is normal. A file that exists but does not parse is an
+/// error, like a malformed `config.toml`: silently dropping it would drop the
+/// credentials it was written to provide.
+fn read_dotenv_credentials(config_dir: &Path) -> Result<std::collections::HashMap<String, String>> {
+    let path = config_dir.join(".env");
+    let iter = match dotenvy::from_path_iter(&path) {
+        Ok(iter) => iter,
+        Err(dotenvy::Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Default::default())
+        }
+        Err(e) => anyhow::bail!("failed to read {}: {}", path.display(), e),
+    };
+    let mut found = std::collections::HashMap::new();
+    for item in iter {
+        let (key, value) =
+            item.map_err(|e| anyhow::anyhow!("failed to parse {}: {}", path.display(), e))?;
+        if DOTENV_KEYS.contains(&key.as_str()) {
+            found.insert(key, value);
+        } else {
+            tracing::warn!(
+                "{}: ignoring {} (only {} are read from this file)",
+                path.display(),
+                key,
+                DOTENV_KEYS.join(", ")
+            );
+        }
+    }
+    if !found.is_empty() {
+        tracing::debug!("Loaded admin credentials from {}", path.display());
+    }
+    Ok(found)
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
@@ -1005,6 +1035,9 @@ realm = "Restricted"
         let toml_config: TomlConfig = toml::from_str(&toml_content).map_err(|e| {
             anyhow::anyhow!("failed to parse {}: {}", config_toml_path.display(), e)
         })?;
+        let dotenv = read_dotenv_credentials(config_dir)?;
+        // The process environment wins over the `.env` file.
+        let env = |key: &str| std::env::var(key).ok().or_else(|| dotenv.get(key).cloned());
 
         Ok(Config {
             server: toml_config.server,
@@ -1014,14 +1047,13 @@ realm = "Restricted"
             admin: {
                 let mut admin = toml_config.admin.unwrap_or_default();
                 if admin.username.is_none() {
-                    admin.username = std::env::var("ADMIN_USER").ok();
+                    admin.username = env("ADMIN_USER");
                 }
                 if admin.password_hash.is_none() {
                     // Prefer the explicit hash env; fall back to ADMIN_PASSWORD
                     // which may be either a bcrypt hash or (legacy) plaintext.
-                    admin.password_hash = std::env::var("ADMIN_PASSWORD_HASH")
-                        .ok()
-                        .or_else(|| std::env::var("ADMIN_PASSWORD").ok());
+                    admin.password_hash =
+                        env("ADMIN_PASSWORD_HASH").or_else(|| env("ADMIN_PASSWORD"));
                 }
                 admin.drop_empty_credentials();
                 if let Some(ref mut hash) = admin.password_hash {
@@ -2035,6 +2067,55 @@ api_key = "secret123"
         assert_eq!(rest, "http://localhost:8080/");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].username, "ok");
+    }
+
+    /// `.env` is read from the config's own directory only, never a parent,
+    /// only the admin keys are taken, and nothing reaches the process
+    /// environment (where `HTTP_PROXY` would be handed to every spawned app).
+    #[test]
+    fn dotenv_is_read_beside_the_config_only_and_never_exported() {
+        let parent = tempfile::tempdir().unwrap();
+        std::fs::write(
+            parent.path().join(".env"),
+            "ADMIN_USER=from-parent\nADMIN_PASSWORD_HASH=$2b$12$parent\n",
+        )
+        .unwrap();
+        let dir = parent.path().join("conf");
+        std::fs::create_dir(&dir).unwrap();
+
+        // No .env beside the config: the parent's is not consulted.
+        assert!(read_dotenv_credentials(&dir).unwrap().is_empty());
+
+        std::fs::write(
+            dir.join(".env"),
+            "ADMIN_USER=alice\nADMIN_PASSWORD_HASH='$2b$12$abc'\nSOLI_DOTENV_TEST_PROXY=http://evil:3128\n",
+        )
+        .unwrap();
+        let creds = read_dotenv_credentials(&dir).unwrap();
+        assert_eq!(creds.get("ADMIN_USER").map(String::as_str), Some("alice"));
+        assert_eq!(
+            creds.get("ADMIN_PASSWORD_HASH").map(String::as_str),
+            Some("$2b$12$abc")
+        );
+        assert!(!creds.contains_key("SOLI_DOTENV_TEST_PROXY"));
+        assert!(std::env::var("SOLI_DOTENV_TEST_PROXY").is_err());
+
+        // And it is what load_config uses when the environment is silent.
+        if std::env::var("ADMIN_USER").is_err() {
+            std::fs::write(dir.join("proxy.conf"), "").unwrap();
+            let manager = ConfigManager::new(dir.join("proxy.conf").to_str().unwrap()).unwrap();
+            assert_eq!(
+                manager.get_config().admin.username.as_deref(),
+                Some("alice")
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_dotenv_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".env"), "ADMIN_USER='unterminated\n").unwrap();
+        assert!(read_dotenv_credentials(dir.path()).is_err());
     }
 
     #[test]
