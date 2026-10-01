@@ -372,6 +372,11 @@ pub struct ServerConfig {
     /// [`ServerConfig::shutdown_grace_period`].
     #[serde(default)]
     pub shutdown_grace_period: Option<u64>,
+    /// `trusted_proxies`, `real_ip_header`, `proxy_protocol` and
+    /// `request_id_header`: who the client is and which request this is (see
+    /// `crate::edge`). Hot-reloaded, read per connection and per request.
+    #[serde(flatten)]
+    pub edge: crate::edge::EdgeConfig,
 }
 
 /// Default for `[server] shutdown_grace_period`, in seconds.
@@ -419,6 +424,7 @@ impl Default for ServerConfig {
             worker_threads: None,
             allow_encoded_slash: None,
             shutdown_grace_period: None,
+            edge: Default::default(),
         }
     }
 }
@@ -658,6 +664,12 @@ pub struct LoggingConfig {
     /// When true, emit one structured log line per served request (method,
     /// path, host, status, latency). Honoured on hot reload. Default false.
     pub log_endpoints: Option<bool>,
+    /// Access log: `off` (the default), `stdout`, `stderr` or a file path
+    /// (rotated like `output`, by `max_size`/`max_files`). Read at startup.
+    pub access_log: Option<String>,
+    /// `json` (the default) or `combined` (Apache/nginx combined, with the
+    /// proxy's fields appended as `key=value`). Read at startup.
+    pub access_log_format: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
@@ -1130,6 +1142,9 @@ bind = "0.0.0.0:80"
 https_port = 443
 worker_threads = 1  # dev default; set to "auto" or omit for one worker per CPU (production)
 # shutdown_grace_period = 10  # seconds in-flight requests get on stop/restart
+# Behind a CDN/balancer: whose X-Forwarded-For to believe (CIDRs or "cloudflare").
+# trusted_proxies = []
+# request_id_header = "X-Request-Id"   # "" = off
 
 # TLS Configuration
 [tls]
@@ -1144,6 +1159,8 @@ output = "stdout"
 # Body logging flags are reserved; currently unused.
 include_request_body = false
 include_response_body = false
+# access_log = "off"         # "stdout", "stderr" or a file path
+# access_log_format = "json" # or "combined"
 
 # Metrics Configuration
 [metrics]
@@ -1260,6 +1277,10 @@ hook_timeout_ms = 10
         global_scripts: Vec<String>,
         config_dir: &Path,
     ) -> Result<Config> {
+        // Edge settings are cross-checked here, so `check` and the validate
+        // endpoint refuse what a start would (proxy_protocol without
+        // trusted_proxies, say).
+        toml_config.server.edge.validate()?;
         let dotenv = read_dotenv_credentials(config_dir)?;
         // The process environment wins over the `.env` file.
         let env = |key: &str| std::env::var(key).ok().or_else(|| dotenv.get(key).cloned());

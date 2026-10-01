@@ -426,6 +426,49 @@
 * Two proxies side by side (an overlapping blue/green start using `SO_REUSEPORT`) is **not**
   supported: the admin port is not shared and both would supervise the same apps.
 
+**Edge: client identity, request IDs, access log (gap/edge)**
+
+### Features
+
+* **The real client behind a CDN or load balancer.** The proxy replaced `X-Forwarded-For` with
+  the TCP peer, so behind Cloudflare or a balancer every client was the balancer: one rate-limit
+  bucket for everyone, the balancer's address in logs and in `X-Real-IP`. New `[server]
+  trusted_proxies` (CIDRs, addresses, or the presets `"cloudflare"` — Cloudflare's published
+  ranges, compiled in — `"private"` and `"loopback"`) and `real_ip_header` (`X-Forwarded-For` by
+  default, or a single-address header such as `CF-Connecting-IP`). From a trusted peer the
+  client is found by walking `X-Forwarded-For` right to left past trusted hops, and used for the
+  rate limiter, the `/metrics` loopback check, `X-Real-IP`, `headers { }` `$client_ip`, Lua's new
+  `req.client_ip`, logs and the admin API's budgets; that peer's chain is appended to rather than
+  replaced and its `X-Forwarded-Proto` kept. Untrusted peers are handled exactly as before (and
+  a `real_ip_header` they send is removed). Hot-reloadable. Off by default.
+* **PROXY protocol v1/v2.** `[server] proxy_protocol = "v1" | "v2" | "any"` (or
+  `{ http = …, https = … }`) reads the header a TCP balancer prepends — before TLS and HTTP,
+  within 5 s and 1 KiB, only from `trusted_proxies` (anyone else is disconnected). The carried
+  address is the connection's peer for everything after, `max_connections_per_ip` included.
+  Enabling it with no `trusted_proxies` is a configuration error.
+* **Request IDs.** Every request carries `X-Request-Id` (`[server] request_id_header`; `""` turns
+  it off) upstream and back to the client, in the access log and in Lua's `req.request_id`. One
+  sent by a trusted peer is kept when it is 1–128 visible ASCII characters; anything else is
+  replaced by 128 random bits as 32 hex digits, drawn from a per-thread generator (no syscall,
+  no lock). W3C `traceparent`/`tracestate` pass through untouched.
+* **Access log.** `[logging] access_log = "off" | "stdout" | "stderr" | "<path>"` and
+  `access_log_format = "json" | "combined"`: one line per request with time, real client IP,
+  method, host, path and query, protocol, status, bytes in (`Content-Length`) and out, duration,
+  upstream, app, request ID, user agent, referer and TLS. The line is written when the response
+  body has been sent (or abandoned — `complete: false`), so bytes out and duration are the real
+  ones; formatted into a reused per-thread buffer and queued to a non-blocking writer that drops
+  rather than blocks; a file rotates by `max_size`/`max_files`. Read at startup.
+
+### Behaviour changes
+
+* **Responses now carry `X-Request-Id`, and upstream requests too**, by default. A client's own
+  `X-Request-Id` no longer reaches the backend (it is replaced); set `request_id_header = ""` for
+  the old behaviour.
+* **A trusted proxy is exempt from `max_connections_per_ip`**: it carries everyone's connections.
+  The cap is applied on accept, before any header is read, so it stays keyed on the TCP peer (or
+  the PROXY protocol address); clients behind a trusted proxy that does not speak PROXY protocol
+  are limited per request by `[rate_limiting]`, not per connection.
+
 ## [0.35.2](https://github.com/solisoft/soli-proxy/compare/v0.35.1...v0.35.2) (2026-09-27)
 
 ### Bug Fixes

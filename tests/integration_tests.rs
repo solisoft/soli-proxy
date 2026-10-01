@@ -308,6 +308,7 @@ mod scripting_tests {
             headers: HashMap::new(),
             host: "localhost".to_string(),
             content_length: 0,
+            ..Default::default()
         }
     }
 
@@ -326,6 +327,7 @@ mod scripting_tests {
             headers: h,
             host: "localhost".to_string(),
             content_length: 0,
+            ..Default::default()
         }
     }
 

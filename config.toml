@@ -7,6 +7,25 @@ worker_threads = "auto"
 # On SIGTERM/SIGINT: stop accepting, then give in-flight requests up to this
 # many seconds to finish (the wait ends with the last one). Default 10.
 # shutdown_grace_period = 10
+# Behind a CDN or load balancer: the peers whose forwarding headers are
+# believed. From one of them, the client is found by walking X-Forwarded-For
+# right to left past trusted hops; it is then used for rate limits, logs,
+# X-Real-IP, $client_ip and Lua's req.client_ip, and the chain is appended to.
+# CIDRs, addresses, or the presets "cloudflare" (compiled-in published ranges),
+# "private" (RFC 1918 + fc00::/7) and "loopback". Empty = trust nobody.
+# trusted_proxies = ["cloudflare"]
+# Where a trusted peer names the client: "X-Forwarded-For" (default), or a
+# single-address header such as "CF-Connecting-IP", "X-Real-IP", "True-Client-IP"
+# (removed from requests by untrusted peers).
+# real_ip_header = "X-Forwarded-For"
+# PROXY protocol (v1 text / v2 binary) from a TCP balancer, read before
+# TLS/HTTP: "off" (default), "v1", "v2", "any", or per listener
+# { http = "off", https = "v2" }. Only from trusted_proxies (others are
+# closed); the carried address is the peer, max_connections_per_ip included.
+# proxy_protocol = "off"
+# Request ID header, forwarded upstream and returned to the client. Kept from a
+# trusted peer when 1-128 visible ASCII chars, otherwise generated. "" = off.
+# request_id_header = "X-Request-Id"
 
 # TLS Configuration
 [tls]
@@ -41,6 +60,11 @@ output = "stdout"  # "stderr", or "file:/var/log/soli-proxy/proxy.log"
 include_request_body = false
 include_response_body = false
 log_endpoints = true  # log one line per request (method, path, host, status, latency)
+# Access log, one line per completed request (client IP, method, host, path,
+# status, bytes in/out, duration, upstream, app, request ID, UA, referer, TLS):
+# "off" (default), "stdout", "stderr" or a file path (rotated by max_size/max_files).
+# access_log = "/var/log/soli-proxy/access.log"
+# access_log_format = "json"   # or "combined" (Apache/nginx, proxy fields appended)
 
 # Metrics Configuration
 [metrics]
@@ -58,6 +82,7 @@ readiness_path = "/health/ready"
 max_connections = 10000      # concurrent client connections; extra ones wait up to 10 s for a slot
 # Simultaneous connections per client address (IPv6: per /64), across HTTP and
 # HTTPS. Excess connections are closed on accept. Default 256; 0 disables.
+# Keyed on the TCP peer (or the PROXY protocol address); trusted_proxies are exempt.
 # max_connections_per_ip = 256
 max_request_size = "10MB"    # request bodies above this get 413
 keep_alive_timeout = 30      # HTTP/1 header read (bounds idle keep-alives); HTTP/2 idle timeout

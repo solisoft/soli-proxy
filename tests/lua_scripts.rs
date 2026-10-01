@@ -35,6 +35,7 @@ fn request(method: &str, headers: &[(&str, &str)]) -> LuaRequest {
             .collect(),
         host: "api.example.com".to_string(),
         content_length: 0,
+        ..Default::default()
     }
 }
 

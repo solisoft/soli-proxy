@@ -83,10 +83,10 @@ static X_REAL_IP: HeaderName = HeaderName::from_static("x-real-ip");
 /// client asked for, before any rewrite) and `X-Real-IP` are set from what the
 /// proxy itself observed.
 ///
-/// The proxy is the edge: the chain starts here, so `X-Forwarded-For` is the
-/// peer address alone, not appended to. (Trusting an upstream load balancer's
-/// chain needs an explicit list of trusted proxy addresses; `client_ip` is the
-/// hook for that — the caller decides which address is the client.)
+/// Here the proxy is the edge: the chain starts here, so `X-Forwarded-For` is
+/// the client address alone, not appended to. A request from a peer listed in
+/// `[server] trusted_proxies` goes through `set_forwarding_headers_for`
+/// instead, which keeps that proxy's chain.
 pub fn set_forwarding_headers(
     headers: &mut hyper::HeaderMap,
     client_ip: Option<IpAddr>,
@@ -108,6 +108,57 @@ pub fn set_forwarding_headers(
         if let Ok(v) = HeaderValue::from_str(host) {
             headers.insert(X_FORWARDED_HOST.clone(), v);
         }
+    }
+}
+
+/// `set_forwarding_headers` for a request whose client was decided at the door
+/// (see `crate::edge::ClientInfo`).
+///
+/// From a peer that is not a trusted proxy this is exactly
+/// `set_forwarding_headers` with the peer as the client. From a trusted proxy
+/// the chain it built is kept: `X-Forwarded-For` becomes the inbound chain
+/// with the peer *appended* (every proxy adds the hop it received from), and
+/// its `X-Forwarded-Proto` is kept when it says `http` or `https` — the proxy
+/// in front is the one that saw the client's scheme. `X-Real-IP` is the
+/// client the walk found. Everything else in the family is still dropped and
+/// `X-Forwarded-Host` is still the Host as received.
+pub fn set_forwarding_headers_for(
+    headers: &mut hyper::HeaderMap,
+    client: Option<&crate::edge::ClientInfo>,
+    is_tls: bool,
+    original_host: Option<&str>,
+) {
+    let Some(client) = client.filter(|c| c.trusted_peer) else {
+        return set_forwarding_headers(headers, client.map(|c| c.ip), is_tls, original_host);
+    };
+    let mut chain = String::new();
+    for field in headers.get_all(&X_FORWARDED_FOR) {
+        if let Ok(v) = field.to_str() {
+            let v = v.trim().trim_matches(',').trim();
+            if !v.is_empty() {
+                chain.push_str(v);
+                chain.push_str(", ");
+            }
+        }
+    }
+    {
+        use std::fmt::Write;
+        let _ = write!(chain, "{}", client.peer);
+    }
+    let proto = headers
+        .get(&X_FORWARDED_PROTO)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| match v.trim() {
+            p if p.eq_ignore_ascii_case("https") => Some("https"),
+            p if p.eq_ignore_ascii_case("http") => Some("http"),
+            _ => None,
+        });
+    set_forwarding_headers(headers, Some(client.ip), is_tls, original_host);
+    if let Ok(v) = HeaderValue::from_str(&chain) {
+        headers.insert(X_FORWARDED_FOR.clone(), v);
+    }
+    if let Some(proto) = proto {
+        headers.insert(X_FORWARDED_PROTO.clone(), HeaderValue::from_static(proto));
     }
 }
 
@@ -325,6 +376,49 @@ mod tests {
         assert!(h.get("x-forwarded-for").is_none());
         assert!(h.get("x-forwarded-host").is_none());
         assert_eq!(h.get("x-forwarded-proto").unwrap(), "https");
+    }
+
+    #[test]
+    fn a_trusted_peer_has_its_chain_appended_to_and_its_proto_kept() {
+        use crate::edge::ClientInfo;
+        let mut h = HeaderMap::new();
+        h.append("x-forwarded-for", "1.2.3.4".parse().unwrap());
+        h.append("x-forwarded-for", "10.0.0.7".parse().unwrap());
+        h.insert("x-forwarded-proto", "https".parse().unwrap());
+        h.insert("x-forwarded-port", "443".parse().unwrap());
+        h.insert("x-real-ip", "6.6.6.6".parse().unwrap());
+        let client = ClientInfo {
+            ip: "1.2.3.4".parse().unwrap(),
+            peer: "10.0.0.1".parse().unwrap(),
+            trusted_peer: true,
+        };
+        set_forwarding_headers_for(&mut h, Some(&client), false, Some("real.example"));
+        assert_eq!(h.get_all("x-forwarded-for").iter().count(), 1);
+        assert_eq!(
+            h.get("x-forwarded-for").unwrap(),
+            "1.2.3.4, 10.0.0.7, 10.0.0.1"
+        );
+        assert_eq!(h.get("x-real-ip").unwrap(), "1.2.3.4");
+        assert_eq!(h.get("x-forwarded-proto").unwrap(), "https");
+        assert!(h.get("x-forwarded-port").is_none());
+        assert_eq!(h.get("x-forwarded-host").unwrap(), "real.example");
+
+        // A proto that is neither http nor https is replaced by the proxy's.
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-proto", "gopher".parse().unwrap());
+        set_forwarding_headers_for(&mut h, Some(&client), true, None);
+        assert_eq!(h.get("x-forwarded-proto").unwrap(), "https");
+        assert_eq!(h.get("x-forwarded-for").unwrap(), "10.0.0.1");
+
+        // An untrusted peer: today's behaviour, the chain and proto replaced.
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-for", "1.2.3.4".parse().unwrap());
+        h.insert("x-forwarded-proto", "https".parse().unwrap());
+        let direct = ClientInfo::direct("9.9.9.9".parse().unwrap());
+        set_forwarding_headers_for(&mut h, Some(&direct), false, None);
+        assert_eq!(h.get("x-forwarded-for").unwrap(), "9.9.9.9");
+        assert_eq!(h.get("x-real-ip").unwrap(), "9.9.9.9");
+        assert_eq!(h.get("x-forwarded-proto").unwrap(), "http");
     }
 
     #[test]

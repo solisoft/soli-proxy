@@ -382,20 +382,31 @@ fn extract_route_index(path: &str) -> Option<usize> {
 /// `Forwarded` / `X-Forwarded-*` / `X-Real-IP` is dropped (this function used
 /// to overwrite three of them and relay `X-Real-IP` and the rest verbatim),
 /// then `X-Forwarded-For`, `X-Real-IP`, `X-Forwarded-Proto` and
-/// `X-Forwarded-Host` are set. The proto is always `http` because the admin
-/// server itself is plaintext; operators who terminate TLS in front of it can
-/// rewrite it at the terminator.
-fn inject_forwarding_headers(headers: &mut hyper::HeaderMap, peer: Option<SocketAddr>) {
+/// `X-Forwarded-Host` are set. The proto is `http` because the admin server
+/// itself is plaintext — unless the request came through a proxy listed in
+/// `[server] trusted_proxies` (the public proxy itself, typically, when the
+/// admin API is published through a route), whose chain and scheme are kept
+/// (see `set_forwarding_headers_for`).
+fn inject_forwarding_headers(
+    headers: &mut hyper::HeaderMap,
+    client: Option<&crate::edge::ClientInfo>,
+) {
     let host = headers
         .get(hyper::header::HOST)
         .and_then(|h| h.to_str().ok())
         .map(str::to_owned);
-    crate::proxy_headers::set_forwarding_headers(
-        headers,
-        peer.map(|a| a.ip()),
-        false,
-        host.as_deref(),
-    );
+    crate::proxy_headers::set_forwarding_headers_for(headers, client, false, host.as_deref());
+}
+
+/// Who the client is (see `crate::edge::ClientInfo`), as `handle_admin_request`
+/// decided, or the peer.
+fn admin_client(
+    ext: &http::Extensions,
+    peer_addr: Option<SocketAddr>,
+) -> Option<crate::edge::ClientInfo> {
+    crate::edge::client_info(ext)
+        .copied()
+        .or_else(|| peer_addr.map(|a| crate::edge::ClientInfo::direct(a.ip())))
 }
 
 /// Reject oversized or chunked-encoded requests before we forward them to
@@ -431,15 +442,25 @@ fn enforce_admin_body_size_limit(
 }
 
 async fn handle_admin_request(
-    req: Request<Incoming>,
+    mut req: Request<Incoming>,
     state: Arc<AdminState>,
     peer_addr: Option<SocketAddr>,
     bound_addr: SocketAddr,
 ) -> Result<Response<BoxBody>, std::convert::Infallible> {
+    // The client is the peer, or — when the admin API is reached through a
+    // proxy listed in `[server] trusted_proxies` — the client that proxy
+    // names. Budgets below are charged to it.
+    if let Some(peer) = peer_addr {
+        let config = state.config_manager.get_config();
+        let who = crate::edge::ClientInfo::resolve(peer.ip(), req.headers(), &config.server.edge);
+        req.extensions_mut().insert(who);
+    }
+    let client_info = admin_client(req.extensions(), peer_addr);
+
     // Per-IP rate limit applied BEFORE auth so a rejected client can't
     // burn bcrypt rounds by replaying a wrong password under the limit.
-    if let (Some(limiter), Some(peer)) = (state.rate_limiter.as_ref(), peer_addr) {
-        if limiter.check_key(&client_key(peer.ip())).is_err() {
+    if let (Some(limiter), Some(who)) = (state.rate_limiter.as_ref(), client_info) {
+        if limiter.check_key(&client_key(who.ip)).is_err() {
             let body = full(Bytes::from_static(b"Rate limit exceeded"));
             return Ok(Response::builder()
                 .status(429)
@@ -493,7 +514,7 @@ async fn handle_admin_request(
     // Failed-credential budget, checked before bcrypt runs (see `AuthFailures`).
     // Keyed like every other per-client budget: an IPv6 client per /64, or a
     // guesser would get a fresh budget from each of its 2^64 addresses.
-    let client = peer_addr.map(|peer| client_key(peer.ip()));
+    let client = client_info.map(|who| client_key(who.ip));
     let blocked_for = client.and_then(|ip| AuthFailures::global().blocked_for(ip, Instant::now()));
 
     let auth_method = match check_auth(
@@ -771,7 +792,8 @@ async fn proxy_to_admin_app(
     // same shape the public proxy applies on outbound requests.
     strip_hop_by_hop(&mut parts.headers);
     crate::proxy_headers::coalesce_cookies(&mut parts.headers);
-    inject_forwarding_headers(&mut parts.headers, peer_addr);
+    let client_info = admin_client(&parts.extensions, peer_addr);
+    inject_forwarding_headers(&mut parts.headers, client_info.as_ref());
 
     // Buffer with a hard cap so chunked / missing-CL bodies cannot blow memory.
     let max = max_request_size.unwrap_or(MAX_ADMIN_REQUEST_BODY_SIZE);
@@ -909,7 +931,16 @@ async fn proxy_websocket_to_admin_app(
     if let Some(host) = req.headers().get(hyper::header::HOST) {
         forwarding.insert(hyper::header::HOST, host.clone());
     }
-    inject_forwarding_headers(&mut forwarding, peer_addr);
+    let client_info = admin_client(req.extensions(), peer_addr);
+    if client_info.is_some_and(|who| who.trusted_peer) {
+        // A trusted proxy's chain and scheme are kept (and appended to).
+        for name in ["x-forwarded-for", "x-forwarded-proto"] {
+            for v in req.headers().get_all(name) {
+                forwarding.append(name, v.clone());
+            }
+        }
+    }
+    inject_forwarding_headers(&mut forwarding, client_info.as_ref());
     for (name, value) in &forwarding {
         if name == hyper::header::HOST {
             continue;
@@ -1393,7 +1424,7 @@ mod tests {
         h.insert("x-forwarded-for", "127.0.0.1".parse().unwrap());
         h.insert("x-forwarded-port", "443".parse().unwrap());
         let peer: SocketAddr = "198.51.100.9:5555".parse().unwrap();
-        inject_forwarding_headers(&mut h, Some(peer));
+        inject_forwarding_headers(&mut h, Some(&crate::edge::ClientInfo::direct(peer.ip())));
         assert_eq!(h["x-forwarded-for"], "198.51.100.9");
         assert_eq!(h["x-real-ip"], "198.51.100.9");
         assert_eq!(h["x-forwarded-proto"], "http");
