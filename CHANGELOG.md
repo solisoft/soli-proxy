@@ -17,8 +17,9 @@
 * **A bcrypt hash is accepted only at cost 4 to 13, and only well-formed.** The cost is a work
   factor for the proxy's CPU chosen by whoever writes the hash — a tenant, for `app.infos` in
   multi-tenant mode — and `$2b$31$` made every attempt run for days. An app with such a hash now
-  fails to load; the admin API and cluster pushes answer 400; a `proxy.conf` `@auth` entry is
-  logged and never matches. `hash-password --cost` is bounded the same way. **Hashes above cost
+  fails to load; the admin API and cluster pushes answer 400; a `proxy.conf` `@auth` entry is a
+  load error (fatal at startup; on reload the previous config stays). `hash-password --cost`, the
+  binary and the new subcommand alike, is bounded the same way. **Hashes above cost
   13 must be regenerated.**
 * **The open admin API refuses a foreign `Host`.** With no credential configured, only requests
   addressed to `localhost`, a loopback IP or the bound address are answered (403 otherwise),
@@ -36,8 +37,8 @@
 
 ### Documentation
 
-* `soli-proxy hash-password` never existed: the hasher is the separate `hash-password` binary
-  (or `POST /api/v1/hash-password`). README, site docs and error messages now say so.
+* `soli-proxy hash-password`, which the README documented, now exists as a subcommand; the
+  standalone `hash-password` binary and `POST /api/v1/hash-password` remain.
 
 **Request path (fix/request)**
 
@@ -188,6 +189,105 @@
   site non-recursively, reacts only to sites appearing/disappearing/renamed and to `app.infos`,
   coalesces bursts (500 ms quiet, 5 s max) and spaces rediscoveries at least 2 s apart.
 * **Docs: an auto-detected Soli app's health check is `/up`**, not `/` as the README said.
+
+**Config, routing and packaging (fix/config)**
+
+* **A prefix rule pointing at `redirect://` can no longer redirect off-site.** The part of the
+  path left after the prefix was glued straight onto the target, and a `redirect://` target has
+  no path of its own: `example.com/old/* -> redirect://new.example` plus `/old/.evil.com/`
+  answered `Location: https://new.example.evil.com/`. The remainder is now always joined as a
+  path — exactly one `/` between target and suffix — and the resolved URL is checked to still
+  carry the configured authority. The same join fixes `http://h/v2` + `/api/x` becoming
+  `http://h/v2x` (now `http://h/v2/x`), a target with its own query string getting a second
+  `?`, and a panic on an empty request path.
+* **`.env` is read from the config directory only, and never exported.** The proxy used
+  `dotenv` (unmaintained, RUSTSEC-2021-0141), which searched the working directory and every
+  parent for a `.env` and exported all of it — a stray file in `/srv` or `$HOME` could set the
+  admin API's `ADMIN_USER`/`ADMIN_PASSWORD`, or an `HTTP_PROXY` inherited by every spawned app.
+  Now `dotenvy` reads exactly `<config dir>/.env`, takes only `ADMIN_USER`, `ADMIN_PASSWORD` and
+  `ADMIN_PASSWORD_HASH` from it, and leaves the process environment untouched; real environment
+  variables still win. A `.env` that does not parse is now an error instead of being ignored.
+* **`cargo audit --deny warnings` is clean.** `rustls-pemfile` (unmaintained, RUSTSEC-2025-0134)
+  is replaced by the PEM reader in `rustls-pki-types`, and `ratatui` 0.28 → 0.30 (with
+  `crossterm` 0.29) drops the unsound `lru` (RUSTSEC-2026-0002) and the unmaintained `paste` it
+  pulled in. No behaviour change.
+* **The systemd unit no longer runs the proxy as root.** `scripts/soli-proxy.service` now uses a
+  dedicated `soli-proxy` account with `AmbientCapabilities=CAP_NET_BIND_SERVICE` and nothing
+  else, under `NoNewPrivileges`, `ProtectSystem=strict` (`ReadWritePaths=/etc/soli-proxy
+  /srv/sites`), `ProtectHome`, `PrivateTmp`, kernel protections and `UMask=0027`, with
+  `StateDirectory`/`LogsDirectory` and `ExecReload` (SIGUSR1). Native apps that run as *other*
+  users need `CAP_SETUID`, which must not be handed out as an ambient capability (apps would
+  inherit it), so the unit documents a root variant for that setup. **Operators upgrading:**
+  create the account and `chown` `/etc/soli-proxy` and the sites directory, or keep the root
+  variant.
+* **The setcap sudoers grant names a root-owned path.** `deploy/soli-proxy-setcap.sudoers`
+  targeted `/home/soli/.local/bin/soli-proxy`, which the grantee can replace with a symlink —
+  `setcap` follows it, so the account could give `cap_net_bind_service` to any binary on the
+  machine. It now names `/usr/local/bin/soli-proxy`; install the binary there, root-owned.
+* **`weight:N` is parsed, round-tripped and honoured.** The README's
+  `/api -> weight:70 http://a, weight:30 http://b` never parsed (every target was stored at
+  weight 100), and the admin API's rewrite of `proxy.conf` dropped weights anyway. Targets now
+  take `weight:0`–`255`; any weight implies `@lb:weighted` unless the rule names a strategy;
+  `weight:0` drains a target (last resort only). The weighted picker reduces weights by their
+  common divisor and interleaves them with a coprime stride — 70:30 goes A B A A B A A B A A,
+  exactly 70/30 per cycle, with no lock — and the picker no longer allocates a `String` per
+  candidate examined.
+* **`headers { }` blocks work.** They were documented and silently ignored. A block now applies
+  to the rule above it: `Name: value` sets an upstream request header (after the proxy's own
+  `X-Forwarded-*`, so it can override them), `-Name` removes one, and values may use
+  `$client_ip`, `$scheme`, `$host`. Hop-by-hop/framing headers are refused. Blocks round-trip
+  through the admin API.
+* **Regex rules substitute their captures.** `~^/users/(\d+)$ -> http://svc/users/$1` sent the
+  literal `$1`. `$N`, `${N}` and `${name}` are now expanded in the target's path and query (never
+  its host), the client's query string is kept, and a reference to a group the pattern lacks is
+  a load error.
+* **`proxy.conf` lines the parser cannot read are errors.** Lines without `->`, unknown `@`
+  directives, unknown `@lb` strategies, invalid `@script` names, malformed `@auth` entries (which
+  left the route *unprotected*), invalid `@noauth` paths and junk after `[global]` were all
+  skipped or defaulted, at most with a warning. Each is now an error naming its line: fatal at
+  startup, a no-op on reload. **Operators upgrading:** a file that loaded before may now be
+  refused — the log says which line. Also fixed: directives written after a `@script:` list were
+  dropped, and `example.com/api` (no `/*`) became the unmatchable prefix `api`.
+* **`[logging]` is honoured, written off the request path, and rotated.** `level`, `format` and
+  `output` were ignored — the proxy always logged JSON at INFO, synchronously, to stdout or
+  (with `-d`) to a `proxy.log` that grew forever with umask permissions. Now `level` takes a level
+  or a `tracing` filter (falling back to `RUST_LOG`), `format` is `json` or `text`, `output` is
+  `stdout`, `stderr` or `file:/path`, every write goes through `tracing_appender::non_blocking`,
+  and file output rotates by size (`max_size`, default 100MB; `max_files`, default 5), creating
+  files `0640`. Defaults are unchanged: JSON, INFO, stdout. The TUI's error screen reads the
+  configured file.
+* **TLS sessions resume.** The HTTPS `ServerConfig` used rustls' defaults: no session ticketer
+  (TLS 1.3 clients could not resume) and a 256-entry TLS 1.2 cache. It now has an aws-lc-rs
+  ticketer and a 32k-entry session cache, so returning clients skip the full handshake. New
+  `[tls] min_version` (`"1.2"` default, or `"1.3"`).
+* **The HTTPS listener uses the configured bind address.** It was hardcoded to
+  `0.0.0.0:<https_port>`: a proxy bound to `127.0.0.1:80` still served HTTPS on every interface,
+  and none of the IPv6 ones. It now listens on `bind`'s address; `bind = "[::]:80"` is
+  dual-stack on both ports (`IPV6_V6ONLY` is cleared explicitly). **Operators:** HTTPS now follows
+  `bind` — a loopback or single-interface `bind` narrows HTTPS too.
+* **The TUI's Circuits screen shows the daemon's circuit breakers.** It read a `CircuitBreaker`
+  the TUI process had just created — always empty, so every backend looked healthy. It now reads
+  `GET /api/v1/circuit-breaker` and says "unavailable" when it cannot. The TUI also works against
+  a Basic-auth admin API: it sent only `X-Api-Key`, so every call was a 401; it now reuses the
+  password typed at its login as HTTP Basic (polling every 5 s in that mode), sends
+  `X-Requested-With` on every request, and reports refused credentials as such.
+* **`soli-proxy hash-password` exists.** The README, `app.infos` docs and the admin API hints all
+  named it; only a separate `hash-password` binary did. The subcommand prompts twice without echo
+  (or reads stdin when it is not a terminal), prints only the hash, never takes the password from
+  argv, and accepts `--cost 4..31` (default 12).
+* **Lua examples named in `config.toml` ship, and `rate_limit.lua` is not spoofable.**
+  `scripts/lua/cors.lua` (allowlisted origins, preflights answered with 204 and the
+  `Access-Control-Allow-*` headers) and `scripts/lua/logging.lua` now exist. `rate_limit.lua`
+  keyed its buckets on the client-supplied `X-Forwarded-For`, so every request could claim a fresh
+  budget; it now keys on `req.client_ip` when the proxy provides it, else one bucket per host.
+* **Documentation matches the code.** The README no longer claims API-key/JWT auth for routes,
+  "graceful draining" on reload, a `soli-proxy [dev|prod]` CLI or `SOLI_CONFIG_PATH`, or calls
+  the project a forward proxy; the dead `[auth]` block (with `jwt`/`jwks_url`) is gone from
+  `config.toml` and from the generated default. Newly documented: `[limits]` WebSocket keys,
+  `[scripting] exposed_env`, `force_https`, `max_connections`, `request_timeout`, every admin
+  endpoint (`routing-table`, `acme-challenges`, `app-metrics*`, `events/apps`, `settings`, …),
+  what a hot reload does and does not change, and the real project layout. The www docs' reload
+  examples now use `/api/v1/reload` and the Docker example the real `--conf` flag.
 
 ## [0.35.2](https://github.com/solisoft/soli-proxy/compare/v0.35.1...v0.35.2) (2026-09-27)
 

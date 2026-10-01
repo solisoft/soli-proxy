@@ -49,16 +49,8 @@ fn get_pid_dir() -> String {
     std::env::var("SOLI_PID_DIR").unwrap_or_else(|_| ".".to_string())
 }
 
-fn get_log_dir() -> String {
-    std::env::var("SOLI_LOG_DIR").unwrap_or_else(|_| ".".to_string())
-}
-
 fn get_pid_path() -> String {
     format!("{}/proxy.pid", get_pid_dir())
-}
-
-fn get_log_path() -> String {
-    format!("{}/proxy.log", get_log_dir())
 }
 
 fn write_pid_file() -> Result<String> {
@@ -117,48 +109,29 @@ fn kill_existing_daemon() -> Result<()> {
     Ok(())
 }
 
-fn setup_logging(daemon: bool) -> Result<()> {
-    if daemon {
-        let log_path = get_log_path();
-        let log_dir = std::path::Path::new(&log_path).parent().unwrap();
-        fs::create_dir_all(log_dir).ok();
-
-        let file = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)?;
-
-        let subscriber = tracing_subscriber::fmt()
-            .json()
-            .with_max_level(tracing::Level::INFO)
-            .with_writer(file)
-            .finish();
-        tracing::subscriber::set_global_default(subscriber)?;
-    } else {
-        tracing_subscriber::fmt()
-            .json()
-            .with_max_level(tracing::Level::INFO)
-            .init();
-    }
-    Ok(())
-}
-
 #[derive(Parser, Debug)]
 #[command(name = "soli-proxy")]
 #[command(version = env!("CARGO_PKG_VERSION"))]
+#[command(about = "Reverse proxy with automatic HTTPS, Lua scripting and blue-green app deploys")]
 struct Cli {
+    /// Routing rules file. config.toml (and an optional .env) are read from
+    /// the same directory.
     #[arg(short, long, default_value = "./proxy.conf")]
     conf: String,
 
+    /// Fork into the background, writing proxy.pid and proxy.log.
     #[arg(short, long)]
     daemon: bool,
 
+    /// Development mode: .test aliases, one worker, apps started with --dev.
     #[arg(long)]
     dev: bool,
 
+    /// Reload proxy.conf and rescan sites when they change.
     #[arg(long, default_value = "true")]
     watch: bool,
 
+    /// Directory holding one sub-directory per app, named after its domain.
     #[arg(long, default_value = "./sites")]
     sites_dir: String,
 
@@ -168,6 +141,7 @@ struct Cli {
 
 #[derive(Parser, Debug)]
 enum Commands {
+    /// Interactive terminal UI.
     Tui {
         #[arg(short, long, default_value = "./proxy.conf")]
         conf: String,
@@ -178,6 +152,7 @@ enum Commands {
         #[arg(long)]
         dev: bool,
     },
+    /// Self-update from the latest GitHub release.
     Update {
         #[arg(long)]
         reinstall: bool,
@@ -188,29 +163,43 @@ enum Commands {
         #[arg(long)]
         allow_unverified: bool,
     },
+    /// Blue-green deploy an app: start the other slot, then switch to it.
     Deploy {
         #[arg(short, long, default_value = "./proxy.conf")]
         conf: String,
 
         app_name: String,
     },
+    /// Restart an app's active slot.
     Restart {
         #[arg(short, long, default_value = "./proxy.conf")]
         conf: String,
 
         app_name: String,
     },
+    /// Stop an app.
     Stop {
         #[arg(short, long, default_value = "./proxy.conf")]
         conf: String,
 
         app_name: String,
     },
+    /// Print an app's deployment logs (both slots).
     Logs {
         #[arg(short, long, default_value = "./proxy.conf")]
         conf: String,
 
         app_name: String,
+    },
+    /// Print a bcrypt hash for `@auth:user:<hash>`, `[auth.users]` in
+    /// app.infos, or ADMIN_PASSWORD_HASH. The password is prompted for (twice,
+    /// without echo), or read from the first line of stdin when it is not a
+    /// terminal; it is never taken from the command line.
+    HashPassword {
+        /// bcrypt cost factor. Each step doubles the time to verify; 12 takes
+        /// ~0.25 s, and the proxy caches verified credentials.
+        #[arg(long, default_value_t = 12, value_parser = clap::value_parser!(u32).range(4..=13))]
+        cost: u32,
     },
 }
 
@@ -250,6 +239,10 @@ fn main() -> Result<()> {
         return run_app_command(&conf, &app_name, "logs");
     }
 
+    if let Some(Commands::HashPassword { cost }) = cli.command {
+        return run_hash_password(cost);
+    }
+
     if !std::path::Path::new(&cli.conf).exists() {
         eprintln!(
             "Error: config file '{}' not found in current directory",
@@ -277,6 +270,35 @@ fn main() -> Result<()> {
     rt.block_on(async move {
         run_server(&cli.conf, cli.daemon, cli.dev, cli.watch, &cli.sites_dir).await
     })
+}
+
+/// `soli-proxy hash-password`: the hash alone on stdout, so it can be captured
+/// (`HASH=$(soli-proxy hash-password)`); prompts and hints go to stderr.
+fn run_hash_password(cost: u32) -> Result<()> {
+    use std::io::IsTerminal;
+    let password = if std::io::stdin().is_terminal() {
+        let first = rpassword::prompt_password("Password: ")?;
+        let again = rpassword::prompt_password("Confirm:  ")?;
+        if first != again {
+            anyhow::bail!("passwords do not match");
+        }
+        first
+    } else {
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        line.trim_end_matches(['\r', '\n']).to_string()
+    };
+    println!("{}", hash_password_checked(&password, cost)?);
+    eprintln!("Use it as `@auth:<user>:<hash>` in proxy.conf, `<user> = \"<hash>\"` under");
+    eprintln!("[auth.users] in app.infos, or ADMIN_PASSWORD_HASH for the admin API.");
+    Ok(())
+}
+
+fn hash_password_checked(password: &str, cost: u32) -> Result<String> {
+    if password.is_empty() {
+        anyhow::bail!("the password is empty");
+    }
+    Ok(soli_proxy::auth::hash_password(password, cost))
 }
 
 /// Compute the SHA-256 digest of a file as lowercase hex.
@@ -784,7 +806,12 @@ async fn run_server(
     watch: bool,
     sites_dir: &str,
 ) -> Result<()> {
-    setup_logging(daemon_mode)?;
+    // `[logging]` is read ahead of the rest of the config so that errors in
+    // the rest are reported in the configured format and place.
+    soli_proxy::logging::init(
+        &soli_proxy::config::read_logging_config(config_path),
+        daemon_mode,
+    )?;
 
     if daemon_mode {
         eprintln!("Started in daemon mode. PID: {}", std::process::id());
@@ -960,9 +987,9 @@ async fn run_server(
 
     let server = match tls_manager.server_config() {
         Some(config) => {
-            let https_addr: SocketAddr = format!("0.0.0.0:{}", cfg.server.https_port).parse()?;
+            let https_addr: SocketAddr = cfg.server.https_addr()?;
             let tls_acceptor = TlsAcceptor::from(config.clone());
-            tracing::info!("HTTPS enabled on port {}", cfg.server.https_port);
+            tracing::info!("HTTPS enabled on {}", https_addr);
             ProxyServer::with_https(
                 config_ref.clone(),
                 shutdown,
@@ -1228,6 +1255,8 @@ async fn run_server(
         if daemon_clone {
             cleanup_pid();
         }
+        // exit() skips destructors: flush the queued log lines first.
+        soli_proxy::logging::flush();
         std::process::exit(0);
     });
 
@@ -1237,6 +1266,7 @@ async fn run_server(
     if daemon_mode {
         cleanup_pid();
     }
+    soli_proxy::logging::flush();
 
     Ok(())
 }
@@ -1264,6 +1294,26 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn hash_password_produces_a_verifiable_bcrypt_hash() {
+        let hash = hash_password_checked("correct horse", 4).unwrap();
+        assert!(hash.starts_with("$2b$04$"), "{hash}");
+        assert!(soli_proxy::auth::verify_password("correct horse", &hash));
+        assert!(hash_password_checked("", 4).is_err());
+    }
+
+    #[test]
+    fn hash_password_is_a_subcommand() {
+        let cli = Cli::try_parse_from(["soli-proxy", "hash-password", "--cost", "10"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::HashPassword { cost: 10 })
+        ));
+        // The password never comes from argv, and the cost is bounded.
+        assert!(Cli::try_parse_from(["soli-proxy", "hash-password", "secret"]).is_err());
+        assert!(Cli::try_parse_from(["soli-proxy", "hash-password", "--cost", "3"]).is_err());
+    }
 
     #[test]
     fn parse_sha256_file_accepts_bare_digest() {

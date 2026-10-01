@@ -337,11 +337,13 @@
                         <pre class="p-4 text-sm font-mono overflow-x-auto"><code><span class="tc"># Round-robin load balancing (default)</span>
 <span class="tf">api.example.com</span> -> <span class="ts">http://backend-1:3000</span>, <span class="ts">http://backend-2:3000</span>
 
-<span class="tc"># Weighted load balancing</span>
-<span class="tf">example.com/api/*</span> -> <span class="ts">http://api-primary:8080</span>, <span class="ts">http://api-secondary:8080</span>  <span class="tc"># @lb:weighted</span>
+<span class="tc"># Weighted load balancing: 3 requests in 4 to the primary, interleaved.</span>
+<span class="tc"># A target's `weight:` alone selects @lb:weighted; weight:0 drains it.</span>
+<span class="tf">example.com/api/*</span> -> weight:3 <span class="ts">http://api-primary:8080</span>, weight:1 <span class="ts">http://api-secondary:8080</span>
 
 <span class="tc"># Failover: use second target only if first fails</span>
-<span class="tf">example.com/backup/*</span> -> <span class="ts">http://primary:8080</span>, <span class="ts">http://backup:8080</span>  <span class="tc"># @lb:failover</span></code></pre>
+<span class="tc"># (directives follow the targets; proxy.conf has no end-of-line comments)</span>
+<span class="tf">example.com/backup/*</span> -> <span class="ts">http://primary:8080</span>, <span class="ts">http://backup:8080</span> @lb:failover</code></pre>
                     </div>
 
                     <!-- API Endpoints -->

@@ -92,7 +92,9 @@
 <span class="tk">EXPOSE</span> <span class="tn">80</span> <span class="tn">443</span> <span class="tn">9090</span>
 
 <span class="tk">ENTRYPOINT</span> [<span class="ts">"soli-proxy"</span>]
-<span class="tk">CMD</span> [<span class="ts">"--config"</span>, <span class="ts">"/etc/soli-proxy/config.toml"</span>]</code></pre>
+<span class="tc"># --conf takes proxy.conf; config.toml is read from the same directory</span>
+<span class="tk">WORKDIR</span> /etc/soli-proxy
+<span class="tk">CMD</span> [<span class="ts">"--conf"</span>, <span class="ts">"/etc/soli-proxy/proxy.conf"</span>, <span class="ts">"--sites-dir"</span>, <span class="ts">"/etc/soli-proxy/sites"</span>]</code></pre>
                         </div>
 
                         <!-- docker-compose Tab -->
@@ -141,26 +143,39 @@
 
                         <!-- systemd Tab -->
                         <div id="deploy-systemd" data-tab-group="deploy" class="hidden">
-                            <pre class="p-4 text-sm leading-relaxed overflow-x-auto"><code><span class="tc"># /etc/systemd/system/soli-proxy.service</span>
+                            <pre class="p-4 text-sm leading-relaxed overflow-x-auto"><code><span class="tc"># /etc/systemd/system/soli-proxy.service — abridged; the full unit with</span>
+<span class="tc"># every directive explained ships as scripts/soli-proxy.service</span>
 [<span class="tk">Unit</span>]
-<span class="tf">Description</span>=<span class="ts">Soli Proxy - HTTP/2 Reverse Proxy</span>
-<span class="tf">After</span>=network.target
-<span class="tf">Documentation</span>=https://proxy.solisoft.net/docs
+<span class="tf">Description</span>=<span class="ts">Soli Proxy Server</span>
+<span class="tf">After</span>=network-online.target
+<span class="tf">Wants</span>=network-online.target
 
 [<span class="tk">Service</span>]
 <span class="tf">Type</span>=simple
+<span class="tc"># Dedicated account; the one capability it needs is binding :80/:443.</span>
+<span class="tc"># Native apps under *other* users need the root variant (see the unit).</span>
 <span class="tf">User</span>=soli-proxy
 <span class="tf">Group</span>=soli-proxy
-<span class="tf">ExecStart</span>=<span class="ts">/usr/local/bin/soli-proxy --config /etc/soli-proxy/config.toml</span>
-<span class="tf">Restart</span>=on-failure
-<span class="tf">RestartSec</span>=<span class="tn">5</span>
-
-<span class="tc"># Allow binding to ports 80 and 443 without root</span>
 <span class="tf">AmbientCapabilities</span>=<span class="ts">CAP_NET_BIND_SERVICE</span>
-<span class="tf">NoNewPrivileges</span>=true
+<span class="tf">CapabilityBoundingSet</span>=<span class="ts">CAP_NET_BIND_SERVICE</span>
 
-<span class="tf">LimitNOFILE</span>=<span class="tn">65535</span>
-<span class="tf">WorkingDirectory</span>=/etc/soli-proxy
+<span class="tc"># run/ and certs/ are relative to this directory</span>
+<span class="tf">StateDirectory</span>=soli-proxy
+<span class="tf">WorkingDirectory</span>=/var/lib/soli-proxy
+<span class="tc"># --conf is proxy.conf; config.toml is read from the same directory</span>
+<span class="tf">ExecStart</span>=<span class="ts">/usr/local/bin/soli-proxy --conf /etc/soli-proxy/proxy.conf --sites-dir /srv/sites</span>
+<span class="tf">ExecReload</span>=<span class="ts">/bin/kill -USR1 $MAINPID</span>
+<span class="tf">Restart</span>=always
+<span class="tf">RestartSec</span>=<span class="tn">5</span>
+<span class="tf">LimitNOFILE</span>=<span class="tn">65536</span>
+
+<span class="tc"># Hardening (apps are children of the proxy and share the sandbox)</span>
+<span class="tf">NoNewPrivileges</span>=yes
+<span class="tf">ProtectSystem</span>=strict
+<span class="tf">ReadWritePaths</span>=/etc/soli-proxy -/srv/sites
+<span class="tf">ProtectHome</span>=yes
+<span class="tf">PrivateTmp</span>=yes
+<span class="tf">UMask</span>=<span class="tn">0027</span>
 
 [<span class="tk">Install</span>]
 <span class="tf">WantedBy</span>=multi-user.target</code></pre>

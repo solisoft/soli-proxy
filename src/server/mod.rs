@@ -1025,6 +1025,10 @@ fn create_listener(addr: SocketAddr) -> Result<TcpListener> {
         Domain::IPV6
     };
     let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
+    // `[::]` serves IPv4 too, whatever net.ipv6.bindv6only says.
+    if addr.is_ipv6() {
+        socket.set_only_v6(false)?;
+    }
     socket.set_reuse_address(true)?;
     socket.set_reuse_port(true)?;
     socket.set_nonblocking(true)?;
@@ -1047,6 +1051,10 @@ fn probe_bind(addr: SocketAddr) -> Result<()> {
         Domain::IPV6
     };
     let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
+    // `[::]` serves IPv4 too, whatever net.ipv6.bindv6only says.
+    if addr.is_ipv6() {
+        socket.set_only_v6(false)?;
+    }
     socket.set_reuse_address(true)?;
     socket.set_reuse_port(true)?;
     socket.bind(&addr.into()).map_err(|e| bind_error(addr, e))?;
@@ -2550,6 +2558,7 @@ async fn handle_request_inner(
         app_manager.clone(),
         load_balancer.clone(),
         is_tls,
+        peer_addr,
     );
     let result = match timeout(timeout_sec, handle_fut).await {
         Ok(res) => res,
@@ -3608,6 +3617,9 @@ async fn handle_regular_request(
     app_manager: Option<Arc<AppManager>>,
     load_balancer: Arc<LoadBalancerState>,
     is_tls: bool,
+    // Only for a rule's `headers { }` block (`$client_ip`): the forwarding
+    // headers themselves were set at the door, in handle_request_inner.
+    peer_addr: Option<SocketAddr>,
 ) -> Result<(Response<BoxBody>, String, Vec<String>), hyper::Error> {
     let route = find_matching_rule(&req, &config.rules);
     // Prefer the Host header over the URI authority. An HTTP/1.1 absolute-form
@@ -3820,7 +3832,22 @@ async fn handle_regular_request(
             // proxy's own view when the request came in (handle_request_inner),
             // with the client's original Host — before the https rewrite above.
             let outbound_body = proxy_request_body(body, config.limits.max_request_size);
-            let request = Request::from_parts(parts, outbound_body);
+            let mut request = Request::from_parts(parts, outbound_body);
+
+            // The rule's `headers { }` block, applied last so it can override
+            // the forwarding headers normalised above.
+            let header_rules = &config.rules[matched_route.rule_idx].headers;
+            if !header_rules.is_empty() {
+                crate::config::apply_header_rules(
+                    request.headers_mut(),
+                    header_rules,
+                    &crate::config::HeaderVars {
+                        client_ip: peer_addr.map(|a| a.ip()),
+                        scheme: if is_tls { "https" } else { "http" },
+                        host: &matched_route.host,
+                    },
+                );
+            }
 
             match client.request(request).await {
                 Ok(mut response) => {
@@ -4248,20 +4275,23 @@ async fn handle_regular_request(
 }
 
 /// How the target URL is resolved from the matched route
-enum UrlResolution {
+enum UrlResolution<'a> {
     /// Domain, Default: append full request path
     AppendPath,
     /// DomainPath, Prefix: strip prefix, append suffix
     StripPrefix(String),
-    /// Exact, Regex: use target URL as-is
+    /// Exact: use target URL as-is
     Identity,
+    /// Regex: substitute the pattern's capture groups (`$1`, `${name}`) into
+    /// the target's path and query
+    Regex(&'a crate::config::RegexMatcher),
 }
 
 /// A matched routing rule with all the info needed to resolve a target URL
 struct MatchedRoute<'a> {
     targets: &'a [crate::config::Target],
     from_domain_rule: bool,
-    resolution: UrlResolution,
+    resolution: UrlResolution<'a>,
     route_scripts: Vec<String>,
     auth: Vec<crate::auth::BasicAuth>,
     auth_exempt: Vec<String>,
@@ -4310,6 +4340,33 @@ impl<'a> MatchedRoute<'a> {
     }
 }
 
+/// Append `suffix` — a request path, or what is left of one once a route
+/// prefix was stripped — to `base`, always as a *path*.
+///
+/// Plain concatenation is not that. A `redirect://` target has an empty path
+/// (`redirect://new.example`, non-special schemes get no implicit `/`), so
+/// `example.com/old/* -> redirect://new.example` plus `/old/.evil.com/` used to
+/// produce `redirect://new.example.evil.com/` — the suffix extended the
+/// *authority* and the 301 sent visitors to a host the operator never named.
+/// The same concatenation turned `http://h/v2` + `x` into `http://h/v2x`. The
+/// rule here: exactly one `/` between base and suffix, whatever either side
+/// ends or starts with. An empty suffix (an empty or authority-form request
+/// path) leaves `base` alone instead of panicking on `&path[1..]`.
+fn push_joined_path(out: &mut String, base: &str, suffix: &str) {
+    out.push_str(base);
+    if suffix.is_empty() {
+        return;
+    }
+    match (base.ends_with('/'), suffix.strip_prefix('/')) {
+        (true, Some(rest)) => out.push_str(rest),
+        (true, None) | (false, Some(_)) => out.push_str(suffix),
+        (false, None) => {
+            out.push('/');
+            out.push_str(suffix);
+        }
+    }
+}
+
 /// Resolve a target URL based on the resolution strategy
 fn resolve_target_url(
     target: &crate::config::Target,
@@ -4317,35 +4374,58 @@ fn resolve_target_url(
     query: Option<&str>,
     resolution: &UrlResolution,
 ) -> String {
-    let target_str = target.url.as_str();
-    let qs = match query {
-        Some(q) if !q.is_empty() => format!("?{}", q),
-        _ => String::new(),
-    };
+    let base = target.url.as_str();
+    let query = query.filter(|q| !q.is_empty());
+    let mut out = String::with_capacity(base.len() + path.len() + query.map_or(0, |q| q.len() + 1));
     match resolution {
-        UrlResolution::AppendPath => {
-            if target_str.ends_with('/') {
-                format!("{}{}{}", target_str, &path[1..], qs)
-            } else {
-                format!("{}{}{}", target_str, path, qs)
-            }
-        }
+        UrlResolution::AppendPath => push_joined_path(&mut out, base, path),
         UrlResolution::StripPrefix(prefix) => {
-            let suffix = if path.len() >= prefix.len() {
-                &path[prefix.len()..]
-            } else {
-                ""
-            };
-            format!("{}{}{}", target_str, suffix, qs)
+            // `path` is either under the prefix or the prefix minus its
+            // trailing slash (`/db` for `/db/`), which leaves nothing to add.
+            let suffix = path.strip_prefix(prefix.as_str()).unwrap_or("");
+            push_joined_path(&mut out, base, suffix)
         }
-        UrlResolution::Identity => {
-            if qs.is_empty() {
-                target_str.to_owned()
-            } else {
-                format!("{}{}", target_str, qs)
+        UrlResolution::Identity => out.push_str(base),
+        UrlResolution::Regex(rm) => {
+            // Captures go into the path and query only: the scheme and
+            // authority are copied verbatim, so a capture can never change
+            // which host the request is sent to.
+            let head = &target.url[..url::Position::BeforePath];
+            let tail = &base[head.len()..];
+            out.push_str(head);
+            match tail
+                .contains('$')
+                .then(|| rm.regex.captures(path))
+                .flatten()
+            {
+                Some(caps) => crate::config::expand_captures(tail, &caps, &mut out),
+                None => out.push_str(tail),
             }
         }
     }
+    if let Some(q) = query {
+        // A target that carries its own query string gets the client's
+        // appended to it, not a second `?`.
+        out.push(if out.contains('?') { '&' } else { '?' });
+        out.push_str(q);
+    }
+
+    // Defence in depth for the join above: whatever was appended must not
+    // have changed the target's authority. The scheme://host:port prefix is
+    // still there by construction; the byte after it must end the authority.
+    let authority = &target.url[..url::Position::AfterPort];
+    if !matches!(
+        out.as_bytes().get(authority.len()),
+        None | Some(b'/' | b'?')
+    ) {
+        tracing::warn!(
+            "Resolved URL {:?} would change the authority of target {}; using the bare target",
+            out,
+            base
+        );
+        return base.to_owned();
+    }
+    out
 }
 
 /// Build the 301 response for a `redirect://` rule target. The resolved
@@ -4475,7 +4555,7 @@ fn find_matching_rule<'a, B>(
                 return Some(MatchedRoute {
                     targets: &rule.targets,
                     from_domain_rule: false,
-                    resolution: UrlResolution::Identity,
+                    resolution: UrlResolution::Regex(rm),
                     route_scripts: rule.scripts.clone(),
                     auth: rule.auth.clone(),
                     auth_exempt: rule.auth_exempt.clone(),
@@ -4510,8 +4590,37 @@ fn find_matching_rule<'a, B>(
     None
 }
 
+fn gcd(mut a: usize, mut b: usize) -> usize {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
+}
+
+/// Stride for the weighted schedule: the integer coprime with `total`
+/// closest to `total / φ`. Stepping through `0..total` by it visits every
+/// slot once per cycle (so each target gets exactly its weight) and spreads
+/// consecutive picks across the targets' ranges instead of sending a run of
+/// `weight` requests to each in turn — for 70:30 (reduced to 7:3 first)
+/// the sequence is A B A A B A A B A A, the same as nginx's smooth weighted
+/// round-robin, without a lock or per-rule mutable state.
+fn weighted_stride(total: usize) -> usize {
+    if total <= 2 {
+        return 1;
+    }
+    let ideal = (total as f64 * 0.618_033_988_75).round() as usize;
+    (0..total)
+        .flat_map(|d| [ideal.saturating_add(d), ideal.saturating_sub(d)])
+        .find(|&c| c > 0 && c < total && gcd(c, total) == 1)
+        .unwrap_or(1)
+}
+
 /// Select a target based on the load balancing strategy.
 /// Returns (resolved_url, base_url) for logging and circuit breaker tracking.
+///
+/// Candidates are checked against the circuit breaker by `&str`; only the
+/// chosen target's URL is copied (this used to allocate a `String` for every
+/// candidate examined).
 fn select_target(
     route: &MatchedRoute<'_>,
     path: &str,
@@ -4520,69 +4629,63 @@ fn select_target(
     load_balancer: &LoadBalancerState,
 ) -> Option<(String, String)> {
     let targets = route.targets;
-    if targets.is_empty() {
+    let num_targets = targets.len();
+    if num_targets == 0 {
         return None;
     }
+    let pick = |target: &crate::config::Target| {
+        let resolved = resolve_target_url(target, path, query, &route.resolution);
+        (resolved, target.url.as_str().to_owned())
+    };
+    let available =
+        |target: &crate::config::Target| circuit_breaker.is_available(target.url.as_str());
 
     match route.load_balancing {
         crate::config::LoadBalancingStrategy::Failover => {
             // Failover: use first available target (circuit breaker aware)
-            for target in targets {
-                let base_url = target.url.as_str().to_owned();
-                if circuit_breaker.is_available(&base_url) {
-                    let resolved = resolve_target_url(target, path, query, &route.resolution);
-                    return Some((resolved, base_url));
-                }
-            }
-            None
+            targets.iter().find(|t| available(t)).map(pick)
         }
         crate::config::LoadBalancingStrategy::RoundRobin => {
             // Round-robin: cycle through all targets, skip unhealthy ones
-            let num_targets = targets.len();
-            if num_targets == 0 {
-                return None;
-            }
             let start_idx = load_balancer.select_index(route.rule_idx, num_targets);
-
-            for i in 0..num_targets {
-                let idx = (start_idx + i) % num_targets;
-                let target = &targets[idx];
-                let base_url = target.url.as_str().to_owned();
-                if circuit_breaker.is_available(&base_url) {
-                    let resolved = resolve_target_url(target, path, query, &route.resolution);
-                    return Some((resolved, base_url));
-                }
-            }
-            None
+            (0..num_targets)
+                .map(|i| &targets[(start_idx + i) % num_targets])
+                .find(|t| available(t))
+                .map(pick)
         }
         crate::config::LoadBalancingStrategy::Weighted => {
-            // Weighted: use weights to determine distribution, skip unhealthy
-            let total_weight: u32 = targets.iter().map(|t| t.weight as u32).sum();
-            // All weights zero: fall through to "first available" below instead
-            // of recursing on the same Weighted route (which would loop forever).
-            if total_weight > 0 {
-                let start_idx = (load_balancer.bump(route.rule_idx) % total_weight as usize) as u32;
-                let mut cumulative = 0u32;
-
-                for target in targets.iter() {
-                    cumulative += target.weight as u32;
-                    let base_url = target.url.as_str().to_owned();
-                    if cumulative > start_idx && circuit_breaker.is_available(&base_url) {
-                        let resolved = resolve_target_url(target, path, query, &route.resolution);
-                        return Some((resolved, base_url));
-                    }
+            // Weighted: slot `k` of each cycle of `total` requests maps, via
+            // the stride permutation, onto the target whose cumulative weight
+            // range holds it. Weight 0 means drained: never chosen while a
+            // weighted target is available.
+            // Weights are reduced by their common divisor first, so 70:30
+            // cycles like 7:3 — a short cycle interleaves more evenly.
+            let divisor = targets.iter().fold(0, |g, t| gcd(g, t.weight as usize));
+            if divisor > 0 {
+                let total: usize = targets.iter().map(|t| t.weight as usize / divisor).sum();
+                let k = load_balancer.bump(route.rule_idx) % total;
+                let slot = ((k as u64 * weighted_stride(total) as u64) % total as u64) as usize;
+                let mut cumulative = 0;
+                let chosen = targets
+                    .iter()
+                    .position(|t| {
+                        cumulative += t.weight as usize / divisor;
+                        slot < cumulative
+                    })
+                    .unwrap_or(0);
+                // The chosen target, or — if its breaker is open — the next
+                // weighted one along that is available.
+                if let Some(target) = (0..num_targets)
+                    .map(|i| &targets[(chosen + i) % num_targets])
+                    .find(|t| t.weight > 0 && available(t))
+                {
+                    return Some(pick(target));
                 }
             }
 
-            // Fallback: try any available target
-            for target in targets {
-                let base_url = target.url.as_str().to_owned();
-                if circuit_breaker.is_available(&base_url) {
-                    let resolved = resolve_target_url(target, path, query, &route.resolution);
-                    return Some((resolved, base_url));
-                }
-            }
-            None
+            // Every weighted target is down (or all weights are zero): any
+            // available target, drained ones included, beats a 503.
+            targets.iter().find(|t| available(t)).map(pick)
         }
     }
 }
@@ -4723,6 +4826,106 @@ mod tests {
             &UrlResolution::AppendPath,
         );
         assert_eq!(resolved, "redirect://bonfire-app.pro/some/path?q=1");
+    }
+
+    fn target(url: &str) -> crate::config::Target {
+        crate::config::Target {
+            url: url::Url::parse(url).unwrap(),
+            weight: 100,
+        }
+    }
+
+    /// Regression: a prefix rule pointing at a `redirect://` target has an
+    /// empty target path, and the stripped suffix used to be glued straight
+    /// onto the authority — `/old/.evil.com/` redirected to
+    /// `https://new.example.evil.com/`.
+    #[test]
+    fn redirect_prefix_suffix_cannot_extend_the_authority() {
+        let t = target("redirect://new.example");
+        let strip = UrlResolution::StripPrefix("/old/".to_string());
+        for (path, want) in [
+            ("/old/.evil.com/", "redirect://new.example/.evil.com/"),
+            ("/old/@evil.com", "redirect://new.example/@evil.com"),
+            ("/old/:8080/x", "redirect://new.example/:8080/x"),
+            ("/old/page", "redirect://new.example/page"),
+            ("/old", "redirect://new.example"),
+            ("/old/", "redirect://new.example"),
+        ] {
+            let resolved = resolve_target_url(&t, path, None, &strip);
+            assert_eq!(resolved, want, "path {path:?}");
+            let location = build_redirect_response(&resolved)
+                .headers()
+                .get("location")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string();
+            let host = url::Url::parse(&location)
+                .unwrap()
+                .host_str()
+                .unwrap()
+                .to_string();
+            assert_eq!(host, "new.example", "path {path:?} -> {location}");
+        }
+        // Whole-domain redirect rules join the same way.
+        assert_eq!(
+            resolve_target_url(&t, "/x.evil.com", None, &UrlResolution::AppendPath),
+            "redirect://new.example/x.evil.com"
+        );
+    }
+
+    #[test]
+    fn resolve_target_url_joins_with_exactly_one_slash() {
+        let strip = UrlResolution::StripPrefix("/api/".to_string());
+        assert_eq!(
+            resolve_target_url(&target("http://h:8080"), "/api/users", None, &strip),
+            "http://h:8080/users"
+        );
+        // A target with a path of its own no longer gets the suffix glued on.
+        assert_eq!(
+            resolve_target_url(&target("http://h/v2"), "/api/users", None, &strip),
+            "http://h/v2/users"
+        );
+        assert_eq!(
+            resolve_target_url(&target("http://h/v2/"), "/api/users", None, &strip),
+            "http://h/v2/users"
+        );
+        let strip_no_slash = UrlResolution::StripPrefix("/api".to_string());
+        assert_eq!(
+            resolve_target_url(&target("http://h/"), "/api/users", None, &strip_no_slash),
+            "http://h/users"
+        );
+    }
+
+    /// An empty path (authority-form, a malformed request) must not panic.
+    #[test]
+    fn resolve_target_url_handles_an_empty_path() {
+        assert_eq!(
+            resolve_target_url(&target("http://h/"), "", None, &UrlResolution::AppendPath),
+            "http://h/"
+        );
+        assert_eq!(
+            resolve_target_url(
+                &target("http://h/"),
+                "",
+                Some("a=1"),
+                &UrlResolution::StripPrefix("/x/".to_string())
+            ),
+            "http://h/?a=1"
+        );
+    }
+
+    #[test]
+    fn resolve_target_url_appends_query_to_a_target_query() {
+        assert_eq!(
+            resolve_target_url(
+                &target("http://h/x?static=1"),
+                "/ignored",
+                Some("q=2"),
+                &UrlResolution::Identity
+            ),
+            "http://h/x?static=1&q=2"
+        );
     }
 
     #[test]
@@ -4910,6 +5113,145 @@ mod tests {
         assert_eq!(selected.unwrap().1, "http://127.0.0.1:3001/");
     }
 
+    fn weighted_route<'a>(
+        targets: &'a [crate::config::Target],
+        strategy: &'a crate::config::LoadBalancingStrategy,
+    ) -> MatchedRoute<'a> {
+        MatchedRoute {
+            targets,
+            from_domain_rule: false,
+            resolution: UrlResolution::AppendPath,
+            route_scripts: vec![],
+            auth: vec![],
+            auth_exempt: vec![],
+            load_balancing: strategy,
+            host: "example.com".to_string(),
+            rule_idx: 0,
+        }
+    }
+
+    fn weighted(url: &str, weight: u8) -> crate::config::Target {
+        crate::config::Target {
+            url: url::Url::parse(url).unwrap(),
+            weight,
+        }
+    }
+
+    /// `weight:70` / `weight:30` must split traffic 70/30 exactly over each
+    /// cycle, and interleave rather than send 70 in a row to one target.
+    #[test]
+    fn weighted_selection_follows_the_weights_and_interleaves() {
+        let targets = vec![
+            weighted("http://heavy:8080", 70),
+            weighted("http://light:8080", 30),
+        ];
+        let strategy = crate::config::LoadBalancingStrategy::Weighted;
+        let route = weighted_route(&targets, &strategy);
+        let cb = crate::circuit_breaker::CircuitBreaker::new(
+            crate::circuit_breaker::CircuitBreakerConfig::default(),
+        );
+        let lb = LoadBalancerState::new(1);
+        let picks: Vec<bool> = (0..1000)
+            .map(|_| select_target(&route, "/x", None, &cb, &lb).unwrap().1 == "http://heavy:8080/")
+            .collect();
+        assert_eq!(picks.iter().filter(|h| **h).count(), 700);
+        // Smoothness: no run of the heavy target longer than 3, and every
+        // window of 10 holds exactly 3 light picks (7:3 reduces to a cycle of
+        // 10 at the stride used).
+        let longest_run = picks.split(|h| !*h).map(|run| run.len()).max().unwrap();
+        assert!(longest_run <= 3, "longest run {longest_run}");
+        for window in picks.chunks(100) {
+            assert_eq!(window.iter().filter(|h| !**h).count(), 30);
+        }
+
+        // Three targets, uneven weights.
+        let targets = vec![
+            weighted("http://a:1", 5),
+            weighted("http://b:1", 3),
+            weighted("http://c:1", 2),
+        ];
+        let route = weighted_route(&targets, &strategy);
+        let lb = LoadBalancerState::new(1);
+        let mut counts = std::collections::HashMap::new();
+        for _ in 0..1000 {
+            let (_, base) = select_target(&route, "/", None, &cb, &lb).unwrap();
+            *counts.entry(base).or_insert(0) += 1;
+        }
+        assert_eq!(counts["http://a:1/"], 500);
+        assert_eq!(counts["http://b:1/"], 300);
+        assert_eq!(counts["http://c:1/"], 200);
+    }
+
+    #[test]
+    fn weight_zero_drains_a_target() {
+        let targets = vec![weighted("http://old:1", 0), weighted("http://new:1", 10)];
+        let strategy = crate::config::LoadBalancingStrategy::Weighted;
+        let route = weighted_route(&targets, &strategy);
+        let cb = crate::circuit_breaker::CircuitBreaker::new(
+            crate::circuit_breaker::CircuitBreakerConfig::default(),
+        );
+        let lb = LoadBalancerState::new(1);
+        for _ in 0..50 {
+            assert_eq!(
+                select_target(&route, "/", None, &cb, &lb).unwrap().1,
+                "http://new:1/"
+            );
+        }
+    }
+
+    #[test]
+    fn weighted_stride_is_coprime_with_the_total() {
+        for total in 1..2000 {
+            let s = weighted_stride(total);
+            let mut seen = vec![false; total];
+            for k in 0..total {
+                seen[(k * s) % total] = true;
+            }
+            assert!(seen.iter().all(|v| *v), "total {total} stride {s}");
+        }
+    }
+
+    #[test]
+    fn regex_target_substitutes_captures_and_keeps_the_query() {
+        let rm = crate::config::RegexMatcher::new(r"^/users/(\d+)(?:/(?P<tab>\w+))?$").unwrap();
+        let resolution = UrlResolution::Regex(&rm);
+        let t = target("http://user-service:8080/users/$1/${tab}");
+        assert_eq!(
+            resolve_target_url(&t, "/users/42/posts", Some("page=2"), &resolution),
+            "http://user-service:8080/users/42/posts?page=2"
+        );
+        // A group that did not take part expands to nothing.
+        assert_eq!(
+            resolve_target_url(&t, "/users/7", None, &resolution),
+            "http://user-service:8080/users/7/"
+        );
+        // A target without references is used as-is.
+        assert_eq!(
+            resolve_target_url(
+                &target("http://u:8080/fixed"),
+                "/users/7",
+                None,
+                &resolution
+            ),
+            "http://u:8080/fixed"
+        );
+    }
+
+    /// A capture lands in the path, never the authority, whatever the
+    /// pattern and target look like.
+    #[test]
+    fn regex_captures_cannot_change_the_target_host() {
+        let rm = crate::config::RegexMatcher::new(r"^/go/(.*)$").unwrap();
+        let resolution = UrlResolution::Regex(&rm);
+        let t = target("http://backend:8080/$1");
+        let resolved = resolve_target_url(&t, "/go/@evil.com/x", None, &resolution);
+        assert_eq!(resolved, "http://backend:8080/@evil.com/x");
+        assert_eq!(
+            url::Url::parse(&resolved).unwrap().host_str(),
+            Some("backend")
+        );
+    }
+
     fn xff_count(s: &str) -> usize {
         s.lines()
             .filter(|l| l.to_ascii_lowercase().starts_with("x-forwarded-for:"))
@@ -5006,6 +5348,7 @@ mod tests {
             force_https: true,
             hsts_max_age_seconds: max_age,
             hsts_include_subdomains: include_subdomains,
+            min_version: None,
         }
     }
 

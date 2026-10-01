@@ -1,12 +1,31 @@
 # Allow user `soli` to grant cap_net_bind_service to the soli-proxy binary
-# without a password — and ONLY that. The proxy runs as `soli` and binds
-# :80/:443, which needs this capability; `rbuild --install proxy` writes a
-# fresh binary that loses it, so it has to be re-applied on every deploy.
+# without a password — and ONLY that. For a proxy started by hand (a
+# workstation, `soli-proxy -d`) rather than by the systemd unit, which grants
+# the capability itself through AmbientCapabilities and needs none of this.
+# Installing a binary drops the capabilities that were on the file, so it has
+# to be re-applied after every upgrade; `soli-proxy update` does it through
+# this grant.
 #
 # Scope is deliberately narrow: one exact command, one exact argument, one
 # exact path. This is NOT a blanket `setcap` grant — that would let `soli`
-# hand any capability to any binary, which is root-equivalent. The single
-# capability reachable here, cap_net_bind_service, only permits binding ports
-# below 1024; a would-be attacker who already controls the `soli` account
-# gains nothing beyond "can bind low ports with this one file".
-soli ALL=(root) NOPASSWD: /usr/bin/setcap cap_net_bind_service=+ep /home/soli/.local/bin/soli-proxy
+# hand any capability to any binary, which is root-equivalent.
+#
+# The path MUST be one that `soli` cannot write: a root-owned file in a
+# root-owned directory. An earlier version of this file named
+# /home/soli/.local/bin/soli-proxy, and that is not the narrow grant it looks
+# like: setcap follows symlinks, so the account could replace its own file
+# with a link to /usr/bin/python3 (or any other interpreter) and have root
+# give *that* the capability — for every user on the machine. Install the
+# binary root-owned instead:
+#
+#   sudo install -m 0755 -o root -g root ./soli-proxy /usr/local/bin/soli-proxy
+#
+# then install this file:
+#
+#   sudo install -m 0440 -o root -g root \
+#     deploy/soli-proxy-setcap.sudoers /etc/sudoers.d/soli-proxy-setcap
+#   sudo visudo -c
+#
+# Edit the user if you are not `soli`. Keep the path root-owned, absolute and
+# free of wildcards.
+soli ALL=(root) NOPASSWD: /usr/bin/setcap cap_net_bind_service=+ep /usr/local/bin/soli-proxy

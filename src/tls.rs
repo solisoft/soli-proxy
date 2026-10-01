@@ -6,8 +6,8 @@ use std::sync::Arc;
 use tokio_rustls::rustls::ServerConfig;
 
 use crate::acme::{
-    build_server_config, certified_key_from_pem, load_certificate, load_wildcard_certificate,
-    AcmeCertResolver,
+    build_server_config_with, certified_key_from_pem, load_certificate, load_wildcard_certificate,
+    AcmeCertResolver, TlsMinVersion,
 };
 use crate::config::TlsConfig;
 
@@ -16,6 +16,7 @@ pub struct TlsManager {
     server_config: Option<Arc<ServerConfig>>,
     resolver: Arc<AcmeCertResolver>,
     cache_dir: PathBuf,
+    min_version: TlsMinVersion,
 }
 
 impl TlsManager {
@@ -39,6 +40,7 @@ impl TlsManager {
             server_config: None,
             resolver,
             cache_dir,
+            min_version: tls_config.min_version()?,
         })
     }
 
@@ -172,8 +174,10 @@ impl TlsManager {
     }
 
     /// Build the ServerConfig using the cert resolver. Call after loading certs.
+    /// Session resumption (tickets + a 32k-entry session cache) is on; see
+    /// `build_server_config_with`.
     pub fn build(&mut self) -> Result<()> {
-        let config = build_server_config(self.resolver.clone())?;
+        let config = build_server_config_with(self.resolver.clone(), self.min_version)?;
         self.server_config = Some(config);
         Ok(())
     }
@@ -215,4 +219,48 @@ fn generate_self_signed_cert(extra_sans: &[String]) -> Result<(String, String)> 
     let key_pem = cert.serialize_private_key_pem();
 
     Ok((cert_pem, key_pem))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn manager(min_version: Option<&str>) -> (tempfile::TempDir, TlsManager) {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = TlsConfig {
+            mode: "auto".into(),
+            cache_dir: dir.path().join("certs").to_string_lossy().into_owned(),
+            min_version: min_version.map(String::from),
+            ..Default::default()
+        };
+        let mut m = TlsManager::new(&cfg).unwrap();
+        m.build().unwrap();
+        (dir, m)
+    }
+
+    /// rustls' defaults resume nothing for TLS 1.3 (no ticketer) and keep
+    /// only 256 TLS 1.2 sessions.
+    #[test]
+    fn server_config_enables_session_resumption() {
+        let (_dir, m) = manager(None);
+        let config = m.server_config().unwrap();
+        assert!(config.ticketer.enabled(), "no session ticketer");
+        assert!(config.session_storage.can_cache());
+        assert_eq!(
+            config.alpn_protocols,
+            vec![b"h2".to_vec(), b"http/1.1".to_vec()]
+        );
+    }
+
+    #[test]
+    fn min_version_is_validated() {
+        let (_dir, _m) = manager(Some("1.3"));
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = TlsConfig {
+            cache_dir: dir.path().to_string_lossy().into_owned(),
+            min_version: Some("1.1".into()),
+            ..Default::default()
+        };
+        assert!(TlsManager::new(&cfg).is_err());
+    }
 }
