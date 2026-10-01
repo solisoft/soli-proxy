@@ -734,6 +734,75 @@ fn is_alive_as(pid: u32, start_time: u64) -> bool {
             .is_some_and(|start| start == start_time)
 }
 
+/// Whether `pid` looks like an instance of an app started by a proxy older
+/// than 1.0, which kept no spawn registry: the leader of its own session and
+/// process group (every native app is started with `setsid()`), running as
+/// `uid`, in the app's directory `app_dir`, with `program` as its executable.
+///
+/// Without this, the first start of 1.0 found every app a 0.35 proxy had left
+/// running on its port, could not prove it was its own, refused to touch it —
+/// correctly, for a stranger — and quarantined the app. These four facts
+/// together are what a 0.35-started app has and a stranger holding the port
+/// does not: a database or another service does not run from the app's own
+/// site directory under the app's program. Linux only (`/proc`); elsewhere
+/// nothing qualifies.
+fn is_pre_registry_instance(pid: u32, app_dir: &Path, uid: u32, program: &str) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{}/stat", pid)) else {
+            return false;
+        };
+        let Some(rest) = stat.rfind(')').and_then(|at| stat.get(at + 2..)) else {
+            return false;
+        };
+        // state, ppid, pgrp, session
+        let fields: Vec<&str> = rest.split_whitespace().take(4).collect();
+        let pid_s = pid.to_string();
+        if fields.len() < 4
+            || matches!(fields[0], "Z" | "X")
+            || fields[2] != pid_s
+            || fields[3] != pid_s
+        {
+            return false;
+        }
+        let real_uid = std::fs::read_to_string(format!("/proc/{}/status", pid))
+            .ok()
+            .and_then(|status| {
+                status
+                    .lines()
+                    .find_map(|l| l.strip_prefix("Uid:"))
+                    .and_then(|v| v.split_whitespace().next()?.parse::<u32>().ok())
+            });
+        if real_uid != Some(uid) {
+            return false;
+        }
+        let same_dir = match (
+            std::fs::read_link(format!("/proc/{}/cwd", pid)),
+            std::fs::canonicalize(app_dir),
+        ) {
+            (Ok(cwd), Ok(dir)) => cwd == dir,
+            _ => false,
+        };
+        if !same_dir {
+            return false;
+        }
+        let argv0 = std::fs::read(format!("/proc/{}/cmdline", pid))
+            .ok()
+            .and_then(|raw| {
+                raw.split(|b| *b == 0)
+                    .next()
+                    .map(|a| String::from_utf8_lossy(a).into_owned())
+            });
+        let base = |p: &str| p.rsplit('/').next().unwrap_or(p).to_string();
+        argv0.is_some_and(|a| !a.is_empty() && base(&a) == base(program))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (pid, app_dir, uid, program);
+        false
+    }
+}
+
 /// What a restarted proxy finds running in an app's slot.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SlotOwnership {
@@ -1795,8 +1864,56 @@ impl DeploymentManager {
         }
     }
 
+    /// Stop the process holding `port` if it is an instance of `app` started
+    /// by a proxy older than 1.0 (see [`is_pre_registry_instance`]). Returns
+    /// whether one was stopped.
+    ///
+    /// Native apps only, and never in multi-tenant mode, where native apps are
+    /// refused and a port holder is never trusted on circumstantial evidence.
+    pub async fn stop_pre_registry_instance(&self, app: &AppInfo, slot: &str, port: u16) -> bool {
+        if self.multi_tenant || app.config.docker_image.is_some() || port == 0 {
+            return false;
+        }
+        let Ok(launch) = self.native_launch(app, port) else {
+            return false;
+        };
+        #[cfg(unix)]
+        let own_uid = unsafe { libc::geteuid() };
+        #[cfg(not(unix))]
+        let own_uid = 0;
+        let uid = launch.ids.map(|(uid, _)| uid).unwrap_or(own_uid);
+        let dir = app.path.clone();
+        let program = launch.program.clone();
+        let found = tokio::task::spawn_blocking(move || {
+            let pid = super::find_pid_by_port(port)?;
+            is_pre_registry_instance(pid, &dir, uid, &program).then_some(pid)
+        })
+        .await
+        .ok()
+        .flatten();
+        let Some(pid) = found else {
+            return false;
+        };
+        tracing::warn!(
+            "Stopping {} slot {} (PID {} on port {}): started by a proxy older than 1.0, which \
+             kept no record of its apps; it is restarted under this one",
+            app.config.name,
+            slot,
+            pid,
+            port
+        );
+        self.mark_stopping(pid);
+        kill_group(
+            pid,
+            Duration::from_secs(app.config.graceful_timeout.clamp(2, 10) as u64),
+        )
+        .await;
+        true
+    }
+
     /// Free `port` for `app`'s slot from a process left over by a previous
-    /// run — if, and only if, this proxy spawned it.
+    /// run — if, and only if, this proxy spawned it (or a proxy older than
+    /// 1.0 did, see [`Self::stop_pre_registry_instance`]).
     ///
     /// "Listens on the app's port" is not "belongs to the app": the port may
     /// be held by a database, another service, or a process squatting it on
@@ -1837,14 +1954,18 @@ impl DeploymentManager {
                 kill_group(group, Duration::from_secs(2)).await;
                 self.spawns.forget(group);
             }
-            None => tracing::error!(
-                "Port {} for {} slot {} is held by PID {}, which this proxy did not spawn; \
-                 leaving it alone",
-                port,
-                app.config.name,
-                slot,
-                pid
-            ),
+            None => {
+                if !self.stop_pre_registry_instance(app, slot, port).await {
+                    tracing::error!(
+                        "Port {} for {} slot {} is held by PID {}, which this proxy did not \
+                         spawn; leaving it alone",
+                        port,
+                        app.config.name,
+                        slot,
+                        pid
+                    );
+                }
+            }
         }
     }
 
@@ -2453,12 +2574,72 @@ fn resolve_group(group: &str) -> Result<u32> {
 
 #[cfg(test)]
 mod tests {
+
+    /// A process a 0.35 proxy left behind is recognised by what it is — its
+    /// own session leader, our uid, the app's directory, the app's program —
+    /// and anything differing in one of those is not.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_pre_registry_instance_is_recognised_and_a_stranger_is_not() {
+        use std::os::unix::process::CommandExt;
+        let site = TempDir::new().unwrap();
+        let elsewhere = TempDir::new().unwrap();
+        let mut leader = std::process::Command::new("sleep");
+        leader.arg("30").current_dir(site.path());
+        unsafe {
+            leader.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+        let mut leader = leader.spawn().unwrap();
+        let mut follower = std::process::Command::new("sleep")
+            .arg("30")
+            .current_dir(site.path())
+            .spawn()
+            .unwrap();
+        let uid = unsafe { libc::geteuid() };
+        let pid = leader.id();
+        // Give the child time to exec, so /proc shows `sleep`, not the test.
+        std::thread::sleep(Duration::from_millis(200));
+
+        assert!(is_pre_registry_instance(pid, site.path(), uid, "sleep"));
+        assert!(is_pre_registry_instance(
+            pid,
+            site.path(),
+            uid,
+            "/usr/bin/sleep"
+        ));
+        assert!(
+            !is_pre_registry_instance(pid, elsewhere.path(), uid, "sleep"),
+            "another directory"
+        );
+        assert!(
+            !is_pre_registry_instance(pid, site.path(), uid, "soli"),
+            "another program"
+        );
+        assert!(
+            !is_pre_registry_instance(pid, site.path(), uid + 1, "sleep"),
+            "another user"
+        );
+        assert!(
+            !is_pre_registry_instance(follower.id(), site.path(), uid, "sleep"),
+            "not the leader of its own session"
+        );
+
+        let _ = leader.kill();
+        let _ = follower.kill();
+        let _ = leader.wait();
+        let _ = follower.wait();
+    }
+
     use super::{
-        carries_userinfo, filter_tenant_env, network_create_args, parse_start_command,
-        proc_identity, resolve_home, tenant_bridge_name, validate_docker_image,
-        validate_docker_network, validate_docker_options, validate_path_component,
-        DeploymentManager, SlotOwnership, SpawnRecord, SpawnRegistry, DOCKER_PASSTHROUGH_ENV,
-        LABEL_APP, LABEL_CONTAINER, LABEL_LAUNCH, LABEL_PORT, PASSTHROUGH_ENV,
+        carries_userinfo, filter_tenant_env, is_pre_registry_instance, network_create_args,
+        parse_start_command, proc_identity, resolve_home, tenant_bridge_name,
+        validate_docker_image, validate_docker_network, validate_docker_options,
+        validate_path_component, DeploymentManager, SlotOwnership, SpawnRecord, SpawnRegistry,
+        DOCKER_PASSTHROUGH_ENV, LABEL_APP, LABEL_CONTAINER, LABEL_LAUNCH, LABEL_PORT,
+        PASSTHROUGH_ENV,
     };
     use crate::app::{AppConfig, AppInfo, AppInstance, InstanceStatus};
     use std::path::Path;

@@ -2297,7 +2297,18 @@ impl AppManager {
         let mut adopted: Option<(String, u32)> = None;
         for slot in [preferred, other] {
             match dm.verify_slot(app, slot).await {
-                SlotOwnership::Absent => {}
+                SlotOwnership::Absent => {
+                    // No record — but a proxy older than 1.0 kept none, and
+                    // left its apps running. One found on this slot's port is
+                    // stopped here, whichever slot starts next, so it neither
+                    // blocks the start nor runs on unrouted.
+                    let port = if slot == "blue" {
+                        app.blue.port
+                    } else {
+                        app.green.port
+                    };
+                    dm.stop_pre_registry_instance(app, slot, port).await;
+                }
                 SlotOwnership::Ours { pid } if adopted.is_none() => {
                     match self.probe_adoptable(app, slot).await {
                         Ok(()) => {

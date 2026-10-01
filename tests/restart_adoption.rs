@@ -25,8 +25,13 @@ impl Installation {
         let http = portpicker::pick_unused_port().unwrap();
         let https = portpicker::pick_unused_port().unwrap();
         let admin = portpicker::pick_unused_port().unwrap();
-        // Slot ports, clear of the proxy's own listeners.
-        let mut range = 46000u16;
+        // Slot ports, clear of the proxy's own listeners and of every other
+        // installation in this binary: the tests run in parallel, and two
+        // proxies given the same range would each find the other's app on
+        // its port.
+        static NEXT_RANGE: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+        let mut range =
+            46000u16 + 200 * NEXT_RANGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         while [http, https, admin]
             .iter()
             .any(|p| (range..range + 100).contains(p))
@@ -297,4 +302,52 @@ fn check_reports_problems_with_their_line_and_fails() {
     // Nothing was started or written.
     assert!(!install.root().join("run").exists());
     assert!(!install.root().join("certs").exists());
+}
+
+/// Upgrading from 0.35: its apps are still running, but 0.35 kept no spawn
+/// registry, so nothing proves they are this proxy's. 1.0.0 refused to touch
+/// them and quarantined every such app ("port already in use by another
+/// process"). The leftover is recognised by its directory, user and program,
+/// stopped, and the app starts afresh under the new proxy.
+#[tokio::test]
+async fn an_app_left_running_by_a_pre_registry_proxy_is_restarted_not_quarantined() {
+    if Command::new("python3").arg("--version").output().is_err() {
+        eprintln!("python3 not available; skipping");
+        return;
+    }
+    let install = Installation::new();
+    let mut cleanup = Cleanup(Vec::new());
+
+    // A proxy starts the app and stops, leaving it running...
+    let mut first = install.start();
+    cleanup.0.push(first.id());
+    let (old_pid, port) = install
+        .running_app(Duration::from_secs(30))
+        .await
+        .unwrap_or_else(|| panic!("app never ran:\n{}", install.log()));
+    cleanup.0.push(old_pid);
+    sigterm(&first);
+    assert!(wait_exit(&mut first, Duration::from_secs(15)).await);
+    assert!(alive(old_pid), "the app must outlive the proxy");
+
+    // ...and, like 0.35, it kept no record of it.
+    std::fs::remove_file(install.root().join("run/spawned.json")).unwrap();
+
+    let mut second = install.start();
+    cleanup.0.push(second.id());
+    let (new_pid, new_port) = install
+        .running_app(Duration::from_secs(40))
+        .await
+        .unwrap_or_else(|| panic!("app not running after the upgrade:\n{}", install.log()));
+    cleanup.0.push(new_pid);
+
+    let log = install.log();
+    assert!(!log.contains("quarantined"), "{log}");
+    assert_ne!(new_pid, old_pid, "the leftover is replaced, not adopted");
+    assert!(!alive(old_pid), "the leftover must be stopped:\n{log}");
+    assert_eq!(new_port, port);
+    assert!(install.served_through_proxy().await, "{log}");
+
+    sigterm(&second);
+    let _ = wait_exit(&mut second, Duration::from_secs(15)).await;
 }

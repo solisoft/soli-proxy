@@ -4,6 +4,16 @@
 
 ### Bug Fixes
 
+* **Upgrading from 0.35 no longer quarantines the apps it left running.** 0.35 kept no spawn
+  registry, so 1.0.0 could not prove the apps a 0.35 proxy had left running were its own,
+  refused to touch them, and quarantined every app whose port they held ("port … is already in
+  use by another process"). A leftover is now recognised by what it is — the leader of its own
+  session, running as the app's user, from the app's site directory, with the app's start
+  program — stopped, and the app starts afresh, which is what the 1.0.0 upgrade notes promised.
+  A process differing in any of those is still never signalled, and multi-tenant mode never
+  applies this. Already hit it? Restart the proxy with this version, or stop the leftover
+  `soli serve` processes and `touch <site>/restart.txt`.
+
 * **A burst of real logins is no longer turned away on a small machine.** 1.0.0 answered 503 to a
   Basic-auth check that could not get a bcrypt slot within one second. With two slots and
   ~300 ms per check, three people logging in at once on a two-core box could get a 503 — and CI's

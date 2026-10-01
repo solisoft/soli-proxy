@@ -1086,6 +1086,11 @@ fails a check is handled as follows:
 - **not provably ours** (a PID with no record or another start time, a process the proxy cannot
   inspect) — neither adopted nor signalled. The fresh start then meets it as before: a port
   held by a stranger is logged and the slot fails rather than kill it;
+- **started by a proxy older than 1.0** (which kept no spawn registry) — recognised by what it
+  is rather than by a record: the leader of its own session, running as the app's user, from the
+  app's own site directory, with the app's start program. It is stopped and the app starts
+  afresh, so the first start after upgrading from 0.35 restarts each app once. Native apps only,
+  never in multi-tenant mode;
 - **a container without the labels** (started by an older version) — replaced, as a fresh start
   always replaced `<app>-<slot>`.
 
