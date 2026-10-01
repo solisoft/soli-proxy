@@ -314,10 +314,10 @@
   `set_forwarding_headers` as every proxied request. The admin API's rate limiter and its
   failed-login budget key IPv6 clients by /64, like the proxy's.
 * **Two more backend-controlled panics are gone.** A backend's WebSocket 101 whose
-  `Sec-WebSocket-Accept`/`-Protocol` held a control character (a lone CR, DEL) panicked on building the
-  client's 101 (proxy and `_admin` passthrough alike); it is now a 502. A prefix-mounted
-  redirect whose rewritten `Location` could not be a header value panicked; the `Location` is
-  now left as the backend sent it.
+  `Sec-WebSocket-Accept`/`-Protocol` held a control character (a lone CR, DEL) panicked on
+  building the client's 101 (proxy and `_admin` passthrough alike); it is now a 502. A
+  prefix-mounted redirect whose rewritten `Location` could not be a header value panicked; the
+  `Location` is now left as the backend sent it.
 * **Routes created through the admin API are validated in full.** `POST`/`PUT /api/v1/routes`
   and `PUT /api/v1/config` only checked `auth_exempt` paths (and auth hashes); a bad `headers`
   entry (a hop-by-hop name, an unknown `$variable`, an invalid value) or a regex target naming a
