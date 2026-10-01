@@ -308,6 +308,11 @@
 * **`proxy_requests_in_flight` no longer drifts upwards.** The gauge was decremented by hand on
   each return path and several had none — failed WebSocket upgrades among them — nor did a
   request whose client went away. It is now held by a guard released on every exit.
+* **The admin API's `_admin` passthrough uses the proxy's forwarding headers.** It overwrote
+  `X-Forwarded-For`/`-Proto`/`-Host` but relayed a client's `X-Real-IP`, `Forwarded` and other
+  `X-Forwarded-*` verbatim (on WebSockets too); it now goes through the same
+  `set_forwarding_headers` as every proxied request. The admin API's rate limiter and its
+  failed-login budget key IPv6 clients by /64, like the proxy's.
 
 ## [0.35.2](https://github.com/solisoft/soli-proxy/compare/v0.35.1...v0.35.2) (2026-09-27)
 

@@ -5,7 +5,7 @@ use crate::circuit_breaker::SharedCircuitBreaker;
 use crate::config::ConfigManager;
 use crate::metrics::SharedMetrics;
 use crate::proxy_headers::strip_hop_by_hop;
-use crate::server::IpRateLimiter;
+use crate::server::{client_key, IpRateLimiter};
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use http_body_util::BodyExt;
@@ -376,20 +376,25 @@ fn extract_route_index(path: &str) -> Option<usize> {
         .and_then(|s| s.parse::<usize>().ok())
 }
 
-/// Inject `X-Forwarded-{For,Proto,Host}` so the bundled `_admin` Rails app
-/// sees the real client IP and can render correct URLs. Always sets
-/// `X-Forwarded-Proto: http` because the admin server itself is plaintext;
-/// operators who terminate TLS in front of it can rewrite at the terminator.
+/// Give the bundled `_admin` app the proxy's view of the client, through the
+/// same `set_forwarding_headers` the public proxy uses: every client-supplied
+/// `Forwarded` / `X-Forwarded-*` / `X-Real-IP` is dropped (this function used
+/// to overwrite three of them and relay `X-Real-IP` and the rest verbatim),
+/// then `X-Forwarded-For`, `X-Real-IP`, `X-Forwarded-Proto` and
+/// `X-Forwarded-Host` are set. The proto is always `http` because the admin
+/// server itself is plaintext; operators who terminate TLS in front of it can
+/// rewrite it at the terminator.
 fn inject_forwarding_headers(headers: &mut hyper::HeaderMap, peer: Option<SocketAddr>) {
-    use hyper::header::HeaderValue;
-    let xff = peer.map(|a| a.ip().to_string()).unwrap_or_default();
-    if let Ok(v) = HeaderValue::from_str(&xff) {
-        headers.insert("X-Forwarded-For", v);
-    }
-    headers.insert("X-Forwarded-Proto", HeaderValue::from_static("http"));
-    if let Some(host) = headers.get("host").cloned() {
-        headers.insert("X-Forwarded-Host", host);
-    }
+    let host = headers
+        .get(hyper::header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .map(str::to_owned);
+    crate::proxy_headers::set_forwarding_headers(
+        headers,
+        peer.map(|a| a.ip()),
+        false,
+        host.as_deref(),
+    );
 }
 
 /// Reject oversized or chunked-encoded requests before we forward them to
@@ -433,7 +438,7 @@ async fn handle_admin_request(
     // Per-IP rate limit applied BEFORE auth so a rejected client can't
     // burn bcrypt rounds by replaying a wrong password under the limit.
     if let (Some(limiter), Some(peer)) = (state.rate_limiter.as_ref(), peer_addr) {
-        if limiter.check_key(&peer.ip()).is_err() {
+        if limiter.check_key(&client_key(peer.ip())).is_err() {
             let body = full(Bytes::from_static(b"Rate limit exceeded"));
             return Ok(Response::builder()
                 .status(429)
@@ -485,8 +490,10 @@ async fn handle_admin_request(
     }
 
     // Failed-credential budget, checked before bcrypt runs (see `AuthFailures`).
-    let blocked_for =
-        peer_addr.and_then(|peer| AuthFailures::global().blocked_for(peer.ip(), Instant::now()));
+    // Keyed like every other per-client budget: an IPv6 client per /64, or a
+    // guesser would get a fresh budget from each of its 2^64 addresses.
+    let client = peer_addr.map(|peer| client_key(peer.ip()));
+    let blocked_for = client.and_then(|ip| AuthFailures::global().blocked_for(ip, Instant::now()));
 
     let auth_method = match check_auth(
         &req,
@@ -499,9 +506,9 @@ async fn handle_admin_request(
     {
         AuthOutcome::Allowed(method) => method,
         AuthOutcome::Denied => {
-            if let Some(peer) = peer_addr {
+            if let Some(ip) = client {
                 if presents_credential(&req) {
-                    AuthFailures::global().record(peer.ip(), Instant::now());
+                    AuthFailures::global().record(ip, Instant::now());
                 }
             }
             return Ok(unauthorized_response(use_basic_auth));
@@ -877,13 +884,12 @@ async fn proxy_websocket_to_admin_app(
             | "sec-websocket-version"
             | "sec-websocket-protocol"
             | "authorization"
-            | "x-api-key"
-            | "x-forwarded-for"
-            | "x-forwarded-proto"
-            | "x-forwarded-host" => continue,
+            | "x-api-key" => continue,
             _ => {}
         }
-        if connection_listed.iter().any(|n| n == name_str) {
+        if crate::proxy_headers::is_forwarding_header(name_str)
+            || connection_listed.iter().any(|n| n == name_str)
+        {
             continue;
         }
         if let Ok(v) = value.to_str() {
@@ -891,13 +897,20 @@ async fn proxy_websocket_to_admin_app(
         }
     }
 
-    // Inject forwarding identity for the bundled _admin Rails app.
-    if let Some(peer) = peer_addr {
-        extra_headers.push_str(&format!("X-Forwarded-For: {}\r\n", peer.ip()));
+    // Inject forwarding identity for the bundled _admin Rails app — the same
+    // set as a plain request (see `inject_forwarding_headers`).
+    let mut forwarding = hyper::HeaderMap::new();
+    if let Some(host) = req.headers().get(hyper::header::HOST) {
+        forwarding.insert(hyper::header::HOST, host.clone());
     }
-    extra_headers.push_str("X-Forwarded-Proto: http\r\n");
-    if let Some(host) = req.headers().get("host").and_then(|v| v.to_str().ok()) {
-        extra_headers.push_str(&format!("X-Forwarded-Host: {}\r\n", host));
+    inject_forwarding_headers(&mut forwarding, peer_addr);
+    for (name, value) in &forwarding {
+        if name == hyper::header::HOST {
+            continue;
+        }
+        if let Ok(v) = value.to_str() {
+            extra_headers.push_str(&format!("{}: {}\r\n", name, v));
+        }
     }
 
     // Connect to the backend
@@ -1373,6 +1386,25 @@ mod tests {
         // The bound address itself, even when it is not 127.0.0.1.
         let other: SocketAddr = "[::1]:9090".parse().unwrap();
         assert!(is_loopback_host("[::1]:9090", other));
+    }
+
+    #[test]
+    fn admin_passthrough_forwarding_headers_are_the_proxys() {
+        let mut h = hyper::HeaderMap::new();
+        h.insert("host", "admin.example:9090".parse().unwrap());
+        h.insert("x-real-ip", "127.0.0.1".parse().unwrap());
+        h.insert("forwarded", "for=127.0.0.1".parse().unwrap());
+        h.insert("x-forwarded-for", "127.0.0.1".parse().unwrap());
+        h.insert("x-forwarded-port", "443".parse().unwrap());
+        let peer: SocketAddr = "198.51.100.9:5555".parse().unwrap();
+        inject_forwarding_headers(&mut h, Some(peer));
+        assert_eq!(h["x-forwarded-for"], "198.51.100.9");
+        assert_eq!(h["x-real-ip"], "198.51.100.9");
+        assert_eq!(h["x-forwarded-proto"], "http");
+        assert_eq!(h["x-forwarded-host"], "admin.example:9090");
+        assert!(h.get("forwarded").is_none());
+        assert!(h.get("x-forwarded-port").is_none());
+        assert_eq!(h.get_all("x-forwarded-for").iter().count(), 1);
     }
 
     #[test]

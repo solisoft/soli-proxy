@@ -299,7 +299,8 @@ backend still receives the path as sent.
   `X-Forwarded-*` or `X-Real-IP` the client sent is dropped, then `X-Forwarded-For` and
   `X-Real-IP` (the connecting address), `X-Forwarded-Proto` and `X-Forwarded-Host` (the
   Host the client asked for) are set — on rule routes, app domains and WebSocket
-  upgrades alike, before any Lua script sees the request.
+  upgrades alike, before any Lua script sees the request, and on the admin API's
+  passthrough to the `_admin` app.
 - **Hop-by-hop headers are removed at the door**, including every header the client
   names in `Connection`, so a client cannot use `Connection: x-user` to delete a header
   a script set.
@@ -953,7 +954,7 @@ Two more guards on the admin listener:
   with any port — and `403` otherwise. That defeats DNS rebinding, where a page on a hostname
   that re-resolves to `127.0.0.1` would otherwise reach the API as a same-origin request. With
   a credential configured any `Host` is accepted, since such a page has none to send.
-- **Ten failed authentications per client IP per minute**, then `429` with `Retry-After` until
+- **Ten failed authentications per client IP (IPv6: per /64) per minute**, then `429` with `Retry-After` until
   the minute is up — answered before bcrypt runs. Only requests that carried a credential count,
   and a correct one never does, so the TUI and CLI can poll freely; a Basic credential that
   already succeeded in the last five minutes is still let through while its IP is blocked. This
