@@ -1167,9 +1167,14 @@ enabled = false
 scripts_dir = "./scripts/lua"
 hook_timeout_ms = 10
 
-# Authentication: HTTP Basic only, per route (@auth:user:hash in proxy.conf),
-# per app ([auth.users] in app.infos) and for the admin API (api_key above, or
+# Authentication: HTTP Basic per route (@auth:user:hash in proxy.conf), per app
+# ([auth.users] in app.infos) and for the admin API (api_key above, or
 # ADMIN_USER + ADMIN_PASSWORD_HASH). Hashes: `soli-proxy hash-password`.
+# Forward authentication to an SSO service: @forward_auth:URL per route,
+# [auth] forward per app; tuned below (see README "Forward authentication").
+# [forward_auth]
+# timeout_secs = 5
+# allowed_urls = []   # multi_tenant: the auth services an app.infos may name
 "#;
             std::fs::write(&config_toml_path, default_config).ok();
             default_config.to_string()

@@ -23,3 +23,13 @@ default -> http://localhost:8080/
 #     X-Real-IP: $client_ip
 #     -X-Debug-Token
 # }
+
+# Forward authentication: an SSO service (oauth2-proxy, Authelia, ...) is asked
+# before every request. 2xx lets it through, copying the listed response headers
+# upstream (they are always stripped from the client's request first); any
+# other answer (401, 302 to the login page) goes to the client; no answer is a
+# 503. With @auth on the same rule, Basic runs first; @noauth skips both.
+# dashboard.example.com -> http://localhost:3000 \
+#     @forward_auth:http://127.0.0.1:4180/ \
+#     @forward_auth_headers:X-Auth-Request-User,X-Auth-Request-Email \
+#     @noauth:/up

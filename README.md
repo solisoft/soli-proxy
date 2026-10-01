@@ -11,8 +11,8 @@ reload, Lua scripting, and blue-green deploys for the apps it hosts.
 - **Simple Configuration**: Custom config format with comments support
 - **Load Balancing**: Round-robin, weighted and failover, with a per-backend circuit breaker
 - **WebSocket Support**: Full WebSocket proxy capabilities, with idle/lifetime/size limits
-- **Middleware**: HTTP Basic auth (per route, per app, admin API), per-IP rate limiting, request header rules, Lua hooks, JSON or text logging
-- **Not included**: JWT/OIDC or API-key auth for proxied routes — use a Lua `on_request` hook or the backend
+- **Middleware**: HTTP Basic auth (per route, per app, admin API), [forward authentication](#forward-authentication) to an SSO service (oauth2-proxy, Authelia, Authentik, …), per-IP rate limiting, request header rules, Lua hooks, JSON or text logging
+- **Not included**: JWT/OIDC validation or API-key checks inside the proxy itself — delegate them to an SSO service with [forward authentication](#forward-authentication), or use a Lua `on_request` hook or the backend
 - **Health Checks**: Kubernetes-compatible liveness and readiness probes
 - **App Health Monitoring**: Automatic health checks with auto-restart for managed apps
 - **High Performance**: Built on Tokio and Hyper for maximum throughput
@@ -268,6 +268,12 @@ secure.example.com -> http://localhost:9000 @auth:admin:$2b$12$...
 # Exact path, or a prefix ending in *. Only meaningful next to @auth.
 app.example.com -> http://localhost:8080 @auth:admin:$2b$12$... \
                    @noauth:/webhooks/stripe,/hooks/*
+
+# Forward authentication: an SSO service decides, before every request
+# (see "Forward authentication" below). @noauth works here too.
+dashboard.example.com -> http://localhost:3000 \
+                   @forward_auth:http://127.0.0.1:4180/ \
+                   @forward_auth_headers:X-Auth-Request-User,X-Auth-Request-Email
 ```
 
 #### How Basic Auth is checked
@@ -292,6 +298,132 @@ Rules, `@auth` and `@noauth` match a canonical form of the path: percent-encoded
 unreserved characters (`A-Z a-z 0-9 - . _ ~`) are decoded and repeated `/` collapse,
 so `//admin/x` and `/%61dmin/x` meet an `/admin/*` rule like `/admin/x` does. The
 backend still receives the path as sent.
+
+### Forward authentication
+
+One SSO service — [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/),
+[Authelia](https://www.authelia.com/), [Authentik](https://goauthentik.io/), a Soli app —
+can gate any route (`@forward_auth:`) or app (`[auth] forward`, see
+[`app.infos`](#app-configuration-appinfos)). It is the model of Traefik's ForwardAuth,
+nginx's `auth_request` and Caddy's `forward_auth`: before proxying a request, the proxy asks
+the auth service, and the auth service's answer decides.
+
+```
+# proxy.conf
+dashboard.example.com -> http://localhost:3000 \
+    @forward_auth:http://127.0.0.1:4180/ \
+    @forward_auth_headers:X-Auth-Request-User,X-Auth-Request-Email \
+    @noauth:/up,/assets/*
+```
+
+**What the auth service is sent**: a `GET` to the URL exactly as configured (query string
+included), with no body and these headers only —
+
+| Header | Value |
+|---|---|
+| `Cookie`, `Authorization` | The client's, as sent: the session the service checks. (`Authorization` is withheld when the same route or app also has Basic Auth — it then carries the Basic password, which is the proxy's business.) |
+| `Accept`, `User-Agent`, `X-Requested-With` | The client's: what Authelia and Authentik read to choose between a 401 and a login redirect. |
+| `X-Forwarded-Method` | The request's method. |
+| `X-Forwarded-Uri` | The request's path and query, as sent. |
+| `X-Forwarded-Proto`, `X-Forwarded-Host`, `X-Forwarded-For`, `X-Real-IP` | The proxy's own (see [What reaches the backend](#what-reaches-the-backend)) — never the client's. |
+| `Host` | The auth service's own authority. |
+
+**What its answer does**:
+
+| Answer | Result |
+|---|---|
+| **2xx** | The request proceeds. Each header named in `@forward_auth_headers:` is copied from the answer onto the upstream request (every value). Nothing else from the answer is used. |
+| **3xx, 4xx, 5xx** | Sent to the client as the auth service wrote it — status, headers (`Location`, `Set-Cookie`, `WWW-Authenticate`, …, minus hop-by-hop ones) and body up to 64 KiB (a larger body is dropped, the status and headers still go). The upstream is never contacted. |
+| **No answer** — refused, reset, or not within `[forward_auth] timeout_secs` (default 5 s, body included) | **503**. Fail closed: a request is never let through because the auth service was away. |
+
+- ⚠️ **The headers named in `@forward_auth_headers:` are removed from the client's request
+  first, on every request** — before the auth service is asked, whatever it answers, and on
+  `@noauth` paths too. The upstream trusts `X-Auth-Request-User` because only the auth service
+  can set it; a client sending its own copy must not have it arrive next to the real one, or in
+  its place on a path the auth service never saw. Hop-by-hop and framing headers, `Host` and the
+  forwarding headers cannot be named (a load error), and at most 32 can.
+- **Nothing is cached.** Every request asks; a session revoked at the auth service stops working
+  on the next request. The subrequest goes through the proxy's shared upstream connection pool,
+  so the connection to the auth service stays open between requests.
+- **With `@auth` on the same rule**, Basic Auth runs first and both must pass: a request without
+  the password gets the Basic 401 and the auth service is not asked. `@noauth:` paths skip both.
+- **WebSocket upgrades** are checked the same way, before anything is tunnelled, and the copied
+  headers reach the WebSocket backend.
+- **The URL** must be `http://` or `https://` with a host, and carry neither credentials nor a
+  `#fragment`. An `https://` auth service is verified against the public web PKI, like an
+  `https://` backend — on a private network, use `http://` on loopback or a private address, or
+  a publicly trusted certificate.
+- A `Set-Cookie` on a **2xx** answer (a refreshed session) is not passed to the client: only
+  denials are relayed.
+
+```toml
+# config.toml
+[forward_auth]
+timeout_secs = 5          # connect + answer; 0 or unset = 5. Applied on the next request after a reload.
+# allowed_urls = [...]    # multi-tenant mode only, see below
+```
+
+#### Example: oauth2-proxy
+
+oauth2-proxy in its "static upstream" mode answers `202` with the user's identity for a valid
+session, and redirects anyone else to the identity provider. One instance serves every protected
+domain under a shared cookie domain; its own callback lives on `auth.example.com`:
+
+```bash
+oauth2-proxy --http-address=127.0.0.1:4180 \
+  --reverse-proxy=true --upstream=static://202 --set-xauthrequest=true \
+  --skip-provider-button=true \
+  --redirect-url=https://auth.example.com/oauth2/callback \
+  --cookie-domain=.example.com --whitelist-domain=.example.com \
+  --provider=oidc --oidc-issuer-url=https://idp.example.com \
+  --client-id=... --client-secret=... --cookie-secret=... --email-domain=example.com
+```
+
+```
+# proxy.conf
+auth.example.com -> http://127.0.0.1:4180
+
+grafana.example.com -> http://127.0.0.1:3000 \
+    @forward_auth:http://127.0.0.1:4180/ \
+    @forward_auth_headers:X-Auth-Request-User,X-Auth-Request-Email
+
+wiki.example.com -> http://127.0.0.1:8081 \
+    @forward_auth:http://127.0.0.1:4180/ \
+    @forward_auth_headers:X-Auth-Request-User
+```
+
+`--reverse-proxy` makes oauth2-proxy read `X-Forwarded-Host`/`-Uri`/`-Proto`, so after the
+login the browser comes back to the page it asked for. Configure the backends to trust
+`X-Auth-Request-User` (Grafana: `[auth.proxy] header_name = X-Auth-Request-User`) — and only
+from the proxy, which is the one place the header can come from.
+
+Authelia (4.38+) works the same way with its forward-auth endpoint:
+`@forward_auth:http://127.0.0.1:9091/api/authz/forward-auth
+@forward_auth_headers:Remote-User,Remote-Groups,Remote-Email,Remote-Name`.
+
+#### Multi-tenant mode: `allowed_urls`
+
+In [multi-tenant mode](#multi-tenant-mode-untrusted-apps) an app's `[auth] forward` is written
+by the tenant, and the proxy fetches it — with the visitor's cookies — and relays a denial's
+body back. Left open, that is a server-side request forgery: `forward =
+"http://169.254.169.254/latest/meta-data/"`, or an internal admin port. So a tenant may only
+name an auth service the operator listed:
+
+```toml
+[forward_auth]
+allowed_urls = [
+  "http://127.0.0.1:4180/",                   # this path and everything below it
+  "http://127.0.0.1:9091/api/authz/forward-auth",  # exactly this path
+]
+```
+
+An entry matches a URL with the same scheme, host and port and, when the entry's path ends in
+`/`, any path below it; otherwise exactly that path. The query string is not compared. Paths are
+compared after normalisation, so `/api/../admin` is `/admin`. An app whose `forward` no entry
+covers fails to load (logged and skipped, like any other manifest error); with the list empty —
+the default — no tenant can use forward-auth. The list is read at each app discovery. Outside
+multi-tenant mode `app.infos` is the operator's, and is not checked against it. Routes in
+`proxy.conf`, the admin API and cluster pushes are operator input and are not checked either.
 
 ### What reaches the backend
 
@@ -361,7 +493,9 @@ host are taken verbatim from the target.
 | `weight:N` (before a target) | Share of traffic under `@lb:weighted`, 0–255, default 100. Weights are reduced by their common divisor and spread evenly (70:30 sends A B A A B A A B A A, not 70 then 30). **`weight:0` drains** a target: it gets no traffic while any weighted target is available, and serves only as a last resort when every other one's circuit breaker is open. |
 | `@script:a.lua,b.lua` | Lua scripts for this route (see `[scripting]`). |
 | `@auth:user:bcrypt-hash` | HTTP Basic Auth; repeat for several users. |
-| `@noauth:/path,/prefix/*` | Paths on a protected rule served without credentials. |
+| `@noauth:/path,/prefix/*` | Paths on a protected rule served without credentials (Basic Auth and forward-auth alike). |
+| `@forward_auth:URL` | Ask this auth service before every request; see [Forward authentication](#forward-authentication). |
+| `@forward_auth_headers:A,B` | Response headers of the auth service copied onto the upstream request (and always stripped from the client's). Needs `@forward_auth:`. |
 
 Every target is also tracked by the circuit breaker (`[circuit_breaker]`): a target whose
 breaker is open is skipped by every strategy, and a rule whose targets are all open answers 503.
@@ -388,7 +522,8 @@ not affected.
 #### Errors
 
 A line the parser does not understand is an error naming its line number — an unknown
-directive, an invalid `weight:`, a malformed `@auth` entry, an unknown `@lb` strategy, a script
+directive, an invalid `weight:`, a malformed `@auth` entry, an unknown `@lb` strategy, an invalid
+`@forward_auth:` URL or header name, a script
 name that is not a plain `*.lua` file, an unterminated `headers` block. At startup that is fatal;
 on a hot reload the previous configuration stays in force and the error is logged. (Earlier
 versions skipped such lines, which could silently drop a route or the `@auth` protecting it.)
@@ -529,7 +664,8 @@ listener addresses (`[server] bind`, `https_port`, `worker_threads`), the admin 
 `enabled`/`bind`, TLS certificates (use `POST /api/v1/certs/reload` instead) and
 `[tls] min_version`, the Lua engine and its scripts, the rate limiter, `max_connections`, and
 `[logging]` `level`/`format`/`output`. Per-request settings — routes, `force_https`, HSTS,
-timeouts, body-size limit, `log_endpoints`, admin credentials — take effect on the next request.
+timeouts, body-size limit, `log_endpoints`, admin credentials, `[forward_auth] timeout_secs` —
+take effect on the next request; `[forward_auth] allowed_urls` at the next app discovery.
 
 ## App Configuration (`app.infos`)
 
@@ -557,9 +693,12 @@ graceful_timeout = 30
 port_range_start = 20000
 port_range_end = 30000
 
-# Optional: HTTP Basic Auth on this app's domains.
+# Optional: HTTP Basic Auth on this app's domains...
 [auth]
 noauth = ["/webhooks/stripe", "/hooks/*"]
+# ...and/or forward authentication to an SSO service.
+forward = "http://127.0.0.1:4180/"
+forward_headers = ["X-Auth-Request-User", "X-Auth-Request-Email"]
 
 [auth.users]
 admin = "$2b$12$..."   # generate with: hash-password (cost 4..=13)
@@ -586,15 +725,18 @@ admin = "$2b$12$..."   # generate with: hash-password (cost 4..=13)
 | `docker_network` | string | `"soli-apps"` | Docker network the container joins (created automatically if missing). A plain network name only: `host` and `container:<id>` are refused in every mode, since the value goes straight to `--network`. Ignored in multi-tenant mode, where each app gets a private network. |
 | `idle_timeout` | int (seconds) | `[apps].idle_timeout` from `config.toml`, itself `0` | Scale to zero: after this many seconds without a request the proxy stops the app and starts it again on the next one, holding that request until the app is healthy. `0` means the app never sleeps. See [Scale to zero](#scale-to-zero). |
 | `[auth.users]` | table | _empty_ | `username = "bcrypt hash"` entries. When non-empty, every request to this app's domains must present matching HTTP Basic Auth credentials. Generate a hash with `hash-password`; only bcrypt hashes at cost 4 to 13 are accepted. |
-| `[auth] noauth` | list of strings | _empty_ | Paths served without credentials, for callers that cannot send a password (a payment webhook, a health probe). Exact path, or a prefix ending in `*` — the same syntax as the `@noauth:` route directive, and the same fail-closed rule: a path carrying percent-encoding or a `..` segment is never exempt. |
+| `[auth] noauth` | list of strings | _empty_ | Paths served without credentials, for callers that cannot send a password (a payment webhook, a health probe). Exact path, or a prefix ending in `*` — the same syntax as the `@noauth:` route directive, and the same fail-closed rule: a path carrying percent-encoding or a `..` segment is never exempt. Skips forward-auth too. |
+| `[auth] forward` | string | _none_ | Auth service asked before every request to this app's domains, WebSocket upgrades included — the app equivalent of `@forward_auth:`. See [Forward authentication](#forward-authentication). With `[auth.users]` too, Basic Auth runs first and both must pass. In multi-tenant mode it must be covered by `[forward_auth] allowed_urls`. |
+| `[auth] forward_headers` | list of strings | _empty_ | Auth-service response headers copied onto the request to the app (and always removed from the client's). Requires `forward`. |
 
 Apps are routed by the app manager rather than by `proxy.conf` rules — `sync_routes` prunes
 static rules for app-managed domains — so a route's `@auth` cannot protect an app. `[auth]` is
 the equivalent for apps, and it covers the app's derived domains (`www.`-stripped, `.test` in
 dev) and any admin-managed alias pointing at it. A `[auth]` section the proxy cannot enforce as
 written (an empty or malformed hash, a bcrypt cost outside 4–13, a `noauth` pattern that does
-not compare literally) makes the app fail to load and be skipped, rather than come up
-unprotected.
+not compare literally, a `forward` URL that is not `http(s)://` with a host, a `forward_headers`
+name the proxy manages or without `forward`) makes the app fail to load and be skipped, rather
+than come up unprotected.
 
 ### Per-environment settings
 
@@ -845,6 +987,9 @@ With it on:
   removed, its containers are stopped and its network removed.
 - Containers are stopped with `docker stop` + `docker rm -f` **by name**, never by signalling
   the PID docker reports, which left the container (and its restart policy) behind.
+- An app's `[auth] forward` must be covered by `[forward_auth] allowed_urls` (empty by default:
+  no tenant can use forward-auth), since the proxy fetches it on the tenant's behalf. See
+  [Multi-tenant mode: `allowed_urls`](#multi-tenant-mode-allowed_urls).
 
 #### Egress filtering is yours to configure
 
@@ -996,9 +1141,12 @@ proxy routes them without supervising them.
 - **`auth` is enforced by this proxy, or not at all.** A pushed target is the workload's raw port
   on another node, with nothing in front of it there, so an app's `[auth]` has to travel with its
   route. It takes the `app.infos` shape and validation (bcrypt cost 4–13, literal `noauth`
-  paths), may only name domains present in `routes`, and is replaced along with them. A pushed
-  domain without `auth` is served unprotected. `GET /api/v1/routing-table` returns usernames and
-  `noauth`, never hashes.
+  paths, and `forward` / `forward_headers` for [forward authentication](#forward-authentication)),
+  may only name domains present in `routes`, and is replaced along with them. A pushed
+  domain without `auth` is served unprotected. `GET /api/v1/routing-table` returns usernames,
+  `noauth` and the forward-auth URL and headers, never hashes. The pusher authenticates as the
+  admin, so a pushed `forward` URL is trusted like a `proxy.conf` route and is not checked
+  against `[forward_auth] allowed_urls`.
 
 ## Deploy Trigger File (`restart.txt`)
 

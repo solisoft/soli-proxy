@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+**Forward auth (gap/auth)**
+
+### Features
+
+* **Forward authentication: one SSO service can gate any route or app.** The README used to
+  claim JWT auth the proxy never had; it now delegates the decision the way Traefik's
+  ForwardAuth, nginx's `auth_request` and Caddy's `forward_auth` do. A route takes
+  `@forward_auth:http://auth.internal:4180/verify` and, optionally,
+  `@forward_auth_headers:X-Auth-User,X-Auth-Email`; an app takes `[auth] forward = "…"` and
+  `forward_headers = […]` in `app.infos` (cluster pushes accept the same keys). Before proxying —
+  and before a WebSocket upgrade — the proxy sends the auth service a bodiless `GET` with the
+  client's `Cookie`, `Authorization`, `Accept`, `User-Agent`, `X-Requested-With`, its own
+  `X-Forwarded-For`/`-Proto`/`-Host`/`X-Real-IP`, and `X-Forwarded-Method`/`X-Forwarded-Uri`.
+  **2xx** lets the request through with the named response headers copied onto it; **any other
+  answer** (401, 403, a 302 to the login page) is relayed to the client — status, headers
+  including `Location` and `Set-Cookie`, body capped at 64 KiB — and the upstream is never
+  contacted; **no answer** within `[forward_auth] timeout_secs` (default 5) is a **503**, never a
+  pass. The subrequest uses the shared upstream connection pool; no verdict is cached, so a
+  revoked session stops working on the next request.
+* **The copied header names are stripped from every client request first**, whatever the auth
+  service answers and on `@noauth` paths too, so a client cannot forge `X-Auth-User`. Naming a
+  hop-by-hop or framing header, `Host` or a forwarding header is refused.
+* **Basic Auth and forward-auth combine:** Basic runs first and both must pass; the client's
+  `Authorization` (the Basic password) is then not sent to the auth service. `@noauth` /
+  `[auth] noauth` paths skip both.
+* **Multi-tenant mode: `[forward_auth] allowed_urls`.** A tenant's `[auth] forward` is a URL the
+  proxy fetches with the visitor's cookies and whose denials it relays — a server-side request
+  forgery if left open (`http://169.254.169.254/…`, an internal admin port). In multi-tenant mode
+  an app whose `forward` no entry covers (same scheme, host and port; an entry ending in `/`
+  covers the paths below it) fails to load. Empty by default: no tenant can use forward-auth
+  until the operator lists a service.
+* Forward-auth URLs must be `http`/`https` with a host, and carry no credentials or fragment —
+  checked by the `proxy.conf` parser, `rule.validate()` (admin API), `app.infos` loading and
+  cluster pushes. Routes round-trip through the admin API as
+  `"forward_auth": {"url": …, "headers": […]}`, and through `proxy.conf` rewrites; the TUI's
+  route editor keeps a route's forward-auth when it saves.
+
 **Authentication and admin API (fix/auth)**
 
 ### Security

@@ -119,10 +119,31 @@ hook_timeout_ms = 10  # Max execution time per hook call in milliseconds
 # exposed_env = ["API_BACKEND_TOKEN"]
 
 # Authentication
-# There is no [auth] section: the proxy implements HTTP Basic auth only, set
-# where it applies —
+# There is no [auth] section. HTTP Basic auth is set where it applies —
 #   * per route in proxy.conf:      app.example.com -> http://... @auth:user:<bcrypt>
 #   * per app in its app.infos:     [auth.users] user = "<bcrypt>"
 #   * for the admin API:            [admin] api_key, or ADMIN_USER + ADMIN_PASSWORD_HASH
-# Hashes come from `soli-proxy hash-password`. JWT / API-key auth for proxied
-# routes is not implemented; do it in a Lua on_request hook or in the backend.
+# Hashes come from `soli-proxy hash-password`.
+#
+# Forward authentication delegates the decision to an SSO service
+# (oauth2-proxy, Authelia, Authentik, ...): before each request the proxy sends
+# it a GET with the client's Cookie/Authorization and X-Forwarded-Method/-Uri/
+# -Host/-Proto/-For. 2xx lets the request through (copying the named response
+# headers upstream), anything else is relayed to the client (401, 302 to the
+# login page...), no answer is a 503. Set per route or per app —
+#   * proxy.conf:  app.example.com -> http://... @forward_auth:http://127.0.0.1:4180/ \
+#                      @forward_auth_headers:X-Auth-Request-User,X-Auth-Request-Email
+#   * app.infos:   [auth] forward = "http://127.0.0.1:4180/"
+#                         forward_headers = ["X-Auth-Request-User"]
+# JWT / API-key validation inside the proxy is not implemented: delegate it to
+# such a service, or do it in a Lua on_request hook or in the backend.
+[forward_auth]
+# Seconds the auth service has to answer (connect, headers, body of a denial).
+# Unset or 0 = 5. Applied on the next request after a reload.
+timeout_secs = 5
+# multi_tenant mode only: the auth URLs an app's `[auth] forward` may name —
+# the proxy fetches that URL, so a tenant must not be able to point it at
+# 169.254.169.254 or an internal admin port. An entry ending in "/" allows any
+# path below it, otherwise exactly that path (query string not compared).
+# Empty (the default): tenants cannot use forward-auth. Ignored otherwise.
+# allowed_urls = ["http://127.0.0.1:4180/", "http://127.0.0.1:9091/api/authz/forward-auth"]

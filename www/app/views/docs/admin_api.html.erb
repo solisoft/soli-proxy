@@ -494,8 +494,11 @@
   -H <span class="ts">"X-Api-Key: your-secret-api-key"</span> \
   -H <span class="ts">"Content-Type: application/json"</span> \
   -d <span class="ts">'{
-    "from": "api.example.com/v2/*",
-    "to": "http://127.0.0.1:8080"
+    "matcher": { "type": "domain_path", "domain": "api.example.com", "path": "/v2/" },
+    "targets": [{ "url": "http://127.0.0.1:8080/", "weight": 100 }],
+    "headers": [],
+    "scripts": [],
+    "forward_auth": { "url": "http://127.0.0.1:4180/", "headers": ["X-Auth-Request-User"] }
   }'</span></code></pre>
                         </div>
                     </div>
