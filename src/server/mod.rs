@@ -3604,6 +3604,33 @@ impl<'a> MatchedRoute<'a> {
     }
 }
 
+/// Append `suffix` — a request path, or what is left of one once a route
+/// prefix was stripped — to `base`, always as a *path*.
+///
+/// Plain concatenation is not that. A `redirect://` target has an empty path
+/// (`redirect://new.example`, non-special schemes get no implicit `/`), so
+/// `example.com/old/* -> redirect://new.example` plus `/old/.evil.com/` used to
+/// produce `redirect://new.example.evil.com/` — the suffix extended the
+/// *authority* and the 301 sent visitors to a host the operator never named.
+/// The same concatenation turned `http://h/v2` + `x` into `http://h/v2x`. The
+/// rule here: exactly one `/` between base and suffix, whatever either side
+/// ends or starts with. An empty suffix (an empty or authority-form request
+/// path) leaves `base` alone instead of panicking on `&path[1..]`.
+fn push_joined_path(out: &mut String, base: &str, suffix: &str) {
+    out.push_str(base);
+    if suffix.is_empty() {
+        return;
+    }
+    match (base.ends_with('/'), suffix.strip_prefix('/')) {
+        (true, Some(rest)) => out.push_str(rest),
+        (true, None) | (false, Some(_)) => out.push_str(suffix),
+        (false, None) => {
+            out.push('/');
+            out.push_str(suffix);
+        }
+    }
+}
+
 /// Resolve a target URL based on the resolution strategy
 fn resolve_target_url(
     target: &crate::config::Target,
@@ -3611,35 +3638,42 @@ fn resolve_target_url(
     query: Option<&str>,
     resolution: &UrlResolution,
 ) -> String {
-    let target_str = target.url.as_str();
-    let qs = match query {
-        Some(q) if !q.is_empty() => format!("?{}", q),
-        _ => String::new(),
-    };
+    let base = target.url.as_str();
+    let query = query.filter(|q| !q.is_empty());
+    let mut out = String::with_capacity(base.len() + path.len() + query.map_or(0, |q| q.len() + 1));
     match resolution {
-        UrlResolution::AppendPath => {
-            if target_str.ends_with('/') {
-                format!("{}{}{}", target_str, &path[1..], qs)
-            } else {
-                format!("{}{}{}", target_str, path, qs)
-            }
-        }
+        UrlResolution::AppendPath => push_joined_path(&mut out, base, path),
         UrlResolution::StripPrefix(prefix) => {
-            let suffix = if path.len() >= prefix.len() {
-                &path[prefix.len()..]
-            } else {
-                ""
-            };
-            format!("{}{}{}", target_str, suffix, qs)
+            // `path` is either under the prefix or the prefix minus its
+            // trailing slash (`/db` for `/db/`), which leaves nothing to add.
+            let suffix = path.strip_prefix(prefix.as_str()).unwrap_or("");
+            push_joined_path(&mut out, base, suffix)
         }
-        UrlResolution::Identity => {
-            if qs.is_empty() {
-                target_str.to_owned()
-            } else {
-                format!("{}{}", target_str, qs)
-            }
-        }
+        UrlResolution::Identity => out.push_str(base),
     }
+    if let Some(q) = query {
+        // A target that carries its own query string gets the client's
+        // appended to it, not a second `?`.
+        out.push(if out.contains('?') { '&' } else { '?' });
+        out.push_str(q);
+    }
+
+    // Defence in depth for the join above: whatever was appended must not
+    // have changed the target's authority. The scheme://host:port prefix is
+    // still there by construction; the byte after it must end the authority.
+    let authority = &target.url[..url::Position::AfterPort];
+    if !matches!(
+        out.as_bytes().get(authority.len()),
+        None | Some(b'/' | b'?')
+    ) {
+        tracing::warn!(
+            "Resolved URL {:?} would change the authority of target {}; using the bare target",
+            out,
+            base
+        );
+        return base.to_owned();
+    }
+    out
 }
 
 /// Build the 301 response for a `redirect://` rule target. The resolved
@@ -4007,6 +4041,106 @@ mod tests {
             &UrlResolution::AppendPath,
         );
         assert_eq!(resolved, "redirect://bonfire-app.pro/some/path?q=1");
+    }
+
+    fn target(url: &str) -> crate::config::Target {
+        crate::config::Target {
+            url: url::Url::parse(url).unwrap(),
+            weight: 100,
+        }
+    }
+
+    /// Regression: a prefix rule pointing at a `redirect://` target has an
+    /// empty target path, and the stripped suffix used to be glued straight
+    /// onto the authority — `/old/.evil.com/` redirected to
+    /// `https://new.example.evil.com/`.
+    #[test]
+    fn redirect_prefix_suffix_cannot_extend_the_authority() {
+        let t = target("redirect://new.example");
+        let strip = UrlResolution::StripPrefix("/old/".to_string());
+        for (path, want) in [
+            ("/old/.evil.com/", "redirect://new.example/.evil.com/"),
+            ("/old/@evil.com", "redirect://new.example/@evil.com"),
+            ("/old/:8080/x", "redirect://new.example/:8080/x"),
+            ("/old/page", "redirect://new.example/page"),
+            ("/old", "redirect://new.example"),
+            ("/old/", "redirect://new.example"),
+        ] {
+            let resolved = resolve_target_url(&t, path, None, &strip);
+            assert_eq!(resolved, want, "path {path:?}");
+            let location = build_redirect_response(&resolved)
+                .headers()
+                .get("location")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string();
+            let host = url::Url::parse(&location)
+                .unwrap()
+                .host_str()
+                .unwrap()
+                .to_string();
+            assert_eq!(host, "new.example", "path {path:?} -> {location}");
+        }
+        // Whole-domain redirect rules join the same way.
+        assert_eq!(
+            resolve_target_url(&t, "/x.evil.com", None, &UrlResolution::AppendPath),
+            "redirect://new.example/x.evil.com"
+        );
+    }
+
+    #[test]
+    fn resolve_target_url_joins_with_exactly_one_slash() {
+        let strip = UrlResolution::StripPrefix("/api/".to_string());
+        assert_eq!(
+            resolve_target_url(&target("http://h:8080"), "/api/users", None, &strip),
+            "http://h:8080/users"
+        );
+        // A target with a path of its own no longer gets the suffix glued on.
+        assert_eq!(
+            resolve_target_url(&target("http://h/v2"), "/api/users", None, &strip),
+            "http://h/v2/users"
+        );
+        assert_eq!(
+            resolve_target_url(&target("http://h/v2/"), "/api/users", None, &strip),
+            "http://h/v2/users"
+        );
+        let strip_no_slash = UrlResolution::StripPrefix("/api".to_string());
+        assert_eq!(
+            resolve_target_url(&target("http://h/"), "/api/users", None, &strip_no_slash),
+            "http://h/users"
+        );
+    }
+
+    /// An empty path (authority-form, a malformed request) must not panic.
+    #[test]
+    fn resolve_target_url_handles_an_empty_path() {
+        assert_eq!(
+            resolve_target_url(&target("http://h/"), "", None, &UrlResolution::AppendPath),
+            "http://h/"
+        );
+        assert_eq!(
+            resolve_target_url(
+                &target("http://h/"),
+                "",
+                Some("a=1"),
+                &UrlResolution::StripPrefix("/x/".to_string())
+            ),
+            "http://h/?a=1"
+        );
+    }
+
+    #[test]
+    fn resolve_target_url_appends_query_to_a_target_query() {
+        assert_eq!(
+            resolve_target_url(
+                &target("http://h/x?static=1"),
+                "/ignored",
+                Some("q=2"),
+                &UrlResolution::Identity
+            ),
+            "http://h/x?static=1&q=2"
+        );
     }
 
     #[test]

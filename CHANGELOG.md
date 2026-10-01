@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+**Config, routing and packaging (fix/config)**
+
+* **A prefix rule pointing at `redirect://` can no longer redirect off-site.** The part of the
+  path left after the prefix was glued straight onto the target, and a `redirect://` target has
+  no path of its own: `example.com/old/* -> redirect://new.example` plus `/old/.evil.com/`
+  answered `Location: https://new.example.evil.com/`. The remainder is now always joined as a
+  path — exactly one `/` between target and suffix — and the resolved URL is checked to still
+  carry the configured authority. The same join fixes `http://h/v2` + `/api/x` becoming
+  `http://h/v2x` (now `http://h/v2/x`), a target with its own query string getting a second
+  `?`, and a panic on an empty request path.
+
 ## [0.35.2](https://github.com/solisoft/soli-proxy/compare/v0.35.1...v0.35.2) (2026-09-27)
 
 ### Bug Fixes
