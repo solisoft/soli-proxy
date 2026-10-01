@@ -51,7 +51,22 @@ impl PortAllocator {
         let key = (app_name.to_string(), slot.to_string());
 
         if let Some(&port) = self.app_slots.get(&key) {
-            return Ok(port);
+            // A remembered port is reused only while it is still inside the
+            // range the app is now entitled to. `ports.lock` outlives config
+            // changes, and an assignment made from a tenant-chosen range (or
+            // before the platform range moved) must not be honoured forever.
+            if (port_range_start..=port_range_end).contains(&port) {
+                return Ok(port);
+            }
+            tracing::warn!(
+                "{} {} held port {}, outside its range {}-{}; reallocating",
+                app_name,
+                slot,
+                port,
+                port_range_start,
+                port_range_end
+            );
+            self.release(app_name, slot);
         }
 
         let port = self.find_available_port_in_range(port_range_start, port_range_end)?;
@@ -144,7 +159,9 @@ impl PortManager {
         let port = {
             let mut allocator = self.allocator.lock().await;
             if let Some(port) = allocator.get_port(app_name, slot) {
-                return Ok(port);
+                if (port_range_start..=port_range_end).contains(&port) {
+                    return Ok(port);
+                }
             }
             allocator.allocate_with_range(app_name, slot, port_range_start, port_range_end)?
         };
@@ -163,7 +180,7 @@ impl PortManager {
     async fn persist(&self) -> Result<()> {
         let allocator = self.allocator.lock().await;
         let content = serde_json::to_string_pretty(&allocator.used_ports)?;
-        fs::write(&self.lock_file, content)?;
+        crate::config::write_atomic(&self.lock_file, content.as_bytes())?;
         Ok(())
     }
 
@@ -255,5 +272,27 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(port, new_port);
+    }
+
+    /// A remembered assignment outside the range the app is entitled to now
+    /// (a tenant-chosen range, or a platform range that moved) is replaced,
+    /// not honoured forever because `ports.lock` remembers it.
+    #[tokio::test]
+    async fn a_cached_port_outside_the_range_is_reallocated() {
+        let temp_dir = TempDir::new().unwrap();
+        let pm = PortManager::new(temp_dir.path().to_str().unwrap()).unwrap();
+
+        let squatted = pm
+            .allocate_with_range("app1", "blue", 33000, 33099)
+            .await
+            .unwrap();
+        assert!((33000..=33099).contains(&squatted));
+        let moved = pm
+            .allocate_with_range("app1", "blue", 33100, 33199)
+            .await
+            .unwrap();
+        assert!((33100..=33199).contains(&moved), "{moved}");
+        // ...and the old port is free again for someone else.
+        assert_eq!(pm.get_app_name(squatted).await, None);
     }
 }

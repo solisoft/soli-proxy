@@ -355,7 +355,9 @@ cargo run --release --bin httptest -- --requests 50000 --concurrency 200
 ## Hot Reload
 
 Configuration changes are detected automatically:
-1. File watcher monitors proxy.conf
+1. File watcher monitors proxy.conf (through its directory, so editors' and the proxy's own
+   atomic rename-into-place saves are seen; a change the proxy wrote itself is recognised by its
+   content and not reloaded twice)
 2. On change, config is reloaded atomically
 3. New connections use new config
 4. Existing connections continue with old config
@@ -366,6 +368,12 @@ Configuration changes are detected automatically:
 When apps are managed by the proxy (via the sites directory, e.g. `./www`), each app directory **must be named after its domain** (must contain at least one dot, e.g. `myapp.example.org/`) and may contain an `app.infos` file describing how to run it.
 
 `app.infos` is a **TOML file** whose settings live at the top level. Three optional sections may follow them: `[auth]`, and the `[development]` / `[production]` overlays described below. The file itself is optional too — if missing or empty, defaults are used.
+
+It must be a **regular file of at most 64 KiB**. A FIFO, a device, or anything larger makes the
+app fail to load (logged, and skipped) instead of being read: the file used to be read whole,
+so a FIFO hung discovery and `app.infos -> /dev/zero` exhausted memory at every boot. In
+[multi-tenant mode](#multi-tenant-mode-untrusted-apps) a symlinked `app.infos` is refused too;
+an operator's single-tenant setup may still symlink it to a shared file.
 
 ### Example
 
@@ -397,17 +405,17 @@ admin = "$2b$12$..."   # generate with: hash-password (cost 4..=13)
 | `domain` | string | directory name (when auto-detected) | Domain the app serves. Matched against the `Host` header. |
 | `start_script` | string | auto-detected (see below) | Command used to launch the app. Supports `$PORT` and `$WORKERS` substitution. Parsed without a shell — no pipes/redirects/globs. |
 | `stop_script` | string | _none_ | Optional command to run when stopping the app. |
-| `health_check` | string | `"/health"` (or `"/"` when auto-detected) | HTTP path the proxy polls every 30s to decide if the app is alive. |
-| `graceful_timeout` | int (seconds) | `30` | Time given to the old process to exit cleanly during a blue/green swap. |
-| `drain_delay` | int (seconds) | `5` | Time to keep the old process draining existing connections before shutdown. Clamped to `< graceful_timeout` (set to `graceful_timeout / 2` if too large). |
-| `port_range_start` | int | `20000` | Lower bound of the port range used to allocate blue/green slots. |
-| `port_range_end` | int | `30000` | Upper bound of the port range. |
+| `health_check` | string | `"/health"` (`"/up"` for an auto-detected Soli app, `"/"` for LuaOnBeans) | HTTP path the proxy polls every 30s to decide if the app is alive. See [App Health Monitoring](#app-health-monitoring). |
+| `graceful_timeout` | int (seconds) | `30` | Time given to the old process to exit cleanly during a blue/green swap. At most `3600`; a larger value is clamped, with a warning. |
+| `drain_delay` | int (seconds) | `5` | Time to keep the old process draining existing connections before shutdown. At most `3600`, and clamped to `< graceful_timeout` (set to `graceful_timeout / 2` if too large). |
+| `port_range_start` | int | `20000` | Lower bound of the port range used to allocate blue/green slots. Ignored in multi-tenant mode, where `[apps] port_range_start` decides. |
+| `port_range_end` | int | `30000` | Upper bound of the port range. A range that starts below 1024, holds fewer than two ports, spans more than 20 000, or contains one of the proxy's own listener ports (HTTP, HTTPS, admin) is refused with an error and the `[apps]` range is used instead. |
 | `workers` | int | `1` | Number of worker processes the app should spawn. Exposed as `$WORKERS` in `start_script` and as the `WORKERS` env var. |
 | `user` | string | `[apps].default_user` from `config.toml` | OS user to drop privileges to (required when running the proxy as root). |
 | `group` | string | `[apps].default_group` from `config.toml` | OS group to drop privileges to. |
 | `docker_image` | string | _none_ | If set, the app runs inside Docker using this image instead of a host process. |
 | `docker_options` | string | _none_ | Extra flags appended to `docker run`. Whitespace-split, no shell. Single-tenant: a denylist rejects `--privileged`, `--cap-add`, `--device`, `--security-opt`, `--userns`, `--volumes-from`, `--env-file`, `--group-add`, joining the `host` or another container's namespaces, and docker-socket / root mounts in every spelling (`-v/:/x`, `--mount type=bind,source=/`, `/./`, `/etc/..`). Multi-tenant: only the allowlist below is accepted. |
-| `docker_network` | string | `"soli-apps"` | Docker network the container joins (created automatically if missing). A plain network name only: `host` and `container:<id>` are refused in every mode, since the value goes straight to `--network`. |
+| `docker_network` | string | `"soli-apps"` | Docker network the container joins (created automatically if missing). A plain network name only: `host` and `container:<id>` are refused in every mode, since the value goes straight to `--network`. Ignored in multi-tenant mode, where each app gets a private network. |
 | `idle_timeout` | int (seconds) | `[apps].idle_timeout` from `config.toml`, itself `0` | Scale to zero: after this many seconds without a request the proxy stops the app and starts it again on the next one, holding that request until the app is healthy. `0` means the app never sleeps. See [Scale to zero](#scale-to-zero). |
 | `[auth.users]` | table | _empty_ | `username = "bcrypt hash"` entries. When non-empty, every request to this app's domains must present matching HTTP Basic Auth credentials. Generate a hash with `hash-password`; only bcrypt hashes at cost 4 to 13 are accepted. |
 | `[auth] noauth` | list of strings | _empty_ | Paths served without credentials, for callers that cannot send a password (a payment webhook, a health probe). Exact path, or a prefix ending in `*` — the same syntax as the `@noauth:` route directive, and the same fail-closed rule: a path carrying percent-encoding or a `..` segment is never exempt. |
@@ -551,6 +559,12 @@ variables, `SOLI_RELEASE_BASE_URL` and `SOLI_NO_PIN` are passed as `-e` flags in
 container, while `XDG_CACHE_HOME`, `SSL_CERT_FILE` and `SSL_CERT_DIR` are not (the container
 cannot see those directories; bake a CA bundle into the image instead).
 
+In [multi-tenant mode](#multi-tenant-mode-untrusted-apps) the egress variables are the
+operator's, not the tenants': `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` (and lowercase) are **not**
+forwarded unless `[apps] tenant_proxy_env = true`, and any forwarded value carrying credentials
+(`http://user:password@proxy:3128`) is dropped, with a warning, unless
+`tenant_proxy_env_credentials = true` as well.
+
 ### Pinned Soli versions
 
 A Soli app can pin the exact interpreter it runs on, with
@@ -584,7 +598,8 @@ If `start_script` is omitted, the proxy tries to infer one from the app director
 
 - **Soli app** — when `app/` and `app/models/` exist:
   - `start_script` → `soli serve . --port $PORT --workers $WORKERS` (with `--dev` appended in dev mode)
-  - `health_check` → `/`
+  - `health_check` → `/up`, Soli's built-in readiness probe: it answers 503 until the app's
+    session store is warm, so a blue/green switch waits for a slot that can actually serve
 - **LuaOnBeans app** — when a `luaonbeans.org` binary exists in the directory:
   - `start_script` → `./luaonbeans.org -D . -p $PORT -s`
   - `health_check` → `/`
@@ -605,6 +620,10 @@ multi_tenant = true       # default false; existing deployments are unchanged
 tenant_memory = "512m"
 tenant_cpus   = "1.0"
 tenant_user   = "10000:10000"
+port_range_start = 20000  # the platform's slot ports; tenants cannot choose their own
+port_range_end   = 30000
+tenant_proxy_env = false              # forward HTTP(S)_PROXY into containers?
+tenant_proxy_env_credentials = false  # ...even when they carry user:password@?
 ```
 
 With it on:
@@ -620,7 +639,10 @@ With it on:
 - `docker_options` is validated against an **allowlist** — anything not listed fails the deploy,
   naming the offending token. Every flag must carry a value (a trailing flag would swallow the
   platform's hardening). Permitted:
-  - `-e`/`--env KEY=VALUE`, `-l`/`--label`, `--restart`, `--stop-timeout`, `--health-*`
+  - `-e`/`--env KEY=VALUE`, `-l`/`--label`, `--stop-timeout`, `--health-*`
+  - no `--restart`: the proxy supervises the slot. A docker restart policy is a second
+    supervisor that knows nothing of blue/green — `always` brought slots the proxy had stopped
+    back to life next to their replacements, each with its own memory ceiling
   - `-m`/`--memory`, `--cpus`, `--cpu-shares`, `--pids-limit`, `--shm-size` (the platform's
     limits still win, see above)
   - no `-p`/`--publish`: the proxy publishes the allocated slot port as `127.0.0.1:$PORT:$PORT`
@@ -640,6 +662,51 @@ With it on:
 - `name`, `domain` and `health_check` are checked at load time in every mode: hostname
   characters (plus `_`, for existing `my_app.example.com` directories) for the first two, an
   absolute URL path for the third.
+- A `www.` site's derived apex (`www.example.com/` also answering `example.com`) is the weakest
+  claim there is: it never displaces another app's declared domain or an admin alias, and in
+  this mode it does not displace an operator's static `proxy.conf` rule or a cluster-pushed
+  route either. An app owns its domains whether or not it is running, so stopping a site no
+  longer hands its apex to someone else's `www.` directory, and Basic Auth is always taken from
+  the app that is actually served.
+- Slot ports come from the platform range (`[apps] port_range_start`/`port_range_end`); an
+  app's own `port_range_*` is ignored. In every mode a range is refused if it reaches below
+  1024 or covers one of the proxy's listeners.
+- Each app gets a **private Docker network**, `soli-app-<name>`, created with inter-container
+  traffic disabled (`com.docker.network.bridge.enable_icc=false`) and a host bridge named
+  `sl-<12 hex digits>`. The tenant's `docker_network` is ignored. When a site directory is
+  removed, its containers are stopped and its network removed.
+- Containers are stopped with `docker stop` + `docker rm -f` **by name**, never by signalling
+  the PID docker reports, which left the container (and its restart policy) behind.
+
+#### Egress filtering is yours to configure
+
+Docker isolates tenant networks from each other, but a container can still open connections to
+the host itself (through its bridge's gateway address — anything listening on `0.0.0.0`, such as
+a database) and to private networks the host can reach. The proxy cannot close that portably;
+the firewall can. The fixed `sl-` bridge prefix makes it one rule set. With nftables:
+
+```nft
+table inet soli_tenants {
+    # Tenant containers may not open connections to the host itself.
+    chain input {
+        type filter hook input priority filter - 1; policy accept;
+        iifname "sl-*" ct state established,related accept
+        iifname "sl-*" drop
+    }
+    # ...nor to private, link-local (cloud metadata) or CGNAT ranges.
+    chain forward {
+        type filter hook forward priority filter - 1; policy accept;
+        iifname "sl-*" ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16,
+                                   169.254.0.0/16, 100.64.0.0/10 } ct state new drop
+        iifname "sl-*" ip6 daddr { fc00::/7, fe80::/10 } ct state new drop
+    }
+}
+```
+
+The iptables equivalent is a `DOCKER-USER` rule per range
+(`iptables -I DOCKER-USER -i sl-+ -d 10.0.0.0/8 -m conntrack --ctstate NEW -j DROP`, …) plus
+`iptables -I INPUT -i sl-+ -m conntrack --ctstate NEW -j DROP`. Traffic from the proxy to a
+container's published slot port is unaffected: it enters the bridge, it does not leave it.
 
 > Docker has a long history of container escapes. This raises the cost of one; it is not a VM
 > boundary. For genuinely hostile code, treat it as the first step toward gVisor or Firecracker.
@@ -756,6 +823,13 @@ ssh server 'touch /home/rocky/sites/myapp.example.org/restart.txt'
   `restart.txt` does not cause a deploy on startup.
 - Creating the file for the first time triggers a deploy; deleting it does not.
 
+The sites watcher does not look at it either: outside dev mode it reacts only to a site
+directory appearing, disappearing or being renamed, and to a site's `app.infos`, watching each
+non-recursively. A tenant's other writes cost nothing — they used to consume an inotify watch per
+directory and trigger a full rediscovery each. Bursts are coalesced (500 ms of quiet, 5 s at
+most) and rediscoveries are at least 2 s apart. `--dev` keeps the recursive watch, to restart
+an app when its code changes.
+
 Both the file name and the interval are configurable under `[apps]` in `config.toml`. Setting
 `restart_trigger_poll_secs = 0` disables the mechanism:
 
@@ -767,10 +841,27 @@ restart_trigger_poll_secs = 2
 
 ## App Health Monitoring
 
-When apps are managed by the proxy, it automatically:
-- Polls each app's `health_check` path every 30 seconds
-- Auto-restarts any app that fails (connection refused, timeout, etc.)
-- Only restarts on actual failures, not on non-2xx responses
+When apps are managed by the proxy, it polls each running app's `health_check` path every 30
+seconds and fails the app over to its other slot (a zero-downtime blue/green restart) when it
+stops answering:
+
+| Response | Counts as |
+|---|---|
+| 2xx | healthy — resets the failure count |
+| no connection, timeout, 5xx | a **failure** |
+| 4xx | not a failure: the app answered, so it is up, and a 404 or 401 on a health path nearly always means `health_check` names the wrong path. Logged as a warning on every poll, so it is noticed. |
+
+A single failure is not acted on: the app is failed over after
+**`[apps] health_failure_threshold` consecutive failures** (default `3`, so about 90 seconds of
+an unresponsive app at the default interval). A GC pause or one slow answer used to cost a full
+restart.
+
+```toml
+[apps]
+health_failure_threshold = 3
+```
+
+A slot being deployed, a quarantined app and a sleeping app are not polled.
 
 See [App Configuration](#app-configuration-appinfos) above for how to set `health_check` per app.
 
@@ -839,6 +930,18 @@ by flag or environment variable. With the unit above they resolve to:
 | `/var/lib/soli-proxy/run/logs/<app>/<blue\|green>.log` | stdout + stderr of each app slot (created automatically) |
 | `/var/lib/soli-proxy/run/app_state.json` | which slot currently serves each app |
 | `/var/lib/soli-proxy/run/ports.lock` | blue/green port assignments |
+| `/var/lib/soli-proxy/run/spawned.json` | the native processes the proxy started, with their start times |
+| `/var/lib/soli-proxy/run/aliases.json` | admin-managed domain aliases |
+
+These files, and `proxy.conf` when the proxy rewrites it, are written atomically (temporary
+file, `fsync`, rename), so a crash or a full disk leaves the previous version rather than a
+truncated one.
+
+`spawned.json` is what lets a restarted proxy clean up after itself without collateral damage.
+At startup, a slot's port that is still held is reclaimed only if the process holding it — or
+the process group it belongs to — is one the proxy recorded spawning, *with the same start
+time* (a PID alone is reused). Anything else on the port is logged and left alone, and the
+slot fails to start rather than kill a stranger.
 | `/var/lib/soli-proxy/certs/` | TLS cache, when `[tls].cache_dir` is `./certs` |
 
 Without `WorkingDirectory`, systemd starts the process in `/` and the proxy tries to write

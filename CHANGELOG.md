@@ -115,6 +115,80 @@
   lock and skips a redundant store on success; WebSocket idle timers are reset rather than
   re-created per frame; the backend pool keeps up to 256 idle connections per host (was 64).
 
+**Apps (multi-tenant hardening, routing and supervision)**
+
+### Security
+
+* **A tenant's `app.infos` can no longer hang or exhaust the proxy.** It was read whole, with
+  `read_to_string`, on an async worker while holding the lock every proxied request takes: a
+  FIFO stopped all app routing, and `app.infos -> /dev/zero` grew the proxy until it was
+  OOM-killed — at every boot. It is now opened non-blocking, must be a regular file of at most
+  64 KiB, and (multi-tenant) is not followed through a symlink. Discovery reads and parses on
+  the blocking pool and takes the apps lock only to apply the result.
+* **A `www.` directory can no longer take over its apex domain, or another app's auth.**
+  Routing, Basic Auth and the app-name lookup now read one table. An app owns its declared
+  domain whether or not it is running (stopping a site used to hand its apex to a `www.` site
+  that derived it, while auth was still looked up on the stopped one), aliases outrank derived
+  domains, and in multi-tenant mode a derived claim no longer overrides an operator's static
+  rule or a cluster-pushed route. Auth is only ever taken from the app actually served.
+* **The proxy kills only processes it spawned.** At startup it killed the process group of
+  whatever listened on an app's ports, with no ownership check. Spawned processes are now
+  recorded with their start time in `run/spawned.json`, and a PID — or the group it belongs
+  to — is signalled only when it matches a record. Container slots are stopped with
+  `docker stop`/`docker rm -f` by name, never by PID.
+* **Tenants no longer choose their ports.** In multi-tenant mode `port_range_start`/`end` in
+  `app.infos` are ignored for the new `[apps] port_range_start`/`port_range_end` (default
+  20000-30000). In every mode a range below 1024, covering one of the proxy's own listeners,
+  or larger than 20 000 ports is refused (the `[apps]` range is used), and a remembered port
+  outside an app's current range is reallocated.
+* **Each tenant gets its own Docker network.** Multi-tenant containers used to share the
+  `soli-apps` bridge with inter-container traffic on, and `docker_network` let a tenant pick
+  any network. Each app now runs on `soli-app-<name>`, created with ICC disabled and a
+  `sl-<hash>` bridge name (so one firewall rule covers every tenant), removed with the app.
+  The README shows the nftables/iptables rules for host and private-range egress, which the
+  proxy cannot set portably.
+* **`--restart` is refused in tenant `docker_options`,** and `graceful_timeout` /
+  `drain_delay` are capped at 3600 s. A restart policy resurrected slots the proxy had stopped.
+* **The operator's egress proxy is no longer handed to tenants.** In multi-tenant mode
+  `HTTP(S)_PROXY`/`NO_PROXY` reach containers only with `[apps] tenant_proxy_env = true`, and a
+  value carrying `user:password@` only with `tenant_proxy_env_credentials = true` too.
+
+### Performance
+
+* **An app request no longer takes the global apps lock.** Each one locked the apps map up to
+  five times — and rebuilt a table of every app's domains, formatted and parsed a URL, and
+  sorted every app by name — before reaching the backend, under the same mutex deploys,
+  discovery and health checks hold. The routing table is now built when something it depends
+  on changes (discovery, a slot starting or stopping, a traffic switch, an alias) and published
+  through an `ArcSwap`; a request does one load and one hash lookup, gets its target, app and
+  auth from the same entry, and records itself for scale to zero with an atomic store.
+  Attributing a response to its app no longer locks the port allocator either.
+* **Per-app metrics take a read lock**, not the write lock every proxied request used to queue
+  behind; the write lock is taken once per app, the first time it is seen.
+
+### Bug Fixes
+
+* **One bad health check no longer restarts an app.** The monitor failed an app over on the
+  first error or non-2xx answer, while the README promised it only reacted to actual failures.
+  Now a failure is no answer, a timeout or a 5xx, and failover waits for
+  `[apps] health_failure_threshold` consecutive ones (default 3). A 4xx means the app is up and
+  its `health_check` path is wrong: it is logged as a warning, not acted on. The old fallback
+  that retried `/` after a 404 is gone with it. Health probes go to `127.0.0.1`, not
+  `localhost`.
+* **State files are written atomically.** `proxy.conf`, `run/aliases.json`,
+  `run/app_state.json`, `run/ports.lock` (and the new `run/spawned.json`) are written to a
+  temporary file, fsynced and renamed, so a crash or a full disk leaves the previous version
+  instead of a truncated one. The `proxy.conf` watcher now watches the file's directory — a
+  rename-into-place left it watching the replaced inode — and recognises the proxy's own writes
+  by their content instead of swallowing exactly one event, which dropped the next real edit
+  whenever a write raised more than one.
+* **The sites watcher no longer watches tenant trees.** It watched the whole sites directory
+  recursively: a tenant could exhaust the host's inotify watches, and any write anywhere set off
+  a rediscovery and route sync. Outside dev mode it now watches the sites directory and each
+  site non-recursively, reacts only to sites appearing/disappearing/renamed and to `app.infos`,
+  coalesces bursts (500 ms quiet, 5 s max) and spaces rediscoveries at least 2 s apart.
+* **Docs: an auto-detected Soli app's health check is `/up`**, not `/` as the README said.
+
 ## [0.35.2](https://github.com/solisoft/soli-proxy/compare/v0.35.1...v0.35.2) (2026-09-27)
 
 ### Bug Fixes
