@@ -767,6 +767,25 @@ fn hsts_header_value(tls: &crate::config::TlsConfig) -> Option<HeaderValue> {
     HeaderValue::from_str(&value).ok()
 }
 
+/// Pause after a failed `accept()` before trying again.
+///
+/// Out of file descriptors (`EMFILE`/`ENFILE`) or socket buffers (`ENOBUFS`,
+/// `ENOMEM`), `accept()` fails at once, every time, until something closes —
+/// and retrying straight away spins the accept loop at 100% of a core, logging
+/// an error per spin, while the connections that would free a descriptor
+/// starve for CPU. Those get a short sleep. Anything else (a peer that reset
+/// before we accepted it, `ECONNABORTED`) is per-connection and retried at
+/// once.
+async fn accept_error_backoff(e: &std::io::Error) {
+    let resource_exhausted = matches!(
+        e.raw_os_error(),
+        Some(libc::EMFILE) | Some(libc::ENFILE) | Some(libc::ENOBUFS) | Some(libc::ENOMEM)
+    );
+    if resource_exhausted {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 /// The HSTS header for `config`, built once per loaded config rather than with
 /// a `format!` on every HTTPS response. The cache holds the config it was
 /// built from and is rebuilt when a reload swaps in a new one.
@@ -1601,6 +1620,7 @@ async fn run_http_server(
                 Ok(accepted) => accepted,
                 Err(e) => {
                     tracing::error!("HTTP/1.1 accept error: {}", e);
+                    accept_error_backoff(&e).await;
                     continue;
                 }
             },
@@ -1668,6 +1688,7 @@ async fn run_https_server(
                 Ok(accepted) => accepted,
                 Err(e) => {
                     tracing::error!("HTTPS/2 accept error: {}", e);
+                    accept_error_backoff(&e).await;
                     continue;
                 }
             },
