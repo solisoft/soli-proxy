@@ -68,6 +68,15 @@
   and file output rotates by size (`max_size`, default 100MB; `max_files`, default 5), creating
   files `0640`. Defaults are unchanged: JSON, INFO, stdout. The TUI's error screen reads the
   configured file.
+* **TLS sessions resume.** The HTTPS `ServerConfig` used rustls' defaults: no session ticketer
+  (TLS 1.3 clients could not resume) and a 256-entry TLS 1.2 cache. It now has an aws-lc-rs
+  ticketer and a 32k-entry session cache, so returning clients skip the full handshake. New
+  `[tls] min_version` (`"1.2"` default, or `"1.3"`).
+* **The HTTPS listener uses the configured bind address.** It was hardcoded to
+  `0.0.0.0:<https_port>`: a proxy bound to `127.0.0.1:80` still served HTTPS on every interface,
+  and none of the IPv6 ones. It now listens on `bind`'s address; `bind = "[::]:80"` is
+  dual-stack on both ports (`IPV6_V6ONLY` is cleared explicitly). **Operators:** HTTPS now follows
+  `bind` — a loopback or single-interface `bind` narrows HTTPS too.
 
 ## [0.35.2](https://github.com/solisoft/soli-proxy/compare/v0.35.1...v0.35.2) (2026-09-27)
 

@@ -1,8 +1,8 @@
 # Soli Proxy Configuration
 # Server settings
 [server]
-bind = "0.0.0.0:80"
-https_port = 443
+bind = "0.0.0.0:80"   # HTTP listener; "[::]:80" listens on IPv6 and IPv4 (dual-stack)
+https_port = 443      # HTTPS listener, on the same address as `bind`
 worker_threads = "auto"
 
 # TLS Configuration
@@ -14,6 +14,11 @@ cache_dir = "./certs"
 # hsts_max_age_seconds = 63072000
 # Set to false on shared parent domains where independent subdomains exist.
 # hsts_include_subdomains = true
+# Plaintext requests for hosts the proxy serves get a 308 to https://.
+# force_https = true
+# Lowest TLS version accepted: "1.2" (default) or "1.3". Session resumption
+# (TLS 1.3 tickets, a 32k-entry TLS 1.2 session cache) is always enabled.
+# min_version = "1.2"
 
 # Let's Encrypt (for production)
 [letsencrypt]

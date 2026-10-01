@@ -168,12 +168,51 @@ impl AcmeService {
     }
 }
 
-/// Build a ServerConfig using the AcmeCertResolver.
+/// Lowest TLS protocol version the HTTPS listener accepts (`[tls] min_version`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TlsMinVersion {
+    #[default]
+    Tls12,
+    Tls13,
+}
+
+/// Sessions remembered for TLS 1.2 resumption by session ID. rustls' default
+/// is 256, which a busy proxy cycles through in well under a second, so
+/// nearly every returning client paid a full handshake. Each entry is a few
+/// hundred bytes; 32k of them is ~10 MB.
+const SESSION_CACHE_SIZE: usize = 32 * 1024;
+
+/// Build a ServerConfig using the AcmeCertResolver, accepting TLS 1.2 and 1.3.
 pub fn build_server_config(resolver: Arc<AcmeCertResolver>) -> Result<Arc<ServerConfig>> {
-    let mut config = ServerConfig::builder()
+    build_server_config_with(resolver, TlsMinVersion::default())
+}
+
+/// Build a ServerConfig using the AcmeCertResolver.
+///
+/// Session resumption is switched on explicitly: rustls' defaults have no
+/// ticketer (so TLS 1.3 clients cannot resume statelessly) and a 256-entry
+/// session cache. With both, a returning client skips the certificate and
+/// key exchange — one round trip and a fraction of the CPU of a full
+/// handshake. Ticket keys rotate every 6 hours and live only in memory: a
+/// restart (or a rebuild of this config) simply means one full handshake per
+/// client.
+pub fn build_server_config_with(
+    resolver: Arc<AcmeCertResolver>,
+    min_version: TlsMinVersion,
+) -> Result<Arc<ServerConfig>> {
+    use tokio_rustls::rustls::version::{TLS12, TLS13};
+    let versions: &[&tokio_rustls::rustls::SupportedProtocolVersion] = match min_version {
+        TlsMinVersion::Tls12 => &[&TLS13, &TLS12],
+        TlsMinVersion::Tls13 => &[&TLS13],
+    };
+    let mut config = ServerConfig::builder_with_protocol_versions(versions)
         .with_no_client_auth()
         .with_cert_resolver(resolver);
     config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    config.session_storage =
+        tokio_rustls::rustls::server::ServerSessionMemoryCache::new(SESSION_CACHE_SIZE);
+    config.ticketer = tokio_rustls::rustls::crypto::aws_lc_rs::Ticketer::new()
+        .map_err(|e| anyhow::anyhow!("Failed to create TLS session ticketer: {}", e))?;
     Ok(Arc::new(config))
 }
 

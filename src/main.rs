@@ -931,9 +931,9 @@ async fn run_server(
 
     let server = match tls_manager.server_config() {
         Some(config) => {
-            let https_addr: SocketAddr = format!("0.0.0.0:{}", cfg.server.https_port).parse()?;
+            let https_addr: SocketAddr = cfg.server.https_addr()?;
             let tls_acceptor = TlsAcceptor::from(config.clone());
-            tracing::info!("HTTPS enabled on port {}", cfg.server.https_port);
+            tracing::info!("HTTPS enabled on {}", https_addr);
             ProxyServer::with_https(
                 config_ref.clone(),
                 shutdown,

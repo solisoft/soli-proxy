@@ -83,8 +83,8 @@ soli-proxy update [--reinstall]                          # Self-update from GitH
 
 ```toml
 [server]
-bind = "0.0.0.0:8080"
-https_port = 8443
+bind = "0.0.0.0:8080"   # HTTP listener; "[::]:8080" is dual-stack (IPv6 + IPv4)
+https_port = 8443       # HTTPS listens on this port at the same address as `bind`
 worker_threads = "auto"
 # Paths with a dot segment (`/api/../admin`, `%2e%2e`, `..;`, `..\`) are answered 400 before
 # any rule matches. So is an encoded slash (`%2F`) anywhere, unless the backend needs them as
@@ -93,6 +93,8 @@ allow_encoded_slash = false
 
 [tls]
 mode = "auto"  # "auto" for dev, "letsencrypt" for production
+force_https = true    # plaintext requests for known hosts get a 308 to https://
+min_version = "1.2"   # or "1.3"; TLS session resumption (tickets + cache) is always on
 
 [letsencrypt]
 email = "admin@example.com"

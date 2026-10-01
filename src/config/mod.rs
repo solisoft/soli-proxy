@@ -339,6 +339,26 @@ pub struct ServerConfig {
     pub allow_encoded_slash: Option<bool>,
 }
 
+impl ServerConfig {
+    /// The HTTPS listener: `https_port` on the same address as `bind`.
+    ///
+    /// It used to be `0.0.0.0:<https_port>` whatever `bind` said, so a proxy
+    /// bound to `127.0.0.1:80` (behind another balancer) or to one interface
+    /// of a multi-homed host still served HTTPS on every IPv4 interface — and
+    /// on none of the IPv6 ones. `bind = "[::]:80"` now gives a dual-stack
+    /// listener on both ports (IPv4 clients arrive as `::ffff:a.b.c.d`).
+    pub fn https_addr(&self) -> Result<std::net::SocketAddr> {
+        let http: std::net::SocketAddr = self.bind.parse().map_err(|e| {
+            anyhow::anyhow!(
+                "invalid [server] bind {:?}: {} (expected IP:port, e.g. \"0.0.0.0:80\" or \"[::]:80\")",
+                self.bind,
+                e
+            )
+        })?;
+        Ok(std::net::SocketAddr::new(http.ip(), self.https_port))
+    }
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -471,6 +491,23 @@ pub struct TlsConfig {
     /// independent subdomains) need to opt out. Defaults to `true`.
     #[serde(default)]
     pub hsts_include_subdomains: Option<bool>,
+    /// Lowest TLS version accepted: `"1.2"` (the default) or `"1.3"`.
+    #[serde(default)]
+    pub min_version: Option<String>,
+}
+
+impl TlsConfig {
+    /// `min_version` as a protocol floor; anything but "1.2"/"1.3" is an error.
+    pub fn min_version(&self) -> Result<crate::acme::TlsMinVersion> {
+        match self.min_version.as_deref().map(str::trim) {
+            None | Some("") | Some("1.2") => Ok(crate::acme::TlsMinVersion::Tls12),
+            Some("1.3") => Ok(crate::acme::TlsMinVersion::Tls13),
+            Some(other) => anyhow::bail!(
+                "invalid [tls] min_version {:?} (expected \"1.2\" or \"1.3\")",
+                other
+            ),
+        }
+    }
 }
 
 fn default_force_https() -> bool {
@@ -2295,6 +2332,28 @@ default -> http://localhost:3000
         let mut bad = rules[0].clone();
         bad.headers[0].value = "$nope".to_string();
         assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn https_listens_on_the_bind_address() {
+        let server = |bind: &str| ServerConfig {
+            bind: bind.to_string(),
+            https_port: 8443,
+            ..Default::default()
+        };
+        assert_eq!(
+            server("127.0.0.1:8080").https_addr().unwrap().to_string(),
+            "127.0.0.1:8443"
+        );
+        assert_eq!(
+            server("[::]:80").https_addr().unwrap().to_string(),
+            "[::]:8443"
+        );
+        assert_eq!(
+            server("0.0.0.0:80").https_addr().unwrap().to_string(),
+            "0.0.0.0:8443"
+        );
+        assert!(server("localhost:80").https_addr().is_err());
     }
 
     #[test]

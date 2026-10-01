@@ -717,6 +717,10 @@ fn create_listener(addr: SocketAddr) -> Result<TcpListener> {
         Domain::IPV6
     };
     let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
+    // `[::]` serves IPv4 too, whatever net.ipv6.bindv6only says.
+    if addr.is_ipv6() {
+        socket.set_only_v6(false)?;
+    }
     socket.set_reuse_address(true)?;
     socket.set_reuse_port(true)?;
     socket.set_nonblocking(true)?;
@@ -739,6 +743,10 @@ fn probe_bind(addr: SocketAddr) -> Result<()> {
         Domain::IPV6
     };
     let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
+    // `[::]` serves IPv4 too, whatever net.ipv6.bindv6only says.
+    if addr.is_ipv6() {
+        socket.set_only_v6(false)?;
+    }
     socket.set_reuse_address(true)?;
     socket.set_reuse_port(true)?;
     socket.bind(&addr.into()).map_err(|e| bind_error(addr, e))?;
@@ -4620,6 +4628,7 @@ mod tests {
             force_https: true,
             hsts_max_age_seconds: max_age,
             hsts_include_subdomains: include_subdomains,
+            min_version: None,
         }
     }
 
