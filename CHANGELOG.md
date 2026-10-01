@@ -23,6 +23,19 @@
   is replaced by the PEM reader in `rustls-pki-types`, and `ratatui` 0.28 → 0.30 (with
   `crossterm` 0.29) drops the unsound `lru` (RUSTSEC-2026-0002) and the unmaintained `paste` it
   pulled in. No behaviour change.
+* **The systemd unit no longer runs the proxy as root.** `scripts/soli-proxy.service` now uses a
+  dedicated `soli-proxy` account with `AmbientCapabilities=CAP_NET_BIND_SERVICE` and nothing
+  else, under `NoNewPrivileges`, `ProtectSystem=strict` (`ReadWritePaths=/etc/soli-proxy
+  /srv/sites`), `ProtectHome`, `PrivateTmp`, kernel protections and `UMask=0027`, with
+  `StateDirectory`/`LogsDirectory` and `ExecReload` (SIGUSR1). Native apps that run as *other*
+  users need `CAP_SETUID`, which must not be handed out as an ambient capability (apps would
+  inherit it), so the unit documents a root variant for that setup. **Operators upgrading:**
+  create the account and `chown` `/etc/soli-proxy` and the sites directory, or keep the root
+  variant.
+* **The setcap sudoers grant names a root-owned path.** `deploy/soli-proxy-setcap.sudoers`
+  targeted `/home/soli/.local/bin/soli-proxy`, which the grantee can replace with a symlink —
+  `setcap` follows it, so the account could give `cap_net_bind_service` to any binary on the
+  machine. It now names `/usr/local/bin/soli-proxy`; install the binary there, root-owned.
 
 ## [0.35.2](https://github.com/solisoft/soli-proxy/compare/v0.35.1...v0.35.2) (2026-09-27)
 

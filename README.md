@@ -717,9 +717,13 @@ and the path to the app's log (`run/logs/<app>/<slot>.log`) are logged at `error
 Install soli-proxy as a systemd service for automatic restart on failure:
 
 ```bash
+# A dedicated, unprivileged account owns the config and the sites
+sudo useradd --system --home-dir /var/lib/soli-proxy --shell /usr/sbin/nologin soli-proxy
+sudo mkdir -p /etc/soli-proxy /srv/sites
+sudo chown -R soli-proxy:soli-proxy /etc/soli-proxy /srv/sites
+
 # Copy the service file and adjust the paths in it
 sudo cp scripts/soli-proxy.service /etc/systemd/system/
-sudo mkdir -p /var/lib/soli-proxy /etc/soli-proxy
 
 # Reload systemd
 sudo systemctl daemon-reload
@@ -734,6 +738,38 @@ sudo systemctl status soli-proxy
 # View logs
 journalctl -u soli-proxy -f
 ```
+
+`systemctl reload soli-proxy` re-reads `proxy.conf` and `config.toml` (it sends `SIGUSR1`).
+
+### Privileges
+
+The unit runs the proxy as the `soli-proxy` user with a single capability,
+`CAP_NET_BIND_SERVICE` (granted by `AmbientCapabilities=`, so no `setcap` on the binary and
+nothing for an upgrade to drop), under `NoNewPrivileges`, `ProtectSystem=strict`,
+`ProtectHome`, `PrivateTmp` and the usual kernel protections. Native apps are children of the
+proxy and share that sandbox: they can write only where `ReadWritePaths=` allows
+(`/etc/soli-proxy` for the admin API's `proxy.conf` rewrites, and `/srv/sites`). Sites under
+`/home`? Set `ProtectHome=no` and list the directory in `ReadWritePaths`.
+
+What the unprivileged account can and cannot do:
+
+| Setup | Unprivileged unit |
+|---|---|
+| Routing, TLS/ACME, admin API, Lua | Yes. |
+| Docker apps (`docker_image`, `multi_tenant`) | Yes, with `SupplementaryGroups=docker` — but the docker group is root-equivalent; prefer rootless Docker/Podman. |
+| Native apps as the proxy's own user | Yes, but they can read `config.toml` and its admin credentials. |
+| Native apps as **other** users (`user`, `[apps] default_user`) | **No.** Use the root variant in the unit's comments. |
+
+Why not simply add `CAP_SETUID`/`CAP_SETGID` for that last row: ambient capabilities survive
+`exec`, and a uid change between two non-root uids does not clear them, so every app would start
+holding `CAP_SETUID` — root, in effect. A root process that `setuid()`s to the app's user does
+shed every capability, which is why per-user native apps need the root variant (still with the
+hardening directives and a narrowed `CapabilityBoundingSet`).
+
+`deploy/soli-proxy-setcap.sudoers` is only for a proxy started by hand (a workstation), not by
+this unit. It lets one account run `setcap cap_net_bind_service=+ep` on one **root-owned** path,
+`/usr/local/bin/soli-proxy`; see the comments in the file for why a user-writable path there
+would widen the grant to any binary on the machine.
 
 The service file is located at `scripts/soli-proxy.service`. Its three load-bearing lines:
 
