@@ -1,4 +1,6 @@
 /** @type {import('tailwindcss').Config} */
+const defaultTheme = require('tailwindcss/defaultTheme')
+
 module.exports = {
   content: [
     // .slv must be listed explicitly: brace expansion matches the whole
@@ -10,6 +12,14 @@ module.exports = {
   ],
   theme: {
     extend: {
+      // Geist / Geist Mono, loaded from Google Fonts in the layout. Declared
+      // here too so `font-sans` and `font-mono` mean the same faces: code
+      // blocks styled with `font-mono` used to fall back to the system
+      // monospace while bare <code> got the webfont.
+      fontFamily: {
+        sans: ['Geist', ...defaultTheme.fontFamily.sans],
+        mono: ['"Geist Mono"', ...defaultTheme.fontFamily.mono],
+      },
       colors: {
         primary: '#059669',
         secondary: '#06b6d4',
