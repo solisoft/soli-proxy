@@ -20,11 +20,14 @@ use crate::metrics::Metrics as AppMetrics;
 pub use deployment::{DeploymentManager, DeploymentStatus, ProcessExit};
 pub use port_manager::{PortAllocator, PortManager};
 
-/// HTTP Basic Auth for an app, from the `[auth]` section of `app.infos`:
+/// Authentication for an app, from the `[auth]` section of `app.infos`:
 ///
 /// ```toml
 /// [auth]
 /// noauth = ["/webhooks/stripe", "/hooks/*"]
+/// # Forward authentication (optional): ask an SSO service first.
+/// forward = "http://auth.internal:4180/oauth2/auth"
+/// forward_headers = ["X-Auth-Request-User", "X-Auth-Request-Email"]
 ///
 /// [auth.users]
 /// admin = "$2b$12$..."
@@ -35,16 +38,55 @@ pub use port_manager::{PortAllocator, PortManager};
 /// `@auth` rule on one cannot protect an app. (A `host/path/*` carve-out
 /// survives, because it shadows nothing; see `shadowing_domain`.) This is the equivalent, living where the rest of the
 /// app's config already lives.
+///
+/// Basic Auth (`users`) and forward-auth (`forward`) may be combined: Basic
+/// runs first and both must pass; `noauth` paths skip both. In
+/// `[apps] multi_tenant` mode `forward` must be covered by `[forward_auth]
+/// allowed_urls` (checked at discovery), since the proxy fetches it.
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(try_from = "AppAuthToml")]
 pub struct AppAuth {
     /// Accounts allowed through, parsed from a `username = "bcrypt hash"`
     /// table into the same shape route auth uses.
-    #[serde(deserialize_with = "deserialize_auth_users")]
     pub users: Vec<crate::auth::BasicAuth>,
     /// Paths served without credentials, same syntax as the `@noauth:`
     /// directive on a route: an exact path, or a prefix ending in `*`.
     pub noauth: Vec<String>,
+    /// `forward` + `forward_headers`, checked and compiled at load time.
+    pub forward: Option<crate::forward_auth::ForwardAuth>,
+}
+
+/// `[auth]` as written. `forward` and `forward_headers` only mean something
+/// together, so they are compiled into one [`crate::forward_auth::ForwardAuth`]
+/// — and a bad URL fails the manifest — on the way to [`AppAuth`].
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct AppAuthToml {
+    #[serde(deserialize_with = "deserialize_auth_users")]
+    users: Vec<crate::auth::BasicAuth>,
+    noauth: Vec<String>,
+    forward: Option<String>,
+    forward_headers: Vec<String>,
+}
+
+impl TryFrom<AppAuthToml> for AppAuth {
+    type Error = String;
+
+    fn try_from(raw: AppAuthToml) -> Result<Self, String> {
+        let forward = match raw.forward {
+            Some(url) => Some(
+                crate::forward_auth::ForwardAuth::new(&url, &raw.forward_headers)
+                    .map_err(|e| format!("[auth] forward: {e:#}"))?,
+            ),
+            None if raw.forward_headers.is_empty() => None,
+            None => return Err("[auth] forward_headers is set without forward".to_string()),
+        };
+        Ok(Self {
+            users: raw.users,
+            noauth: raw.noauth,
+            forward,
+        })
+    }
 }
 
 /// Read `[auth.users]` as a `username = "hash"` table.
@@ -73,10 +115,17 @@ impl Serialize for AppAuth {
         S: serde::Serializer,
     {
         use serde::ser::SerializeMap;
-        let mut map = serializer.serialize_map(Some(2))?;
+        let mut map = serializer.serialize_map(Some(4))?;
         let usernames: Vec<&str> = self.users.iter().map(|u| u.username.as_str()).collect();
         map.serialize_entry("usernames", &usernames)?;
         map.serialize_entry("noauth", &self.noauth)?;
+        let forward_headers: Vec<&str> = self
+            .forward
+            .iter()
+            .flat_map(|f| f.copy_headers().iter().map(|h| h.as_str()))
+            .collect();
+        map.serialize_entry("forward", &self.forward.as_ref().map(|f| f.url()))?;
+        map.serialize_entry("forward_headers", &forward_headers)?;
         map.end()
     }
 }
@@ -84,7 +133,18 @@ impl Serialize for AppAuth {
 impl AppAuth {
     /// Whether a request for `path` must present credentials.
     pub fn requires_auth(&self, path: &str) -> bool {
-        !self.users.is_empty() && !crate::config::path_is_auth_exempt(&self.noauth, path)
+        !self.users.is_empty() && !self.is_exempt(path)
+    }
+
+    /// Whether `path` is one of the `noauth` carve-outs (skipping Basic Auth
+    /// and forward-auth alike).
+    pub fn is_exempt(&self, path: &str) -> bool {
+        crate::config::path_is_auth_exempt(&self.noauth, path)
+    }
+
+    /// Whether this section gates anything: accounts, or a forward-auth.
+    pub fn is_active(&self) -> bool {
+        !self.users.is_empty() || self.forward.is_some()
     }
 
     /// Reject a manifest whose auth section cannot be enforced as written.
@@ -895,7 +955,11 @@ fn build_routes(
             .and_then(|port| Url::parse(&format!("http://127.0.0.1:{}/", port)).ok()),
         port: live_port(app).unwrap_or(0),
         health_check: app.config.health_check.clone(),
-        auth: (!app.config.auth.users.is_empty()).then(|| Arc::new(app.config.auth.clone())),
+        auth: app
+            .config
+            .auth
+            .is_active()
+            .then(|| Arc::new(app.config.auth.clone())),
         activity: activity.entry(app.config.name.clone()).or_default().clone(),
     };
     let mut routes = AppRoutes::default();
@@ -1810,7 +1874,19 @@ impl AppManager {
 
         let mut seen_names: HashSet<String> = HashSet::new();
         let mut loaded: Vec<AppInfo> = Vec::new();
+        // In multi_tenant mode an `[auth] forward` URL is tenant input the
+        // proxy will fetch: only the operator's `[forward_auth] allowed_urls`.
+        let forward_auth_settings =
+            multi_tenant.then(|| self.config_manager.get_config().forward_auth.clone());
         for (path, result) in scanned {
+            let result = result.and_then(|app_info| {
+                if let (Some(settings), Some(forward)) =
+                    (&forward_auth_settings, &app_info.config.auth.forward)
+                {
+                    settings.check_tenant_url(forward.url())?;
+                }
+                Ok(app_info)
+            });
             match result {
                 Ok(app_info) => {
                     let name = app_info.config.name.clone();
@@ -3813,6 +3889,7 @@ qa = "$2b$12$qahashqahashqahashqahashqahashqahashqahashqahashqahas"
                 hash: "$2b$12$hash".to_string(),
             }],
             noauth: vec!["/webhooks/stripe".to_string(), "/hooks/*".to_string()],
+            forward: None,
         };
 
         assert!(!auth.requires_auth("/webhooks/stripe"));
@@ -3872,6 +3949,66 @@ qa = "$2b$12$qahashqahashqahashqahashqahashqahashqahashqahashqahas"
         }
     }
 
+    #[test]
+    fn app_infos_parses_forward_auth() {
+        let dir = TempDir::new().unwrap();
+        let path = write_app(
+            &dir,
+            "sso.example.com",
+            r#"
+name = "sso.example.com"
+domain = "sso.example.com"
+
+[auth]
+noauth = ["/up"]
+forward = "http://auth.internal:4180/oauth2/auth"
+forward_headers = ["X-Auth-Request-User", "X-Auth-Request-Email"]
+"#,
+        );
+        let info = AppInfo::from_path(&path, false, false).unwrap();
+        let auth = &info.config.auth;
+        assert!(auth.users.is_empty());
+        assert!(auth.is_active());
+        // No accounts: Basic Auth is off, forward-auth gates the app.
+        assert!(!auth.requires_auth("/"));
+        assert!(auth.is_exempt("/up"));
+        let forward = auth.forward.as_ref().unwrap();
+        assert_eq!(forward.url(), "http://auth.internal:4180/oauth2/auth");
+        assert_eq!(forward.copy_headers().len(), 2);
+
+        let json = serde_json::to_value(auth).unwrap();
+        assert_eq!(json["forward"], "http://auth.internal:4180/oauth2/auth");
+        assert_eq!(
+            json["forward_headers"],
+            serde_json::json!(["x-auth-request-user", "x-auth-request-email"])
+        );
+
+        for (case, section) in [
+            ("headers without a URL", "forward_headers = [\"X-User\"]\n"),
+            ("not http", "forward = \"file:///etc/passwd\"\n"),
+            ("no host", "forward = \"http://\"\n"),
+            ("credentials", "forward = \"http://u:p@auth/verify\"\n"),
+            (
+                "a managed header",
+                "forward = \"http://auth/verify\"\nforward_headers = [\"Host\"]\n",
+            ),
+            ("unknown key", "forward_url = \"http://auth/verify\"\n"),
+        ] {
+            let path = write_app(
+                &dir,
+                "bad.example.com",
+                &format!(
+                    "name = \"bad.example.com\"\ndomain = \"bad.example.com\"\n\n[auth]\n{}",
+                    section
+                ),
+            );
+            assert!(
+                AppInfo::from_path(&path, false, false).is_err(),
+                "{case} must be rejected"
+            );
+        }
+    }
+
     /// The admin API must never hand back password hashes — the route-auth
     /// endpoints have the same contract.
     #[test]
@@ -3882,6 +4019,7 @@ qa = "$2b$12$qahashqahashqahashqahashqahashqahashqahashqahashqahas"
                 hash: "$2b$12$supersecret".to_string(),
             }],
             noauth: vec!["/hooks/*".to_string()],
+            forward: None,
         };
         let json = serde_json::to_string(&auth).unwrap();
         assert!(json.contains("admin"), "{json}");
@@ -4517,6 +4655,54 @@ typo_here = true
             assert_eq!(
                 manager.app_name_for_host("example.com").await.as_deref(),
                 Some("www.example.com")
+            );
+        }
+    }
+
+    /// In multi_tenant mode `[auth] forward` is a URL the tenant makes the
+    /// proxy fetch: only the operator's `[forward_auth] allowed_urls` load.
+    #[tokio::test]
+    async fn multi_tenant_forward_auth_must_be_allowlisted() {
+        for multi_tenant in [true, false] {
+            let temp_dir = TempDir::new().unwrap();
+            let sites = temp_dir.path().join("sites");
+            site_with_app_infos(
+                &sites,
+                "allowed.example.com",
+                "name = \"allowed.example.com\"\ndomain = \"allowed.example.com\"\n\n\
+                 [auth]\nforward = \"http://auth.internal:4180/oauth2/auth\"\n",
+            );
+            site_with_app_infos(
+                &sites,
+                "ssrf.example.com",
+                "name = \"ssrf.example.com\"\ndomain = \"ssrf.example.com\"\n\n\
+                 [auth]\nforward = \"http://169.254.169.254/latest/meta-data/\"\n",
+            );
+            std::fs::write(
+                temp_dir.path().join("config.toml"),
+                format!(
+                    "[apps]\nmulti_tenant = {multi_tenant}\n\n[forward_auth]\n\
+                     allowed_urls = [\"http://auth.internal:4180/oauth2/\"]\n"
+                ),
+            )
+            .unwrap();
+            let manager = test_manager(&temp_dir, &sites);
+            manager.discover_apps_readonly().await.unwrap();
+            mark_running(&manager, "allowed.example.com").await;
+
+            assert!(manager
+                .auth_for_host("allowed.example.com")
+                .await
+                .is_some_and(|auth| auth.forward.is_some()));
+            // Refused in multi_tenant mode; the operator's own manifest
+            // (single-tenant) may name any auth service.
+            assert_eq!(
+                manager
+                    .app_name_for_host("ssrf.example.com")
+                    .await
+                    .is_some(),
+                !multi_tenant,
+                "multi_tenant = {multi_tenant}"
             );
         }
     }

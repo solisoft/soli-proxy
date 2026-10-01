@@ -1021,8 +1021,15 @@ fn verify_basic_auth<'a>(
     req: &Request<Incoming>,
     auth_entries: &'a [crate::auth::BasicAuth],
 ) -> impl std::future::Future<Output = Option<Response<BoxBody>>> + Send + 'a {
-    let authorization = req
-        .headers()
+    verify_basic_auth_headers(req.headers(), auth_entries)
+}
+
+/// [`verify_basic_auth`] on a request's headers, whatever its body type.
+fn verify_basic_auth_headers<'a>(
+    headers: &hyper::HeaderMap,
+    auth_entries: &'a [crate::auth::BasicAuth],
+) -> impl std::future::Future<Output = Option<Response<BoxBody>>> + Send + 'a {
+    let authorization = headers
         .get(hyper::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
@@ -1036,6 +1043,29 @@ fn verify_basic_auth<'a>(
             auth::Verdict::Busy => Some(create_auth_busy_response()),
         }
     }
+}
+
+/// An app's `[auth] forward`, after its Basic Auth (which the caller ran):
+/// `None` lets the request through. Same contract as a rule's — see
+/// `MatchedRoute::authorize` and `forward_auth::gate`.
+async fn app_forward_auth(
+    auth: &crate::app::AppAuth,
+    req: &mut Request<Incoming>,
+    client: &ProxyClient,
+    config: &crate::config::Config,
+) -> Option<Response<BoxBody>> {
+    let forward_auth = auth.forward.as_ref()?;
+    let exempt = auth.is_exempt(&request_match_path(req));
+    let send_authorization = auth.users.is_empty();
+    crate::forward_auth::gate(
+        client,
+        forward_auth,
+        &config.forward_auth,
+        req,
+        exempt,
+        send_authorization,
+    )
+    .await
 }
 
 /// Create 401 Unauthorized response with WWW-Authenticate header
@@ -2546,11 +2576,11 @@ async fn handle_request_inner(
     }
 
     if is_websocket {
+        // Same gates as the HTTP path, `@auth` then `@forward_auth`, before
+        // anything is tunnelled.
         if let Some(matched) = find_matching_rule(&req, &config.rules) {
-            if matched.requires_auth(&request_match_path(&req)) {
-                if let Some(denied) = verify_basic_auth(&req, &matched.auth).await {
-                    return Ok(denied);
-                }
+            if let Some(denied) = matched.authorize(&mut req, &client, &config).await {
+                return Ok(denied);
             }
         }
         return handle_websocket_request(
@@ -3183,7 +3213,7 @@ fn handle_acme_challenge(
 #[allow(clippy::too_many_arguments)]
 async fn handle_websocket_request(
     mut req: Request<Incoming>,
-    _client: ProxyClient,
+    client: ProxyClient,
     config: &crate::config::Config,
     metrics: &SharedMetrics,
     _start_time: std::time::Instant,
@@ -3249,6 +3279,12 @@ async fn handle_websocket_request(
                                 metrics.inc_errors();
                                 return Ok(denied);
                             }
+                        }
+                        if let Some(denied) =
+                            app_forward_auth(&auth, &mut req, &client, config).await
+                        {
+                            metrics.inc_errors();
+                            return Ok(denied);
                         }
                     }
                     let path = req.uri().path();
@@ -3650,7 +3686,7 @@ pub(crate) fn ws_upgrade_response_headers(
 /// Returns (Response, target_url_for_logging, route_scripts)
 #[allow(clippy::too_many_arguments)]
 async fn handle_regular_request(
-    req: Request<Incoming>,
+    mut req: Request<Incoming>,
     client: ProxyClient,
     config: &crate::config::Config,
     lua_engine: &OptionalLuaEngine,
@@ -3703,17 +3739,16 @@ async fn handle_regular_request(
             let html_rewrite_prefix = matched_route.html_rewrite_prefix();
             let route_scripts = matched_route.route_scripts.clone();
 
+            // `@auth`, then `@forward_auth`; `@noauth` is judged on the same
+            // canonical path the rule was matched on (see
+            // `canonical_match_path`).
+            if let Some(denied) = matched_route.authorize(&mut req, &client, config).await {
+                tracing::debug!("auth refused {}", req.uri().path());
+                return Ok((denied, String::new(), vec![]));
+            }
             let (mut target_url, base_url) = {
                 let raw_path = req.uri().path();
-                // `@auth` / `@noauth` are judged on the same canonical path
-                // the rule was matched on (see `canonical_match_path`).
                 let match_path = canonical_match_path(raw_path);
-                if matched_route.requires_auth(&match_path) {
-                    if let Some(denied) = verify_basic_auth(&req, &matched_route.auth).await {
-                        tracing::debug!("Basic auth failed for {}", raw_path);
-                        return Ok((denied, String::new(), vec![]));
-                    }
-                }
                 // A prefix rule strips the prefix it matched, so it must strip
                 // it from the form it matched — slicing `prefix.len()` bytes
                 // off `//admin/x` or `/%61dmin/x` would cut in the wrong
@@ -4175,6 +4210,11 @@ async fn handle_regular_request(
                                 return Ok((denied, String::new(), vec![]));
                             }
                         }
+                        if let Some(denied) =
+                            app_forward_auth(&auth, &mut req, &client, config).await
+                        {
+                            return Ok((denied, String::new(), vec![]));
+                        }
                     }
                     let base_url = target.url.to_string();
                     let path = req.uri().path();
@@ -4336,6 +4376,7 @@ struct MatchedRoute<'a> {
     route_scripts: Vec<String>,
     auth: Vec<crate::auth::BasicAuth>,
     auth_exempt: Vec<String>,
+    forward_auth: Option<&'a crate::forward_auth::ForwardAuth>,
     load_balancing: &'a crate::config::LoadBalancingStrategy,
     host: String,
     /// Index into `config.rules` — used for independent per-route LB counters.
@@ -4352,6 +4393,40 @@ impl<'a> MatchedRoute<'a> {
     /// any prefix stripping, so operators write the URL they actually see.
     fn requires_auth(&self, path: &str) -> bool {
         !self.auth.is_empty() && !crate::config::path_is_auth_exempt(&self.auth_exempt, path)
+    }
+
+    /// Run this rule's `@auth`, then its `@forward_auth`: both must pass, and
+    /// a `@noauth` path skips both. `None` lets the request through.
+    async fn authorize<B: Send>(
+        &self,
+        req: &mut Request<B>,
+        client: &ProxyClient,
+        config: &crate::config::Config,
+    ) -> Option<Response<BoxBody>> {
+        let (basic, exempt) = {
+            let path = request_match_path(req);
+            (
+                self.requires_auth(&path),
+                crate::config::path_is_auth_exempt(&self.auth_exempt, &path),
+            )
+        };
+        if basic {
+            let denied = verify_basic_auth_headers(req.headers(), &self.auth).await;
+            if denied.is_some() {
+                return denied;
+            }
+        }
+        let forward_auth = self.forward_auth?;
+        let send_authorization = self.auth.is_empty();
+        crate::forward_auth::gate(
+            client,
+            forward_auth,
+            &config.forward_auth,
+            req,
+            exempt,
+            send_authorization,
+        )
+        .await
     }
 
     fn matched_prefix(&self, is_tls: bool) -> Option<String> {
@@ -4526,6 +4601,7 @@ fn find_matching_rule<'a, B>(
                     route_scripts: rule.scripts.clone(),
                     auth: rule.auth.clone(),
                     auth_exempt: rule.auth_exempt.clone(),
+                    forward_auth: rule.forward_auth.as_ref(),
                     load_balancing: &rule.load_balancing,
                     host: domain.clone(),
                     rule_idx: i,
@@ -4544,6 +4620,7 @@ fn find_matching_rule<'a, B>(
                         route_scripts: rule.scripts.clone(),
                         auth: rule.auth.clone(),
                         auth_exempt: rule.auth_exempt.clone(),
+                        forward_auth: rule.forward_auth.as_ref(),
                         load_balancing: &rule.load_balancing,
                         host: domain.clone(),
                         rule_idx: i,
@@ -4567,6 +4644,7 @@ fn find_matching_rule<'a, B>(
                     route_scripts: rule.scripts.clone(),
                     auth: rule.auth.clone(),
                     auth_exempt: rule.auth_exempt.clone(),
+                    forward_auth: rule.forward_auth.as_ref(),
                     load_balancing: &rule.load_balancing,
                     host: host.to_string(),
                     rule_idx: i,
@@ -4584,6 +4662,7 @@ fn find_matching_rule<'a, B>(
                         route_scripts: rule.scripts.clone(),
                         auth: rule.auth.clone(),
                         auth_exempt: rule.auth_exempt.clone(),
+                        forward_auth: rule.forward_auth.as_ref(),
                         load_balancing: &rule.load_balancing,
                         host: host.to_string(),
                         rule_idx: i,
@@ -4600,6 +4679,7 @@ fn find_matching_rule<'a, B>(
                     route_scripts: rule.scripts.clone(),
                     auth: rule.auth.clone(),
                     auth_exempt: rule.auth_exempt.clone(),
+                    forward_auth: rule.forward_auth.as_ref(),
                     load_balancing: &rule.load_balancing,
                     host: host.to_string(),
                     rule_idx: i,
@@ -4620,6 +4700,7 @@ fn find_matching_rule<'a, B>(
                     route_scripts: rule.scripts.clone(),
                     auth: rule.auth.clone(),
                     auth_exempt: rule.auth_exempt.clone(),
+                    forward_auth: rule.forward_auth.as_ref(),
                     load_balancing: &rule.load_balancing,
                     host: host.to_string(),
                     rule_idx: i,
@@ -5159,6 +5240,7 @@ mod tests {
             route_scripts: vec![],
             auth: vec![],
             auth_exempt: vec![],
+            forward_auth: None,
             load_balancing: &strategy,
             host: "example.com".to_string(),
             rule_idx: 0,
@@ -5184,6 +5266,7 @@ mod tests {
             route_scripts: vec![],
             auth: vec![],
             auth_exempt: vec![],
+            forward_auth: None,
             load_balancing: strategy,
             host: "example.com".to_string(),
             rule_idx: 0,
@@ -5467,6 +5550,7 @@ mod tests {
             },
             auth_exempt: vec![],
             load_balancing: Default::default(),
+            forward_auth: None,
         }
     }
 

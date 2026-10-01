@@ -307,7 +307,7 @@ pub async fn put_routing_table(state: &Arc<AdminState>, body: &str) -> Response<
             if let Err(e) = section.validate() {
                 return error_response(400, &format!("auth[{}]: {}", host, e));
             }
-            if !section.users.is_empty() {
+            if section.is_active() {
                 auth.insert(host, section);
             }
         }
@@ -453,7 +453,7 @@ pub async fn get_routing_table(state: &Arc<AdminState>) -> Response<BoxBody> {
             )
         })
         .collect();
-    // `AppAuth` serializes usernames and `noauth` only, never the hashes.
+    // `AppAuth` serializes usernames, `noauth` and forward-auth, never the hashes.
     ok_response(serde_json::json!({
         "index": snapshot.index,
         "routes": routes,

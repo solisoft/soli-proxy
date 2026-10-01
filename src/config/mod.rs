@@ -47,6 +47,8 @@ pub struct TomlConfig {
     pub logging: Option<LoggingConfig>,
     #[serde(default)]
     pub rate_limiting: Option<RateLimitingConfig>,
+    #[serde(default)]
+    pub forward_auth: Option<crate::forward_auth::ForwardAuthSettings>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -549,6 +551,7 @@ pub struct Config {
     pub metrics: MetricsConfig,
     pub logging: LoggingConfig,
     pub rate_limiting: RateLimitingConfig,
+    pub forward_auth: crate::forward_auth::ForwardAuthSettings,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
@@ -647,6 +650,11 @@ pub struct ProxyRule {
     pub auth_exempt: Vec<String>,
     #[serde(default)]
     pub load_balancing: LoadBalancingStrategy,
+    /// `@forward_auth:` (+ `@forward_auth_headers:`): an auth service asked
+    /// before every request on this rule, after `@auth` when both are set.
+    /// `@noauth` paths skip it too. See `crate::forward_auth`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forward_auth: Option<crate::forward_auth::ForwardAuth>,
 }
 
 impl ProxyRule {
@@ -685,6 +693,9 @@ impl ProxyRule {
     /// satisfy before it is written to disk.
     pub fn validate(&self) -> Result<()> {
         self.validate_auth_exempt()?;
+        if let Some(forward_auth) = &self.forward_auth {
+            forward_auth.validate()?;
+        }
         for header in &self.headers {
             header.validate()?;
         }
@@ -1242,6 +1253,7 @@ hook_timeout_ms = 10
             metrics: toml_config.metrics.unwrap_or_default(),
             logging: toml_config.logging.unwrap_or_default(),
             rate_limiting: toml_config.rate_limiting.unwrap_or_default(),
+            forward_auth: toml_config.forward_auth.unwrap_or_default(),
         })
     }
 
@@ -1517,6 +1529,7 @@ struct RuleTail {
     load_balancing: Option<LoadBalancingStrategy>,
     /// Whether any target carried an explicit `weight:N`.
     weighted: bool,
+    forward_auth: Option<crate::forward_auth::ForwardAuth>,
 }
 
 /// Parse the right-hand side of a rule.
@@ -1531,6 +1544,7 @@ struct RuleTail {
 fn parse_rule_tail(tail: &str) -> Result<RuleTail> {
     let mut out = RuleTail::default();
     let mut target_text = String::new();
+    let mut forward_auth = crate::forward_auth::Directives::default();
 
     for token in tail.split_whitespace() {
         let Some(directive) = token.strip_prefix('@') else {
@@ -1591,12 +1605,16 @@ fn parse_rule_tail(tail: &str) -> Result<RuleTail> {
                     anyhow::bail!("@lb: given more than once");
                 }
             }
+            "forward_auth" => forward_auth.url(value)?,
+            "forward_auth_headers" => forward_auth.headers(value)?,
             other => anyhow::bail!(
-                "unknown directive @{}: (expected @script:, @auth:, @noauth: or @lb:)",
+                "unknown directive @{}: (expected @script:, @auth:, @noauth:, @lb:, \
+                 @forward_auth: or @forward_auth_headers:)",
                 other
             ),
         }
     }
+    out.forward_auth = forward_auth.finish()?;
 
     for item in target_text.split(',') {
         let item = item.trim();
@@ -1757,7 +1775,7 @@ fn check_capture_refs(target: &Url, regex: &Regex) -> Result<()> {
 /// Hop-by-hop and framing headers a `headers { }` block may not touch: they
 /// describe the client connection, not the request, and the proxy manages
 /// them itself.
-const PROTECTED_HEADERS: &[&str] = &[
+pub(crate) const PROTECTED_HEADERS: &[&str] = &[
     "connection",
     "keep-alive",
     "proxy-connection",
@@ -2049,6 +2067,7 @@ fn parse_rule(source: &str, target_str: &str) -> Result<ProxyRule> {
         auth: tail.auth,
         auth_exempt: tail.auth_exempt,
         load_balancing,
+        forward_auth: tail.forward_auth,
     })
 }
 
@@ -2414,6 +2433,63 @@ default -> http://localhost:3000
     }
 
     #[test]
+    fn forward_auth_directives_parse_and_are_checked() {
+        let (rules, _) = parse_proxy_config(
+            "app.example.com -> http://a:1 @forward_auth:http://auth:4180/verify \
+             @forward_auth_headers:X-Auth-User,X-Auth-Email @noauth:/hooks/*\n",
+        )
+        .unwrap();
+        let fa = rules[0].forward_auth.as_ref().unwrap();
+        assert_eq!(fa.url(), "http://auth:4180/verify");
+        assert_eq!(fa.copy_headers().len(), 2);
+        assert_eq!(rules[0].auth_exempt, vec!["/hooks/*"]);
+        assert!(rules[0].validate().is_ok());
+
+        for bad in [
+            // Headers with nowhere to copy them from.
+            "/a/* -> http://a:1 @forward_auth_headers:X-Auth-User",
+            "/a/* -> http://a:1 @forward_auth:http://x/v @forward_auth:http://y/v",
+            "/a/* -> http://a:1 @forward_auth:ftp://auth/verify",
+            "/a/* -> http://a:1 @forward_auth:http://u:p@auth/verify",
+            "/a/* -> http://a:1 @forward_auth:/verify",
+            "/a/* -> http://a:1 @forward_auth:",
+            "/a/* -> http://a:1 @forward_auth:http://x/v @forward_auth_headers:Host",
+            "/a/* -> http://a:1 @forward_auth:http://x/v @forward_auth_headers:X-Forwarded-For",
+        ] {
+            assert!(parse_proxy_config(bad).is_err(), "{bad:?} must be rejected");
+        }
+    }
+
+    /// A route arriving as JSON through the admin API carries forward-auth
+    /// as `{"url", "headers"}`, checked on the way in.
+    #[test]
+    fn forward_auth_json_is_validated() {
+        let json = r#"{"matcher":{"type":"prefix","value":"/a/"},"targets":[{"url":"http://a:1/","weight":100}],
+            "headers":[],"scripts":[],
+            "forward_auth":{"url":"http://auth:4180/verify","headers":["X-Auth-User"]}}"#;
+        let rule: ProxyRule = serde_json::from_str(json).unwrap();
+        assert!(rule.validate().is_ok());
+        let back = serde_json::to_value(&rule).unwrap();
+        assert_eq!(
+            back["forward_auth"],
+            serde_json::json!({"url": "http://auth:4180/verify", "headers": ["x-auth-user"]})
+        );
+        let again: ProxyRule = serde_json::from_value(back).unwrap();
+        assert_eq!(again.forward_auth, rule.forward_auth);
+
+        let bad = json.replace("http://auth:4180/verify", "gopher://auth/verify");
+        assert!(serde_json::from_str::<ProxyRule>(&bad).is_err());
+        // No forward-auth: the key is not emitted at all.
+        let plain = r#"{"matcher":{"type":"prefix","value":"/a/"},"targets":[{"url":"http://a:1/","weight":100}],
+            "headers":[],"scripts":[]}"#;
+        let rule: ProxyRule = serde_json::from_str(plain).unwrap();
+        assert!(serde_json::to_value(&rule)
+            .unwrap()
+            .get("forward_auth")
+            .is_none());
+    }
+
+    #[test]
     fn domain_path_rules_keep_their_leading_slash() {
         let (rules, _) =
             parse_proxy_config("example.com/api -> http://a:1\nexample.com/old/* -> http://b:1\n")
@@ -2647,6 +2723,7 @@ api_key = "secret123"
             auth,
             auth_exempt: vec![],
             load_balancing: LoadBalancingStrategy::default(),
+            forward_auth: None,
         }
     }
 

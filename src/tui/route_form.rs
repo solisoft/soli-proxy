@@ -54,6 +54,11 @@ pub struct RouteForm {
     pub auth_new_username: String,
     pub auth_new_password: String,
     pub auth_selected: usize,
+
+    /// The rule's `@forward_auth`, carried through an edit untouched: the
+    /// form has no field for it, and rebuilding the rule without it would
+    /// silently take a route out from behind its SSO.
+    pub forward_auth: Option<crate::forward_auth::ForwardAuth>,
 }
 
 impl RouteForm {
@@ -74,6 +79,7 @@ impl RouteForm {
             auth_new_username: String::new(),
             auth_new_password: String::new(),
             auth_selected: 0,
+            forward_auth: None,
         }
     }
 
@@ -129,6 +135,7 @@ impl RouteForm {
             auth_new_username: String::new(),
             auth_new_password: String::new(),
             auth_selected: 0,
+            forward_auth: rule.forward_auth.clone(),
         }
     }
 
@@ -391,6 +398,7 @@ impl RouteForm {
             auth,
             auth_exempt,
             load_balancing,
+            forward_auth: self.forward_auth.clone(),
         })
     }
 
