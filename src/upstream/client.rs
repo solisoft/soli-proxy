@@ -222,6 +222,8 @@ impl ClientKey {
 /// A hyper client for one option set.
 pub struct UpstreamClient {
     h2: bool,
+    /// `@connect_timeout`, or the 5 s default.
+    connect_timeout: Duration,
     inner: Inner,
     /// For a TCP client with TLS options of its own: its TLS settings (without
     /// ALPN) and SNI override, for the WebSocket tunnel, which does its own
@@ -247,6 +249,12 @@ impl UpstreamClient {
     /// Whether requests go out as HTTP/2 (`@h2`, `h2c://`).
     pub fn is_h2(&self) -> bool {
         self.h2
+    }
+
+    /// The connect timeout this client applies — for the WebSocket tunnel,
+    /// which connects by itself.
+    pub fn connect_timeout(&self) -> Duration {
+        self.connect_timeout
     }
 
     /// Whether this client connects to a Unix socket.
@@ -347,6 +355,7 @@ fn build(key: &ClientKey) -> Result<UpstreamClient> {
     };
     Ok(UpstreamClient {
         h2: key.h2,
+        connect_timeout: key.connect_timeout(),
         inner,
         websocket_tls,
     })

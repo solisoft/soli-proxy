@@ -665,8 +665,34 @@ pub fn client_info(ext: &http::Extensions) -> Option<&ClientInfo> {
     ext.get::<ClientInfo>()
 }
 
+/// The scheme `X-Forwarded-Proto` names, read the one way everything in the
+/// proxy reads it: the **last** value, across every field — the one the
+/// nearest proxy appended, the one a trusted proxy vouches for (what is left
+/// of it came from further away: the client, or proxies nobody listed).
+/// `http` or `https`, any case; `None` for anything else or no header.
+///
+/// `force_https` used to read the first value and the forwarding headers
+/// dropped a multi-valued header, so `https, http` was HTTPS for the
+/// redirect and plain HTTP for the backend.
+pub fn forwarded_proto(headers: &http::HeaderMap) -> Option<&'static str> {
+    let last = headers
+        .get_all("x-forwarded-proto")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .map(str::trim)
+        .rfind(|v| !v.is_empty())?;
+    if last.eq_ignore_ascii_case("https") {
+        Some("https")
+    } else if last.eq_ignore_ascii_case("http") {
+        Some("http")
+    } else {
+        None
+    }
+}
+
 /// Whether a trusted proxy in front says the client connected over HTTPS
-/// (`X-Forwarded-Proto: https`, first value).
+/// (`X-Forwarded-Proto: https`, see [`forwarded_proto`]).
 ///
 /// What `force_https` must ask on a plain-HTTP connection: a CDN that
 /// terminates TLS and talks plain HTTP to the proxy (Cloudflare "Flexible")
@@ -678,11 +704,7 @@ pub fn forwarded_https(headers: &http::HeaderMap, ext: &http::Extensions) -> boo
     if !client_info(ext).is_some_and(|c| c.trusted_peer) {
         return false;
     }
-    headers
-        .get("x-forwarded-proto")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(',').next())
-        .is_some_and(|p| p.trim().eq_ignore_ascii_case("https"))
+    forwarded_proto(headers) == Some("https")
 }
 
 /// For a peer that is not trusted, remove the header `real_ip_header` names
@@ -998,8 +1020,17 @@ mod tests {
         assert!(forwarded_https(&headers, &ext));
         headers.insert("x-forwarded-proto", "http".parse().unwrap());
         assert!(!forwarded_https(&headers, &ext));
-        headers.insert("x-forwarded-proto", "HTTPS, http".parse().unwrap());
+        // The last value is the nearest proxy's: one parser for the redirect
+        // and the forwarding headers.
+        headers.insert("x-forwarded-proto", "http, HTTPS".parse().unwrap());
         assert!(forwarded_https(&headers, &ext));
+        headers.insert("x-forwarded-proto", "HTTPS, http".parse().unwrap());
+        assert!(!forwarded_https(&headers, &ext));
+        headers.append("x-forwarded-proto", "https".parse().unwrap());
+        assert!(forwarded_https(&headers, &ext));
+        assert_eq!(forwarded_proto(&headers), Some("https"));
+        headers.insert("x-forwarded-proto", "gopher".parse().unwrap());
+        assert_eq!(forwarded_proto(&headers), None);
     }
 
     use super::*;

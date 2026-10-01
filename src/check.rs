@@ -389,11 +389,19 @@ pub fn check_sources(
             Some(cfg)
         }
         Err(e) => {
-            report.error(
-                &config_dir.join(".env").display().to_string(),
-                None,
-                format!("{:#}", e),
-            );
+            // Assembly reads three sources; name the one at fault. Every
+            // error used to be filed under `.env` — a route's unreadable
+            // `@tls_ca` included.
+            let dotenv = config_dir.join(".env").display().to_string();
+            let message = format!("{:#}", e);
+            let file = if message.starts_with("route #") {
+                conf_file.to_string()
+            } else if message.contains(&dotenv) {
+                dotenv
+            } else {
+                toml_file.to_string()
+            };
+            report.error(&file, None, message);
             None
         }
     }
@@ -704,6 +712,30 @@ mod tests {
              [apps]\nmulti_tenant = true\n"
         )
         .is_none());
+    }
+
+    /// A route's TLS file that cannot be loaded is a `proxy.conf` problem,
+    /// not a `.env` one.
+    #[test]
+    fn assembly_errors_name_the_file_at_fault() {
+        let dir = TempDir::new().unwrap();
+        let mut report = Report::default();
+        let cfg = check_sources(
+            (
+                "proxy.conf",
+                "/a/* -> https://127.0.0.1:1/ @tls_ca:/nonexistent/soli-proxy-check-ca.pem\n",
+            ),
+            ("config.toml", ""),
+            dir.path(),
+            &mut report,
+        );
+        assert!(cfg.is_none());
+        let problem = report
+            .problems
+            .iter()
+            .find(|p| p.message.contains("soli-proxy-check-ca.pem"))
+            .expect("reported");
+        assert_eq!(problem.file, "proxy.conf", "{problem}");
     }
 
     fn site(sites: &Path, name: &str, manifest: &str) {

@@ -398,9 +398,8 @@ pub fn check<B>(
                     .and_then(|p| p.maintenance())
             })
             .unwrap_or(BUILTIN_PAGE);
-        let request_id = req
-            .headers()
-            .get("x-request-id")
+        // The ID the door stamped, under whatever `request_id_header` names.
+        let request_id = crate::edge::request_id(req.extensions())
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
         let html = super::error_pages::render(

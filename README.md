@@ -410,7 +410,7 @@ included), with no body and these headers only —
 | `Cookie`, `Authorization` | The client's, as sent: the session the service checks. (`Authorization` is withheld when the same route or app also has Basic Auth — it then carries the Basic password, which is the proxy's business.) |
 | `Accept`, `User-Agent`, `X-Requested-With` | The client's: what Authelia and Authentik read to choose between a 401 and a login redirect. |
 | `X-Forwarded-Method` | The request's method. |
-| `X-Forwarded-Uri` | The request's path and query, as sent. |
+| `X-Forwarded-Uri` | The request's path and query exactly as the client sent them — not the canonical form routes are matched on, nor the path after a prefix rule strips its prefix: what the auth service needs to send the browser back to after a login. Do not authorize on it. |
 | `X-Forwarded-Proto`, `X-Forwarded-Host`, `X-Forwarded-For`, `X-Real-IP` | The proxy's own (see [What reaches the backend](#what-reaches-the-backend)) — never the client's. |
 | `Host` | The auth service's own authority. |
 
@@ -529,9 +529,14 @@ multi-tenant mode `app.infos` is the operator's, and is not checked against it. 
   a script set.
 - **Malformed requests are refused up front**: `CONNECT` (405), authority-form and
   asterisk-form targets (400; `OPTIONS *` is answered directly), more than one `Host`
-  header, or on HTTP/2 a `Host` that differs from `:authority` (400).
-- **WebSocket upgrades run the route's Lua hooks** (`on_request`, `on_route`) like any
-  other request, and an open tunnel keeps counting against the connection limits.
+  header, on HTTP/2 a `Host` that differs from `:authority`, or userinfo (`user@`) in the
+  authority or in `Host` (400).
+- **WebSocket upgrades are routed like any other request**: the same target choice (the
+  rule's balancing, past targets whose breaker is open or that health checks marked down —
+  a failed connect or handshake counts against the breaker), the same gates (the rule's
+  `@auth`/`@forward_auth`, or only the app's when an app takes the domain over), the route's
+  Lua hooks (`on_request`, `on_route`), its `headers { }` block and its `@connect_timeout`.
+  An open tunnel keeps counting against the connection limits.
 
 ### Client IP behind a proxy or CDN
 
@@ -558,7 +563,8 @@ rate limiter, `[maintenance] allow_ips`, `X-Real-IP`, `$client_ip` in `headers {
 the connection itself: the TCP peer (or the PROXY header's source) must be loopback, and so must
 the client — a front proxy on this host relaying a remote client does not open it. Its forwarding
 headers are kept rather than replaced: `X-Forwarded-For` is the incoming chain with the peer
-appended, `X-Forwarded-Proto` stays as the trusted proxy set it (`http`/`https` only). A peer
+appended, `X-Forwarded-Proto` stays as the trusted proxy set it (`http`/`https` only; of several
+values the last — the nearest proxy's — is the one kept, and the one `force_https` reads). A peer
 that is not trusted is handled exactly as before, and a `real_ip_header` such as
 `CF-Connecting-IP` it sends is removed.
 
@@ -588,8 +594,11 @@ proxy_protocol = "v2"                  # "v1", "v2", "any"; or { http = "off", h
 On a listener with PROXY protocol on, every connection must start with a v1 or v2 header
 (within 5 s and 1 KiB) and come from a `trusted_proxies` address; anything else is closed. The
 header is read before TLS and HTTP, and the address it carries is the connection's peer from
-then on — including for `max_connections_per_ip`. A `LOCAL` header (the balancer's own health
-check) keeps the balancer as the peer. Enabling `proxy_protocol` with no `trusted_proxies` is a
+then on — including for `max_connections_per_ip`. A header that names no client (v2 `LOCAL`,
+v1 `UNKNOWN`, an unspecified or Unix address — the balancer's own health check) keeps the
+balancer as the peer, counted against `max_connections_per_ip` like a client, and the forwarding
+headers, request ID and `X-Forwarded-Proto` on that connection are not believed: the balancer
+did not write them. Enabling `proxy_protocol` with no `trusted_proxies` is a
 configuration error.
 
 **The per-IP connection cap** is applied when a connection is accepted, before any header is
@@ -694,8 +703,9 @@ override or remove those too. Values may use:
 
 `$$` is a literal `$`. Hop-by-hop and framing headers (`Connection`, `Keep-Alive`,
 `Transfer-Encoding`, `TE`, `Trailer`, `Upgrade`, `Content-Length`, `Proxy-Connection`) cannot
-be set. Blocks apply to proxied HTTP requests; WebSocket upgrades and app-managed domains are
-not affected.
+be set. Blocks apply to proxied HTTP requests and to WebSocket upgrades (the upgrade is an
+ordinary request until the backend's `101`; a block may not touch its `Upgrade`, `Connection` or
+`Sec-WebSocket-*` lines). App-managed domains are not affected.
 
 #### Errors
 
@@ -755,7 +765,11 @@ next reload. Each must be a regular file of at most 1 MiB, read once. The error 
 not the reason — the admin API relays it, and "missing", "unreadable" or "not a certificate" would
 let an API client probe the proxy's filesystem — the reason is in the proxy's log (on stderr for
 `soli-proxy check`). Rules with the same options share one client and its connection pool. A
-WebSocket upgrade to the rule's `https://` target uses the same TLS settings.
+WebSocket upgrade to the rule's `https://` target uses the same TLS settings. A Lua `on_route`
+override keeps the rule's TLS settings (and `@h2`, `@connect_timeout`) only when it goes to one
+of the rule's own origins (scheme, host, port); anywhere else it gets the defaults — a script
+sending a request elsewhere does not present the rule's client certificate there, nor skip
+verification because the rule's own backend needed `@tls_insecure`.
 
 **Unix sockets.** `unix:/run/app.sock` must be an absolute path. The request URI is built on a
 placeholder origin (`http://unix.invalid/`), the client's `Host` is forwarded untouched, and

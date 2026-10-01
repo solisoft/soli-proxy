@@ -51,6 +51,37 @@
   `POST /api/v1/config/validate`; the reason goes to the log. The distinct errors (and a PEM
   parser quoting the line it choked on) made the API a probe of the proxy's filesystem.
 
+* **A PROXY header that names no client no longer vouches for the connection.** On v1 `UNKNOWN`,
+  v2 `LOCAL` or an address-less v2 header the balancer stayed a trusted peer, so the client's own
+  `X-Forwarded-For`, `real_ip_header`, request ID and `X-Forwarded-Proto` were believed and the
+  per-IP cap skipped. Such a connection is still served (health checks) but trusted for nothing,
+  and counted per IP against the balancer's address.
+* **`X-Forwarded-Proto` is read one way.** `force_https` took the first value while the forwarding
+  headers dropped a multi-valued header; both now take the last value — the nearest proxy's.
+* **The admin listener strips an untrusted client's `real_ip_header`** (`CF-Connecting-IP`…)
+  before the `_admin` passthrough, like the proxy's listeners do.
+* **Userinfo in a request's host is a 400**, in the HTTP/2 `:authority` and in `Host` alike;
+  maintenance used to judge `x@site.example` raw while routing used `site.example`. A malformed
+  request is no longer looked at by maintenance at all.
+* **A Lua `on_route` override keeps the rule's upstream client only for the rule's own origins.**
+  Sent anywhere else, it used to take the rule's mTLS certificate, `@tls_insecure` and
+  `@tls_sni` along (HTTP and WebSocket alike); it now gets the shared pool's defaults.
+* **WebSocket upgrades are routed like requests.** When an app takes a whole-domain rule over,
+  only the app's gates apply (the rule's ran too, so forward-auth was asked twice); the target is
+  chosen by the rule's balancing past open breakers and down targets, with the rule's
+  `@connect_timeout` (it was always the first target, 5 s), and the tunnel's connect/handshake
+  outcome feeds the breaker; the rule's `headers { }` block applies to the upgrade.
+* **A pushed domain's retry is no longer dropped by a half-open breaker:** the next instance was
+  checked twice, and the second check refused what the first had just let through as the probe.
+* Smaller seams: a rule's `@timeout` no longer applies when an app takes the rule over; error and
+  maintenance pages show the request ID under `request_id_header`, not always `X-Request-Id`;
+  `soli-proxy check` files assembly errors under the right file (a route's TLS file was blamed on
+  `.env`); a response with any non-`identity` coding in any `Content-Encoding` field (`identity,
+  gzip`) is no longer compressed again; a backend error page replaced under
+  `intercept_upstream_errors` drops its `ETag`, `Last-Modified`, `Content-Disposition`,
+  `Content-Range` and `Content-Encoding`. The README now says that forward-auth's
+  `X-Forwarded-Uri` is the raw request target, for redirects, not for authorization.
+
 **Forward auth (gap/auth)**
 
 ### Features

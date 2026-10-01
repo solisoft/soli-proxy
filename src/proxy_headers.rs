@@ -179,14 +179,9 @@ pub fn set_forwarding_headers_for(
         use std::fmt::Write;
         let _ = write!(chain, "{}", client.peer);
     }
-    let proto = headers
-        .get(&X_FORWARDED_PROTO)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| match v.trim() {
-            p if p.eq_ignore_ascii_case("https") => Some("https"),
-            p if p.eq_ignore_ascii_case("http") => Some("http"),
-            _ => None,
-        });
+    // The nearest proxy's value: the last one (see `edge::forwarded_proto`,
+    // which `force_https` reads too).
+    let proto = crate::edge::forwarded_proto(headers);
     set_forwarding_headers(headers, Some(client.ip), is_tls, original_host);
     if let Ok(v) = HeaderValue::from_str(&chain) {
         headers.insert(X_FORWARDED_FOR.clone(), v);
@@ -459,6 +454,13 @@ mod tests {
         assert_eq!(h.get("x-forwarded-proto").unwrap(), "https");
         assert!(h.get("x-forwarded-port").is_none());
         assert_eq!(h.get("x-forwarded-host").unwrap(), "real.example");
+
+        // Several values: the nearest proxy's — the last — is kept, as
+        // `force_https` reads it (it used to be dropped here).
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-proto", "http, https".parse().unwrap());
+        set_forwarding_headers_for(&mut h, Some(&client), false, None);
+        assert_eq!(h.get("x-forwarded-proto").unwrap(), "https");
 
         // A proto that is neither http nor https is replaced by the proxy's.
         let mut h = HeaderMap::new();

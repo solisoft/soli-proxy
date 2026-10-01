@@ -26,8 +26,9 @@
 //!
 //! Templates may use `{{status}}`, `{{reason}}`, `{{host}}`, `{{request_id}}`
 //! and, in the maintenance page, `{{message}}`. Values are HTML-escaped.
-//! `{{request_id}}` is the `X-Request-Id` of the response if the proxy set
-//! one, else the request's `X-Request-Id` header, else empty.
+//! `{{request_id}}` is the response's request-ID header (`[server]
+//! request_id_header`, `X-Request-Id` by default) if it has one, else the
+//! request's ID, else empty.
 
 use crate::server::BoxBody;
 use bytes::Bytes;
@@ -356,7 +357,19 @@ pub fn capture<B>(
     };
     Some(ErrorCtx {
         host,
-        request_id: req.headers().get("x-request-id").cloned(),
+        // The ID the door stamped, under whatever `request_id_header` names
+        // (it used to be read from `X-Request-Id` whatever the setting).
+        request_id: crate::edge::request_id(req.extensions())
+            .or_else(|| {
+                config
+                    .server
+                    .edge
+                    .request_id_header
+                    .0
+                    .as_ref()
+                    .and_then(|name| req.headers().get(name))
+            })
+            .cloned(),
         apps,
         rule,
     })
@@ -414,9 +427,10 @@ pub fn apply(
     let Some(template) = template else {
         return Ok(resp);
     };
+    let id_header = config.server.edge.request_id_header.0.as_ref();
     let request_id = header_str(
-        resp.headers()
-            .get("x-request-id")
+        id_header
+            .and_then(|name| resp.headers().get(name))
             .or(ctx.request_id.as_ref()),
     )
     .to_string();
@@ -437,7 +451,19 @@ pub fn apply(
 pub(crate) fn html_response(resp: Response<BoxBody>, html: String) -> Response<BoxBody> {
     let (mut parts, _) = resp.into_parts();
     let headers = &mut parts.headers;
-    headers.remove(header::CONTENT_ENCODING);
+    // Whatever described the body that is being replaced — a backend's, under
+    // `intercept_upstream_errors` — describes nothing now: its encoding, its
+    // validators (a cache would revalidate the page against the backend's
+    // ETag), a download name, a byte range.
+    for name in [
+        header::CONTENT_ENCODING,
+        header::ETAG,
+        header::LAST_MODIFIED,
+        header::CONTENT_DISPOSITION,
+        header::CONTENT_RANGE,
+    ] {
+        headers.remove(name);
+    }
     headers.insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("text/html; charset=utf-8"),
@@ -686,5 +712,31 @@ mod tests {
         crate::response::mark_upstream(&mut upstream, None);
         let resp = apply(Ok(upstream), capture(&html, &config, None), &config).unwrap();
         assert_eq!(body(resp).await, "<p>500 on site.example (req-1)</p>");
+
+        // What described the backend's body goes with it.
+        let mut upstream = error(500);
+        for (name, value) in [
+            ("etag", "\"v1\""),
+            ("last-modified", "Wed, 21 Oct 2015 07:28:00 GMT"),
+            ("content-disposition", "attachment; filename=x.bin"),
+            ("content-range", "bytes 0-1/2"),
+            ("content-encoding", "gzip"),
+        ] {
+            upstream
+                .headers_mut()
+                .insert(name, HeaderValue::from_static(value));
+        }
+        crate::response::mark_upstream(&mut upstream, None);
+        let resp = apply(Ok(upstream), capture(&html, &config, None), &config).unwrap();
+        for name in [
+            "etag",
+            "last-modified",
+            "content-disposition",
+            "content-range",
+            "content-encoding",
+        ] {
+            assert!(resp.headers().get(name).is_none(), "{name} kept");
+        }
+        assert_eq!(resp.headers()[header::RETRY_AFTER], "1");
     }
 }

@@ -442,6 +442,20 @@ fn enforce_admin_body_size_limit(
     None
 }
 
+/// Decide who the client is, and apply the same door as the proxy's
+/// listeners: an untrusted client's `CF-Connecting-IP` (or whatever
+/// `real_ip_header` names) is removed, or it reached the `_admin` app through
+/// the passthrough as if the proxy had vouched for it.
+fn admin_door(
+    headers: &mut hyper::HeaderMap,
+    peer: std::net::IpAddr,
+    edge: &crate::edge::EdgeConfig,
+) -> crate::edge::ClientInfo {
+    let who = crate::edge::ClientInfo::resolve(peer, headers, edge);
+    crate::edge::strip_untrusted_real_ip(headers, &who, edge);
+    who
+}
+
 async fn handle_admin_request(
     mut req: Request<Incoming>,
     state: Arc<AdminState>,
@@ -453,7 +467,7 @@ async fn handle_admin_request(
     // names. Budgets below are charged to it.
     if let Some(peer) = peer_addr {
         let config = state.config_manager.get_config();
-        let who = crate::edge::ClientInfo::resolve(peer.ip(), req.headers(), &config.server.edge);
+        let who = admin_door(req.headers_mut(), peer.ip(), &config.server.edge);
         req.extensions_mut().insert(who);
     }
     let client_info = admin_client(req.extensions(), peer_addr);
@@ -1244,6 +1258,27 @@ pub async fn run_admin_server(state: Arc<AdminState>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The admin listener's door strips an untrusted client's real-IP
+    /// header, like the proxy's: the `_admin` passthrough used to relay it.
+    #[test]
+    fn admin_door_strips_an_untrusted_real_ip_header() {
+        let edge: crate::edge::EdgeConfig = toml::from_str(
+            "trusted_proxies = [\"10.0.0.0/8\"]\nreal_ip_header = \"CF-Connecting-IP\"\n",
+        )
+        .unwrap();
+        let mut h = hyper::HeaderMap::new();
+        h.insert("cf-connecting-ip", "6.6.6.6".parse().unwrap());
+        let who = admin_door(&mut h, "203.0.113.1".parse().unwrap(), &edge);
+        assert!(h.get("cf-connecting-ip").is_none());
+        assert_eq!(who.ip, "203.0.113.1".parse::<std::net::IpAddr>().unwrap());
+        // From a trusted proxy it is kept, and names the client.
+        let mut h = hyper::HeaderMap::new();
+        h.insert("cf-connecting-ip", "198.51.100.7".parse().unwrap());
+        let who = admin_door(&mut h, "10.0.0.1".parse().unwrap(), &edge);
+        assert!(h.get("cf-connecting-ip").is_some());
+        assert_eq!(who.ip, "198.51.100.7".parse::<std::net::IpAddr>().unwrap());
+    }
 
     #[test]
     fn constant_time_eq_matches_equal_inputs() {
