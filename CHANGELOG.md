@@ -53,6 +53,29 @@
 * **Per-app metrics take a read lock**, not the write lock every proxied request used to queue
   behind; the write lock is taken once per app, the first time it is seen.
 
+### Bug Fixes
+
+* **One bad health check no longer restarts an app.** The monitor failed an app over on the
+  first error or non-2xx answer, while the README promised it only reacted to actual failures.
+  Now a failure is no answer, a timeout or a 5xx, and failover waits for
+  `[apps] health_failure_threshold` consecutive ones (default 3). A 4xx means the app is up and
+  its `health_check` path is wrong: it is logged as a warning, not acted on. The old fallback
+  that retried `/` after a 404 is gone with it. Health probes go to `127.0.0.1`, not
+  `localhost`.
+* **State files are written atomically.** `proxy.conf`, `run/aliases.json`,
+  `run/app_state.json`, `run/ports.lock` (and the new `run/spawned.json`) are written to a
+  temporary file, fsynced and renamed, so a crash or a full disk leaves the previous version
+  instead of a truncated one. The `proxy.conf` watcher now watches the file's directory — a
+  rename-into-place left it watching the replaced inode — and recognises the proxy's own writes
+  by their content instead of swallowing exactly one event, which dropped the next real edit
+  whenever a write raised more than one.
+* **The sites watcher no longer watches tenant trees.** It watched the whole sites directory
+  recursively: a tenant could exhaust the host's inotify watches, and any write anywhere set off
+  a rediscovery and route sync. Outside dev mode it now watches the sites directory and each
+  site non-recursively, reacts only to sites appearing/disappearing/renamed and to `app.infos`,
+  coalesces bursts (500 ms quiet, 5 s max) and spaces rediscoveries at least 2 s apart.
+* **Docs: an auto-detected Soli app's health check is `/up`**, not `/` as the README said.
+
 ## [0.35.2](https://github.com/solisoft/soli-proxy/compare/v0.35.1...v0.35.2) (2026-09-27)
 
 ### Bug Fixes

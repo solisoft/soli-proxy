@@ -61,6 +61,12 @@ burst_size = 2000
 [apps]
 # default_user = "rocky"
 # default_group = "rocky"
+# health_failure_threshold = 3   # consecutive failed health checks before failover
+# port_range_start = 20000       # slot ports (the only range used when multi_tenant)
+# port_range_end = 30000
+# multi_tenant = true            # untrusted apps; see the README's Multi-Tenant section
+# tenant_proxy_env = false       # forward HTTP(S)_PROXY into tenant containers
+# tenant_proxy_env_credentials = false  # ...even when it carries user:password@
 
 # Circuit Breaker Configuration
 # Tracks backend health and stops sending traffic to failing backends.

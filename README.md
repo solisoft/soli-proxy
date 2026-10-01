@@ -294,7 +294,9 @@ cargo run --release --bin httptest -- --requests 50000 --concurrency 200
 ## Hot Reload
 
 Configuration changes are detected automatically:
-1. File watcher monitors proxy.conf
+1. File watcher monitors proxy.conf (through its directory, so editors' and the proxy's own
+   atomic rename-into-place saves are seen; a change the proxy wrote itself is recognised by its
+   content and not reloaded twice)
 2. On change, config is reloaded atomically
 3. New connections use new config
 4. Existing connections continue with old config
@@ -342,7 +344,7 @@ admin = "$2b$12$..."   # generate with: soli-proxy hash-password
 | `domain` | string | directory name (when auto-detected) | Domain the app serves. Matched against the `Host` header. |
 | `start_script` | string | auto-detected (see below) | Command used to launch the app. Supports `$PORT` and `$WORKERS` substitution. Parsed without a shell — no pipes/redirects/globs. |
 | `stop_script` | string | _none_ | Optional command to run when stopping the app. |
-| `health_check` | string | `"/health"` (or `"/"` when auto-detected) | HTTP path the proxy polls every 30s to decide if the app is alive. |
+| `health_check` | string | `"/health"` (`"/up"` for an auto-detected Soli app, `"/"` for LuaOnBeans) | HTTP path the proxy polls every 30s to decide if the app is alive. See [App Health Monitoring](#app-health-monitoring). |
 | `graceful_timeout` | int (seconds) | `30` | Time given to the old process to exit cleanly during a blue/green swap. At most `3600`; a larger value is clamped, with a warning. |
 | `drain_delay` | int (seconds) | `5` | Time to keep the old process draining existing connections before shutdown. At most `3600`, and clamped to `< graceful_timeout` (set to `graceful_timeout / 2` if too large). |
 | `port_range_start` | int | `20000` | Lower bound of the port range used to allocate blue/green slots. Ignored in multi-tenant mode, where `[apps] port_range_start` decides. |
@@ -722,6 +724,13 @@ ssh server 'touch /home/rocky/sites/myapp.example.org/restart.txt'
   `restart.txt` does not cause a deploy on startup.
 - Creating the file for the first time triggers a deploy; deleting it does not.
 
+The sites watcher does not look at it either: outside dev mode it reacts only to a site
+directory appearing, disappearing or being renamed, and to a site's `app.infos`, watching each
+non-recursively. A tenant's other writes cost nothing — they used to consume an inotify watch per
+directory and trigger a full rediscovery each. Bursts are coalesced (500 ms of quiet, 5 s at
+most) and rediscoveries are at least 2 s apart. `--dev` keeps the recursive watch, to restart
+an app when its code changes.
+
 Both the file name and the interval are configurable under `[apps]` in `config.toml`. Setting
 `restart_trigger_poll_secs = 0` disables the mechanism:
 
@@ -733,10 +742,27 @@ restart_trigger_poll_secs = 2
 
 ## App Health Monitoring
 
-When apps are managed by the proxy, it automatically:
-- Polls each app's `health_check` path every 30 seconds
-- Auto-restarts any app that fails (connection refused, timeout, etc.)
-- Only restarts on actual failures, not on non-2xx responses
+When apps are managed by the proxy, it polls each running app's `health_check` path every 30
+seconds and fails the app over to its other slot (a zero-downtime blue/green restart) when it
+stops answering:
+
+| Response | Counts as |
+|---|---|
+| 2xx | healthy — resets the failure count |
+| no connection, timeout, 5xx | a **failure** |
+| 4xx | not a failure: the app answered, so it is up, and a 404 or 401 on a health path nearly always means `health_check` names the wrong path. Logged as a warning on every poll, so it is noticed. |
+
+A single failure is not acted on: the app is failed over after
+**`[apps] health_failure_threshold` consecutive failures** (default `3`, so about 90 seconds of
+an unresponsive app at the default interval). A GC pause or one slow answer used to cost a full
+restart.
+
+```toml
+[apps]
+health_failure_threshold = 3
+```
+
+A slot being deployed, a quarantined app and a sleeping app are not polled.
 
 See [App Configuration](#app-configuration-appinfos) above for how to set `health_check` per app.
 

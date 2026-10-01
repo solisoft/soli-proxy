@@ -1038,6 +1038,15 @@ burst_size = 2000
 # tenant_memory = "512m"
 # tenant_cpus = "1.0"
 # tenant_user = "10000:10000"
+# Slot ports. With multi_tenant, the only range used (app.infos cannot pick).
+# port_range_start = 20000
+# port_range_end = 30000
+# Tenant containers do not get the proxy's HTTP(S)_PROXY unless asked, nor
+# one carrying user:password@ unless asked twice.
+# tenant_proxy_env = false
+# tenant_proxy_env_credentials = false
+# Consecutive failed health checks (no answer, or 5xx) before failover.
+# health_failure_threshold = 3
 
 # Circuit Breaker Configuration
 [circuit_breaker]

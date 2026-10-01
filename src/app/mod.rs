@@ -620,6 +620,10 @@ pub struct AppManager {
         Arc<parking_lot::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<ProcessExit>>>>,
     last_failover: Arc<parking_lot::Mutex<HashMap<String, std::time::Instant>>>,
     failure_count: Arc<parking_lot::Mutex<HashMap<String, u32>>>,
+    /// Consecutive failed health checks per app; see `check_health`.
+    health_failures: Arc<parking_lot::Mutex<HashMap<String, u32>>>,
+    /// `[apps] health_failure_threshold`.
+    health_failure_threshold: u32,
     /// Apps whose start failed and for which automatic remediation (health-check
     /// failover, process-exit failover) is suspended until an explicit deploy.
     quarantined: Arc<parking_lot::Mutex<HashSet<String>>>,
@@ -1090,6 +1094,24 @@ async fn is_port_in_use(port: u16) -> bool {
     .unwrap_or(false)
 }
 
+/// What one health-check response says about an app.
+#[derive(Debug, Clone, PartialEq)]
+enum HealthVerdict {
+    Healthy,
+    /// The app answered, with a 4xx: it is up, its health path is not.
+    Misconfigured(u16),
+    /// Cannot serve: no answer, or a 5xx.
+    Failed(String),
+}
+
+fn health_verdict(status: u16) -> HealthVerdict {
+    match status {
+        200..=299 => HealthVerdict::Healthy,
+        400..=499 => HealthVerdict::Misconfigured(status),
+        _ => HealthVerdict::Failed(format!("HTTP {}", status)),
+    }
+}
+
 /// Decide whether a change to a site's trigger file should fire a deploy, and
 /// return the mtime to remember for the next poll.
 ///
@@ -1107,6 +1129,56 @@ fn trigger_decision(
         None => (false, current),
         // File appeared, or was touched/rewritten since the last poll.
         Some(previous) => (current.is_some() && *previous != current, current),
+    }
+}
+
+/// Whether a sites-watcher event (outside dev mode) can change what
+/// discovery finds. `relative` is the path under the sites directory.
+///
+/// Depth 1 is a site directory: it matters when it appears, disappears or
+/// is renamed — not when its metadata changes, which a tenant can do at will.
+/// Depth 2 matters only for `app.infos` itself. (The restart trigger file is
+/// polled, not watched; see `check_restart_triggers`.)
+fn watch_event_is_relevant(relative: &Path, kind: &notify::EventKind) -> bool {
+    use notify::event::ModifyKind;
+    use notify::EventKind;
+    match relative.components().count() {
+        1 => matches!(
+            kind,
+            EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_))
+        ),
+        2 => relative.file_name().is_some_and(|name| name == "app.infos"),
+        _ => false,
+    }
+}
+
+/// Make the per-site watches match `sites`: watch new site directories
+/// (non-recursively — inotify follows a symlinked site to its target),
+/// unwatch removed ones. Best effort: a site that cannot be watched is still
+/// found by the next rediscovery.
+fn sync_site_watches(
+    watcher: &mut RecommendedWatcher,
+    watched: &mut HashSet<PathBuf>,
+    sites: &[PathBuf],
+) {
+    let wanted: HashSet<&PathBuf> = sites.iter().collect();
+    watched.retain(|path| {
+        if wanted.contains(path) {
+            return true;
+        }
+        let _ = watcher.unwatch(path);
+        false
+    });
+    for path in sites {
+        if watched.contains(path) {
+            continue;
+        }
+        match watcher.watch(path, RecursiveMode::NonRecursive) {
+            Ok(()) => {
+                watched.insert(path.clone());
+            }
+            Err(e) => tracing::warn!("Cannot watch {}: {}", path.display(), e),
+        }
     }
 }
 
@@ -1282,6 +1354,8 @@ impl AppManager {
             process_exit_rx: Arc::new(parking_lot::Mutex::new(Some(process_exit_rx))),
             last_failover: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             failure_count: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            health_failures: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            health_failure_threshold: cfg.apps.health_failure_threshold(),
             quarantined: Arc::new(parking_lot::Mutex::new(HashSet::new())),
             restart_triggers: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             restart_trigger_file: cfg.apps.restart_trigger_file(),
@@ -1957,10 +2031,28 @@ impl AppManager {
         }
     }
 
+    /// Watch the sites directory and rediscover apps when it changes.
+    ///
+    /// Outside dev mode only what discovery reads is watched: the sites
+    /// directory itself (a site created, removed or renamed) and each site's
+    /// own directory, non-recursively, for its `app.infos`. The tree used to
+    /// be watched recursively, which hands every tenant a way to exhaust the
+    /// host's inotify watches (one per directory it creates) and to trigger a
+    /// full rediscovery with any write anywhere in its site. Dev mode keeps
+    /// the recursive watch: restarting an app when its code changes is the
+    /// point there, and the code is the developer's own.
+    ///
+    /// Events are coalesced until the tree has been quiet for 500 ms (at most
+    /// 5 s), and two rediscoveries are at least 2 s apart, so a burst of
+    /// writes costs one rediscovery rather than one per event.
     pub async fn start_watcher(&self) -> Result<(), anyhow::Error> {
-        let (tx, mut rx) = mpsc::channel(100);
+        // Only "something changed" travels; the paths matter for the dev
+        // restart. A full channel means a rediscovery is already due, so an
+        // event that does not fit is dropped rather than queued.
+        let (tx, mut rx) = mpsc::channel::<Vec<PathBuf>>(256);
         let sites_dir = self.sites_dir.clone();
         let manager = self.clone();
+        let dev_mode = self.dev_mode;
 
         let watch_path = if sites_dir.is_symlink() {
             sites_dir.canonicalize()?
@@ -1968,49 +2060,74 @@ impl AppManager {
             sites_dir.clone()
         };
 
+        let roots = [sites_dir.clone(), watch_path.clone()];
+        let callback_sites_dir = sites_dir.clone();
         let mut watcher = RecommendedWatcher::new(
-            move |res| {
-                let _ = tx.blocking_send(res);
+            move |res: notify::Result<notify::Event>| {
+                let Ok(event) = res else {
+                    return;
+                };
+                if !(event.kind.is_modify() || event.kind.is_create() || event.kind.is_remove()) {
+                    return;
+                }
+                let paths: Vec<PathBuf> = event
+                    .paths
+                    .iter()
+                    .filter_map(|path| {
+                        let relative =
+                            roots.iter().find_map(|root| path.strip_prefix(root).ok())?;
+                        (dev_mode || watch_event_is_relevant(relative, &event.kind))
+                            .then(|| callback_sites_dir.join(relative))
+                    })
+                    .collect();
+                if !paths.is_empty() {
+                    let _ = tx.try_send(paths);
+                }
             },
             notify::Config::default(),
         )?;
 
-        watcher.watch(&watch_path, RecursiveMode::Recursive)?;
+        let mut watched_sites: HashSet<PathBuf> = HashSet::new();
+        if dev_mode {
+            watcher.watch(&watch_path, RecursiveMode::Recursive)?;
+        } else {
+            watcher.watch(&watch_path, RecursiveMode::NonRecursive)?;
+            sync_site_watches(
+                &mut watcher,
+                &mut watched_sites,
+                &self.site_directory_paths(),
+            );
+        }
 
         *self.watcher.lock().await = Some(watcher);
 
         tokio::spawn(async move {
-            loop {
-                // Wait for the first relevant event, collecting changed paths
-                let mut changed_paths: HashSet<PathBuf> = HashSet::new();
-                let mut got_event = false;
-                while let Some(res) = rx.recv().await {
-                    if let Ok(event) = res {
-                        if event.kind.is_modify()
-                            || event.kind.is_create()
-                            || event.kind.is_remove()
-                        {
-                            changed_paths.extend(event.paths);
-                            got_event = true;
-                            break;
-                        }
-                    }
-                }
-                if !got_event {
-                    break; // channel closed
-                }
+            const QUIET: std::time::Duration = std::time::Duration::from_millis(500);
+            const MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+            const MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
-                // Debounce: drain any events arriving within 500ms, collecting paths
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                while let Ok(res) = rx.try_recv() {
-                    if let Ok(event) = res {
-                        changed_paths.extend(event.paths);
+            while let Some(first) = rx.recv().await {
+                let mut changed_paths: HashSet<PathBuf> = first.into_iter().collect();
+                let started = tokio::time::Instant::now();
+                // Coalesce until quiet, or until MAX_WAIT under a steady stream.
+                while started.elapsed() < MAX_WAIT {
+                    match tokio::time::timeout(QUIET, rx.recv()).await {
+                        Ok(Some(paths)) => changed_paths.extend(paths),
+                        Ok(None) | Err(_) => break,
                     }
                 }
 
                 tracing::info!("Apps directory changed, rediscovering...");
                 if let Err(e) = manager.discover_apps().await {
                     tracing::error!("Failed to rediscover apps: {}", e);
+                }
+
+                if !manager.dev_mode {
+                    // Follow sites coming and going.
+                    let sites = manager.site_directory_paths();
+                    if let Some(watcher) = manager.watcher.lock().await.as_mut() {
+                        sync_site_watches(watcher, &mut watched_sites, &sites);
+                    }
                 }
 
                 // In dev mode, restart affected apps that are currently running
@@ -2048,10 +2165,31 @@ impl AppManager {
                         }
                     }
                 }
+
+                tokio::time::sleep(MIN_INTERVAL).await;
             }
         });
 
         Ok(())
+    }
+
+    /// Paths of the site directories under `sites_dir`, as discovery sees
+    /// them (a symlinked site keeps its `sites/<name>` path).
+    fn site_directory_paths(&self) -> Vec<PathBuf> {
+        let Ok(entries) = std::fs::read_dir(&self.sites_dir) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.is_dir()
+                    && !path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with('.'))
+            })
+            .collect()
     }
 
     pub async fn list_apps(&self) -> Vec<AppInfo> {
@@ -2469,11 +2607,12 @@ impl AppManager {
 
         tracing::info!("Deploy completed for {} to slot {}", app_name, slot);
 
-        // Reset failure count on successful deploy
+        // Reset failure counts on successful deploy
         {
             let mut failure_count = self.failure_count.lock();
             failure_count.insert(app_name.to_string(), 0);
         }
+        self.health_failures.lock().remove(app_name);
 
         self.emit_event(AppEvent::Deployed {
             app_name: app_name.to_string(),
@@ -2632,6 +2771,16 @@ impl AppManager {
         }
     }
 
+    /// Poll every running app's health check once; fail an app over after
+    /// `[apps] health_failure_threshold` consecutive failures (default 3).
+    ///
+    /// A failure is what says the app cannot serve: no connection, a
+    /// timeout, or a 5xx. A 4xx is not one — the app answered, so it is up;
+    /// a 404 or 401 on a health path almost always means the path is wrong,
+    /// and failing over would restart a working app every interval. It is
+    /// logged as a warning instead. One failure on its own is not acted on
+    /// either: a GC pause or a slow request during a deploy elsewhere used to
+    /// cost a full blue/green restart.
     pub async fn check_health(&self) {
         let http_client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(5))
@@ -2668,71 +2817,56 @@ impl AppManager {
             if self.is_asleep(&app_name) {
                 continue;
             }
-            let url_health = format!("http://localhost:{}{}", port, health_path);
-            let url_root = format!("http://localhost:{}/", port);
-            let healthy = match http_client.get(&url_health).send().await {
-                Ok(resp) if resp.status().is_success() => {
+            let url = format!("http://127.0.0.1:{}{}", port, health_path);
+            let verdict = match http_client.get(&url).send().await {
+                Ok(resp) => health_verdict(resp.status().as_u16()),
+                Err(e) => HealthVerdict::Failed(e.to_string()),
+            };
+            match verdict {
+                HealthVerdict::Healthy => {
                     tracing::debug!("Health check OK for {} on port {}", app_name, port);
-                    true
+                    self.health_failures.lock().remove(&app_name);
                 }
-                Ok(resp) if resp.status() == 404 => {
-                    tracing::debug!(
-                        "Health check returned 404 for {} on port {}, trying fallback /",
-                        app_name,
-                        port
-                    );
-                    match http_client.get(&url_root).send().await {
-                        Ok(resp) if resp.status().is_success() => {
-                            tracing::debug!(
-                                "Health check fallback OK for {} on port {}",
-                                app_name,
-                                port
-                            );
-                            true
-                        }
-                        Ok(_) => {
-                            tracing::debug!(
-                                "Health check fallback returned non-2xx for {} on port {}",
-                                app_name,
-                                port
-                            );
-                            false
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                "Health check fallback failed for {} on port {}: {}",
-                                app_name,
-                                port,
-                                e
-                            );
-                            false
-                        }
-                    }
-                }
-                Ok(_) => {
-                    tracing::debug!(
-                        "Health check returned non-2xx for {} on port {}",
-                        app_name,
-                        port
-                    );
-                    false
-                }
-                Err(e) => {
+                HealthVerdict::Misconfigured(status) => {
                     tracing::warn!(
-                        "Health check failed for {} on port {}: {}, failing over",
+                        "Health check {} for {} answered HTTP {}: the app is up, but its \
+                         health_check path looks wrong. Not counted as a failure.",
+                        url,
+                        app_name,
+                        status
+                    );
+                    self.health_failures.lock().remove(&app_name);
+                }
+                HealthVerdict::Failed(reason) => {
+                    let failures = {
+                        let mut counts = self.health_failures.lock();
+                        let count = counts.entry(app_name.clone()).or_insert(0);
+                        *count += 1;
+                        *count
+                    };
+                    if failures < self.health_failure_threshold {
+                        tracing::warn!(
+                            "Health check failed for {} on port {}: {} ({}/{} before failover)",
+                            app_name,
+                            port,
+                            reason,
+                            failures,
+                            self.health_failure_threshold
+                        );
+                        continue;
+                    }
+                    tracing::warn!(
+                        "Health check failed for {} on port {}: {} — {} consecutive failures, \
+                         failing over",
                         app_name,
                         port,
-                        e
+                        reason,
+                        failures
                     );
+                    self.health_failures.lock().remove(&app_name);
                     if let Err(e) = self.failover(&app_name).await {
                         tracing::error!("Failed to failover {}: {}", app_name, e);
                     }
-                    continue;
-                }
-            };
-            if !healthy {
-                if let Err(e) = self.failover(&app_name).await {
-                    tracing::error!("Failed to failover {}: {}", app_name, e);
                 }
             }
         }
@@ -4467,6 +4601,68 @@ admin = "$2b$12$adminhash"
         assert_eq!(&*route.app, "live.example.com");
     }
 
+    #[test]
+    fn health_verdicts() {
+        assert_eq!(health_verdict(200), HealthVerdict::Healthy);
+        assert_eq!(health_verdict(204), HealthVerdict::Healthy);
+        // Up, but the path is wrong: never a reason to restart the app.
+        assert_eq!(health_verdict(404), HealthVerdict::Misconfigured(404));
+        assert_eq!(health_verdict(401), HealthVerdict::Misconfigured(401));
+        assert!(matches!(health_verdict(500), HealthVerdict::Failed(_)));
+        assert!(matches!(health_verdict(503), HealthVerdict::Failed(_)));
+    }
+
+    /// One bad answer is not a dead app: failover waits for
+    /// `health_failure_threshold` (3) consecutive failures.
+    #[tokio::test]
+    async fn health_failover_waits_for_consecutive_failures() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buf = [0u8; 1024];
+                    let _ = sock.read(&mut buf).await;
+                    let _ = sock
+                        .write_all(
+                            b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\n\
+                              connection: close\r\n\r\n",
+                        )
+                        .await;
+                });
+            }
+        });
+
+        let temp_dir = TempDir::new().unwrap();
+        let sites = temp_dir.path().join("sites");
+        site_with_app_infos(
+            &sites,
+            "sick.example.com",
+            "name = \"sick.example.com\"\nhealth_check = \"/health\"\n",
+        );
+        let manager = test_manager(&temp_dir, &sites);
+        manager.discover_apps_readonly().await.unwrap();
+        {
+            let mut apps = manager.apps.lock().await;
+            let app = apps.get_mut("sick.example.com").unwrap();
+            app.blue.port = port;
+            app.blue.pid = Some(4242);
+            app.current_slot = "blue".to_string();
+            manager.publish_routes(&apps);
+        }
+
+        for _ in 0..2 {
+            manager.check_health().await;
+            assert!(!manager.is_quarantined("sick.example.com"));
+        }
+        // The third failure fails over. This app has no start script, so the
+        // failover's deploy fails and quarantines it — the observable sign
+        // that it ran.
+        manager.check_health().await;
+        assert!(manager.is_quarantined("sick.example.com"));
+    }
+
     /// An AppManager over `sites`, with its proxy.conf, config.toml and run
     /// directory inside `temp_dir`.
     fn test_manager(temp_dir: &TempDir, sites: &Path) -> AppManager {
@@ -4666,6 +4862,55 @@ health_check = "/status"
     }
 
     // --- affected_app_names ---
+
+    /// Outside dev mode the watcher reacts to sites appearing, disappearing
+    /// or being renamed, and to `app.infos` — not to a tenant's other writes.
+    #[test]
+    fn watcher_reacts_only_to_what_discovery_reads() {
+        use notify::event::{CreateKind, DataChange, MetadataKind, ModifyKind, RemoveKind};
+        use notify::EventKind;
+        let create = EventKind::Create(CreateKind::Any);
+        let write = EventKind::Modify(ModifyKind::Data(DataChange::Any));
+        let rename = EventKind::Modify(ModifyKind::Name(notify::event::RenameMode::Any));
+
+        assert!(watch_event_is_relevant(
+            Path::new("new.example.com"),
+            &create
+        ));
+        assert!(watch_event_is_relevant(
+            Path::new("old.example.com"),
+            &EventKind::Remove(RemoveKind::Any)
+        ));
+        assert!(watch_event_is_relevant(
+            Path::new("moved.example.com"),
+            &rename
+        ));
+        assert!(!watch_event_is_relevant(
+            Path::new("app.example.com"),
+            &EventKind::Modify(ModifyKind::Metadata(MetadataKind::Any))
+        ));
+
+        assert!(watch_event_is_relevant(
+            Path::new("app.example.com/app.infos"),
+            &write
+        ));
+        assert!(watch_event_is_relevant(
+            Path::new("app.example.com/app.infos"),
+            &rename
+        ));
+        assert!(!watch_event_is_relevant(
+            Path::new("app.example.com/index.html"),
+            &write
+        ));
+        assert!(!watch_event_is_relevant(
+            Path::new("app.example.com/restart.txt"),
+            &create
+        ));
+        assert!(!watch_event_is_relevant(
+            Path::new("app.example.com/deep/app.infos"),
+            &create
+        ));
+    }
 
     #[test]
     fn test_affected_app_names_skips_top_level_trigger_file() {
