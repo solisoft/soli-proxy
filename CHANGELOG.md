@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased
+
+**Apps (multi-tenant hardening, routing and supervision)**
+
+### Security
+
+* **A tenant's `app.infos` can no longer hang or exhaust the proxy.** It was read whole, with
+  `read_to_string`, on an async worker while holding the lock every proxied request takes: a
+  FIFO stopped all app routing, and `app.infos -> /dev/zero` grew the proxy until it was
+  OOM-killed — at every boot. It is now opened non-blocking, must be a regular file of at most
+  64 KiB, and (multi-tenant) is not followed through a symlink. Discovery reads and parses on
+  the blocking pool and takes the apps lock only to apply the result.
+* **A `www.` directory can no longer take over its apex domain, or another app's auth.**
+  Routing, Basic Auth and the app-name lookup now read one table. An app owns its declared
+  domain whether or not it is running (stopping a site used to hand its apex to a `www.` site
+  that derived it, while auth was still looked up on the stopped one), aliases outrank derived
+  domains, and in multi-tenant mode a derived claim no longer overrides an operator's static
+  rule or a cluster-pushed route. Auth is only ever taken from the app actually served.
+* **The proxy kills only processes it spawned.** At startup it killed the process group of
+  whatever listened on an app's ports, with no ownership check. Spawned processes are now
+  recorded with their start time in `run/spawned.json`, and a PID — or the group it belongs
+  to — is signalled only when it matches a record. Container slots are stopped with
+  `docker stop`/`docker rm -f` by name, never by PID.
+* **Tenants no longer choose their ports.** In multi-tenant mode `port_range_start`/`end` in
+  `app.infos` are ignored for the new `[apps] port_range_start`/`port_range_end` (default
+  20000-30000). In every mode a range below 1024, covering one of the proxy's own listeners,
+  or larger than 20 000 ports is refused (the `[apps]` range is used), and a remembered port
+  outside an app's current range is reallocated.
+* **Each tenant gets its own Docker network.** Multi-tenant containers used to share the
+  `soli-apps` bridge with inter-container traffic on, and `docker_network` let a tenant pick
+  any network. Each app now runs on `soli-app-<name>`, created with ICC disabled and a
+  `sl-<hash>` bridge name (so one firewall rule covers every tenant), removed with the app.
+  The README shows the nftables/iptables rules for host and private-range egress, which the
+  proxy cannot set portably.
+* **`--restart` is refused in tenant `docker_options`,** and `graceful_timeout` /
+  `drain_delay` are capped at 3600 s. A restart policy resurrected slots the proxy had stopped.
+* **The operator's egress proxy is no longer handed to tenants.** In multi-tenant mode
+  `HTTP(S)_PROXY`/`NO_PROXY` reach containers only with `[apps] tenant_proxy_env = true`, and a
+  value carrying `user:password@` only with `tenant_proxy_env_credentials = true` too.
+
 ## [0.35.2](https://github.com/solisoft/soli-proxy/compare/v0.35.1...v0.35.2) (2026-09-27)
 
 ### Bug Fixes

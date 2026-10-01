@@ -309,6 +309,80 @@ fn warn_unknown_keys(table: &toml::Table, label: &str, section: Option<&str>) {
     }
 }
 
+/// Largest `app.infos` the proxy will read. A real manifest is a few hundred
+/// bytes; the cap is what keeps a tenant's `app.infos -> /dev/zero` (or a
+/// multi-gigabyte file) from being read into memory whole.
+pub(crate) const MAX_TENANT_FILE_BYTES: u64 = 64 * 1024;
+
+/// Ceiling on `graceful_timeout` and `drain_delay`, in seconds.
+const MAX_APP_TIMEOUT_SECS: u32 = 3600;
+
+/// Read a small file that a tenant controls, safely.
+///
+/// `std::fs::read_to_string` on tenant input fails three ways at once: a FIFO
+/// blocks the reading thread forever (and discovery ran it on an async
+/// worker, under the lock every request takes), a symlink to `/dev/zero` is
+/// read until the process is OOM-killed — at every boot, so the proxy
+/// crash-loops — and a symlink can point at a file the tenant should not be
+/// able to name. So: open with `O_NONBLOCK` (a FIFO opens immediately instead
+/// of waiting for a writer), refuse anything but a regular file after
+/// `fstat`, and read at most [`MAX_TENANT_FILE_BYTES`]. With `follow_symlinks`
+/// false the open also carries `O_NOFOLLOW`, so a symlink in the last
+/// component is an error rather than an indirection.
+///
+/// `Ok(None)` means the file does not exist, which is not an error: most
+/// manifests are optional.
+pub(crate) fn read_tenant_file(
+    path: &Path,
+    follow_symlinks: bool,
+) -> Result<Option<String>, anyhow::Error> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut flags = libc::O_NONBLOCK | libc::O_CLOEXEC;
+    if !follow_symlinks {
+        flags |= libc::O_NOFOLLOW;
+    }
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(flags)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
+            anyhow::bail!("{} is a symlink, which is not followed", path.display())
+        }
+        Err(e) => return Err(anyhow::anyhow!("cannot open {}: {}", path.display(), e)),
+    };
+    let meta = file.metadata()?;
+    if !meta.file_type().is_file() {
+        anyhow::bail!("{} is not a regular file", path.display());
+    }
+    if meta.len() > MAX_TENANT_FILE_BYTES {
+        anyhow::bail!(
+            "{} is {} bytes, above the {} byte limit",
+            path.display(),
+            meta.len(),
+            MAX_TENANT_FILE_BYTES
+        );
+    }
+    // The size above is a hint, not a bound: the file can grow between the
+    // fstat and the read. `take` is the bound.
+    let mut buf = Vec::with_capacity(meta.len() as usize);
+    file.take(MAX_TENANT_FILE_BYTES + 1).read_to_end(&mut buf)?;
+    if buf.len() as u64 > MAX_TENANT_FILE_BYTES {
+        anyhow::bail!(
+            "{} is above the {} byte limit",
+            path.display(),
+            MAX_TENANT_FILE_BYTES
+        );
+    }
+    String::from_utf8(buf)
+        .map(Some)
+        .map_err(|_| anyhow::anyhow!("{} is not UTF-8", path.display()))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppInstance {
     pub name: String,
@@ -378,18 +452,36 @@ impl AppInfo {
             ));
         }
 
-        let app_infos_path = path.join("app.infos");
-
-        let mut config = if app_infos_path.exists() {
-            let content = std::fs::read_to_string(&app_infos_path)?;
-            if content.trim().is_empty() {
-                AppConfig::default()
-            } else {
+        // In multi_tenant mode the file is tenant input, and so is its *type*:
+        // a symlink is not followed (it could name another tenant's manifest,
+        // or a host file whose first line a TOML error would then quote into
+        // the log). Either way it must be a small regular file.
+        let mut config = match read_tenant_file(&path.join("app.infos"), !multi_tenant)? {
+            Some(content) if !content.trim().is_empty() => {
                 parse_app_infos(&content, dev_mode, folder_name)?
             }
-        } else {
-            AppConfig::default()
+            _ => AppConfig::default(),
         };
+
+        // Bound the two timeouts: a deploy sleeps `drain_delay` with the old
+        // slot still holding its memory, and a stop waits `graceful_timeout`
+        // before escalating — a year-long value would pin a slot (and, for a
+        // tenant, its share of the host) indefinitely.
+        for (value, label) in [
+            (&mut config.graceful_timeout, "graceful_timeout"),
+            (&mut config.drain_delay, "drain_delay"),
+        ] {
+            if *value > MAX_APP_TIMEOUT_SECS {
+                tracing::warn!(
+                    "app.infos for {}: {} = {} is above the {}s ceiling, clamped",
+                    folder_name,
+                    label,
+                    value,
+                    MAX_APP_TIMEOUT_SECS
+                );
+                *value = MAX_APP_TIMEOUT_SECS;
+            }
+        }
 
         // Clamp drain_delay to be less than graceful_timeout
         if config.drain_delay >= config.graceful_timeout {
@@ -557,12 +649,22 @@ pub struct AppManager {
     /// atomic map swap with no restart — the primitive behind production
     /// aliases, per-branch URLs and instant rollback.
     aliases: Arc<Mutex<HashMap<String, String>>>,
+    /// Serialises discoveries: see `discover_apps_inner`.
+    discover_lock: Arc<Mutex<()>>,
+    /// `[apps] port_range_*`, validated at construction.
+    port_range: (u16, u16),
+    /// The proxy's own listener ports, never handed to an app.
+    reserved_ports: Vec<u16>,
 }
 
 /// Where the alias table is persisted, alongside `app_state.json` and
 /// `ports.lock`. Paths in `run/` are CWD-relative, matching the rest of the
 /// runtime state.
 const ALIASES_FILE: &str = "./run/aliases.json";
+
+/// The native processes this proxy spawned, with their start times, so a
+/// restarted proxy reclaims its own leftovers and nothing else.
+const SPAWN_REGISTRY_FILE: &str = "./run/spawned.json";
 
 /// Convert a domain to its `.test` alias by replacing the TLD.
 /// e.g. "soli.solisoft.net" → "soli.solisoft.test"
@@ -657,109 +759,311 @@ fn strip_www(domain: &str) -> Option<String> {
     }
 }
 
-/// The domain -> (port, health_check) table for every app with a live slot.
+/// How a host came to point at an app. Decides who wins a host two apps
+/// could both answer for: declared beats alias beats derived.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Claim {
+    /// The app's own `domain`.
+    Declared,
+    /// An admin-managed alias (`set_alias`).
+    Alias,
+    /// Derived from `domain` by the proxy: its `www.`-stripped apex, or its
+    /// `.test` twin in dev mode. Nobody chose it explicitly, so it never
+    /// displaces an explicit claim — and in multi_tenant mode, where the
+    /// `domain` it derives from is tenant input, it does not displace an
+    /// operator's static rule or a cluster-pushed route either.
+    Derived,
+}
+
+/// Where one host goes, and everything the request path needs about it.
 ///
-/// Apps are visited in name order and a domain, once claimed, is never
-/// overwritten: with a plain `HashMap::insert` a second app declaring the
-/// same `domain` would hijack the first one's traffic, and which one won
-/// would depend on map iteration order. A clash on a *declared* domain is
-/// logged as an error so it is visible instead of silently routing to the
-/// wrong app. A clash on a derived one (`www.`-stripped, `.test`) is routine
-/// — `x/` and `www.x/` both map to `x` — and stays at debug, since this runs
-/// on every request.
-fn running_app_domains(
+/// Routing, Basic Auth, idle tracking and metrics attribution are all read
+/// from this one entry. They used to be four separate lookups with four
+/// separate rules — routing skipped apps that were not running, the name
+/// lookup did not — so a `www.` twin could be served a request while another
+/// app's `[auth]` (or none) was enforced on it.
+#[derive(Debug)]
+pub struct AppRoute {
+    pub app: Arc<str>,
+    pub claim: Claim,
+    /// `http://127.0.0.1:<port>/` of the live slot, or `None` while the app
+    /// has no running process (stopped, asleep, failed). Such an app still
+    /// owns its hosts — nobody else is routed them — it just cannot serve.
+    pub target: Option<Url>,
+    pub port: u16,
+    pub health_check: Option<String>,
+    /// The app's `[auth]`, when it has accounts.
+    pub auth: Option<Arc<AppAuth>>,
+}
+
+/// A resolved request: where to send it, and — for the proxy's own apps —
+/// which app that is and the Basic Auth it requires.
+#[derive(Debug, Clone)]
+pub struct AppTarget {
+    pub target: super::config::Target,
+    /// `None` for a cluster-pushed route.
+    pub app: Option<Arc<str>>,
+    pub auth: Option<Arc<AppAuth>>,
+}
+
+/// The routing table for every app the proxy manages: host -> entry, plus
+/// slot port -> app for attributing a proxied request to its app.
+#[derive(Debug, Default)]
+pub struct AppRoutes {
+    hosts: HashMap<String, Arc<AppRoute>>,
+    ports: HashMap<u16, Arc<str>>,
+}
+
+impl AppRoutes {
+    pub fn get(&self, host: &str) -> Option<&Arc<AppRoute>> {
+        self.hosts.get(host)
+    }
+}
+
+/// The port of the slot that should take traffic: the current slot, or the
+/// other one when the current slot has no process (so a dead `current_slot`
+/// does not mean a permanent 421 while the other slot runs). `None` when
+/// neither slot has a process.
+fn live_port(app: &AppInfo) -> Option<u16> {
+    let (current, other) = if app.current_slot == "blue" {
+        (&app.blue, &app.green)
+    } else {
+        (&app.green, &app.blue)
+    };
+    [current, other]
+        .into_iter()
+        .find(|instance| instance.pid.is_some() && instance.port > 0)
+        .map(|instance| instance.port)
+}
+
+/// Build the routing table from the apps map and the alias table.
+///
+/// Deterministic whatever the maps' iteration order: claims are taken in
+/// three passes — declared domains, then aliases, then derived domains — and
+/// within a pass apps are visited in name order (aliases in domain order).
+/// A host, once claimed, is never overwritten. A clash on a declared domain
+/// is logged as an error, since it is a misconfiguration that leaves one app
+/// unreachable; a derived clash is routine (`x/` and `www.x/` both map to
+/// `x`) and stays at debug.
+///
+/// Ownership does not depend on whether an app is running: a stopped app
+/// keeps its hosts (with no target) instead of releasing them to whichever
+/// app derives the same name. Otherwise stopping a site would hand its apex
+/// to a `www.` directory owned by someone else.
+fn build_routes(
     apps: &HashMap<String, AppInfo>,
+    aliases: &HashMap<String, String>,
     dev_mode: bool,
-) -> HashMap<String, (u16, Option<String>)> {
-    let mut result: HashMap<String, (u16, Option<String>)> = HashMap::new();
-    let mut claim = |domain: String, app: &AppInfo, port: u16, declared: bool| {
-        if let Some((existing_port, _)) = result.get(&domain) {
-            if declared {
+) -> AppRoutes {
+    let mut ordered: Vec<&AppInfo> = apps.values().collect();
+    ordered.sort_by(|a, b| a.config.name.cmp(&b.config.name));
+
+    // One entry per app, shared by all of its hosts.
+    let entry = |app: &AppInfo, claim: Claim| AppRoute {
+        app: Arc::from(app.config.name.as_str()),
+        claim,
+        target: live_port(app)
+            .and_then(|port| Url::parse(&format!("http://127.0.0.1:{}/", port)).ok()),
+        port: live_port(app).unwrap_or(0),
+        health_check: app.config.health_check.clone(),
+        auth: (!app.config.auth.users.is_empty()).then(|| Arc::new(app.config.auth.clone())),
+    };
+    let mut routes = AppRoutes::default();
+    let mut claim = |host: String, app: &AppInfo, kind: Claim| {
+        if let Some(existing) = routes.hosts.get(&host) {
+            if kind == Claim::Declared {
                 tracing::error!(
-                    "get_running_app_domains: app {} declares domain {}, already served by port {}; \
-                     keeping the first, ignoring {}",
+                    "app {} declares domain {}, already claimed by app {}; keeping the first",
                     app.config.name,
-                    domain,
-                    existing_port,
-                    app.config.name
+                    host,
+                    existing.app
                 );
             } else {
                 tracing::debug!(
-                    "get_running_app_domains: derived domain {} of app {} already served by port {}, keeping the first",
-                    domain,
+                    "{:?} host {} of app {} is already claimed by app {}",
+                    kind,
+                    host,
                     app.config.name,
-                    existing_port
+                    existing.app
                 );
             }
             return;
         }
-        result.insert(domain, (port, app.config.health_check.clone()));
+        routes.hosts.insert(host, Arc::new(entry(app, kind)));
     };
 
-    let mut ordered: Vec<&AppInfo> = apps.values().collect();
-    ordered.sort_by(|a, b| a.config.name.cmp(&b.config.name));
+    // The bundled `_admin` app is served only via the authenticated admin
+    // listener (which reaches it through `get_app("_admin")` directly). It
+    // must never be reachable through the public proxy's Host-based app
+    // routing: the admin API strips credentials before forwarding, so
+    // `_admin` does no auth of its own, and exposing it here would let any
+    // client reach the admin UI/actions unauthenticated with
+    // `Host: <admin-domain>`. Same for an alias pointing at it.
+    let routable = |app: &AppInfo| app.config.name != "_admin" && !app.config.domain.is_empty();
 
-    for app in ordered {
-        // The bundled `_admin` app is served only via the authenticated
-        // admin listener (which reaches it through `get_app("_admin")`
-        // directly). It must never be reachable through the public proxy's
-        // Host-based app routing: the admin API strips credentials before
-        // forwarding, so `_admin` does no auth of its own, and exposing it
-        // here would let any client reach the admin UI/actions unauthenticated
-        // with `Host: <admin-domain>`.
-        if app.config.name == "_admin" {
-            continue;
+    for app in ordered.iter().copied().filter(|app| routable(app)) {
+        claim(app.config.domain.clone(), app, Claim::Declared);
+    }
+
+    // Aliases resolve to whatever their target app is serving right now, so
+    // repointing one takes effect on the next request without touching the
+    // running processes. After the declared pass, so an alias can never
+    // shadow an app's own domain.
+    let mut alias_list: Vec<(&String, &String)> = aliases.iter().collect();
+    alias_list.sort();
+    for (alias, target) in alias_list {
+        if let Some(app) = apps.get(target).filter(|app| app.config.name != "_admin") {
+            claim(alias.clone(), app, Claim::Alias);
         }
-        if app.config.domain.is_empty() {
-            tracing::debug!(
-                "get_running_app_domains: app {} has empty domain, skipping",
-                app.config.name
-            );
-            continue;
-        }
-        let (port, pid) = if app.current_slot == "blue" {
-            (app.blue.port, app.blue.pid)
-        } else {
-            (app.green.port, app.green.pid)
-        };
-        tracing::debug!("get_running_app_domains: app {} domain={} current_slot={} blue_port={} blue_pid={:?} green_port={} green_pid={:?}",
-            app.config.name, app.config.domain, app.current_slot, app.blue.port, app.blue.pid, app.green.port, app.green.pid);
-        // If current slot has no PID, fall back to the other slot.
-        // This prevents permanent 421 when current_slot points to a
-        // dead slot but the other slot has a running process.
-        let (port, pid) = if pid.is_none() {
-            tracing::debug!(
-                "get_running_app_domains: app {} has no pid for slot {}, trying other slot",
-                app.config.name,
-                app.current_slot
-            );
-            if app.current_slot == "blue" {
-                (app.green.port, app.green.pid)
-            } else {
-                (app.blue.port, app.blue.pid)
-            }
-        } else {
-            (port, pid)
-        };
-        if pid.is_none() {
-            tracing::debug!(
-                "get_running_app_domains: app {} has no pid on either slot, skipping",
-                app.config.name,
-            );
-            continue;
-        }
-        claim(app.config.domain.clone(), app, port, true);
-        if let Some(non_www) = strip_www(&app.config.domain) {
-            claim(non_www, app, port, false);
+    }
+
+    for app in ordered.iter().copied().filter(|app| routable(app)) {
+        if let Some(apex) = strip_www(&app.config.domain) {
+            claim(apex, app, Claim::Derived);
         }
         if dev_mode {
             if let Some(dev) = dev_domain(&app.config.domain) {
-                claim(dev, app, port, false);
+                claim(dev, app, Claim::Derived);
             }
         }
     }
 
-    result
+    for app in &ordered {
+        let name: Arc<str> = Arc::from(app.config.name.as_str());
+        for port in [app.blue.port, app.green.port] {
+            if port > 0 {
+                routes.ports.entry(port).or_insert_with(|| name.clone());
+            }
+        }
+    }
+
+    routes
+}
+
+/// The port of a loopback target URL (`http://127.0.0.1:20001/x`), parsed by
+/// hand: this runs once per proxied request, to attribute it to an app.
+fn loopback_port(target_url: &str) -> Option<u16> {
+    let rest = target_url.split_once("://")?.1;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let (host, port) = authority.rsplit_once(':')?;
+    matches!(host, "127.0.0.1" | "localhost" | "[::1]")
+        .then(|| port.parse().ok())
+        .flatten()
+}
+
+/// Load every site directory under `sites_dir`, in path order.
+///
+/// Synchronous and lock-free on purpose: discovery runs it on the blocking
+/// pool, so a site directory that is slow to read (or built to be) costs a
+/// blocking thread, never an async worker or the apps lock.
+fn scan_sites(
+    sites_dir: &Path,
+    dev_mode: bool,
+    multi_tenant: bool,
+) -> std::io::Result<Vec<(PathBuf, Result<AppInfo, anyhow::Error>)>> {
+    // Directory order is filesystem-dependent; sort so that when two
+    // directories collide on a name, "first wins" is stable across restarts.
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(sites_dir)?
+        .map(|entry| entry.map(|e| e.path()))
+        .collect::<Result<_, _>>()?;
+    entries.sort();
+
+    let mut out = Vec::new();
+    for path in entries {
+        // Skip directories starting with '.' (like .claude)
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            if name.starts_with('.') {
+                continue;
+            }
+        }
+        // `is_dir` follows a symlinked site, which is the common layout.
+        if path.is_dir() {
+            let result = AppInfo::from_path(&path, dev_mode, multi_tenant);
+            out.push((path, result));
+        }
+    }
+    Ok(out)
+}
+
+/// Why a port range cannot be used for app slots, if it cannot.
+///
+/// Below 1024 are the privileged ports (and in practice every system service
+/// worth squatting); `reserved` are the proxy's own listeners, which are not
+/// bound yet when discovery first allocates at boot — so the allocator's
+/// bind probe would happily hand the admin port to an app. The size cap keeps
+/// the allocator's linear probe bounded.
+fn port_range_problem(start: u16, end: u16, reserved: &[u16]) -> Option<String> {
+    if start < 1024 {
+        return Some(format!("starts at {start}, below 1024"));
+    }
+    if end <= start {
+        return Some(format!(
+            "{start}-{end} holds fewer than the two ports blue/green needs"
+        ));
+    }
+    if u32::from(end - start) + 1 > MAX_PORT_RANGE_SIZE {
+        return Some(format!(
+            "{start}-{end} spans more than {MAX_PORT_RANGE_SIZE} ports"
+        ));
+    }
+    if let Some(port) = reserved.iter().find(|p| (start..=end).contains(*p)) {
+        return Some(format!(
+            "{start}-{end} contains port {port}, one of the proxy's own listeners"
+        ));
+    }
+    None
+}
+
+/// Largest app port range accepted.
+const MAX_PORT_RANGE_SIZE: u32 = 20_000;
+
+/// The ports the proxy itself listens on, from its configuration.
+fn proxy_listener_ports(cfg: &crate::config::Config) -> Vec<u16> {
+    let port_of = |bind: &str| {
+        bind.rsplit_once(':')
+            .and_then(|(_, port)| port.parse::<u16>().ok())
+    };
+    [
+        port_of(&cfg.server.bind),
+        Some(cfg.server.https_port),
+        port_of(&cfg.admin.bind),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// Defaults for the platform-owned app port range (`[apps] port_range_start`
+/// / `port_range_end`), the same values `AppConfig` has always defaulted to.
+const DEFAULT_APP_PORT_RANGE: (u16, u16) = (20000, 30000);
+
+impl crate::config::AppsTomlConfig {
+    /// The platform's app port range: every app's range in multi_tenant mode,
+    /// and the fallback for an app whose own range is unusable otherwise.
+    pub fn app_port_range(&self) -> (u16, u16) {
+        (
+            self.port_range_start.unwrap_or(DEFAULT_APP_PORT_RANGE.0),
+            self.port_range_end.unwrap_or(DEFAULT_APP_PORT_RANGE.1),
+        )
+    }
+
+    /// Consecutive failed health checks before an app is failed over.
+    pub fn health_failure_threshold(&self) -> u32 {
+        self.health_failure_threshold.unwrap_or(3).max(1)
+    }
+
+    /// Whether the proxy's egress variables (`HTTP_PROXY` & co.) reach tenant
+    /// containers. Off by default in multi_tenant mode: they are the
+    /// operator's, and often carry credentials.
+    pub fn tenant_proxy_env(&self) -> bool {
+        self.tenant_proxy_env.unwrap_or(false)
+    }
+
+    /// Whether a forwarded variable may carry `user:password@` — only with
+    /// this explicit second opt-in.
+    pub fn tenant_proxy_env_credentials(&self) -> bool {
+        self.tenant_proxy_env_credentials.unwrap_or(false)
+    }
 }
 
 /// Check if a port is currently in use by attempting to connect to it.
@@ -770,42 +1074,6 @@ async fn is_port_in_use(port: u16) -> bool {
     })
     .await
     .unwrap_or(false)
-}
-
-/// Kill a process group (SIGTERM, wait, then SIGKILL if needed).
-async fn kill_process_group(pid: u32) {
-    if pid < 2 {
-        return;
-    }
-    let pgid = format!("-{}", pid);
-    let _ = tokio::process::Command::new("kill")
-        .arg("-TERM")
-        .arg("--")
-        .arg(&pgid)
-        .output()
-        .await;
-
-    for _ in 0..20 {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        let output = tokio::process::Command::new("kill")
-            .arg("-0")
-            .arg(pid.to_string())
-            .output()
-            .await;
-        if let Ok(o) = output {
-            if !o.status.success() {
-                return; // Process is dead
-            }
-        }
-    }
-
-    // Force kill
-    let _ = tokio::process::Command::new("kill")
-        .arg("-9")
-        .arg("--")
-        .arg(&pgid)
-        .output()
-        .await;
 }
 
 /// Decide whether a change to a site's trigger file should fire a deploy, and
@@ -957,9 +1225,31 @@ impl AppManager {
                 cfg.apps.default_group.clone(),
                 process_exit_tx,
             )
-            .with_tenant_isolation(multi_tenant, cfg.apps.mandatory_docker_args()),
+            .with_tenant_isolation(multi_tenant, cfg.apps.mandatory_docker_args())
+            .with_tenant_env(
+                cfg.apps.tenant_proxy_env(),
+                cfg.apps.tenant_proxy_env_credentials(),
+            )
+            .with_spawn_registry(PathBuf::from(SPAWN_REGISTRY_FILE)),
         );
         let (event_tx, _) = broadcast::channel(32);
+
+        let reserved_ports = proxy_listener_ports(&cfg);
+        let port_range = {
+            let (start, end) = cfg.apps.app_port_range();
+            match port_range_problem(start, end, &reserved_ports) {
+                None => (start, end),
+                Some(problem) => {
+                    tracing::error!(
+                        "[apps] port range unusable ({}); using {}-{}",
+                        problem,
+                        DEFAULT_APP_PORT_RANGE.0,
+                        DEFAULT_APP_PORT_RANGE.1
+                    );
+                    DEFAULT_APP_PORT_RANGE
+                }
+            }
+        };
 
         let manager = Self {
             sites_dir: sites_path,
@@ -987,9 +1277,71 @@ impl AppManager {
             asleep: Arc::new(parking_lot::Mutex::new(HashSet::new())),
             aliases: Arc::new(Mutex::new(read_aliases_file())),
             external_routes: Arc::new(external::ExternalRouteTable::default()),
+            discover_lock: Arc::new(Mutex::new(())),
+            port_range,
+            reserved_ports,
         };
 
         Ok(manager)
+    }
+
+    /// The port range an app's slots are allocated from.
+    ///
+    /// Multi-tenant: always the platform's. A tenant choosing its own range
+    /// could aim it at 5432, the admin port, or a band another tenant's slots
+    /// live in. Single-tenant: the app's own, when it is usable.
+    fn port_range_for(&self, config: &AppConfig) -> (u16, u16) {
+        let requested = (config.port_range_start, config.port_range_end);
+        if self.multi_tenant {
+            let default = AppConfig::default();
+            let declared = requested != (default.port_range_start, default.port_range_end);
+            if declared && requested != self.port_range {
+                tracing::warn!(
+                    "app.infos for {}: port_range_start/port_range_end are ignored in \
+                     multi_tenant mode; using the platform range {}-{}",
+                    config.name,
+                    self.port_range.0,
+                    self.port_range.1
+                );
+            }
+            return self.port_range;
+        }
+        match port_range_problem(requested.0, requested.1, &self.reserved_ports) {
+            None => requested,
+            Some(problem) => {
+                tracing::error!(
+                    "app.infos for {}: port range unusable ({}); using {}-{}",
+                    config.name,
+                    problem,
+                    self.port_range.0,
+                    self.port_range.1
+                );
+                self.port_range
+            }
+        }
+    }
+
+    /// Clean up after an app whose site directory is gone.
+    ///
+    /// Multi-tenant docker apps are stopped and their private network
+    /// removed: the tenant was deprovisioned, and an untrusted container that
+    /// outlives its site is still running someone's code on the host. Other
+    /// apps are left running as before — dropping them from the map is all
+    /// discovery ever did — so an operator who moves a directory does not
+    /// take a site down by accident.
+    fn retire_removed_app(&self, app: AppInfo) {
+        if !(self.multi_tenant && app.config.docker_image.is_some()) {
+            return;
+        }
+        let dm = self.deployment_manager.clone();
+        tokio::spawn(async move {
+            for slot in ["blue", "green"] {
+                if let Err(e) = dm.stop_instance(&app, slot).await {
+                    tracing::warn!("Failed to stop {} slot {}: {}", app.config.name, slot, e);
+                }
+            }
+            dm.remove_app_network(&app.config.name).await;
+        });
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<AppEvent> {
@@ -1008,37 +1360,23 @@ impl AppManager {
         *self.acme_service.lock().await = Some(service);
     }
 
-    pub async fn get_running_app_domains(&self) -> HashMap<String, (u16, Option<String>)> {
+    /// The routing table: one entry per host, see [`AppRoute`].
+    pub async fn routes(&self) -> Arc<AppRoutes> {
         let apps = self.apps.lock().await;
-        let mut result = running_app_domains(&apps, self.dev_mode);
-
-        // Fold in admin-managed aliases. An alias resolves to whatever its
-        // target app is serving right now, so repointing one takes effect on
-        // the next request without touching the running processes.
-        //
-        // This runs last and skips domains already present, so an alias can
-        // never shadow an app's own domain — otherwise a stale alias could
-        // silently hijack a real site.
         let aliases = self.aliases.lock().await;
-        for (alias, target) in aliases.iter() {
-            if result.contains_key(alias) {
-                continue;
-            }
-            let Some(app) = apps.get(target) else {
-                continue;
-            };
-            // `_admin` is unauthenticated behind the admin listener; an alias
-            // to it would expose it on the public proxy.
-            if app.config.name == "_admin" {
-                continue;
-            }
-            if let Some((port, health_check)) = result.get(&app.config.domain).cloned() {
-                result.insert(alias.clone(), (port, health_check));
-            }
-        }
-        drop(aliases);
+        Arc::new(build_routes(&apps, &aliases, self.dev_mode))
+    }
 
-        result
+    /// Domain -> (port, health_check) for every host currently served by a
+    /// running app.
+    pub async fn get_running_app_domains(&self) -> HashMap<String, (u16, Option<String>)> {
+        self.routes()
+            .await
+            .hosts
+            .iter()
+            .filter(|(_, route)| route.target.is_some())
+            .map(|(host, route)| (host.clone(), (route.port, route.health_check.clone())))
+            .collect()
     }
 
     /// Current alias table (domain -> app name).
@@ -1114,7 +1452,7 @@ impl AppManager {
         }
         match serde_json::to_string_pretty(&state) {
             Ok(content) => {
-                if let Err(e) = std::fs::write(&path, content) {
+                if let Err(e) = crate::config::write_atomic(&path, content.as_bytes()) {
                     tracing::error!("Failed to write {}: {}", ALIASES_FILE, e);
                 }
             }
@@ -1126,24 +1464,58 @@ impl AppManager {
         self.resolve_app_target_with(host, &|_| true).await
     }
 
-    /// [`Self::resolve_app_target`], with the circuit breaker's opinion of each
-    /// cluster target: consecutive requests rotate across a pushed domain's
-    /// instances, and one whose circuit is open is passed over.
+    /// [`Self::resolve_app_request`], for callers that only need the target.
     pub async fn resolve_app_target_with(
         &self,
         host: &str,
         is_available: &(dyn Fn(&str) -> bool + Sync),
     ) -> Option<super::config::Target> {
-        let app_domains = self.get_running_app_domains().await;
-        tracing::debug!(
-            "resolve_app_target: host={}, available_domains={:?}",
-            host,
-            app_domains.keys().collect::<Vec<_>>()
-        );
-        if let Some((port, _)) = app_domains.get(host) {
-            let url = format!("http://localhost:{}", port);
-            if let Ok(url) = Url::parse(&url) {
-                return Some(super::config::Target { url, weight: 100 });
+        self.resolve_app_request(host, is_available)
+            .await
+            .map(|resolved| resolved.target)
+    }
+
+    /// Resolve a request for `host`: where it goes, which app that is, and
+    /// the Basic Auth to enforce — all from one routing entry, so the app
+    /// whose credentials are checked is always the app that is served.
+    ///
+    /// Records the request for scale to zero, and wakes a sleeping app (the
+    /// request is held until it is healthy) rather than answering 421.
+    /// Cluster-pushed routes come back with no app and no auth: their
+    /// `app.infos` lives on the node that runs them, and that node enforces
+    /// it.
+    pub async fn resolve_app_request(
+        &self,
+        host: &str,
+        is_available: &(dyn Fn(&str) -> bool + Sync),
+    ) -> Option<AppTarget> {
+        let mut route = self.routes().await.get(host).cloned();
+        if let Some(ref r) = route {
+            self.touch(&r.app);
+            if r.target.is_none() && self.is_asleep(&r.app) {
+                match self.wake(&r.app).await {
+                    // Woken and healthy: this request is the one that woke
+                    // it, and it should be served, not told 421.
+                    Ok(()) => route = self.routes().await.get(host).cloned(),
+                    Err(e) => tracing::warn!("Could not wake {} for {}: {}", r.app, host, e),
+                }
+            }
+        }
+        if let Some(route) = route {
+            // A derived claim is the weakest there is; in multi_tenant mode it
+            // is tenant input and yields to a route the cluster pushed.
+            let yields = self.multi_tenant
+                && route.claim == Claim::Derived
+                && self.external_routes.serves(host);
+            if let (Some(url), false) = (&route.target, yields) {
+                return Some(AppTarget {
+                    target: super::config::Target {
+                        url: url.clone(),
+                        weight: 100,
+                    },
+                    app: Some(route.app.clone()),
+                    auth: route.auth.clone(),
+                });
             }
         }
         // Then routes pushed from the cluster. **After** the proxy's own apps,
@@ -1151,7 +1523,35 @@ impl AppManager {
         // sides, and the node that actually holds the process has to win.
         // Preferring the pushed table would hand traffic to a workload that may
         // not have started yet.
-        self.external_routes.pick(host, is_available)
+        self.external_routes
+            .pick(host, is_available)
+            .map(|target| AppTarget {
+                target,
+                app: None,
+                auth: None,
+            })
+    }
+
+    /// Whether a whole-domain static rule for `host` should step aside for
+    /// the app manager (`override_with_app` in the server).
+    ///
+    /// Any claim does in single-tenant mode, where the operator wrote both
+    /// the rule and the manifest. In multi_tenant mode a derived claim does
+    /// not: `www.example.com/` deriving `example.com` would otherwise take
+    /// the operator's own rule for the apex — and whatever `@auth` it had.
+    pub async fn overrides_domain_rule(&self, host: &str) -> bool {
+        self.routes()
+            .await
+            .get(host)
+            .is_some_and(|route| !(self.multi_tenant && route.claim == Claim::Derived))
+    }
+
+    /// The app a proxied request went to, from its target URL's port: how a
+    /// request is attributed to an app for per-app metrics, including one
+    /// that reached an app's port through a static rule.
+    pub async fn app_for_target_url(&self, target_url: &str) -> Option<Arc<str>> {
+        let port = loopback_port(target_url)?;
+        self.routes().await.ports.get(&port).cloned()
     }
 
     /// Every domain this proxy will answer for — its own apps plus pushed ones.
@@ -1184,51 +1584,25 @@ impl AppManager {
     /// Basic Auth configured for the app serving `host`, if any.
     ///
     /// `None` — the common case — means the request needs no credential check
-    /// at all, so a request for an unprotected app never clones anything.
-    /// Cluster-pushed routes always answer `None`: their `app.infos` lives on
-    /// the node that actually runs the workload, and that node enforces it.
-    pub async fn auth_for_host(&self, host: &str) -> Option<AppAuth> {
-        let name = self.app_name_for_host(host).await?;
-        let apps = self.apps.lock().await;
-        let auth = &apps.get(&name)?.config.auth;
-        (!auth.users.is_empty()).then(|| auth.clone())
+    /// at all. Only an app that is actually serving `host` answers: one that
+    /// owns the host but is not running has no request to protect, and a
+    /// cluster-pushed route is enforced by the node that runs it.
+    pub async fn auth_for_host(&self, host: &str) -> Option<Arc<AppAuth>> {
+        let routes = self.routes().await;
+        let route = routes.get(host)?;
+        route.target.as_ref()?;
+        route.auth.clone()
     }
 
-    /// Find the app name for a given host domain.
-    ///
-    /// Apps are visited in name order, the same rule `running_app_domains`
-    /// uses to settle a domain claimed by two apps. Iterating the map directly
-    /// would pick an arbitrary winner, so the app that *serves* a contested
-    /// domain and the app this returns could differ from run to run — and
-    /// since `auth_for_host` builds on this, that would mean answering a
-    /// protected app's traffic with another app's credentials (or none).
+    /// The app that owns `host` — by its declared domain, an alias, or a
+    /// derived domain, whether or not it is running. Ties are settled the way
+    /// [`build_routes`] settles them, so this is always the app that would
+    /// serve the host.
     pub async fn app_name_for_host(&self, host: &str) -> Option<String> {
-        {
-            let apps = self.apps.lock().await;
-            let mut ordered: Vec<(&String, &AppInfo)> = apps.iter().collect();
-            ordered.sort_by(|a, b| a.0.cmp(b.0));
-            for (name, app) in ordered {
-                if app.config.domain == host {
-                    return Some(name.clone());
-                }
-                if strip_www(&app.config.domain).as_deref() == Some(host) {
-                    return Some(name.clone());
-                }
-                if self.dev_mode && dev_domain(&app.config.domain).as_deref() == Some(host) {
-                    return Some(name.clone());
-                }
-            }
-        }
-
-        // Fall back to the alias table, so traffic arriving on an alias is
-        // still attributed to its app — this is what per-app metrics and
-        // request-triggered failover key off.
-        let alias_target = self.aliases.lock().await.get(host).cloned()?;
-        self.apps
-            .lock()
+        self.routes()
             .await
-            .contains_key(&alias_target)
-            .then_some(alias_target)
+            .get(host)
+            .map(|route| route.app.to_string())
     }
 
     /// Trigger a failover for the given app in a background task.
@@ -1272,126 +1646,123 @@ impl AppManager {
     }
 
     async fn discover_apps_inner(&self, auto_start: bool) -> Result<(), anyhow::Error> {
+        // One discovery at a time. The phases below release the apps lock
+        // between them, so two overlapping scans could otherwise both take an
+        // app for new and both queue its auto-start.
+        let _discovering = self.discover_lock.lock().await;
         tracing::info!("Discovering apps in {}", self.sites_dir.display());
-        let mut apps_to_start: Vec<String> = Vec::new();
 
-        {
-            let mut apps = self.apps.lock().await;
+        // Phase 1 — the filesystem, on the blocking pool and under no lock.
+        // Every `app.infos` read and parse happens here: this used to run on
+        // an async worker while holding the lock every proxied request takes,
+        // so one slow (or hostile) site directory stalled all routing.
+        let sites_dir = self.sites_dir.clone();
+        let (dev_mode, multi_tenant) = (self.dev_mode, self.multi_tenant);
+        let scanned =
+            tokio::task::spawn_blocking(move || scan_sites(&sites_dir, dev_mode, multi_tenant))
+                .await
+                .map_err(|e| anyhow::anyhow!("site scan failed: {}", e))??;
 
-            // Track which apps still exist on disk
-            let mut seen_names: HashSet<String> = HashSet::new();
-
-            // Directory order is filesystem-dependent; sort so that when two
-            // directories collide on a name, "first wins" below is stable
-            // across restarts.
-            let mut entries: Vec<PathBuf> = std::fs::read_dir(&self.sites_dir)?
-                .map(|entry| entry.map(|e| e.path()))
-                .collect::<Result<_, _>>()?;
-            entries.sort();
-
-            for path in entries {
-                // Skip directories starting with '.' (like .claude)
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    if name.starts_with('.') {
+        let mut seen_names: HashSet<String> = HashSet::new();
+        let mut loaded: Vec<AppInfo> = Vec::new();
+        for (path, result) in scanned {
+            match result {
+                Ok(app_info) => {
+                    let name = app_info.config.name.clone();
+                    // Two directories resolving to one name would otherwise
+                    // share an apps-map entry: the later one inherits the
+                    // earlier one's ports and PIDs while replacing its path
+                    // and start command. Keep the first, never overwrite.
+                    if !seen_names.insert(name.clone()) {
+                        tracing::error!(
+                            "Skipping {}: app name {:?} is already taken by another site \
+                             directory in this scan",
+                            path.display(),
+                            name
+                        );
                         continue;
                     }
+                    loaded.push(app_info);
                 }
+                Err(e) => {
+                    tracing::warn!("Failed to load app from {}: {:#}", path.display(), e);
+                }
+            }
+        }
 
-                let resolved_path = if path.is_symlink() {
-                    match path.canonicalize() {
-                        Ok(p) => p,
-                        Err(_) => path.clone(),
-                    }
+        // Phase 2 — ports for the apps not in the map yet, again without the
+        // apps lock: allocation probes the OS and persists `ports.lock`.
+        let known: HashSet<String> = {
+            let apps = self.apps.lock().await;
+            loaded
+                .iter()
+                .filter(|app| apps.contains_key(&app.config.name))
+                .map(|app| app.config.name.clone())
+                .collect()
+        };
+        for app_info in loaded
+            .iter_mut()
+            .filter(|app| !known.contains(&app.config.name))
+        {
+            let (start, end) = self.port_range_for(&app_info.config);
+            for slot in ["blue", "green"] {
+                match self
+                    .port_allocator
+                    .allocate_with_range(&app_info.config.name, slot, start, end)
+                    .await
+                {
+                    Ok(port) if slot == "blue" => app_info.blue.port = port,
+                    Ok(port) => app_info.green.port = port,
+                    Err(e) => tracing::error!(
+                        "Failed to allocate {} port for {}: {}",
+                        slot,
+                        app_info.config.name,
+                        e
+                    ),
+                }
+            }
+        }
+
+        // Phase 3 — apply, under a lock held only for map updates.
+        let mut apps_to_start: Vec<String> = Vec::new();
+        let removed: Vec<AppInfo> = {
+            let mut apps = self.apps.lock().await;
+            for mut app_info in loaded {
+                let name = app_info.config.name.clone();
+                if let Some(existing) = apps.get(&name) {
+                    // Preserve runtime state from existing entry
+                    app_info.blue.port = existing.blue.port;
+                    app_info.blue.pid = existing.blue.pid;
+                    app_info.blue.status = existing.blue.status.clone();
+                    app_info.blue.last_started = existing.blue.last_started.clone();
+                    app_info.green.port = existing.green.port;
+                    app_info.green.pid = existing.green.pid;
+                    app_info.green.status = existing.green.status.clone();
+                    app_info.green.last_started = existing.green.last_started.clone();
+                    app_info.current_slot = existing.current_slot.clone();
+                    tracing::debug!("Refreshed config for app: {}", name);
                 } else {
-                    path.clone()
-                };
-                if resolved_path.is_dir() {
-                    match AppInfo::from_path(&path, self.dev_mode, self.multi_tenant) {
-                        Ok(mut app_info) => {
-                            let name = app_info.config.name.clone();
-                            // Two directories resolving to one name would
-                            // otherwise share an apps-map entry: the later one
-                            // inherits the earlier one's ports and PIDs while
-                            // replacing its path and start command. Keep the
-                            // first, never overwrite.
-                            if !seen_names.insert(name.clone()) {
-                                tracing::error!(
-                                    "Skipping {}: app name {:?} is already taken by another site \
-                                     directory in this scan",
-                                    path.display(),
-                                    name
-                                );
-                                continue;
-                            }
-
-                            if let Some(existing) = apps.get(&name) {
-                                // Preserve runtime state from existing entry
-                                app_info.blue.port = existing.blue.port;
-                                app_info.blue.pid = existing.blue.pid;
-                                app_info.blue.status = existing.blue.status.clone();
-                                app_info.blue.last_started = existing.blue.last_started.clone();
-                                app_info.green.port = existing.green.port;
-                                app_info.green.pid = existing.green.pid;
-                                app_info.green.status = existing.green.status.clone();
-                                app_info.green.last_started = existing.green.last_started.clone();
-                                app_info.current_slot = existing.current_slot.clone();
-                                tracing::debug!("Refreshed config for app: {}", name);
-                            } else {
-                                tracing::info!("Discovered new app: {}", name);
-                                // Allocate ports for new apps only
-                                let port_range_start = app_info.config.port_range_start;
-                                let port_range_end = app_info.config.port_range_end;
-                                match self
-                                    .port_allocator
-                                    .allocate_with_range(
-                                        &app_info.config.name,
-                                        "blue",
-                                        port_range_start,
-                                        port_range_end,
-                                    )
-                                    .await
-                                {
-                                    Ok(port) => app_info.blue.port = port,
-                                    Err(e) => tracing::error!(
-                                        "Failed to allocate blue port for {}: {}",
-                                        app_info.config.name,
-                                        e
-                                    ),
-                                }
-                                match self
-                                    .port_allocator
-                                    .allocate_with_range(
-                                        &app_info.config.name,
-                                        "green",
-                                        port_range_start,
-                                        port_range_end,
-                                    )
-                                    .await
-                                {
-                                    Ok(port) => app_info.green.port = port,
-                                    Err(e) => tracing::error!(
-                                        "Failed to allocate green port for {}: {}",
-                                        app_info.config.name,
-                                        e
-                                    ),
-                                }
-                                if app_info.config.start_script.is_some()
-                                    && !self.deployment_manager.is_deploying(&name)
-                                {
-                                    apps_to_start.push(name.clone());
-                                }
-                            }
-                            apps.insert(name, app_info);
-                        }
-                        Err(e) => {
-                            tracing::warn!("Failed to load app from {}: {}", path.display(), e);
-                        }
+                    tracing::info!("Discovered new app: {}", name);
+                    if app_info.config.start_script.is_some()
+                        && !self.deployment_manager.is_deploying(&name)
+                    {
+                        apps_to_start.push(name.clone());
                     }
                 }
+                apps.insert(name, app_info);
             }
 
             // Remove apps that no longer exist on disk
-            apps.retain(|name, _| seen_names.contains(name));
+            let gone: Vec<String> = apps
+                .keys()
+                .filter(|name| !seen_names.contains(*name))
+                .cloned()
+                .collect();
+            gone.iter().filter_map(|name| apps.remove(name)).collect()
+        };
+        for app in removed {
+            tracing::info!("App {} no longer exists on disk", app.config.name);
+            self.retire_removed_app(app);
         }
 
         // Auto-start discovered apps in parallel (locks are per-app) and
@@ -1412,23 +1783,19 @@ impl AppManager {
                 for app_name in apps_to_start {
                     let mgr = manager.clone();
                     handles.push(tokio::spawn(async move {
-                        // Kill orphaned processes on both slots from previous daemon
+                        // Reclaim both slots' ports from a previous daemon's
+                        // processes. Only processes this proxy recorded
+                        // spawning are killed: a port can be held by anything
+                        // (a database, another service, a squatter), and
+                        // "listens on my port" is not "is mine".
                         if let Some(app) = mgr.get_app(&app_name).await {
                             for (slot_name, port) in
                                 [("blue", app.blue.port), ("green", app.green.port)]
                             {
                                 if is_port_in_use(port).await {
-                                    if let Some(orphan_pid) = find_pid_by_port(port) {
-                                        tracing::warn!(
-                                            "Killing orphaned process {} on {} port {} for {}",
-                                            orphan_pid,
-                                            slot_name,
-                                            port,
-                                            app_name
-                                        );
-                                        mgr.deployment_manager.mark_stopping(orphan_pid);
-                                        kill_process_group(orphan_pid).await;
-                                    }
+                                    mgr.deployment_manager
+                                        .reclaim_port(&app, slot_name, port)
+                                        .await;
                                 }
                             }
                         }
@@ -1745,25 +2112,7 @@ impl AppManager {
 
     /// Save app state (current_slot) to disk so other processes (e.g. TUI) can see it.
     pub async fn save_app_state(&self) {
-        let state_file = PathBuf::from("./run/app_state.json");
-        if let Some(parent) = state_file.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let state: serde_json::Value = {
-            let apps_guard = self.apps.lock().await;
-            let mut map = serde_json::Map::new();
-            for (name, app) in apps_guard.iter() {
-                map.insert(
-                    name.clone(),
-                    serde_json::Value::String(app.current_slot.clone()),
-                );
-            }
-            serde_json::Value::Object(map)
-        };
-        if let Ok(content) = serde_json::to_string_pretty(&state) {
-            let _ = std::fs::write(&state_file, content);
-            tracing::debug!("Saved app state to {:?}", state_file);
-        }
+        write_app_state_file(&*self.apps.lock().await);
     }
 
     pub async fn get_app(&self, name: &str) -> Option<AppInfo> {
@@ -1834,8 +2183,15 @@ impl AppManager {
     }
 
     pub async fn allocate_ports(&self, app_name: &str) -> Result<(u16, u16), anyhow::Error> {
-        let blue_port = self.port_allocator.allocate(app_name, "blue").await?;
-        let green_port = self.port_allocator.allocate(app_name, "green").await?;
+        let (start, end) = self.port_range;
+        let blue_port = self
+            .port_allocator
+            .allocate_with_range(app_name, "blue", start, end)
+            .await?;
+        let green_port = self
+            .port_allocator
+            .allocate_with_range(app_name, "green", start, end)
+            .await?;
         Ok((blue_port, green_port))
     }
 
@@ -1884,8 +2240,7 @@ impl AppManager {
             }
         };
         if let Some(pid) = target_pid {
-            self.deployment_manager.mark_stopping(pid);
-            kill_process_group(pid).await;
+            self.deployment_manager.terminate(&app, slot, pid).await;
         }
 
         // Start new instance
@@ -1951,8 +2306,7 @@ impl AppManager {
             .await
         {
             tracing::error!("{}", e);
-            self.deployment_manager.mark_stopping(pid);
-            kill_process_group(pid).await;
+            self.deployment_manager.terminate(&app, slot, pid).await;
             {
                 let mut apps = self.apps.lock().await;
                 if let Some(app_entry) = apps.get_mut(app_name) {
@@ -1992,20 +2346,7 @@ impl AppManager {
 
             // Persist while still holding the lock to prevent load_app_state()
             // from reverting the switch with stale disk data
-            let state_file = PathBuf::from("./run/app_state.json");
-            if let Some(parent) = state_file.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let mut map = serde_json::Map::new();
-            for (name, app) in apps.iter() {
-                map.insert(
-                    name.clone(),
-                    serde_json::Value::String(app.current_slot.clone()),
-                );
-            }
-            if let Ok(content) = serde_json::to_string_pretty(&serde_json::Value::Object(map)) {
-                let _ = std::fs::write(&state_file, content);
-            }
+            write_app_state_file(&apps);
         }
         // Verify the routing state after switch
         {
@@ -2029,7 +2370,7 @@ impl AppManager {
             } else {
                 app.green.port
             };
-            cb.reset_target(&format!("http://localhost:{}/", port));
+            cb.reset_target(&format!("http://127.0.0.1:{}/", port));
         }
 
         // Stop old slot (skip if same slot)
@@ -2051,8 +2392,9 @@ impl AppManager {
                     tracing::info!("Draining old slot {} for {}s", old_slot, drain);
                     tokio::time::sleep(std::time::Duration::from_secs(drain)).await;
                 }
-                self.deployment_manager.mark_stopping(pid);
-                kill_process_group(pid).await;
+                self.deployment_manager
+                    .terminate(&app, &old_slot, pid)
+                    .await;
                 {
                     let mut apps = self.apps.lock().await;
                     if let Some(app_entry) = apps.get_mut(app_name) {
@@ -2472,16 +2814,17 @@ impl AppManager {
     }
 
     /// Record that a request just arrived for `host`.
-    ///
-    /// Called on every request the app router sees. The host→name lookup is
-    /// the same one `auth_for_host` already does per request; the write is a
-    /// map insert under a short lock.
     pub async fn note_activity(&self, host: &str) {
-        if let Some(name) = self.app_name_for_host(host).await {
-            self.last_activity
-                .lock()
-                .insert(name, std::time::Instant::now());
+        if let Some(route) = self.routes().await.get(host) {
+            self.touch(&route.app);
         }
+    }
+
+    /// Restart `app_name`'s idle clock.
+    fn touch(&self, app_name: &str) {
+        self.last_activity
+            .lock()
+            .insert(app_name.to_string(), std::time::Instant::now());
     }
 
     /// Whether the reaper has stopped `app_name` for inactivity.
@@ -2701,27 +3044,32 @@ impl AppManager {
 
                 // Verify the PID still matches the current slot — if it was
                 // already replaced by a concurrent deploy, skip failover.
-                let should_failover = {
+                let failover_app = {
                     let apps = manager.apps.lock().await;
-                    if let Some(app) = apps.get(&exit.app_name) {
-                        let current_pid = if app.current_slot == "blue" {
-                            app.blue.pid
-                        } else {
-                            app.green.pid
-                        };
-                        // Only failover if the dead PID is still the active one
-                        current_pid == Some(exit.pid) && app.current_slot == exit.slot
-                    } else {
-                        false
-                    }
+                    apps.get(&exit.app_name)
+                        .filter(|app| {
+                            let current_pid = if app.current_slot == "blue" {
+                                app.blue.pid
+                            } else {
+                                app.green.pid
+                            };
+                            // Only failover if the dead PID is still the active one
+                            current_pid == Some(exit.pid) && app.current_slot == exit.slot
+                        })
+                        .cloned()
                 };
 
-                if should_failover {
+                if let Some(app) = failover_app {
                     // Kill the dead process's entire group to clean up
                     // any surviving worker processes. The main process is
                     // dead but workers (started via --workers N) may still
                     // be running and could interfere with the replacement.
-                    kill_process_group(exit.pid).await;
+                    // (A container is stopped by name, which also removes
+                    // it before docker's own restart policy can act.)
+                    manager
+                        .deployment_manager
+                        .terminate(&app, &exit.slot, exit.pid)
+                        .await;
 
                     // Clear the dead PID so health checks and routing
                     // know this slot is gone
@@ -2801,6 +3149,35 @@ fn read_app_state_file() -> Option<serde_json::Map<String, serde_json::Value>> {
         tracing::debug!("Loaded app state from {:?}", state_file);
     }
     apps
+}
+
+/// Write `run/app_state.json` (app name -> current_slot), atomically: the
+/// TUI and the next start both read it, and a torn file reverts every app to
+/// its default slot.
+fn write_app_state_file(apps: &HashMap<String, AppInfo>) {
+    let state_file = PathBuf::from("./run/app_state.json");
+    if let Some(parent) = state_file.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let map: serde_json::Map<String, serde_json::Value> = apps
+        .iter()
+        .map(|(name, app)| {
+            (
+                name.clone(),
+                serde_json::Value::String(app.current_slot.clone()),
+            )
+        })
+        .collect();
+    match serde_json::to_string_pretty(&serde_json::Value::Object(map)) {
+        Ok(content) => {
+            if let Err(e) = crate::config::write_atomic(&state_file, content.as_bytes()) {
+                tracing::error!("Failed to write {}: {}", state_file.display(), e);
+            } else {
+                tracing::debug!("Saved app state to {:?}", state_file);
+            }
+        }
+        Err(e) => tracing::error!("Failed to serialize app state: {}", e),
+    }
 }
 
 fn apply_app_state(
@@ -3011,6 +3388,151 @@ mod tests {
                 .idle_timeout,
             Some(900)
         );
+    }
+
+    /// A tenant's `app.infos` used to be read with `read_to_string` on an
+    /// async worker under the global apps lock: a FIFO hung all routing, and
+    /// a symlink to `/dev/zero` grew the proxy until it was OOM-killed — at
+    /// every boot. Every one of those must now fail fast, as a load error.
+    #[test]
+    fn hostile_app_infos_fail_fast() {
+        let dir = TempDir::new().unwrap();
+        let site = |name: &str| {
+            let path = dir.path().join(name);
+            std::fs::create_dir_all(&path).unwrap();
+            path
+        };
+
+        let fifo = site("fifo.example.com");
+        let c_path =
+            std::ffi::CString::new(fifo.join("app.infos").to_str().unwrap().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o644) }, 0);
+        // On a thread, so a regression shows up as a failure, not a hang.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(AppInfo::from_path(&fifo, false, false).is_err());
+        });
+        assert_eq!(
+            rx.recv_timeout(std::time::Duration::from_secs(5)),
+            Ok(true),
+            "a FIFO app.infos must be refused without blocking"
+        );
+
+        let zero = site("zero.example.com");
+        std::os::unix::fs::symlink("/dev/zero", zero.join("app.infos")).unwrap();
+        for multi_tenant in [false, true] {
+            let err = AppInfo::from_path(&zero, false, multi_tenant).unwrap_err();
+            let err = format!("{err:#}");
+            assert!(
+                err.contains("not a regular file") || err.contains("symlink"),
+                "{err}"
+            );
+        }
+
+        let huge = site("huge.example.com");
+        std::fs::write(
+            huge.join("app.infos"),
+            format!("# {}\n", "x".repeat(MAX_TENANT_FILE_BYTES as usize)),
+        )
+        .unwrap();
+        assert!(AppInfo::from_path(&huge, false, false).is_err());
+
+        // A symlink to a real manifest: followed for the operator, refused
+        // for a tenant (it could name another tenant's file, or a host file
+        // a TOML error would quote into the log).
+        let linked = site("linked.example.com");
+        let real = dir.path().join("shared.infos");
+        std::fs::write(&real, "workers = 3\n").unwrap();
+        std::os::unix::fs::symlink(&real, linked.join("app.infos")).unwrap();
+        assert_eq!(
+            AppInfo::from_path(&linked, false, false)
+                .unwrap()
+                .config
+                .workers,
+            3
+        );
+        assert!(AppInfo::from_path(&linked, false, true).is_err());
+    }
+
+    /// Year-long timeouts would pin a draining slot (and its memory) for as
+    /// long as the tenant likes.
+    #[test]
+    fn timeouts_are_bounded() {
+        let dir = TempDir::new().unwrap();
+        let path = write_app(
+            &dir,
+            "slow.example.com",
+            "graceful_timeout = 4000000000\ndrain_delay = 4000000000\n",
+        );
+        let config = AppInfo::from_path(&path, false, true).unwrap().config;
+        assert_eq!(config.graceful_timeout, MAX_APP_TIMEOUT_SECS);
+        assert!(config.drain_delay < config.graceful_timeout);
+    }
+
+    /// A tenant (or a typo) must not point slots at a privileged port, the
+    /// proxy's own listeners, or an unbounded range.
+    #[test]
+    fn port_ranges_are_validated() {
+        let reserved = [80, 443, 9090];
+        assert_eq!(port_range_problem(20000, 30000, &reserved), None);
+        assert!(port_range_problem(5432, 5432, &reserved).is_some());
+        assert!(port_range_problem(80, 2000, &reserved).is_some());
+        assert!(port_range_problem(9000, 9100, &reserved)
+            .unwrap()
+            .contains("9090"));
+        assert!(port_range_problem(30000, 20000, &reserved).is_some());
+        assert!(port_range_problem(1024, 65535, &reserved).is_some());
+
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[server]\nbind = \"0.0.0.0:8080\"\nhttps_port = 8443\n\n\
+             [admin]\nbind = \"127.0.0.1:9091\"\n",
+        )
+        .unwrap();
+        let cfg =
+            crate::config::ConfigManager::new(dir.path().join("proxy.conf").to_str().unwrap())
+                .unwrap()
+                .get_config();
+        let mut ports = proxy_listener_ports(&cfg);
+        ports.sort_unstable();
+        assert_eq!(ports, vec![8080, 8443, 9091]);
+    }
+
+    /// Multi-tenant: the tenant's range is ignored for the platform's.
+    /// Single-tenant: the app's own range, unless it is unusable.
+    #[tokio::test]
+    async fn tenant_port_ranges_are_platform_owned() {
+        for multi_tenant in [true, false] {
+            let temp_dir = TempDir::new().unwrap();
+            let sites = temp_dir.path().join("sites");
+            std::fs::create_dir_all(&sites).unwrap();
+            std::fs::write(
+                temp_dir.path().join("config.toml"),
+                format!(
+                    "[apps]\nmulti_tenant = {multi_tenant}\nport_range_start = 34000\n\
+                     port_range_end = 34099\n"
+                ),
+            )
+            .unwrap();
+            let manager = test_manager(&temp_dir, &sites);
+            let mut config = AppConfig {
+                name: "app.example.com".to_string(),
+                port_range_start: 35000,
+                port_range_end: 35099,
+                ..AppConfig::default()
+            };
+            let expected = if multi_tenant {
+                (34000, 34099)
+            } else {
+                (35000, 35099)
+            };
+            assert_eq!(manager.port_range_for(&config), expected);
+            // Privileged ports: never, in either mode.
+            config.port_range_start = 80;
+            config.port_range_end = 81;
+            assert_eq!(manager.port_range_for(&config), (34000, 34099));
+        }
     }
 
     fn write_app(dir: &TempDir, name: &str, manifest: &str) -> std::path::PathBuf {
@@ -3647,9 +4169,10 @@ typo_here = true
             running_app("zzz-evil.example.com", "victim.example.com", 21000),
         );
 
+        let port_of = |routes: &AppRoutes, host: &str| routes.get(host).map(|r| r.port);
         for _ in 0..8 {
-            let domains = running_app_domains(&apps, false);
-            assert_eq!(domains.get("victim.example.com").map(|d| d.0), Some(20000));
+            let routes = build_routes(&apps, &HashMap::new(), false);
+            assert_eq!(port_of(&routes, "victim.example.com"), Some(20000));
         }
 
         // A derived domain (www-stripped) cannot displace an app's own one either.
@@ -3657,12 +4180,122 @@ typo_here = true
             "www.victim.example.com".to_string(),
             running_app("www.victim.example.com", "www.victim.example.com", 22000),
         );
-        let domains = running_app_domains(&apps, false);
-        assert_eq!(domains.get("victim.example.com").map(|d| d.0), Some(20000));
-        assert_eq!(
-            domains.get("www.victim.example.com").map(|d| d.0),
-            Some(22000)
+        let routes = build_routes(&apps, &HashMap::new(), false);
+        assert_eq!(port_of(&routes, "victim.example.com"), Some(20000));
+        assert_eq!(port_of(&routes, "www.victim.example.com"), Some(22000));
+    }
+
+    /// The `www.` hijack: `www.victim.example.com/` derives the apex
+    /// `victim.example.com`. While the victim app ran, the declared claim
+    /// won; the moment it stopped, routing (running apps only) handed the
+    /// apex to the `www.` app while the auth lookup (all apps) still answered
+    /// with the victim's `[auth]` — or the reverse, none. Ownership no longer
+    /// depends on running state, and everything comes from the one entry.
+    #[test]
+    fn a_stopped_app_keeps_its_domain_from_a_www_twin() {
+        let mut victim = running_app("victim.example.com", "victim.example.com", 20000);
+        victim.blue.pid = None;
+        victim.config.auth.users = vec![crate::auth::BasicAuth {
+            username: "admin".to_string(),
+            hash: "$2b$12$hash".to_string(),
+        }];
+        let mut apps = HashMap::new();
+        apps.insert("victim.example.com".to_string(), victim);
+        apps.insert(
+            "www.victim.example.com".to_string(),
+            running_app("www.victim.example.com", "www.victim.example.com", 22000),
         );
+
+        let routes = build_routes(&apps, &HashMap::new(), false);
+        let apex = routes.get("victim.example.com").unwrap();
+        assert_eq!(&*apex.app, "victim.example.com");
+        assert_eq!(apex.claim, Claim::Declared);
+        assert!(apex.target.is_none(), "stopped: owned, but not served");
+        let www = routes.get("www.victim.example.com").unwrap();
+        assert_eq!(&*www.app, "www.victim.example.com");
+        assert!(www.auth.is_none());
+    }
+
+    /// Declared beats alias beats derived, and an alias resolves to its own
+    /// app even when that app's declared domain went to someone else.
+    #[test]
+    fn claims_are_ranked_declared_alias_derived() {
+        let mut apps = HashMap::new();
+        apps.insert(
+            "aaa.example.com".to_string(),
+            running_app("aaa.example.com", "www.shop.example.com", 20000),
+        );
+        apps.insert(
+            "zzz.example.com".to_string(),
+            running_app("zzz.example.com", "zzz.example.com", 21000),
+        );
+        let aliases: HashMap<String, String> = [
+            (
+                "shop.example.com".to_string(),
+                "zzz.example.com".to_string(),
+            ),
+            ("zzz.example.com".to_string(), "aaa.example.com".to_string()),
+        ]
+        .into_iter()
+        .collect();
+
+        let routes = build_routes(&apps, &aliases, false);
+        // The alias outranks aaa's derived apex...
+        let shop = routes.get("shop.example.com").unwrap();
+        assert_eq!((&*shop.app, shop.claim), ("zzz.example.com", Claim::Alias));
+        assert_eq!(shop.port, 21000);
+        // ...and cannot shadow a declared domain.
+        let zzz = routes.get("zzz.example.com").unwrap();
+        assert_eq!((&*zzz.app, zzz.claim), ("zzz.example.com", Claim::Declared));
+        // Slot ports attribute requests to their app.
+        assert_eq!(
+            routes.ports.get(&20001).map(|a| &**a),
+            Some("aaa.example.com")
+        );
+    }
+
+    #[test]
+    fn loopback_port_reads_only_local_targets() {
+        assert_eq!(loopback_port("http://127.0.0.1:20001/x?y"), Some(20001));
+        assert_eq!(loopback_port("http://localhost:20001"), Some(20001));
+        assert_eq!(loopback_port("http://10.0.0.5:20001/"), None);
+        assert_eq!(loopback_port("http://127.0.0.1/"), None);
+        assert_eq!(loopback_port("garbage"), None);
+    }
+
+    /// Multi-tenant: a claim derived from tenant input (`www.example.com/`'s
+    /// apex) does not take an operator's static rule for that apex, while a
+    /// declared domain still does. Single-tenant keeps both.
+    #[tokio::test]
+    async fn multi_tenant_derived_claim_does_not_override_a_static_rule() {
+        for multi_tenant in [true, false] {
+            let temp_dir = TempDir::new().unwrap();
+            let sites = temp_dir.path().join("sites");
+            site_with_app_infos(
+                &sites,
+                "www.example.com",
+                "name = \"www.example.com\"\ndomain = \"www.example.com\"\n",
+            );
+            std::fs::write(
+                temp_dir.path().join("config.toml"),
+                format!("[apps]\nmulti_tenant = {multi_tenant}\n"),
+            )
+            .unwrap();
+            let manager = test_manager(&temp_dir, &sites);
+            manager.discover_apps_readonly().await.unwrap();
+
+            assert!(manager.overrides_domain_rule("www.example.com").await);
+            assert_eq!(
+                manager.overrides_domain_rule("example.com").await,
+                !multi_tenant,
+                "multi_tenant = {multi_tenant}"
+            );
+            // The derived host is still the app's when no rule claims it.
+            assert_eq!(
+                manager.app_name_for_host("example.com").await.as_deref(),
+                Some("www.example.com")
+            );
+        }
     }
 
     /// Two site directories that resolve to one app name (single-tenant, where
@@ -3695,15 +4328,14 @@ admin = "$2b$12$adminhash"
             "name = \"open.example.com\"\ndomain = \"open.example.com\"\n",
         );
 
-        let config_manager = Arc::new(
-            crate::config::ConfigManager::new(temp_dir.path().join("proxy.conf").to_str().unwrap())
-                .unwrap(),
-        );
-        let port_manager =
-            Arc::new(PortManager::new(temp_dir.path().join("run").to_str().unwrap()).unwrap());
-        let manager =
-            AppManager::new(sites.to_str().unwrap(), port_manager, config_manager, false).unwrap();
+        let manager = test_manager(&temp_dir, &sites);
         manager.discover_apps_readonly().await.unwrap();
+
+        // Not running: the hosts are the app's, but nothing is served on
+        // them, so there is nothing to protect yet.
+        assert!(manager.auth_for_host("shop.example.com").await.is_none());
+        mark_running(&manager, "shop.example.com").await;
+        mark_running(&manager, "open.example.com").await;
 
         // Declared domain and its www-stripped twin both carry the auth.
         for host in ["www.shop.example.com", "shop.example.com"] {
@@ -3727,6 +4359,27 @@ admin = "$2b$12$adminhash"
         // host resolves to no app at all.
         assert!(manager.auth_for_host("open.example.com").await.is_none());
         assert!(manager.auth_for_host("nobody.example.com").await.is_none());
+    }
+
+    /// An AppManager over `sites`, with its proxy.conf, config.toml and run
+    /// directory inside `temp_dir`.
+    fn test_manager(temp_dir: &TempDir, sites: &Path) -> AppManager {
+        let config_manager = Arc::new(
+            crate::config::ConfigManager::new(temp_dir.path().join("proxy.conf").to_str().unwrap())
+                .unwrap(),
+        );
+        let port_manager =
+            Arc::new(PortManager::new(temp_dir.path().join("run").to_str().unwrap()).unwrap());
+        AppManager::new(sites.to_str().unwrap(), port_manager, config_manager, false).unwrap()
+    }
+
+    /// Give `name` a live blue slot, as a deploy would.
+    async fn mark_running(manager: &AppManager, name: &str) {
+        let mut apps = manager.apps.lock().await;
+        let app = apps.get_mut(name).unwrap();
+        app.blue.pid = Some(4242);
+        app.blue.status = InstanceStatus::Running;
+        app.current_slot = "blue".to_string();
     }
 
     /// its own path and start command instead of inheriting the second's.

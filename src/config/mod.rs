@@ -7,7 +7,7 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::RwLock;
 use tokio::sync::mpsc;
@@ -90,6 +90,17 @@ pub struct AppsTomlConfig {
     /// restarted on demand. The default for apps whose `app.infos` does not
     /// set `idle_timeout`; `0` (the default) leaves every app running.
     pub idle_timeout: Option<u64>,
+    /// Platform-owned port range for app slots (default 20000-30000). In
+    /// multi_tenant mode it is the only range used; otherwise it backs an app
+    /// whose own `port_range_*` is unusable. Accessor: `app_port_range`.
+    pub port_range_start: Option<u16>,
+    pub port_range_end: Option<u16>,
+    /// Consecutive failed health checks before failover (default 3).
+    pub health_failure_threshold: Option<u32>,
+    /// Forward `HTTP_PROXY` & co. into tenant containers (default false), and
+    /// separately allow values carrying `user:password@` (default false).
+    pub tenant_proxy_env: Option<bool>,
+    pub tenant_proxy_env_credentials: Option<bool>,
 }
 
 /// Default name of the per-site deploy trigger file.
@@ -848,11 +859,78 @@ impl Config {
     }
 }
 
+/// Replace `path` with `contents` atomically.
+///
+/// `fs::write` truncates and then writes: a crash, a full disk or a concurrent
+/// reader in between sees an empty or half-written proxy.conf, aliases.json,
+/// app_state.json or ports.lock — and the next start reads that as the truth.
+/// This writes a temporary file in the same directory, fsyncs it, renames it
+/// over the target (atomic on one filesystem) and fsyncs the directory, so a
+/// reader sees the old file or the new one, never a mix. The target's
+/// permissions carry over, and a symlinked target is replaced at the file it
+/// points to rather than turned into a regular file.
+pub fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    let path = match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => std::fs::canonicalize(path)?,
+        _ => path.to_path_buf(),
+    };
+    let dir = match path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
+    let name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no file name")
+    })?;
+    let tmp = dir.join(format!(
+        ".{}.{}.{}.tmp",
+        name.to_string_lossy(),
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+
+    let written: std::io::Result<()> = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        if let Ok(meta) = std::fs::metadata(&path) {
+            file.set_permissions(meta.permissions())?;
+        }
+        file.write_all(contents)?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, &path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written?;
+    // The rename is only durable once the directory entry is.
+    if let Ok(dir) = std::fs::File::open(&dir) {
+        let _ = dir.sync_all();
+    }
+    Ok(())
+}
+
+/// Content fingerprint for `ConfigManager`'s own-write check. Never 0, which
+/// means "nothing written yet".
+fn content_hash(bytes: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish().max(1)
+}
+
 pub struct ConfigManager {
     config: Arc<ArcSwap<Config>>,
     config_path: PathBuf,
     _watcher: Option<RecommendedWatcher>,
-    suppress_watch: Arc<AtomicBool>,
+    /// Hash of the proxy.conf content this process last wrote (0: none).
+    /// The watcher skips an event whose file still hashes to it — the
+    /// change is already in memory — and reloads on anything else.
+    own_write_hash: Arc<AtomicU64>,
     app_acme_domains: Arc<RwLock<Vec<String>>>,
 }
 
@@ -862,7 +940,7 @@ impl Clone for ConfigManager {
             config: self.config.clone(),
             config_path: self.config_path.clone(),
             _watcher: None,
-            suppress_watch: self.suppress_watch.clone(),
+            own_write_hash: self.own_write_hash.clone(),
             app_acme_domains: self.app_acme_domains.clone(),
         }
     }
@@ -876,17 +954,13 @@ impl ConfigManager {
             config: Arc::new(ArcSwap::new(Arc::new(config))),
             config_path: path,
             _watcher: None,
-            suppress_watch: Arc::new(AtomicBool::new(false)),
+            own_write_hash: Arc::new(AtomicU64::new(0)),
             app_acme_domains: Arc::new(RwLock::new(Vec::new())),
         })
     }
 
     pub fn config_path(&self) -> &Path {
         &self.config_path
-    }
-
-    pub fn suppress_watch(&self) -> &Arc<AtomicBool> {
-        &self.suppress_watch
     }
 
     fn load_config(proxy_conf_path: &Path, config_path: &Path) -> Result<Config> {
@@ -1084,18 +1158,41 @@ realm = "Restricted"
             std::fs::write(&self.config_path, "")?;
         }
 
-        let (tx, mut rx) = mpsc::channel(1);
-        let config_path = self.config_path.clone();
-        let suppress = self.suppress_watch.clone();
+        // Watch the directory, not the file. Writes are atomic renames now
+        // (see `write_atomic`), and an inotify watch on a file follows its
+        // inode: the first rename would leave it watching the replaced copy,
+        // deaf to every later edit. A symlinked proxy.conf is followed to its
+        // target, whose directory is the one that sees the renames.
+        let config_path =
+            std::fs::canonicalize(&self.config_path).unwrap_or_else(|_| self.config_path.clone());
+        let watch_dir = match config_path.parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
+            _ => PathBuf::from("."),
+        };
+        let file_name = config_path.file_name().map(|n| n.to_os_string());
+
+        let (tx, mut rx) = mpsc::channel(16);
+        let own_write_hash = self.own_write_hash.clone();
 
         let mut watcher = RecommendedWatcher::new(
-            move |res| {
+            move |res: notify::Result<notify::Event>| {
+                // Only events naming proxy.conf itself; the directory may hold
+                // config.toml, certs and whatever else.
+                if let Ok(ref event) = res {
+                    let ours = event
+                        .paths
+                        .iter()
+                        .any(|p| p.file_name() == file_name.as_deref());
+                    if !ours || !(event.kind.is_modify() || event.kind.is_create()) {
+                        return;
+                    }
+                }
                 let _ = tx.blocking_send(res);
             },
             notify::Config::default(),
         )?;
 
-        watcher.watch(&config_path, RecursiveMode::NonRecursive)?;
+        watcher.watch(&watch_dir, RecursiveMode::NonRecursive)?;
 
         tracing::info!("Watching config file: {}", config_path.display());
 
@@ -1105,23 +1202,26 @@ realm = "Restricted"
         std::thread::spawn(move || {
             while let Some(res) = rx.blocking_recv() {
                 match res {
-                    Ok(event) => {
-                        if event.kind.is_modify() {
-                            if suppress.swap(false, Ordering::SeqCst) {
-                                tracing::debug!(
-                                    "Suppressing file watcher reload (admin API write)"
-                                );
-                                continue;
+                    Ok(_) => {
+                        // A write of ours raises several events (create, write,
+                        // rename) and an editor's save raises its own mix, so
+                        // counting them cannot tell the two apart; the content
+                        // can. Skip only while the file is byte-for-byte what we
+                        // last wrote — that version is already in memory.
+                        let on_disk = std::fs::read(&reload_path).unwrap_or_default();
+                        let written = own_write_hash.load(Ordering::SeqCst);
+                        if written != 0 && content_hash(&on_disk) == written {
+                            tracing::debug!("Ignoring watcher event for our own proxy.conf write");
+                            continue;
+                        }
+                        tracing::info!("Config file changed, reloading...");
+                        match Self::load_config(&reload_path, &reload_path) {
+                            Ok(new_config) => {
+                                config_store.store(Arc::new(new_config));
+                                tracing::info!("Configuration reloaded successfully");
                             }
-                            tracing::info!("Config file changed, reloading...");
-                            match Self::load_config(&reload_path, &reload_path) {
-                                Ok(new_config) => {
-                                    config_store.store(Arc::new(new_config));
-                                    tracing::info!("Configuration reloaded successfully");
-                                }
-                                Err(e) => {
-                                    tracing::error!("Failed to reload config: {}", e);
-                                }
+                            Err(e) => {
+                                tracing::error!("Failed to reload config: {}", e);
                             }
                         }
                     }
@@ -1185,8 +1285,9 @@ realm = "Restricted"
             }
         }
         let content = serializer::serialize_proxy_conf(&rules, &global_scripts);
-        self.suppress_watch.store(true, Ordering::SeqCst);
-        std::fs::write(&self.config_path, &content)?;
+        self.own_write_hash
+            .store(content_hash(content.as_bytes()), Ordering::SeqCst);
+        write_atomic(&self.config_path, content.as_bytes())?;
         let mut config = (*self.config.load().as_ref()).clone();
         config.rules = rules;
         config.global_scripts = global_scripts;
@@ -2044,5 +2145,49 @@ api_key = "secret123"
         std::fs::write(&proxy_conf, "").unwrap();
         // No config.toml in dir.
         assert_eq!(read_worker_threads(proxy_conf.to_str().unwrap()), None);
+    }
+
+    /// The replacement is whole or absent, carries the old permissions, goes
+    /// through a symlink to its target, and leaves no temporary file behind.
+    #[test]
+    fn write_atomic_replaces_in_place() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("proxy.conf");
+        std::fs::write(&target, "old").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        write_atomic(&target, b"new contents").unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new contents");
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+
+        let link = dir.path().join("link.conf");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        write_atomic(&link, b"via link").unwrap();
+        assert!(std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "via link");
+
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    /// The watcher's own-write check: the fingerprint of what was written
+    /// matches the file until someone else changes a byte, and is never the
+    /// "nothing written" sentinel.
+    #[test]
+    fn content_hash_tells_our_write_from_an_edit() {
+        let ours = content_hash(b"default -> http://localhost:3000\n");
+        assert_ne!(ours, 0);
+        assert_eq!(ours, content_hash(b"default -> http://localhost:3000\n"));
+        assert_ne!(ours, content_hash(b"default -> http://localhost:3001\n"));
+        assert_ne!(content_hash(b""), 0);
     }
 }

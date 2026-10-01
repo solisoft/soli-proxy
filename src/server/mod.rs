@@ -580,11 +580,8 @@ impl LoadBalancerState {
 async fn app_name_for_target(
     app_manager: &Option<Arc<AppManager>>,
     target_url: &str,
-) -> Option<String> {
-    let manager = app_manager.as_ref()?;
-    let url = url::Url::parse(target_url).ok()?;
-    let port = url.port()?;
-    manager.get_app_name(port).await
+) -> Option<Arc<str>> {
+    app_manager.as_ref()?.app_for_target_url(target_url).await
 }
 
 static X_FORWARDED_PROTO_HTTPS: std::sync::LazyLock<HeaderValue> =
@@ -2335,7 +2332,7 @@ async fn handle_websocket_request(
             if matched.from_domain_rule
                 && matches!(matched.resolution, UrlResolution::AppendPath) =>
         {
-            manager.app_name_for_host(h).await.is_some()
+            manager.overrides_domain_rule(h).await
         }
         _ => false,
     };
@@ -2349,15 +2346,12 @@ async fn handle_websocket_request(
         Some((url, _, _, _)) => url,
         None => {
             if let (Some(ref manager), Some(ref h)) = (app_manager, host) {
-                manager.note_activity(h).await;
-                let mut target = manager.resolve_app_target(h).await;
-                if target.is_none() && manager.wake_if_asleep(h).await {
-                    target = manager.resolve_app_target(h).await;
-                }
-                if let Some(target) = target {
+                if let Some(crate::app::AppTarget { target, auth, .. }) =
+                    manager.resolve_app_request(h, &|_| true).await
+                {
                     // Same gate as the HTTP path: an upgrade must not be a way
                     // around the app's Basic Auth.
-                    if let Some(auth) = manager.auth_for_host(h).await {
+                    if let Some(auth) = auth {
                         if auth.requires_auth(req.uri().path())
                             && !verify_basic_auth(&req, &auth.users)
                         {
@@ -2786,7 +2780,7 @@ async fn handle_regular_request(
             if matched.from_domain_rule
                 && matches!(matched.resolution, UrlResolution::AppendPath) =>
         {
-            manager.app_name_for_host(h).await.is_some()
+            manager.overrides_domain_rule(h).await
         }
         _ => false,
     };
@@ -3389,23 +3383,22 @@ async fn handle_regular_request(
             let app_manager_available = app_manager.is_some();
 
             if let (Some(ref manager), Some(ref h)) = (app_manager, host) {
-                manager.note_activity(h).await;
                 // The circuit breaker is keyed by the target's URL as written,
                 // which is what `base_url` below records failures under.
                 let available = |url: &str| circuit_breaker.is_available(url);
-                let mut target = manager.resolve_app_target_with(h, &available).await;
-                if target.is_none() && manager.wake_if_asleep(h).await {
-                    // The app was asleep: it has just been started and is
-                    // healthy, so resolve again — this request is the one that
-                    // woke it and it should be served, not told 421.
-                    target = manager.resolve_app_target_with(h, &available).await;
-                }
-                if let Some(target) = target {
+                // One resolution — target, app and auth from the same entry;
+                // it also wakes an app asleep, holding this request.
+                if let Some(crate::app::AppTarget {
+                    target,
+                    app: served_app,
+                    auth,
+                }) = manager.resolve_app_request(h, &available).await
+                {
                     // App domains are routed here, not through `config.rules`
                     // (`sync_routes` prunes static rules for them), so a
                     // route's `@auth` can never cover an app. `[auth]` in
                     // app.infos is where an app declares its own.
-                    if let Some(auth) = manager.auth_for_host(h).await {
+                    if let Some(auth) = auth {
                         if auth.requires_auth(req.uri().path())
                             && !verify_basic_auth(&req, &auth.users)
                         {
@@ -3511,14 +3504,8 @@ async fn handle_regular_request(
                             // Trigger immediate async failover so the next
                             // request hits a healthy backend (skip on body-limit
                             // 413 — the backend never saw a failed request).
-                            if !body_limit {
-                                let mgr = manager.clone();
-                                let host = h.clone();
-                                tokio::spawn(async move {
-                                    if let Some(app_name) = mgr.app_name_for_host(&host).await {
-                                        mgr.trigger_async_failover(app_name);
-                                    }
-                                });
+                            if let (false, Some(app_name)) = (body_limit, served_app) {
+                                manager.trigger_async_failover(app_name.to_string());
                             }
                             return Ok((backend_error_response(&e), target_url, vec![]));
                         }
