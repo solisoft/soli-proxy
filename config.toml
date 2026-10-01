@@ -52,7 +52,7 @@ readiness_path = "/health/ready"
 
 # Limits Configuration
 [limits]
-max_connections = 10000      # concurrent client connections; extra ones wait to be accepted
+max_connections = 10000      # concurrent client connections; extra ones wait up to 10 s for a slot
 # Simultaneous connections per client address (IPv6: per /64), across HTTP and
 # HTTPS. Excess connections are closed on accept. Default 256; 0 disables.
 # max_connections_per_ip = 256

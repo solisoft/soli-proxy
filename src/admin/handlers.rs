@@ -1,5 +1,5 @@
 use super::{
-    created_response, error_response, no_content_response, ok_response, AdminState, BoxBody,
+    created_response, error_response, full, no_content_response, ok_response, AdminState, BoxBody,
 };
 use crate::auth;
 use crate::config::ProxyRule;
@@ -691,7 +691,7 @@ pub fn get_metrics(state: &Arc<AdminState>) -> Response<BoxBody> {
     Response::builder()
         .status(200)
         .header("Content-Type", "text/plain")
-        .body(http_body_util::Full::new(bytes).boxed())
+        .body(full(bytes))
         .unwrap()
 }
 
@@ -730,7 +730,7 @@ pub fn post_route(state: &Arc<AdminState>, body: &str) -> Response<BoxBody> {
     if let Err(e) = validate_auth_hashes(&rule) {
         return error_response(400, &e);
     }
-    if let Err(e) = rule.validate_auth_exempt() {
+    if let Err(e) = rule.validate() {
         return error_response(400, &e.to_string());
     }
 
@@ -761,7 +761,7 @@ pub fn put_route(state: &Arc<AdminState>, index: usize, body: &str) -> Response<
     if let Err(e) = validate_auth_hashes(&rule) {
         return error_response(400, &e);
     }
-    if let Err(e) = rule.validate_auth_exempt() {
+    if let Err(e) = rule.validate() {
         return error_response(400, &e.to_string());
     }
 
@@ -841,7 +841,7 @@ pub fn put_config(state: &Arc<AdminState>, body: &str) -> Response<BoxBody> {
         if let Err(e) = validate_auth_hashes(rule) {
             return error_response(400, &format!("rule {}: {}", index, e));
         }
-        if let Err(e) = rule.validate_auth_exempt() {
+        if let Err(e) = rule.validate() {
             return error_response(400, &format!("rule {}: {}", index, e));
         }
     }
@@ -982,7 +982,7 @@ pub async fn sse_app_events(state: Arc<AdminState>) -> Response<BoxBody> {
 
     impl Body for MpscBody {
         type Data = bytes::Bytes;
-        type Error = std::convert::Infallible;
+        type Error = crate::pool::BoxError;
 
         fn poll_frame(
             mut self: Pin<&mut Self>,
@@ -1164,6 +1164,104 @@ mod routing_table_tests {
         });
         assert_eq!(push(&state, body.clone()).await, 200);
         assert_eq!(push(&state, body).await, 409);
+    }
+
+    /// The request path asks `resolve_app_request` for a host's target, and
+    /// gates the request on the `auth` that comes back with it: a pushed
+    /// domain that carries auth must get it there, not only from
+    /// `auth_for_host`.
+    #[tokio::test]
+    async fn pushed_auth_comes_back_with_the_pushed_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(&dir);
+        let manager = state.app_manager.clone().unwrap();
+        let body = serde_json::json!({
+            "index": 1,
+            "routes": {
+                "locked.soli.app": [ { "url": "http://10.0.0.1:1" } ],
+                "open.soli.app": [ { "url": "http://10.0.0.2:1" } ]
+            },
+            "auth": { "locked.soli.app": { "users": { "admin": hash() } } }
+        });
+        assert_eq!(push(&state, body).await, 200);
+
+        let locked = manager
+            .resolve_app_request("locked.soli.app", &|_| true)
+            .await
+            .expect("a pushed domain resolves");
+        assert!(
+            locked.app.is_none(),
+            "a pushed route belongs to no local app"
+        );
+        assert_eq!(locked.target.url.host_str(), Some("10.0.0.1"));
+        let auth = locked
+            .auth
+            .expect("the pushed domain's auth must come with its target");
+        assert_eq!(auth.users[0].username, "admin");
+        assert!(auth.requires_auth("/"));
+
+        let open = manager
+            .resolve_app_request("open.soli.app", &|_| true)
+            .await
+            .expect("a pushed domain resolves");
+        assert!(open.auth.is_none(), "a domain pushed without auth is open");
+    }
+
+    /// A route arriving as JSON is checked like a `proxy.conf` line before it
+    /// is written: a bad `headers` entry or a regex capture the pattern lacks
+    /// is a 400, not a file the next reload refuses.
+    #[test]
+    fn admin_routes_are_fully_validated_before_persisting() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(&dir);
+        let before = state.config_manager.get_config().rules.len();
+        let bad = [
+            serde_json::json!({
+                "matcher": { "type": "prefix", "value": "/a/" },
+                "targets": [{ "url": "http://localhost:9999/", "weight": 100 }],
+                "headers": [{ "name": "Connection", "value": "close" }],
+                "scripts": []
+            }),
+            serde_json::json!({
+                "matcher": { "type": "prefix", "value": "/a/" },
+                "targets": [{ "url": "http://localhost:9999/", "weight": 100 }],
+                "headers": [{ "name": "X-Who", "value": "$nobody" }],
+                "scripts": []
+            }),
+            serde_json::json!({
+                "matcher": { "type": "regex", "value": "^/u/(\\d+)$" },
+                "targets": [{ "url": "http://localhost:9999/users/$2", "weight": 100 }],
+                "headers": [],
+                "scripts": []
+            }),
+        ];
+        for rule in &bad {
+            assert_eq!(
+                post_route(&state, &rule.to_string()).status(),
+                400,
+                "accepted {rule}"
+            );
+            assert_eq!(
+                put_route(&state, 0, &rule.to_string()).status(),
+                400,
+                "accepted {rule}"
+            );
+            let table = serde_json::json!({ "rules": [rule] });
+            assert_eq!(
+                put_config(&state, &table.to_string()).status(),
+                400,
+                "accepted {rule}"
+            );
+        }
+        assert_eq!(state.config_manager.get_config().rules.len(), before);
+
+        let good = serde_json::json!({
+            "matcher": { "type": "regex", "value": "^/u/(\\d+)$" },
+            "targets": [{ "url": "http://localhost:9999/users/$1", "weight": 100 }],
+            "headers": [{ "name": "X-Client", "value": "$client_ip" }],
+            "scripts": []
+        });
+        assert_eq!(post_route(&state, &good.to_string()).status(), 201);
     }
 
     #[tokio::test]

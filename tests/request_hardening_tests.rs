@@ -569,9 +569,8 @@ async fn per_ip_connection_cap_refuses_the_excess() {
 /// An open WebSocket tunnel keeps holding its connection's slots after hyper
 /// has handed the socket over. Observed through the per-IP cap: with one
 /// connection allowed, the tunnel must keep the next one out until it closes.
-/// (The same lease carries the `max_connections` permit; that cap is not
-/// exercised directly here because its permit-before-accept loops — one per
-/// core — cannot be driven deterministically with a cap of one.)
+/// (The same lease carries the `max_connections` permit, which
+/// `max_connections_is_shared_by_every_accept_loop` exercises.)
 #[tokio::test]
 async fn websocket_tunnel_keeps_its_connection_slot() {
     let (backend, _seen) = spawn_backend().await;
@@ -615,4 +614,161 @@ async fn websocket_tunnel_keeps_its_connection_slot() {
     )
     .await;
     assert_eq!(status(&resp), 200, "slot released when the tunnel closed");
+}
+
+/// Backend that answers with response headers and the start of a chunked
+/// body, then resets the connection (RST, via a zero linger) mid-body.
+async fn spawn_resetting_backend() -> u16 {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut tmp = [0u8; 4096];
+                let mut buf = Vec::new();
+                while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match sock.read(&mut tmp).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                    }
+                }
+                let _ = sock
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n",
+                    )
+                    .await;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let _ = socket2::SockRef::from(&sock).set_linger(Some(Duration::ZERO));
+                drop(sock);
+            });
+        }
+    });
+    port
+}
+
+/// Set when any thread panics with `unreachable!()` — what the proxy did when
+/// a backend body failed mid-stream. A panic in a connection task is caught
+/// by tokio, so "the proxy still answers" alone would not show it.
+static UNREACHABLE_PANICKED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn watch_for_unreachable_panics() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if info.to_string().contains("unreachable") {
+                UNREACHABLE_PANICKED.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            previous(info);
+        }));
+    });
+}
+
+/// A backend that fails mid-body must not panic the connection task: the
+/// error propagates, the client sees a truncated response (no terminating
+/// chunk), and the proxy keeps serving.
+#[tokio::test]
+async fn backend_reset_mid_body_truncates_without_panicking() {
+    watch_for_unreachable_panics();
+    let broken = spawn_resetting_backend().await;
+    let (healthy, _seen) = spawn_backend().await;
+    let proxy = start_proxy(
+        &format!(
+            "/broken/* -> http://127.0.0.1:{}/\n/* -> http://127.0.0.1:{}/\n",
+            broken, healthy
+        ),
+        "",
+        &[],
+    )
+    .await;
+    for _ in 0..3 {
+        let resp = raw(
+            proxy.port,
+            "GET /broken/x HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert_eq!(status(&resp), 200, "{resp}");
+        assert!(resp.contains("hello"), "{resp}");
+        assert!(
+            !resp.ends_with("0\r\n\r\n"),
+            "a failed body must not look complete: {resp:?}"
+        );
+    }
+    let resp = raw(
+        proxy.port,
+        "GET /x HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert_eq!(status(&resp), 200, "{resp}");
+    assert!(
+        !UNREACHABLE_PANICKED.load(std::sync::atomic::Ordering::SeqCst),
+        "a backend body error panicked the proxy"
+    );
+}
+
+/// `max_connections` is one pool for every accept loop, taken after accept: a
+/// cap of one serves one connection at a time, whichever loop accepts it,
+/// instead of parking the only permit in an idle loop.
+#[tokio::test]
+async fn max_connections_is_shared_by_every_accept_loop() {
+    let (backend, _seen) = spawn_backend().await;
+    let proxy = start_proxy(
+        &format!("/* -> http://127.0.0.1:{}/\n", backend),
+        "[limits]\nmax_connections = 1\n",
+        &[],
+    )
+    .await;
+    // Let the readiness probe's connection be released.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    for _ in 0..5 {
+        let resp = raw(
+            proxy.port,
+            "GET /x HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert_eq!(status(&resp), 200, "{resp}");
+    }
+    // A held connection makes the next one wait for its slot...
+    let held = TcpStream::connect(("127.0.0.1", proxy.port)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let waiting = tokio::spawn(raw(
+        proxy.port,
+        "GET /x HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n",
+    ));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!waiting.is_finished(), "served past max_connections = 1");
+    // ...and get it as soon as that one closes.
+    drop(held);
+    let resp = waiting.await.unwrap();
+    assert_eq!(status(&resp), 200, "{resp}");
+}
+
+/// Every request leaves the in-flight gauge as it found it, failed WebSocket
+/// upgrades included (they used to leave it one higher each).
+#[tokio::test]
+async fn failed_websocket_upgrades_leave_the_in_flight_gauge_alone() {
+    let dead = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    }; // nothing listens there any more
+    let proxy = start_proxy(&format!("/* -> http://127.0.0.1:{}/\n", dead), "", &[]).await;
+    for _ in 0..3 {
+        let resp = raw(
+            proxy.port,
+            &format!("GET /ws HTTP/1.1\r\nHost: h\r\n{WS_UPGRADE}\r\n"),
+        )
+        .await;
+        assert!(status(&resp) >= 500, "{resp}");
+    }
+    let resp = raw(
+        proxy.port,
+        "GET /metrics HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    // The /metrics request itself is the one in flight.
+    assert!(
+        resp.contains("\nproxy_requests_in_flight 1\n"),
+        "gauge leaked: {resp}"
+    );
 }

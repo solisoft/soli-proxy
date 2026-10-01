@@ -289,6 +289,41 @@
   what a hot reload does and does not change, and the real project layout. The www docs' reload
   examples now use `/api/v1/reload` and the Docker example the real `--conf` flag.
 
+**Follow-ups (fix/followups)**
+
+* **A backend that fails mid-body no longer panics the connection.** The response body type
+  declared its error `Infallible`, so a backend's body error — a reset, a truncated chunk — went
+  through `unreachable!()` and panicked the task serving that client connection. Errors now
+  propagate: hyper aborts the client's response (HTTP/1: the connection is closed without the
+  final chunk; HTTP/2: the stream is reset), so the client sees a truncated response instead of
+  a dead connection, and other requests on an HTTP/2 connection carry on. The `_admin` app
+  passthrough had the same panic.
+* **`max_connections` no longer stalls below the number of accept loops.** Each accept loop (one
+  per core, per listener) took a permit *before* calling `accept`, so idle loops sat on permits
+  they had no connection for: with `max_connections` under the loop count, or near the limit,
+  the permits could all be parked on the HTTPS listener while HTTP connections waited for a
+  slot nobody used. The permit is now taken after `accept`; the loop waits for it inline (still
+  backpressure: it accepts nothing meanwhile and the listen backlog absorbs the rest), FIFO
+  across both listeners, and closes a connection that gets no slot within 10 s.
+* **`proxy_requests_in_flight` no longer drifts upwards.** The gauge was decremented by hand on
+  each return path and several had none — failed WebSocket upgrades among them — nor did a
+  request whose client went away. It is now held by a guard released on every exit.
+* **The admin API's `_admin` passthrough uses the proxy's forwarding headers.** It overwrote
+  `X-Forwarded-For`/`-Proto`/`-Host` but relayed a client's `X-Real-IP`, `Forwarded` and other
+  `X-Forwarded-*` verbatim (on WebSockets too); it now goes through the same
+  `set_forwarding_headers` as every proxied request. The admin API's rate limiter and its
+  failed-login budget key IPv6 clients by /64, like the proxy's.
+* **Two more backend-controlled panics are gone.** A backend's WebSocket 101 whose
+  `Sec-WebSocket-Accept`/`-Protocol` held a control character (a lone CR, DEL) panicked on
+  building the client's 101 (proxy and `_admin` passthrough alike); it is now a 502. A
+  prefix-mounted redirect whose rewritten `Location` could not be a header value panicked; the
+  `Location` is now left as the backend sent it.
+* **Routes created through the admin API are validated in full.** `POST`/`PUT /api/v1/routes`
+  and `PUT /api/v1/config` only checked `auth_exempt` paths (and auth hashes); a bad `headers`
+  entry (a hop-by-hop name, an unknown `$variable`, an invalid value) or a regex target naming a
+  capture the pattern lacks was written to `proxy.conf`, which the next load then refused. They
+  now get the same checks as a `proxy.conf` line, and a 400 up front.
+
 ## [0.35.2](https://github.com/solisoft/soli-proxy/compare/v0.35.1...v0.35.2) (2026-09-27)
 
 ### Bug Fixes

@@ -140,6 +140,16 @@ fn nonzero(ms: u64) -> Option<u64> {
     (ms != 0).then_some(ms)
 }
 
+/// See [`Metrics::in_flight_guard`].
+#[must_use = "the request stops counting as in flight when the guard is dropped"]
+pub struct InFlightGuard(Arc<AtomicUsize>);
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 /// Status code array size: covers HTTP codes 100-599
 const STATUS_ARRAY_SIZE: usize = 512;
 
@@ -424,6 +434,19 @@ impl Metrics {
 
     pub fn dec_in_flight(&self) {
         self.requests_in_flight.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    /// Count one request in flight until the returned guard is dropped.
+    ///
+    /// The request handler used to pair `inc_in_flight` with a
+    /// `dec_in_flight` on each of its two dozen return paths, and several
+    /// (WebSocket failures among them) had none: every such request left the
+    /// gauge one higher, forever. The guard decrements on every exit — early
+    /// return, `?`, a panic, or hyper dropping the handler because the client
+    /// went away.
+    pub fn in_flight_guard(&self) -> InFlightGuard {
+        self.inc_in_flight();
+        InFlightGuard(self.requests_in_flight.clone())
     }
 
     pub fn inc_tls_connections(&self) {
