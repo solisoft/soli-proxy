@@ -177,3 +177,21 @@ async fn basic_auth_reads_need_no_extra_header() {
         .unwrap();
     assert_eq!(resp.status().as_u16(), 401);
 }
+
+/// The `Host` allow-list guards only the credential-less API: with a
+/// credential configured, a DNS-rebinding page has nothing to send, and an
+/// operator may legitimately publish the admin API under a name of their own
+/// through a local route.
+#[tokio::test]
+async fn a_protected_admin_api_answers_any_host() {
+    let (port, _mgr) = start_admin().await;
+
+    let resp = client()
+        .get(url(port, "/api/v1/status"))
+        .header("Host", "admin.example.com")
+        .header("X-Api-Key", API_KEY)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+}

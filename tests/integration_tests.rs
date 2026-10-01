@@ -2094,6 +2094,32 @@ mod admin_tests {
         assert_eq!(json["ok"], false);
     }
 
+    /// DNS rebinding: a page on `attacker.example` whose name now resolves to
+    /// 127.0.0.1 reaches the open admin API as a same-origin request — but its
+    /// `Host` header still names the attacker, and that is what gets refused.
+    #[tokio::test]
+    async fn open_admin_api_refuses_a_rebound_host() {
+        let (port, _mgr) = start_admin("default -> http://localhost:3000\n").await;
+        let client = reqwest::Client::new();
+        let status = |host: String| {
+            let client = client.clone();
+            async move {
+                client
+                    .get(format!("http://127.0.0.1:{}/api/v1/status", port))
+                    .header("Host", host)
+                    .send()
+                    .await
+                    .unwrap()
+                    .status()
+                    .as_u16()
+            }
+        };
+        assert_eq!(status(format!("attacker.example:{port}")).await, 403);
+        assert_eq!(status("attacker.example".to_string()).await, 403);
+        assert_eq!(status(format!("localhost:{port}")).await, 200);
+        assert_eq!(status(format!("127.0.0.1:{port}")).await, 200);
+    }
+
     #[tokio::test]
     async fn test_admin_auth_required() {
         let temp_dir = tempdir().unwrap();

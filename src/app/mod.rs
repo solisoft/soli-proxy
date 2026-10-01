@@ -91,8 +91,9 @@ impl AppAuth {
     /// `noauth` pattern that cannot be compared literally is refused for the
     /// same reason the route directive refuses it: it must never widen into a
     /// bypass. Callers treat this as a load failure, so the app is skipped
-    /// rather than served with auth the operator thinks is on.
-    fn validate(&self) -> Result<(), anyhow::Error> {
+    /// rather than served with auth the operator thinks is on. A cluster push
+    /// carrying auth for a domain goes through the same check.
+    pub(crate) fn validate(&self) -> Result<(), anyhow::Error> {
         for user in &self.users {
             if user.username.is_empty() {
                 anyhow::bail!("[auth.users] has an entry with an empty username");
@@ -100,8 +101,19 @@ impl AppAuth {
             if user.hash.is_empty() {
                 anyhow::bail!(
                     "[auth.users] entry {:?} has an empty password hash (generate one with \
-                     `soli-proxy hash-password`)",
+                     `hash-password`)",
                     user.username
+                );
+            }
+            // The hash is written by whoever owns the manifest — a tenant, in
+            // multi-tenant mode — and its cost is a work factor they would be
+            // choosing for the proxy's CPU: `$2b$31$` is days of bcrypt per
+            // request. Only well-formed hashes at cost 4..=13 are accepted.
+            if let Err(e) = crate::auth::validate_hash(&user.hash) {
+                anyhow::bail!(
+                    "[auth.users] entry {:?} has an unusable password hash: {}",
+                    user.username,
+                    e
                 );
             }
         }
@@ -1185,10 +1197,17 @@ impl AppManager {
     ///
     /// `None` — the common case — means the request needs no credential check
     /// at all, so a request for an unprotected app never clones anything.
-    /// Cluster-pushed routes always answer `None`: their `app.infos` lives on
-    /// the node that actually runs the workload, and that node enforces it.
+    ///
+    /// ⚠️ **A cluster-pushed domain is enforced here too, or nowhere.** Its
+    /// target is the workload's raw port on another node — no proxy runs in
+    /// front of it there — so the `[auth]` the pusher sends along with the
+    /// route (`PUT /api/v1/routing-table`, `auth`) is checked by this proxy.
+    /// A pushed domain without one is served open. A local app wins over a
+    /// pushed route for the same host, as it does for routing.
     pub async fn auth_for_host(&self, host: &str) -> Option<AppAuth> {
-        let name = self.app_name_for_host(host).await?;
+        let Some(name) = self.app_name_for_host(host).await else {
+            return self.external_routes.auth(host);
+        };
         let apps = self.apps.lock().await;
         let auth = &apps.get(&name)?.config.auth;
         (!auth.users.is_empty()).then(|| auth.clone())
@@ -3034,8 +3053,8 @@ domain = "shop.example.com"
 noauth = ["/webhooks/stripe", "/hooks/*"]
 
 [auth.users]
-admin = "$2b$12$adminhash"
-qa = "$2b$12$qahash"
+admin = "$2b$12$adminhashadminhashadminhashadminhashadminhashadminhas"
+qa = "$2b$12$qahashqahashqahashqahashqahashqahashqahashqahashqahas"
 "#,
         );
 
@@ -3049,7 +3068,10 @@ qa = "$2b$12$qahash"
                 .collect::<Vec<_>>(),
             vec!["admin", "qa"]
         );
-        assert_eq!(auth.users[0].hash, "$2b$12$adminhash");
+        assert_eq!(
+            auth.users[0].hash,
+            "$2b$12$adminhashadminhashadminhashadminhashadminhashadminhas"
+        );
         assert_eq!(auth.noauth, vec!["/webhooks/stripe", "/hooks/*"]);
     }
 
@@ -3099,17 +3121,24 @@ qa = "$2b$12$qahash"
 
         for (case, section) in [
             ("empty hash", "[auth.users]\nadmin = \"\"\n"),
+            // Un locataire ne choisit pas le facteur de cout du proxy :
+            // `$2b$31$` coute des jours de CPU par requete.
+            (
+                "tenant-chosen cost",
+                "[auth.users]\nadmin = \"$2b$31$aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n",
+            ),
+            ("malformed hash", "[auth.users]\nadmin = \"$2b$12$short\"\n"),
             (
                 "traversing noauth",
-                "noauth = [\"/a/../b\"]\n\n[auth.users]\nadmin = \"$2b$12$h\"\n",
+                "noauth = [\"/a/../b\"]\n\n[auth.users]\nadmin = \"$2b$12$hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh\"\n",
             ),
             (
                 "relative noauth",
-                "noauth = [\"hooks\"]\n\n[auth.users]\nadmin = \"$2b$12$h\"\n",
+                "noauth = [\"hooks\"]\n\n[auth.users]\nadmin = \"$2b$12$hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh\"\n",
             ),
             (
                 "encoded noauth",
-                "noauth = [\"/c%2f\"]\n\n[auth.users]\nadmin = \"$2b$12$h\"\n",
+                "noauth = [\"/c%2f\"]\n\n[auth.users]\nadmin = \"$2b$12$hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh\"\n",
             ),
         ] {
             let path = write_app(
@@ -3686,7 +3715,7 @@ domain = "www.shop.example.com"
 noauth = ["/webhooks/stripe"]
 
 [auth.users]
-admin = "$2b$12$adminhash"
+admin = "$2b$12$adminhashadminhashadminhashadminhashadminhashadminhas"
 "#,
         );
         site_with_app_infos(

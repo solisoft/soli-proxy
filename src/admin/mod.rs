@@ -124,61 +124,214 @@ enum AuthMethod {
     Basic,
 }
 
+/// What `check_auth` concluded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AuthOutcome {
+    Allowed(AuthMethod),
+    /// No credential, or a wrong one.
+    Denied,
+    /// The bcrypt pool stayed saturated: the credential was not checked.
+    Busy,
+    /// The client is over its failed-attempt budget and the credential could
+    /// not be accepted without running bcrypt (see `AuthFailures`).
+    Throttled,
+}
+
+/// Authenticate an admin request.
+///
+/// Not an `async fn`: everything it needs is copied out of the request first,
+/// so the returned future borrows nothing — the request's body type need not be
+/// `Sync` for the handler's future to stay `Send`. The API key is compared
+/// right here (it is a plain constant-time compare); only the Basic path
+/// awaits, because it runs bcrypt on the bounded blocking pool and remembers
+/// successes, exactly like route auth (`auth::verify_basic`). It used to run
+/// bcrypt inline on a tokio worker on every request — a polling TUI paid
+/// ~250 ms per refresh, and a password-guessing loop could stall the runtime
+/// the whole proxy shares.
+///
+/// `throttled` is set for a client over its failure budget: bcrypt is then not
+/// run at all, but a matching API key or a Basic credential still in the
+/// success cache is let through — an operator who is already logged in keeps
+/// working while someone else hammers the same address (every client looks
+/// like `127.0.0.1` when the admin API is published through a local route).
 fn check_auth<B>(
     req: &Request<B>,
     api_key: &Option<String>,
     username: &Option<String>,
     password_hash: &Option<String>,
-) -> Option<AuthMethod> {
+    throttled: bool,
+) -> impl std::future::Future<Output = AuthOutcome> + Send + 'static {
     // The same notion of "configured" as the bind-time guard: config loading
     // drops empty credentials, and this keeps the two in step regardless.
-    if !admin_auth_configured(api_key, username, password_hash) {
-        return Some(AuthMethod::Open);
-    }
+    let configured = admin_auth_configured(api_key, username, password_hash);
 
-    if let Some(key) = api_key {
-        if !key.is_empty()
+    let key_ok = api_key.as_deref().is_some_and(|key| {
+        !key.is_empty()
             && req
                 .headers()
                 .get("X-Api-Key")
                 .and_then(|v| v.to_str().ok())
                 .is_some_and(|v| constant_time_eq(v.as_bytes(), key.as_bytes()))
+    });
+
+    let account = match (username, password_hash) {
+        (Some(user), Some(hash)) if !user.is_empty() && !hash.is_empty() => {
+            Some(crate::auth::BasicAuth {
+                username: user.clone(),
+                hash: hash.clone(),
+            })
+        }
+        _ => None,
+    };
+    let authorization = req
+        .headers()
+        .get(hyper::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+
+    async move {
+        if !configured {
+            return AuthOutcome::Allowed(AuthMethod::Open);
+        }
+        if key_ok {
+            return AuthOutcome::Allowed(AuthMethod::ApiKey);
+        }
+        let Some(account) = account else {
+            return if throttled {
+                AuthOutcome::Throttled
+            } else {
+                AuthOutcome::Denied
+            };
+        };
+        if throttled {
+            let remembered = authorization.as_deref().is_some_and(|header| {
+                crate::auth::is_remembered(std::slice::from_ref(&account), header)
+            });
+            return if remembered {
+                AuthOutcome::Allowed(AuthMethod::Basic)
+            } else {
+                AuthOutcome::Throttled
+            };
+        }
+        match crate::auth::verify_basic(std::slice::from_ref(&account), authorization.as_deref())
+            .await
         {
-            return Some(AuthMethod::ApiKey);
+            crate::auth::Verdict::Granted => AuthOutcome::Allowed(AuthMethod::Basic),
+            crate::auth::Verdict::Denied => AuthOutcome::Denied,
+            crate::auth::Verdict::Busy => AuthOutcome::Busy,
+        }
+    }
+}
+
+/// Whether the request carried a credential at all. Only those count as
+/// failed attempts: a browser's first, credential-less hit (the one that gets
+/// the 401 and opens the password prompt) is not a guess.
+fn presents_credential<B>(req: &Request<B>) -> bool {
+    req.headers().contains_key(hyper::header::AUTHORIZATION)
+        || req.headers().contains_key("X-Api-Key")
+}
+
+/// Failed admin authentications allowed per client IP within one window.
+const MAX_AUTH_FAILURES: u32 = 10;
+/// The window `MAX_AUTH_FAILURES` is counted over, and how long an IP that
+/// exhausted it waits.
+const AUTH_FAILURE_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+/// Tracked IPs above which expired entries are swept (and, if that is not
+/// enough, everything is forgotten — the cheapest sane answer to a flood from
+/// spoofed-looking address space).
+const AUTH_FAILURE_CAPACITY: usize = 10_000;
+
+/// Per-IP budget of **failed** admin authentications.
+///
+/// The general `[rate_limiting]` limiter is shared with the proxy, sized for
+/// traffic (1000 rps by default) and off unless configured, so it never stood
+/// between a password guesser and the admin credential. This one is always on
+/// and counts only failures: a correct credential never consumes it, so the
+/// TUI and CLI can poll as fast as they like, while a guessing loop gets
+/// `MAX_AUTH_FAILURES` tries a minute — and is answered 429 *before* bcrypt
+/// runs, so the guesses stop costing CPU too.
+struct AuthFailures {
+    by_ip: parking_lot::Mutex<std::collections::HashMap<std::net::IpAddr, (u32, Instant)>>,
+}
+
+impl AuthFailures {
+    fn global() -> &'static AuthFailures {
+        static FAILURES: std::sync::LazyLock<AuthFailures> =
+            std::sync::LazyLock::new(|| AuthFailures {
+                by_ip: parking_lot::Mutex::new(std::collections::HashMap::new()),
+            });
+        &FAILURES
+    }
+
+    /// Seconds until `ip` may try again, or `None` when it may now.
+    fn blocked_for(&self, ip: std::net::IpAddr, now: Instant) -> Option<u64> {
+        let by_ip = self.by_ip.lock();
+        let (count, since) = by_ip.get(&ip)?;
+        let elapsed = now.saturating_duration_since(*since);
+        if *count >= MAX_AUTH_FAILURES && elapsed < AUTH_FAILURE_WINDOW {
+            Some((AUTH_FAILURE_WINDOW - elapsed).as_secs().max(1))
+        } else {
+            None
         }
     }
 
-    if let (Some(user), Some(hash)) = (username, password_hash) {
-        if let Some(auth_header) = req.headers().get("authorization") {
-            if let Ok(header_value) = auth_header.to_str() {
-                if let Some(encoded) = header_value.strip_prefix("Basic ") {
-                    if let Ok(decoded) =
-                        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
-                    {
-                        let creds = String::from_utf8_lossy(&decoded);
-                        if let Some((u, p)) = creds.split_once(':') {
-                            let user_ok = constant_time_eq(u.as_bytes(), user.as_bytes());
-                            // Always run exactly one bcrypt verify — against the
-                            // real hash when the username matches, otherwise a
-                            // dummy — so response timing doesn't reveal whether
-                            // the admin username is correct (user enumeration).
-                            let verify_hash = if user_ok {
-                                hash.as_str()
-                            } else {
-                                crate::auth::dummy_hash()
-                            };
-                            let pass_ok = crate::auth::verify_password(p, verify_hash);
-                            if user_ok && pass_ok {
-                                return Some(AuthMethod::Basic);
-                            }
-                        }
-                    }
-                }
+    fn record(&self, ip: std::net::IpAddr, now: Instant) {
+        let mut by_ip = self.by_ip.lock();
+        if by_ip.len() >= AUTH_FAILURE_CAPACITY {
+            by_ip.retain(|_, (_, since)| {
+                now.saturating_duration_since(*since) < AUTH_FAILURE_WINDOW
+            });
+            if by_ip.len() >= AUTH_FAILURE_CAPACITY {
+                by_ip.clear();
             }
         }
+        let entry = by_ip.entry(ip).or_insert((0, now));
+        if now.saturating_duration_since(entry.1) >= AUTH_FAILURE_WINDOW {
+            *entry = (0, now);
+        }
+        entry.0 = entry.0.saturating_add(1);
     }
+}
 
-    None
+/// Whether `host` (a `Host` header value) names this loopback listener.
+///
+/// **DNS rebinding.** With no credential configured, the admin API trusts
+/// whatever reaches `127.0.0.1:9090` — and a web page can reach it: its
+/// attacker-controlled hostname first resolves to the attacker's server, then,
+/// once the page is loaded, to `127.0.0.1`. The browser treats both as the
+/// same origin, so the page can read and write the admin API with no
+/// credential to steal. What it cannot change is the `Host` header, which
+/// still carries the attacker's name. So the open admin API answers only
+/// requests addressed to a loopback name: `localhost`, a loopback IP literal
+/// (`127.0.0.1`, `[::1]`), or the bound address, each with an optional port.
+/// A request with no `Host` at all (HTTP/1.0 tooling; never a browser) passes.
+fn is_loopback_host(host: &str, bound: SocketAddr) -> bool {
+    let name = if let Some(rest) = host.strip_prefix('[') {
+        // `[v6]` or `[v6]:port`
+        match rest.split_once(']') {
+            Some((ip, port)) if port.is_empty() || is_port_suffix(port) => ip,
+            _ => return false,
+        }
+    } else {
+        match host.rsplit_once(':') {
+            Some((name, port)) if is_port_suffix(&format!(":{port}")) => name,
+            Some(_) => return false,
+            None => host,
+        }
+    };
+    if name.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    match name.parse::<std::net::IpAddr>() {
+        Ok(ip) => ip.is_loopback() || ip == bound.ip(),
+        Err(_) => false,
+    }
+}
+
+/// `:` followed by one to five digits.
+fn is_port_suffix(s: &str) -> bool {
+    s.strip_prefix(':')
+        .is_some_and(|p| !p.is_empty() && p.len() <= 5 && p.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Cross-site request check for Basic-authenticated mutations.
@@ -313,8 +466,73 @@ async fn handle_admin_request(
         return Ok(error_response(503, "admin auth not configured"));
     }
 
-    let Some(auth_method) = check_auth(&req, &api_key, &username, &password_hash) else {
-        return Ok(unauthorized_response(use_basic_auth));
+    // DNS rebinding: see `is_loopback_host`. Only the open (credential-less)
+    // API needs it — with a credential configured, a rebinding page has none
+    // to send, since the browser keys cached Basic credentials by origin and
+    // never invents an `X-Api-Key`. Applying it there too would break an
+    // operator who publishes a protected admin API through a named route.
+    if bound_addr.ip().is_loopback() && !admin_auth_configured(&api_key, &username, &password_hash)
+    {
+        let host_ok = match req.headers().get(hyper::header::HOST) {
+            None => true,
+            Some(host) => host
+                .to_str()
+                .is_ok_and(|host| is_loopback_host(host, bound_addr)),
+        };
+        if !host_ok {
+            return Ok(error_response(
+                403,
+                "the unauthenticated admin API only answers requests addressed to localhost",
+            ));
+        }
+    }
+
+    // Failed-credential budget, checked before bcrypt runs (see `AuthFailures`).
+    let blocked_for =
+        peer_addr.and_then(|peer| AuthFailures::global().blocked_for(peer.ip(), Instant::now()));
+
+    let auth_method = match check_auth(
+        &req,
+        &api_key,
+        &username,
+        &password_hash,
+        blocked_for.is_some(),
+    )
+    .await
+    {
+        AuthOutcome::Allowed(method) => method,
+        AuthOutcome::Denied => {
+            if let Some(peer) = peer_addr {
+                if presents_credential(&req) {
+                    AuthFailures::global().record(peer.ip(), Instant::now());
+                }
+            }
+            return Ok(unauthorized_response(use_basic_auth));
+        }
+        AuthOutcome::Throttled => {
+            let body = http_body_util::Full::new(Bytes::from_static(
+                b"Too many failed authentication attempts",
+            ))
+            .boxed();
+            return Ok(Response::builder()
+                .status(429)
+                .header("Retry-After", blocked_for.unwrap_or(1).to_string())
+                .header("Content-Type", "text/plain")
+                .body(body)
+                .unwrap());
+        }
+        AuthOutcome::Busy => {
+            let body = http_body_util::Full::new(Bytes::from_static(
+                b"Authentication temporarily unavailable",
+            ))
+            .boxed();
+            return Ok(Response::builder()
+                .status(503)
+                .header("Retry-After", "1")
+                .header("Content-Type", "text/plain")
+                .body(body)
+                .unwrap());
+        }
     };
 
     if is_cross_site_mutation(&req, auth_method) {
@@ -484,7 +702,7 @@ async fn handle_admin_request(
                 Ok(b) => b,
                 Err(e) => return Ok(error_response(413, e)),
             };
-            handlers::post_hash_password(&state, &body)
+            handlers::post_hash_password(&state, &body).await
         }
 
         // Everything else → proxy to _admin app (UI, static assets, etc.)
@@ -925,6 +1143,18 @@ pub async fn run_admin_server(state: Arc<AdminState>) -> Result<()> {
         );
     }
 
+    // A hash bcrypt should not run (malformed, or a cost outside 4..=13) is
+    // never verified, so Basic login would fail with no explanation. Say why.
+    if let Some(hash) = admin_cfg.password_hash.as_deref().filter(|h| !h.is_empty()) {
+        if let Err(e) = crate::auth::validate_hash(hash) {
+            tracing::error!(
+                "ADMIN_PASSWORD_HASH is unusable ({}); Basic login to the admin API will be \
+                 refused. Regenerate it with `hash-password`.",
+                e
+            );
+        }
+    }
+
     let listener = TcpListener::bind(addr)
         .await
         .with_context(|| format!("failed to bind admin API to {addr}"))?;
@@ -1020,44 +1250,156 @@ mod tests {
         builder.body(()).unwrap()
     }
 
-    #[test]
-    fn check_auth_reports_which_credential_matched() {
+    #[tokio::test]
+    async fn check_auth_reports_which_credential_matched() {
         let key = Some("k".to_string());
         assert_eq!(
-            check_auth(&request("GET", &[]), &None, &None, &None),
-            Some(AuthMethod::Open)
+            check_auth(&request("GET", &[]), &None, &None, &None, false).await,
+            AuthOutcome::Allowed(AuthMethod::Open)
         );
         assert_eq!(
-            check_auth(&request("GET", &[("X-Api-Key", "k")]), &key, &None, &None),
-            Some(AuthMethod::ApiKey)
+            check_auth(
+                &request("GET", &[("X-Api-Key", "k")]),
+                &key,
+                &None,
+                &None,
+                false
+            )
+            .await,
+            AuthOutcome::Allowed(AuthMethod::ApiKey)
         );
         assert_eq!(
-            check_auth(&request("GET", &[("X-Api-Key", "x")]), &key, &None, &None),
-            None
+            check_auth(
+                &request("GET", &[("X-Api-Key", "x")]),
+                &key,
+                &None,
+                &None,
+                false
+            )
+            .await,
+            AuthOutcome::Denied
         );
+    }
+
+    #[tokio::test]
+    async fn check_auth_verifies_basic_credentials_at_their_own_cost() {
+        let user = Some("admin".to_string());
+        let hash = Some(crate::auth::hash_password("pw", 4));
+        let header = |creds: &str| {
+            format!(
+                "Basic {}",
+                base64::Engine::encode(&base64::engine::general_purpose::STANDARD, creds)
+            )
+        };
+        let good = header("admin:pw");
+        let bad = header("admin:nope");
+        let check = |authorization: &str, throttled: bool| {
+            check_auth(
+                &request("GET", &[("Authorization", authorization)]),
+                &None,
+                &user,
+                &hash,
+                throttled,
+            )
+        };
+
+        // Throttled before any success: bcrypt does not run, nothing gets in.
+        assert_eq!(check(&good, true).await, AuthOutcome::Throttled);
+        assert_eq!(
+            check(&good, false).await,
+            AuthOutcome::Allowed(AuthMethod::Basic)
+        );
+        assert_eq!(check(&bad, false).await, AuthOutcome::Denied);
+        // Throttled after a success: the remembered session keeps working,
+        // the guess is refused without bcrypt.
+        assert_eq!(
+            check(&good, true).await,
+            AuthOutcome::Allowed(AuthMethod::Basic)
+        );
+        assert_eq!(check(&bad, true).await, AuthOutcome::Throttled);
     }
 
     /// An empty credential is "unset" for `check_auth` exactly as it is for
     /// `admin_auth_configured`: `api_key = ""` must not produce a server that
     /// logs "no authentication configured" and then 401s every request, and
     /// an empty user/hash pair must not accept `Basic Og==`.
-    #[test]
-    fn check_auth_treats_empty_credentials_as_unset() {
+    #[tokio::test]
+    async fn check_auth_treats_empty_credentials_as_unset() {
         let empty = Some(String::new());
         assert_eq!(
-            check_auth(&request("GET", &[]), &empty, &None, &None),
-            Some(AuthMethod::Open)
+            check_auth(&request("GET", &[]), &empty, &None, &None, false).await,
+            AuthOutcome::Allowed(AuthMethod::Open)
         );
         assert_eq!(
-            check_auth(&request("GET", &[]), &empty, &empty, &empty),
-            Some(AuthMethod::Open)
+            check_auth(&request("GET", &[]), &empty, &empty, &empty, false).await,
+            AuthOutcome::Allowed(AuthMethod::Open)
         );
         // Only a complete Basic pair counts, and an empty key never matches.
         let key = Some("k".to_string());
         assert_eq!(
-            check_auth(&request("GET", &[("X-Api-Key", "")]), &key, &empty, &None),
-            None
+            check_auth(
+                &request("GET", &[("X-Api-Key", "")]),
+                &key,
+                &empty,
+                &None,
+                false
+            )
+            .await,
+            AuthOutcome::Denied
         );
+    }
+
+    #[test]
+    fn only_loopback_names_reach_the_open_admin_api() {
+        let bound: SocketAddr = "127.0.0.1:9090".parse().unwrap();
+        for ok in [
+            "127.0.0.1",
+            "127.0.0.1:9090",
+            "localhost",
+            "LOCALHOST:9090",
+            "[::1]",
+            "[::1]:9090",
+            "127.0.0.2:80",
+        ] {
+            assert!(is_loopback_host(ok, bound), "{ok}");
+        }
+        // Ce que montre une page en rebinding DNS : son propre nom.
+        for bad in [
+            "attacker.example",
+            "attacker.example:9090",
+            "localhost.attacker.example",
+            "127.0.0.1.nip.io:9090",
+            "10.0.0.1:9090",
+            "[::1]x",
+            "localhost:abc",
+            "",
+        ] {
+            assert!(!is_loopback_host(bad, bound), "{bad}");
+        }
+        // The bound address itself, even when it is not 127.0.0.1.
+        let other: SocketAddr = "[::1]:9090".parse().unwrap();
+        assert!(is_loopback_host("[::1]:9090", other));
+    }
+
+    #[test]
+    fn failed_attempts_are_budgeted_per_ip_and_forgotten_after_the_window() {
+        let failures = AuthFailures {
+            by_ip: parking_lot::Mutex::new(std::collections::HashMap::new()),
+        };
+        let ip: std::net::IpAddr = "192.0.2.7".parse().unwrap();
+        let other: std::net::IpAddr = "192.0.2.8".parse().unwrap();
+        let t0 = Instant::now();
+        for _ in 0..MAX_AUTH_FAILURES - 1 {
+            failures.record(ip, t0);
+        }
+        assert_eq!(failures.blocked_for(ip, t0), None);
+        failures.record(ip, t0);
+        assert!(failures.blocked_for(ip, t0).is_some());
+        assert_eq!(failures.blocked_for(other, t0), None, "per IP, not global");
+        let later = t0 + AUTH_FAILURE_WINDOW;
+        assert_eq!(failures.blocked_for(ip, later), None);
+        failures.record(ip, later);
+        assert_eq!(failures.blocked_for(ip, later), None, "the count restarted");
     }
 
     #[test]

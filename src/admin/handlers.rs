@@ -195,15 +195,30 @@ pub async fn get_aliases(state: &Arc<AdminState>) -> Response<BoxBody> {
 ///
 /// ```json
 /// { "index": 42,
-///   "routes": { "x.soli.app": [ { "url": "http://10.0.0.12:20001", "weight": 100 } ] } }
+///   "routes": { "x.soli.app": [ { "url": "http://10.0.0.12:20001", "weight": 100 } ] },
+///   "auth":   { "x.soli.app": { "users": { "admin": "$2b$12$..." },
+///                               "noauth": ["/webhooks/*"] } } }
 /// ```
 ///
+/// Each target is an `http`/`https` URL with a host — the same rule as a
+/// static route's target — and a `weight` of 0..=255 (default 100). Anything
+/// else is refused rather than reinterpreted: `weight: 256` used to wrap to 0.
+///
+/// `auth` is optional, and keyed by domains present in `routes`. It is the
+/// app's `[auth]` section, in the same shape and under the same validation as
+/// in `app.infos` (bcrypt hashes at cost 4..=13). **This proxy is what enforces
+/// it**: a pushed target is the workload's raw port, with nothing in front of
+/// it on the node that runs it, so a protected app pushed without its `auth`
+/// is served open.
+///
 /// **Complete set, not a delta.** A missed push then self-corrects on the next
-/// one, and removing a route needs no separate call. The `index` must increase:
-/// a retry overtaking the write that superseded it would otherwise reinstate
-/// routes that were deliberately removed, which looks exactly like a rollback
-/// nobody asked for. A stale push answers 409 rather than being silently
-/// ignored, so the pusher can tell "refused" from "applied".
+/// one, and removing a route needs no separate call. The `index` must increase
+/// strictly — any index is accepted for the first table after a start, then
+/// each push must exceed the one in place, 0 included: a retry overtaking the
+/// write that superseded it would otherwise reinstate routes that were
+/// deliberately removed, which looks exactly like a rollback nobody asked for.
+/// A stale push answers 409 rather than being silently ignored, so the pusher
+/// can tell "refused" from "applied".
 pub async fn put_routing_table(state: &Arc<AdminState>, body: &str) -> Response<BoxBody> {
     use crate::app::external::ExternalRoutes;
 
@@ -234,22 +249,74 @@ pub async fn put_routing_table(state: &Arc<AdminState>, body: &str) -> Response<
             // Parsed here, not at use. A malformed URL rejected at push time is
             // one error message for the pusher; the same URL rejected at
             // request time is a 502 for a real user with no explanation.
-            let Ok(url) = raw.parse() else {
+            let Ok(url) = raw.parse::<url::Url>() else {
                 return error_response(
                     400,
                     &format!("routes[{}] has an invalid url: {}", host, raw),
                 );
             };
-            let weight = target.get("weight").and_then(|v| v.as_u64()).unwrap_or(100) as u8;
+            // The same rule a static route's target obeys: the proxy speaks
+            // HTTP to it, so `file://`, `unix:` or a host-less URL is a
+            // mistake (or an attempt) to refuse now, not a 502 to explain later.
+            if !matches!(url.scheme(), "http" | "https") || url.host().is_none() {
+                return error_response(
+                    400,
+                    &format!(
+                        "routes[{}] target {} must be an http:// or https:// URL with a host",
+                        host, raw
+                    ),
+                );
+            }
+            let weight = match target.get("weight") {
+                None => 100,
+                Some(w) => match w.as_u64().and_then(|w| u8::try_from(w).ok()) {
+                    Some(w) => w,
+                    None => {
+                        return error_response(
+                            400,
+                            &format!(
+                                "routes[{}] target {} has weight {}, expected an integer 0..=255",
+                                host, raw, w
+                            ),
+                        )
+                    }
+                },
+            };
             parsed_targets.push(crate::config::Target { url, weight });
         }
         table.insert(host.to_lowercase(), parsed_targets);
     }
 
+    let mut auth = std::collections::HashMap::new();
+    if let Some(raw) = parsed.get("auth").filter(|v| !v.is_null()) {
+        let Some(entries) = raw.as_object() else {
+            return error_response(400, "auth must be an object keyed by domain");
+        };
+        for (host, section) in entries {
+            let host = host.to_lowercase();
+            if !table.contains_key(&host) {
+                return error_response(
+                    400,
+                    &format!("auth[{}] names a domain absent from routes", host),
+                );
+            }
+            let section: crate::app::AppAuth = match serde_json::from_value(section.clone()) {
+                Ok(section) => section,
+                Err(e) => return error_response(400, &format!("auth[{}]: {}", host, e)),
+            };
+            if let Err(e) = section.validate() {
+                return error_response(400, &format!("auth[{}]: {}", host, e));
+            }
+            if !section.users.is_empty() {
+                auth.insert(host, section);
+            }
+        }
+    }
+
     let count = table.len();
     if manager
         .external_routes
-        .push(ExternalRoutes { index, table })
+        .push(ExternalRoutes { index, table, auth })
     {
         ok_response(serde_json::json!({ "applied": true, "index": index, "domains": count }))
     } else {
@@ -386,7 +453,12 @@ pub async fn get_routing_table(state: &Arc<AdminState>) -> Response<BoxBody> {
             )
         })
         .collect();
-    ok_response(serde_json::json!({ "index": snapshot.index, "routes": routes }))
+    // `AppAuth` serializes usernames and `noauth` only, never the hashes.
+    ok_response(serde_json::json!({
+        "index": snapshot.index,
+        "routes": routes,
+        "auth": snapshot.auth,
+    }))
 }
 
 /// `POST /api/v1/apps/{name}/aliases` with `{"domain": "..."}`.
@@ -634,6 +706,17 @@ pub async fn post_reload(state: &Arc<AdminState>) -> Response<BoxBody> {
 
 // Phase 2: Mutation endpoints
 
+/// Refuse a rule whose `@auth` hashes bcrypt could not, or should not, verify:
+/// malformed, or at a cost outside 4..=13 (see `auth::validate_hash`). Run
+/// after `carry_forward_auth_hashes`, so kept hashes are checked too.
+fn validate_auth_hashes(rule: &ProxyRule) -> Result<(), String> {
+    for entry in &rule.auth {
+        auth::validate_hash(&entry.hash)
+            .map_err(|e| format!("auth entry for {}: {}", entry.username, e))?;
+    }
+    Ok(())
+}
+
 pub fn post_route(state: &Arc<AdminState>, body: &str) -> Response<BoxBody> {
     let mut rule: ProxyRule = match serde_json::from_str(body) {
         Ok(r) => r,
@@ -643,6 +726,9 @@ pub fn post_route(state: &Arc<AdminState>, body: &str) -> Response<BoxBody> {
     // A new route has nothing to inherit from: every auth entry needs a hash.
     if let Err(e) = rule.carry_forward_auth_hashes(None) {
         return error_response(400, &e.to_string());
+    }
+    if let Err(e) = validate_auth_hashes(&rule) {
+        return error_response(400, &e);
     }
     if let Err(e) = rule.validate_auth_exempt() {
         return error_response(400, &e.to_string());
@@ -671,6 +757,9 @@ pub fn put_route(state: &Arc<AdminState>, index: usize, body: &str) -> Response<
     let cfg = state.config_manager.get_config();
     if let Err(e) = rule.carry_forward_auth_hashes(cfg.rules.get(index)) {
         return error_response(400, &e.to_string());
+    }
+    if let Err(e) = validate_auth_hashes(&rule) {
+        return error_response(400, &e);
     }
     if let Err(e) = rule.validate_auth_exempt() {
         return error_response(400, &e.to_string());
@@ -749,6 +838,9 @@ pub fn put_config(state: &Arc<AdminState>, body: &str) -> Response<BoxBody> {
         if let Err(e) = rule.carry_forward_auth_hashes(existing) {
             return error_response(400, &format!("rule {}: {}", index, e));
         }
+        if let Err(e) = validate_auth_hashes(rule) {
+            return error_response(400, &format!("rule {}: {}", index, e));
+        }
         if let Err(e) = rule.validate_auth_exempt() {
             return error_response(400, &format!("rule {}: {}", index, e));
         }
@@ -824,7 +916,12 @@ struct HashPasswordRequest {
     password: String,
 }
 
-pub fn post_hash_password(_state: &Arc<AdminState>, body: &str) -> Response<BoxBody> {
+/// `POST /api/v1/hash-password` — bcrypt a password at the default cost (12).
+///
+/// Runs on the bounded bcrypt pool like every credential check: hashing is the
+/// same quarter-second of CPU, and done inline it parked a tokio worker per
+/// call. Answers 503 when the pool stays saturated.
+pub async fn post_hash_password(_state: &Arc<AdminState>, body: &str) -> Response<BoxBody> {
     let req: HashPasswordRequest = match serde_json::from_str(body) {
         Ok(r) => r,
         Err(e) => return error_response(400, &format!("Invalid JSON: {}", e)),
@@ -838,7 +935,10 @@ pub fn post_hash_password(_state: &Arc<AdminState>, body: &str) -> Response<BoxB
         return error_response(400, "Password too long (max 1024 bytes)");
     }
 
-    let hash = auth::generate_hash(&req.password);
+    let password = req.password;
+    let Some(hash) = auth::run_bcrypt(move || auth::generate_hash(&password)).await else {
+        return error_response(503, "password hashing is busy, retry shortly");
+    };
     ok_response(serde_json::json!({
         "hash": hash,
         "format": "bcrypt"
@@ -953,5 +1053,158 @@ mod acme_challenge_tests {
         assert!(plausible_acme_token(&"a".repeat(22)));
         assert!(plausible_acme_token(&"a".repeat(128)));
         assert!(!plausible_acme_token(&"a".repeat(129)));
+    }
+}
+
+#[cfg(test)]
+mod routing_table_tests {
+    use super::*;
+    use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
+    use std::time::Instant;
+
+    /// An admin state with an app manager over empty `sites/`, which is all
+    /// the routing-table endpoints need.
+    fn state(dir: &tempfile::TempDir) -> Arc<AdminState> {
+        let sites = dir.path().join("sites");
+        std::fs::create_dir_all(&sites).unwrap();
+        let conf = dir.path().join("proxy.conf");
+        std::fs::write(&conf, "default -> http://localhost:3000\n").unwrap();
+        let config_manager =
+            Arc::new(crate::config::ConfigManager::new(conf.to_str().unwrap()).unwrap());
+        let port_manager = Arc::new(
+            crate::app::PortManager::new(dir.path().join("run").to_str().unwrap()).unwrap(),
+        );
+        let app_manager = crate::app::AppManager::new(
+            sites.to_str().unwrap(),
+            port_manager,
+            config_manager.clone(),
+            false,
+        )
+        .unwrap();
+        Arc::new(AdminState {
+            config_manager,
+            metrics: crate::metrics::new_metrics(),
+            start_time: Instant::now(),
+            circuit_breaker: Arc::new(CircuitBreaker::new(CircuitBreakerConfig::default())),
+            app_manager: Some(Arc::new(app_manager)),
+            rate_limiter: None,
+            tls_manager: None,
+            challenge_store: None,
+        })
+    }
+
+    fn hash() -> String {
+        crate::auth::hash_password("pw", 4)
+    }
+
+    async fn push(state: &Arc<AdminState>, body: serde_json::Value) -> u16 {
+        put_routing_table(state, &body.to_string())
+            .await
+            .status()
+            .as_u16()
+    }
+
+    #[tokio::test]
+    async fn only_http_targets_with_a_host_are_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(&dir);
+        for url in [
+            "file:///etc/passwd",
+            "unix:/run/app.sock",
+            "ftp://10.0.0.1/",
+            "data:text/plain,hi",
+        ] {
+            let body = serde_json::json!({
+                "index": 1,
+                "routes": { "x.soli.app": [ { "url": url } ] }
+            });
+            assert_eq!(push(&state, body).await, 400, "{url} was accepted");
+        }
+        let body = serde_json::json!({
+            "index": 1,
+            "routes": { "x.soli.app": [ { "url": "https://10.0.0.1:20001" } ] }
+        });
+        assert_eq!(push(&state, body).await, 200);
+    }
+
+    #[tokio::test]
+    async fn a_weight_above_255_is_refused_not_wrapped() {
+        // `as u8` turned 256 into 0 and 300 into 44, silently.
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(&dir);
+        for weight in [
+            serde_json::json!(256),
+            serde_json::json!(-1),
+            serde_json::json!("10"),
+        ] {
+            let body = serde_json::json!({
+                "index": 1,
+                "routes": { "x.soli.app": [ { "url": "http://10.0.0.1:1", "weight": weight } ] }
+            });
+            assert_eq!(
+                push(&state, body).await,
+                400,
+                "weight {weight} was accepted"
+            );
+        }
+        let body = serde_json::json!({
+            "index": 1,
+            "routes": { "x.soli.app": [ { "url": "http://10.0.0.1:1", "weight": 255 } ] }
+        });
+        assert_eq!(push(&state, body).await, 200);
+    }
+
+    #[tokio::test]
+    async fn a_replayed_push_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(&dir);
+        let body = serde_json::json!({
+            "index": 0,
+            "routes": { "x.soli.app": [ { "url": "http://10.0.0.1:1" } ] }
+        });
+        assert_eq!(push(&state, body.clone()).await, 200);
+        assert_eq!(push(&state, body).await, 409);
+    }
+
+    #[tokio::test]
+    async fn pushed_auth_is_validated_then_enforced_for_its_domain() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(&dir);
+        let manager = state.app_manager.clone().unwrap();
+        let routes = serde_json::json!({ "x.soli.app": [ { "url": "http://10.0.0.1:1" } ] });
+
+        // Un locataire ne choisit pas le facteur de cout du proxy.
+        let slow = format!("$2b$31${}", "a".repeat(53));
+        for auth in [
+            serde_json::json!({ "x.soli.app": { "users": { "admin": slow } } }),
+            serde_json::json!({ "x.soli.app": { "users": { "admin": "not-a-hash" } } }),
+            serde_json::json!({ "y.soli.app": { "users": { "admin": hash() } } }),
+            serde_json::json!({ "x.soli.app": { "users": { "admin": hash() }, "bogus": 1 } }),
+        ] {
+            let body = serde_json::json!({ "index": 1, "routes": routes, "auth": auth });
+            assert_eq!(push(&state, body).await, 400, "{auth} was accepted");
+        }
+        assert!(manager.auth_for_host("x.soli.app").await.is_none());
+
+        let body = serde_json::json!({
+            "index": 1,
+            "routes": routes,
+            "auth": { "X.soli.app": { "users": { "admin": hash() }, "noauth": ["/hooks/*"] } }
+        });
+        assert_eq!(push(&state, body).await, 200);
+        let auth = manager
+            .auth_for_host("x.soli.app")
+            .await
+            .expect("a pushed domain's auth must be enforced by this proxy");
+        assert_eq!(auth.users[0].username, "admin");
+        assert!(auth.requires_auth("/"));
+        assert!(!auth.requires_auth("/hooks/github"));
+
+        // The read side never returns a hash.
+        let response = get_routing_table(&state).await;
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("\"usernames\":[\"admin\"]"), "{text}");
+        assert!(!text.contains("$2b$"), "{text}");
     }
 }
