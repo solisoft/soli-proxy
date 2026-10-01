@@ -46,10 +46,10 @@
                     </p>
                 </div>
 
-                <!-- 1.0.1 -->
+                <!-- 1.0.2 -->
                 <div class="mb-10 reveal-on-scroll">
                     <div class="flex items-center gap-3 mb-5 flex-wrap">
-                        <h2 class="text-2xl font-bold text-white font-mono">v1.0.1</h2>
+                        <h2 class="text-2xl font-bold text-white font-mono">v1.0.2</h2>
                         <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
                         <span class="text-sm text-gray-500">2026-10-01</span>
                     </div>
@@ -61,7 +61,7 @@
                                 <h3 class="text-base font-semibold text-white">Upgrading from 0.35 no longer quarantines its apps</h3>
                             </div>
                             <p class="text-gray-400 leading-relaxed">
-                                0.35 kept no record of the apps it started, and left them running when it stopped. 1.0.0 could not prove they were its own, refused to touch them and quarantined every app whose port they held. A leftover is now recognised by what it is &mdash; the leader of its own session, running as the app&rsquo;s user, from the app&rsquo;s site directory, with the app&rsquo;s start program &mdash; stopped, and the app starts afresh. Already hit it? Restart the proxy with 1.0.1, or stop the leftover <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">soli serve</code> processes and <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">touch &lt;site&gt;/restart.txt</code>.
+                                0.35 kept no record of the apps it started, and left them running when it stopped. 1.0.0 could not prove they were its own, refused to touch them and quarantined every app whose port they held. A leftover is now recognised by what it is &mdash; the leader of its own session, running as the app&rsquo;s user, from the app&rsquo;s site directory, with the app&rsquo;s start program &mdash; stopped, and the app starts afresh. Already hit it? Restart the proxy with 1.0.2, or stop the leftover <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">soli serve</code> processes and <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">touch &lt;site&gt;/restart.txt</code>.
                             </p>
                         </div>
 
