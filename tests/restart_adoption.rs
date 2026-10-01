@@ -143,13 +143,27 @@ impl Installation {
         None
     }
 
+    /// Whether the app answers through the proxy within a few seconds.
+    ///
+    /// "Running" is reported from the spawn, before the app listens: a slow
+    /// runner can ask before `http.server` has bound its port, so a single
+    /// attempt is a race, not a check.
     async fn served_through_proxy(&self) -> bool {
-        reqwest::Client::new()
-            .get(format!("http://127.0.0.1:{}/", self.http))
-            .header("Host", APP)
-            .send()
-            .await
-            .is_ok_and(|r| r.status().is_success())
+        let client = reqwest::Client::new();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline {
+            let ok = client
+                .get(format!("http://127.0.0.1:{}/", self.http))
+                .header("Host", APP)
+                .send()
+                .await
+                .is_ok_and(|r| r.status().is_success());
+            if ok {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        false
     }
 }
 

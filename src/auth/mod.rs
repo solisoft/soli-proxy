@@ -254,12 +254,14 @@ struct QueuePlace;
 impl QueuePlace {
     fn take() -> Option<Self> {
         let limit = bcrypt_slot_count() * BCRYPT_QUEUE_PER_SLOT;
-        BCRYPT_WAITING
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                (n < limit).then_some(n + 1)
-            })
-            .ok()
-            .map(|_| QueuePlace)
+        // Take a place, then give it back if the queue was already full. Two
+        // callers racing at the limit may both give theirs back — a 503 a few
+        // microseconds early, never a queue past the limit.
+        if BCRYPT_WAITING.fetch_add(1, Ordering::AcqRel) >= limit {
+            BCRYPT_WAITING.fetch_sub(1, Ordering::AcqRel);
+            return None;
+        }
+        Some(QueuePlace)
     }
 }
 
