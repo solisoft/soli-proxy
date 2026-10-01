@@ -9,6 +9,44 @@ const STATE_CLOSED: u8 = 0;
 const STATE_OPEN: u8 = 1;
 const STATE_HALF_OPEN: u8 = 2;
 
+/// What the active health checks (`crate::upstream::health`) last concluded
+/// about a target. Kept beside the breaker's own state rather than folded
+/// into it: the breaker learns from live traffic and recovers by letting a
+/// probe request through, while a health-check verdict only changes when the
+/// checker says so — a target marked down stays out of rotation however long
+/// the breaker's recovery timeout is, and comes back the moment its health
+/// path answers again.
+const HEALTH_UNKNOWN: u8 = 0;
+const HEALTH_UP: u8 = 1;
+const HEALTH_DOWN: u8 = 2;
+
+/// A target's health as the active checks see it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Health {
+    /// Not checked (no health check covers it), or not yet probed.
+    Unknown,
+    Up,
+    Down,
+}
+
+impl Health {
+    fn from_u8(v: u8) -> Self {
+        match v {
+            HEALTH_UP => Health::Up,
+            HEALTH_DOWN => Health::Down,
+            _ => Health::Unknown,
+        }
+    }
+
+    fn as_u8(self) -> u8 {
+        match self {
+            Health::Unknown => HEALTH_UNKNOWN,
+            Health::Up => HEALTH_UP,
+            Health::Down => HEALTH_DOWN,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CircuitBreakerConfig {
     pub failure_threshold: u32,
@@ -53,6 +91,8 @@ struct TargetState {
     opened_at_nanos: AtomicU64,
     /// In half-open state, only one probe request is allowed through
     probe_permit: AtomicBool,
+    /// `HEALTH_*`: the active health checks' verdict.
+    health: AtomicU8,
 }
 
 impl TargetState {
@@ -63,6 +103,7 @@ impl TargetState {
             consecutive_successes: AtomicU32::new(0),
             opened_at_nanos: AtomicU64::new(0),
             probe_permit: AtomicBool::new(false),
+            health: AtomicU8::new(HEALTH_UNKNOWN),
         }
     }
 }
@@ -72,6 +113,11 @@ pub struct CircuitBreakerInfo {
     pub state: String,
     pub consecutive_failures: u32,
     pub consecutive_successes: u32,
+    /// `"up"` or `"down"` for a target an active health check covers; absent
+    /// otherwise (and until its first probe), so the shape is unchanged for
+    /// everything else.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub health: Option<String>,
 }
 
 pub struct CircuitBreaker {
@@ -130,8 +176,15 @@ impl CircuitBreaker {
     /// In Closed state: always available.
     /// In Open state: available only if recovery_timeout has elapsed (transitions to HalfOpen).
     /// In HalfOpen state: available only if the probe permit can be claimed.
+    ///
+    /// A target the active health checks marked down is unavailable whatever
+    /// the breaker says — checked first, so it never claims a half-open probe
+    /// permit it will not use.
     pub fn is_available(&self, target_url: &str) -> bool {
         let state = self.get_or_create(target_url);
+        if state.health.load(Ordering::Relaxed) == HEALTH_DOWN {
+            return false;
+        }
         let current = state.state.load(Ordering::Acquire);
 
         match current {
@@ -277,6 +330,22 @@ impl CircuitBreaker {
         }
     }
 
+    /// The active health checks' verdict on `target_url`.
+    pub fn health(&self, target_url: &str) -> Health {
+        let targets = self.targets.read();
+        targets.get(target_url).map_or(Health::Unknown, |s| {
+            Health::from_u8(s.health.load(Ordering::Relaxed))
+        })
+    }
+
+    /// Record a health-check verdict; returns the previous one. `Unknown`
+    /// forgets it — for a target no check covers any more, which must not
+    /// stay down because a check that no longer exists once said so.
+    pub fn set_health(&self, target_url: &str, health: Health) -> Health {
+        let state = self.get_or_create(target_url);
+        Health::from_u8(state.health.swap(health.as_u8(), Ordering::Relaxed))
+    }
+
     pub fn is_failure_status(&self, status: u16) -> bool {
         self.config.failure_status_codes.contains(&status)
     }
@@ -299,12 +368,20 @@ impl CircuitBreaker {
                         state: state_str.to_string(),
                         consecutive_failures: state.consecutive_failures.load(Ordering::Relaxed),
                         consecutive_successes: state.consecutive_successes.load(Ordering::Relaxed),
+                        health: match Health::from_u8(state.health.load(Ordering::Relaxed)) {
+                            Health::Unknown => None,
+                            Health::Up => Some("up".to_string()),
+                            Health::Down => Some("down".to_string()),
+                        },
                     },
                 )
             })
             .collect()
     }
 
+    /// Reset every breaker to closed. Health-check verdicts are left alone:
+    /// they are the checker's to change, and it re-asserts them on its next
+    /// probe anyway.
     pub fn reset(&self) {
         let targets = self.targets.read();
         for (url, state) in targets.iter() {
@@ -498,6 +575,52 @@ mod tests {
 
         cb.reset();
         assert!(cb.is_available(url)); // closed again
+    }
+
+    #[test]
+    fn health_down_makes_a_closed_target_unavailable() {
+        let cb = CircuitBreaker::new(test_config());
+        let url = "http://backend:8080";
+        assert_eq!(cb.health(url), Health::Unknown);
+        assert_eq!(cb.set_health(url, Health::Down), Health::Unknown);
+        assert!(!cb.is_available(url));
+        // The breaker itself is still closed: only the health verdict says no.
+        assert_eq!(cb.get_states()[url].state, "closed");
+        assert_eq!(cb.get_states()[url].health.as_deref(), Some("down"));
+        cb.set_health(url, Health::Up);
+        assert!(cb.is_available(url));
+        assert_eq!(cb.get_states()[url].health.as_deref(), Some("up"));
+        // Forgetting the verdict hides the field again.
+        cb.set_health(url, Health::Unknown);
+        assert!(cb.get_states()[url].health.is_none());
+    }
+
+    #[test]
+    fn health_down_does_not_consume_the_half_open_probe() {
+        let config = CircuitBreakerConfig {
+            failure_threshold: 1,
+            recovery_timeout: Duration::from_millis(10),
+            success_threshold: 1,
+            failure_status_codes: vec![502],
+        };
+        let cb = CircuitBreaker::new(config);
+        let url = "http://backend:8080";
+        cb.record_failure(url);
+        std::thread::sleep(Duration::from_millis(20));
+        cb.set_health(url, Health::Down);
+        assert!(!cb.is_available(url));
+        cb.set_health(url, Health::Up);
+        // The probe permit is still there for the first real request.
+        assert!(cb.is_available(url));
+    }
+
+    #[test]
+    fn reset_keeps_health_verdicts() {
+        let cb = CircuitBreaker::new(test_config());
+        let url = "http://backend:8080";
+        cb.set_health(url, Health::Down);
+        cb.reset();
+        assert!(!cb.is_available(url));
     }
 
     #[test]

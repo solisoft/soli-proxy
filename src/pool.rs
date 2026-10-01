@@ -106,46 +106,61 @@ pub struct ConnectionPool {
     client: ProxyClient,
 }
 
+/// Connect timeout of the shared pool, and of an upstream client whose route
+/// does not set `@connect_timeout`.
+pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The TCP connector every backend client starts from.
+pub(crate) fn tcp_connector(connect_timeout: Duration) -> HttpConnector {
+    let mut connector = HttpConnector::new();
+    connector.set_nodelay(true);
+    connector.set_keepalive(Some(Duration::from_secs(30)));
+    connector.set_connect_timeout(Some(connect_timeout));
+    // Let https:// URIs through to the TLS layer above instead of
+    // rejecting them at connect time.
+    connector.enforce_http(false);
+    connector
+}
+
+/// The pool settings every backend client shares — the shared pool below and
+/// the dedicated clients of `crate::upstream` alike.
+pub(crate) fn client_builder() -> hyper_util::client::legacy::Builder {
+    let mut builder = Client::builder(TokioExecutor::new());
+    builder
+        // A pool timer is REQUIRED for `pool_idle_timeout` to take effect
+        // (hyper-util docs). Without it the idle timeout is a silent no-op:
+        // idle connections are never recycled by age, so the pool keeps
+        // handing out keep-alive connections the backend has already closed.
+        // Reusing such a half-closed socket stalls the request for seconds
+        // (until TCP gives up and hyper retries) — observed as intermittent
+        // multi-second hangs on otherwise-fast AJAX/asset requests.
+        .pool_timer(TokioTimer::new())
+        // Recycle idle connections well before typical backend keep-alive
+        // timeouts (Cowboy/Bandit/nginx default to ~60s) so the proxy always
+        // drops a connection before the backend does, avoiding the stale-
+        // reuse race. Backends are usually localhost, so reconnecting is
+        // cheap. If a backend uses a very short keep-alive (e.g. Node's 5s
+        // default), lower this below it or raise the backend's.
+        .pool_idle_timeout(Duration::from_secs(15))
+        // Cap idle sockets per backend host so a multi-tenant deploy with
+        // many origins cannot grow unbounded keep-alive pools. 256 rather
+        // than 64: under a burst one busy backend easily has more than 64
+        // requests in flight, and every one beyond the cap had its socket
+        // closed on completion and paid a fresh connect on the next request.
+        .pool_max_idle_per_host(256);
+    builder
+}
+
 impl ConnectionPool {
     /// Create a new connection pool with sensible defaults for reverse proxying.
     pub fn new() -> Self {
-        let mut connector = HttpConnector::new();
-        connector.set_nodelay(true);
-        connector.set_keepalive(Some(Duration::from_secs(30)));
-        connector.set_connect_timeout(Some(Duration::from_secs(5)));
-        // Let https:// URIs through to the TLS layer below instead of
-        // rejecting them at connect time.
-        connector.enforce_http(false);
-
         let https = hyper_rustls::HttpsConnectorBuilder::new()
             .with_webpki_roots()
             .https_or_http()
             .enable_http1()
-            .wrap_connector(connector);
+            .wrap_connector(tcp_connector(DEFAULT_CONNECT_TIMEOUT));
 
-        let client = Client::builder(TokioExecutor::new())
-            // A pool timer is REQUIRED for `pool_idle_timeout` to take effect
-            // (hyper-util docs). Without it the idle timeout is a silent no-op:
-            // idle connections are never recycled by age, so the pool keeps
-            // handing out keep-alive connections the backend has already closed.
-            // Reusing such a half-closed socket stalls the request for seconds
-            // (until TCP gives up and hyper retries) — observed as intermittent
-            // multi-second hangs on otherwise-fast AJAX/asset requests.
-            .pool_timer(TokioTimer::new())
-            // Recycle idle connections well before typical backend keep-alive
-            // timeouts (Cowboy/Bandit/nginx default to ~60s) so the proxy always
-            // drops a connection before the backend does, avoiding the stale-
-            // reuse race. Backends are usually localhost, so reconnecting is
-            // cheap. If a backend uses a very short keep-alive (e.g. Node's 5s
-            // default), lower this below it or raise the backend's.
-            .pool_idle_timeout(Duration::from_secs(15))
-            // Cap idle sockets per backend host so a multi-tenant deploy with
-            // many origins cannot grow unbounded keep-alive pools. 256 rather
-            // than 64: under a burst one busy backend easily has more than 64
-            // requests in flight, and every one beyond the cap had its socket
-            // closed on completion and paid a fresh connect on the next request.
-            .pool_max_idle_per_host(256)
-            .build(https);
+        let client = client_builder().build(https);
 
         Self { client }
     }

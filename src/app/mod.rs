@@ -815,6 +815,10 @@ pub struct AppRoute {
     /// has no running process (stopped, asleep, failed). Such an app still
     /// owns its hosts — nobody else is routed them — it just cannot serve.
     pub target: Option<Url>,
+    /// The other slot, while it has a process too (a blue/green deploy, or
+    /// the drain after one): where a request the live slot failed may be
+    /// retried (`crate::upstream::retry`).
+    pub standby: Option<Url>,
     pub port: u16,
     pub health_check: Option<String>,
     /// The app's `[auth]`, when it has accounts.
@@ -829,6 +833,8 @@ pub struct AppRoute {
 #[derive(Debug, Clone)]
 pub struct AppTarget {
     pub target: super::config::Target,
+    /// The app's other running slot, if any (see `AppRoute::standby`).
+    pub standby: Option<super::config::Target>,
     /// `None` for a cluster-pushed route.
     pub app: Option<Arc<str>>,
     pub auth: Option<Arc<AppAuth>>,
@@ -864,6 +870,19 @@ fn live_port(app: &AppInfo) -> Option<u16> {
         .map(|instance| instance.port)
 }
 
+/// The port of the slot that is running but not taking traffic, if any.
+fn standby_port(app: &AppInfo) -> Option<u16> {
+    let live = live_port(app)?;
+    [&app.blue, &app.green]
+        .into_iter()
+        .find(|instance| instance.pid.is_some() && instance.port > 0 && instance.port != live)
+        .map(|instance| instance.port)
+}
+
+fn slot_url(port: u16) -> Option<Url> {
+    Url::parse(&format!("http://127.0.0.1:{}/", port)).ok()
+}
+
 /// Build the routing table from the apps map and the alias table.
 ///
 /// Deterministic whatever the maps' iteration order: claims are taken in
@@ -891,8 +910,8 @@ fn build_routes(
     let mut entry = |app: &AppInfo, claim: Claim| AppRoute {
         app: Arc::from(app.config.name.as_str()),
         claim,
-        target: live_port(app)
-            .and_then(|port| Url::parse(&format!("http://127.0.0.1:{}/", port)).ok()),
+        target: live_port(app).and_then(slot_url),
+        standby: standby_port(app).and_then(slot_url),
         port: live_port(app).unwrap_or(0),
         health_check: app.config.health_check.clone(),
         auth: (!app.config.auth.users.is_empty()).then(|| Arc::new(app.config.auth.clone())),
@@ -1647,6 +1666,10 @@ impl AppManager {
                         url: url.clone(),
                         weight: 100,
                     },
+                    standby: route
+                        .standby
+                        .clone()
+                        .map(|url| super::config::Target { url, weight: 100 }),
                     app: Some(route.app.clone()),
                     auth: route.auth.clone(),
                 });
@@ -1661,6 +1684,9 @@ impl AppManager {
             .pick(host, is_available)
             .map(|target| AppTarget {
                 target,
+                // Another instance, if any, is found by asking the table
+                // again without the failed one (see the server's retry).
+                standby: None,
                 app: None,
                 // A pushed target is a raw workload port: nothing in front of
                 // it enforces the app's `[auth]` but this proxy.

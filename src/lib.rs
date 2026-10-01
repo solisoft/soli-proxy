@@ -14,6 +14,7 @@ pub mod server;
 pub mod shutdown;
 pub mod tls;
 pub mod tui;
+pub mod upstream;
 
 pub use acme::{new_challenge_store, AcmeService, ChallengeStore};
 pub use admin::{run_admin_server, AdminState};

@@ -54,6 +54,11 @@ pub struct RouteForm {
     pub auth_new_username: String,
     pub auth_new_password: String,
     pub auth_selected: usize,
+
+    /// The rule's upstream directives (`@h2`, `@tls_*`, `@retries`, ...),
+    /// which the form does not show: carried through an edit so saving a
+    /// route does not silently strip them.
+    pub upstream: crate::upstream::UpstreamOptions,
 }
 
 impl RouteForm {
@@ -74,6 +79,7 @@ impl RouteForm {
             auth_new_username: String::new(),
             auth_new_password: String::new(),
             auth_selected: 0,
+            upstream: Default::default(),
         }
     }
 
@@ -129,6 +135,7 @@ impl RouteForm {
             auth_new_username: String::new(),
             auth_new_password: String::new(),
             auth_selected: 0,
+            upstream: rule.upstream.clone(),
         }
     }
 
@@ -391,6 +398,7 @@ impl RouteForm {
             auth,
             auth_exempt,
             load_balancing,
+            upstream: self.upstream.clone(),
         })
     }
 

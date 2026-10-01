@@ -47,6 +47,10 @@ pub struct TomlConfig {
     pub logging: Option<LoggingConfig>,
     #[serde(default)]
     pub rate_limiting: Option<RateLimitingConfig>,
+    #[serde(default)]
+    pub upstream: Option<crate::upstream::UpstreamTomlConfig>,
+    #[serde(default)]
+    pub health_checks: Option<crate::upstream::HealthChecksTomlConfig>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -549,6 +553,10 @@ pub struct Config {
     pub metrics: MetricsConfig,
     pub logging: LoggingConfig,
     pub rate_limiting: RateLimitingConfig,
+    /// `[upstream]`: retries.
+    pub upstream: crate::upstream::UpstreamConfig,
+    /// `[health_checks]`: active checks of static targets.
+    pub health_checks: crate::upstream::HealthChecksConfig,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
@@ -647,6 +655,13 @@ pub struct ProxyRule {
     pub auth_exempt: Vec<String>,
     #[serde(default)]
     pub load_balancing: LoadBalancingStrategy,
+    /// `@retries`, `@timeout`, `@h2`, `@tls_*`, `@health`, ... (see
+    /// `crate::upstream`).
+    #[serde(
+        default,
+        skip_serializing_if = "crate::upstream::UpstreamOptions::is_default"
+    )]
+    pub upstream: crate::upstream::UpstreamOptions,
 }
 
 impl ProxyRule {
@@ -693,6 +708,7 @@ impl ProxyRule {
                 check_capture_refs(&target.url, &rm.regex)?;
             }
         }
+        self.upstream.validate(&self.targets)?;
         Ok(())
     }
 
@@ -1142,6 +1158,21 @@ recovery_timeout_secs = 30
 success_threshold = 2
 failure_status_codes = [502, 503, 504]
 
+# Upstream retries: a failed attempt goes to the rule's next target when that
+# is safe (a connect failure; otherwise idempotent requests without a body).
+# [upstream]
+# retries = 1
+# retry_on = ["connect", "error"]   # may add "502", "503", "504", "500"
+# try_duration = "5s"
+
+# Active health checks of proxy.conf targets (@health:/path per route).
+# [health_checks]
+# default_path = "/healthz"
+# interval = "10s"
+# timeout = "2s"
+# unhealthy_threshold = 3
+# healthy_threshold = 2
+
 # Admin REST API Configuration
 # Default binds to loopback only. Exposing on a non-loopback address
 # requires api_key or username+password_hash — the proxy refuses to
@@ -1177,7 +1208,7 @@ hook_timeout_ms = 10
         // The process environment wins over the `.env` file.
         let env = |key: &str| std::env::var(key).ok().or_else(|| dotenv.get(key).cloned());
 
-        Ok(Config {
+        let mut config = Config {
             server: toml_config.server,
             tls: toml_config.tls,
             letsencrypt: toml_config.letsencrypt,
@@ -1242,7 +1273,15 @@ hook_timeout_ms = 10
             metrics: toml_config.metrics.unwrap_or_default(),
             logging: toml_config.logging.unwrap_or_default(),
             rate_limiting: toml_config.rate_limiting.unwrap_or_default(),
-        })
+            upstream: crate::upstream::UpstreamConfig::from_toml(toml_config.upstream.as_ref())?,
+            health_checks: crate::upstream::HealthChecksConfig::from_toml(
+                toml_config.health_checks.as_ref(),
+            )?,
+        };
+        // Per-rule upstream clients (`@h2`, `@tls_*`, unix sockets, ...):
+        // built here, once, so a request only reads the one it needs.
+        crate::upstream::prepare(&mut config)?;
+        Ok(config)
     }
 
     pub fn get_config(&self) -> Arc<Config> {
@@ -1391,6 +1430,7 @@ hook_timeout_ms = 10
         let mut config = (*self.config.load().as_ref()).clone();
         config.rules = rules;
         config.global_scripts = global_scripts;
+        crate::upstream::prepare(&mut config)?;
         self.config.store(Arc::new(config));
         tracing::info!("Configuration persisted to {}", self.config_path.display());
         Ok(())
@@ -1517,6 +1557,7 @@ struct RuleTail {
     load_balancing: Option<LoadBalancingStrategy>,
     /// Whether any target carried an explicit `weight:N`.
     weighted: bool,
+    upstream: crate::upstream::UpstreamOptions,
 }
 
 /// Parse the right-hand side of a rule.
@@ -1540,9 +1581,12 @@ fn parse_rule_tail(tail: &str) -> Result<RuleTail> {
             target_text.push_str(token);
             continue;
         };
-        let (kind, value) = directive.split_once(':').ok_or_else(|| {
-            anyhow::anyhow!("malformed directive {:?} (expected @name:value)", token)
-        })?;
+        let (kind, value) = match directive.split_once(':') {
+            Some(kv) => kv,
+            // `@h2`, `@tls_insecure`: flags, written without a value.
+            None if crate::upstream::is_flag(directive) => (directive, ""),
+            None => anyhow::bail!("malformed directive {:?} (expected @name:value)", token),
+        };
         match kind {
             "script" => out.scripts.extend(parse_script_list(value)?),
             "auth" => match value.split_once(':') {
@@ -1591,8 +1635,11 @@ fn parse_rule_tail(tail: &str) -> Result<RuleTail> {
                     anyhow::bail!("@lb: given more than once");
                 }
             }
+            k if crate::upstream::is_directive(k) => out.upstream.apply_directive(k, value)?,
             other => anyhow::bail!(
-                "unknown directive @{}: (expected @script:, @auth:, @noauth: or @lb:)",
+                "unknown directive @{}: (expected @script:, @auth:, @noauth:, @lb:, @retries:, \
+                 @timeout:, @connect_timeout:, @h2, @tls_ca:, @tls_insecure, @tls_sni:, \
+                 @tls_client_cert:, @health: or @health_interval:)",
                 other
             ),
         }
@@ -1627,6 +1674,7 @@ fn parse_rule_tail(tail: &str) -> Result<RuleTail> {
         }
         let url =
             Url::parse(url).map_err(|e| anyhow::anyhow!("invalid target {:?}: {}", url, e))?;
+        crate::upstream::validate_target(&url)?;
         out.targets.push(Target { url, weight });
     }
     Ok(out)
@@ -2034,6 +2082,7 @@ fn parse_rule(source: &str, target_str: &str) -> Result<ProxyRule> {
             check_capture_refs(&target.url, &rm.regex)?;
         }
     }
+    tail.upstream.validate(&tail.targets)?;
     // `weight:N` on a target means weighted balancing unless the rule says
     // otherwise — that is how the README has always written it.
     let load_balancing = tail.load_balancing.unwrap_or(if tail.weighted {
@@ -2049,6 +2098,7 @@ fn parse_rule(source: &str, target_str: &str) -> Result<ProxyRule> {
         auth: tail.auth,
         auth_exempt: tail.auth_exempt,
         load_balancing,
+        upstream: tail.upstream,
     })
 }
 
@@ -2647,6 +2697,7 @@ api_key = "secret123"
             auth,
             auth_exempt: vec![],
             load_balancing: LoadBalancingStrategy::default(),
+            upstream: Default::default(),
         }
     }
 

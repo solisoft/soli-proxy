@@ -47,7 +47,7 @@ pub fn render(
         return;
     }
 
-    let header = Row::new(vec!["Target", "State", "Failures", "Successes"])
+    let header = Row::new(vec!["Target", "State", "Health", "Failures", "Successes"])
         .style(Style::default().fg(crate::tui::theme::ACCENT).bold());
 
     let max_rows = inner.height.saturating_sub(1) as usize;
@@ -65,11 +65,19 @@ pub fn render(
                 _ => Color::Green,
             };
 
+            // The active health check's verdict, when one covers the target.
+            let (health, health_color) = match info.health.as_deref() {
+                Some("down") => ("down", Color::Red),
+                Some("up") => ("up", Color::Green),
+                _ => ("-", crate::tui::theme::MUTED),
+            };
+
             let style = crate::tui::theme::row_style(is_selected);
 
             Row::new(vec![
                 Cell::from(url.as_str()).style(style),
                 Cell::from(info.state.as_str()).style(style.fg(state_color)),
+                Cell::from(health).style(style.fg(health_color)),
                 Cell::from(info.consecutive_failures.to_string()).style(style),
                 Cell::from(info.consecutive_successes.to_string()).style(style),
             ])
@@ -81,6 +89,7 @@ pub fn render(
         [
             Constraint::Min(30),
             Constraint::Length(12),
+            Constraint::Length(8),
             Constraint::Length(12),
             Constraint::Length(12),
         ],
