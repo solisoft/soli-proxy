@@ -5,6 +5,7 @@ pub mod auth;
 pub mod check;
 pub mod circuit_breaker;
 pub mod config;
+pub mod forward_auth;
 pub mod logging;
 pub mod metrics;
 pub mod pool;

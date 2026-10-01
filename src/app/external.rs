@@ -36,7 +36,7 @@ pub struct ExternalRoutes {
     /// current one is refused.
     pub index: u64,
     pub table: HashMap<String, Vec<Target>>,
-    /// Basic Auth per pushed domain, enforced by this proxy.
+    /// Basic Auth and forward-auth per pushed domain, enforced by this proxy.
     ///
     /// A pushed target is the workload's raw port on another node, with no
     /// proxy in front of it there, so an app's `[auth]` is enforced here or
@@ -147,13 +147,13 @@ impl ExternalRouteTable {
         true
     }
 
-    /// Basic Auth pushed for a host, if any.
+    /// Auth (Basic and/or forward) pushed for a host, if any.
     pub fn auth(&self, host: &str) -> Option<AppAuth> {
         self.inner
             .read()
             .auth
             .get(host)
-            .filter(|auth| !auth.users.is_empty())
+            .filter(|auth| auth.is_active())
             .cloned()
     }
 
@@ -299,6 +299,7 @@ mod tests {
                     hash: format!("$2b$12${}", "a".repeat(53)),
                 }],
                 noauth: vec![],
+                forward: None,
             },
         );
         assert!(table.push(first));
