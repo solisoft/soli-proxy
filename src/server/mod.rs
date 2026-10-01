@@ -4113,7 +4113,7 @@ async fn handle_regular_request(
         Some(matched_route) => {
             let matched_prefix = matched_route.matched_prefix(is_tls);
             let html_rewrite_prefix = matched_route.html_rewrite_prefix();
-            let route_scripts = matched_route.route_scripts.clone();
+            let route_scripts = matched_route.route_scripts.to_vec();
 
             // `@auth`, then `@forward_auth`; `@noauth` is judged on the same
             // canonical path the rule was matched on (see
@@ -4844,7 +4844,7 @@ enum UrlResolution<'a> {
     /// Domain: append full request path
     AppendPath,
     /// DomainPath, Prefix: strip prefix, append suffix
-    StripPrefix(String),
+    StripPrefix(&'a str),
     /// Exact, Default: use target URL as-is (the query string is kept).
     /// `default` appended the path until 0.8.0 (d942bb5), which switched it
     /// here; the README documents the current behaviour.
@@ -4859,9 +4859,11 @@ struct MatchedRoute<'a> {
     targets: &'a [crate::config::Target],
     from_domain_rule: bool,
     resolution: UrlResolution<'a>,
-    route_scripts: Vec<String>,
-    auth: Vec<crate::auth::BasicAuth>,
-    auth_exempt: Vec<String>,
+    // Borrowed from the rule: a match used to clone the scripts, every
+    // Basic-auth account (two Strings each) and the `@noauth` list, per request.
+    route_scripts: &'a [String],
+    auth: &'a [crate::auth::BasicAuth],
+    auth_exempt: &'a [String],
     forward_auth: Option<&'a crate::forward_auth::ForwardAuth>,
     load_balancing: &'a crate::config::LoadBalancingStrategy,
     host: String,
@@ -4878,7 +4880,7 @@ impl<'a> MatchedRoute<'a> {
     /// cannot send a password. `path` is the raw request path, matched before
     /// any prefix stripping, so operators write the URL they actually see.
     fn requires_auth(&self, path: &str) -> bool {
-        !self.auth.is_empty() && !crate::config::path_is_auth_exempt(&self.auth_exempt, path)
+        !self.auth.is_empty() && !crate::config::path_is_auth_exempt(self.auth_exempt, path)
     }
 
     /// Run this rule's `@auth`, then its `@forward_auth`: both must pass, and
@@ -4893,11 +4895,11 @@ impl<'a> MatchedRoute<'a> {
             let path = request_match_path(req);
             (
                 self.requires_auth(&path),
-                crate::config::path_is_auth_exempt(&self.auth_exempt, &path),
+                crate::config::path_is_auth_exempt(self.auth_exempt, &path),
             )
         };
         if basic {
-            let denied = verify_basic_auth_headers(req.headers(), &self.auth).await;
+            let denied = verify_basic_auth_headers(req.headers(), self.auth).await;
             if denied.is_some() {
                 return denied;
             }
@@ -4987,7 +4989,7 @@ fn resolve_target_url(
         UrlResolution::StripPrefix(prefix) => {
             // `path` is either under the prefix or the prefix minus its
             // trailing slash (`/db` for `/db/`), which leaves nothing to add.
-            let suffix = path.strip_prefix(prefix.as_str()).unwrap_or("");
+            let suffix = path.strip_prefix(*prefix).unwrap_or("");
             push_joined_path(&mut out, base, suffix)
         }
         UrlResolution::Identity => out.push_str(base),
@@ -5087,9 +5089,9 @@ fn find_matching_rule<'a, B>(
                     targets: &rule.targets,
                     from_domain_rule: true,
                     resolution: UrlResolution::AppendPath,
-                    route_scripts: rule.scripts.clone(),
-                    auth: rule.auth.clone(),
-                    auth_exempt: rule.auth_exempt.clone(),
+                    route_scripts: &rule.scripts,
+                    auth: &rule.auth,
+                    auth_exempt: &rule.auth_exempt,
                     forward_auth: rule.forward_auth.as_ref(),
                     load_balancing: &rule.load_balancing,
                     host: domain.clone(),
@@ -5105,10 +5107,10 @@ fn find_matching_rule<'a, B>(
                     return Some(MatchedRoute {
                         targets: &rule.targets,
                         from_domain_rule: true,
-                        resolution: UrlResolution::StripPrefix(path_prefix.clone()),
-                        route_scripts: rule.scripts.clone(),
-                        auth: rule.auth.clone(),
-                        auth_exempt: rule.auth_exempt.clone(),
+                        resolution: UrlResolution::StripPrefix(path_prefix.as_str()),
+                        route_scripts: &rule.scripts,
+                        auth: &rule.auth,
+                        auth_exempt: &rule.auth_exempt,
                         forward_auth: rule.forward_auth.as_ref(),
                         load_balancing: &rule.load_balancing,
                         host: domain.clone(),
@@ -5130,9 +5132,9 @@ fn find_matching_rule<'a, B>(
                     targets: &rule.targets,
                     from_domain_rule: false,
                     resolution: UrlResolution::Identity,
-                    route_scripts: rule.scripts.clone(),
-                    auth: rule.auth.clone(),
-                    auth_exempt: rule.auth_exempt.clone(),
+                    route_scripts: &rule.scripts,
+                    auth: &rule.auth,
+                    auth_exempt: &rule.auth_exempt,
                     forward_auth: rule.forward_auth.as_ref(),
                     load_balancing: &rule.load_balancing,
                     host: host.to_string(),
@@ -5147,10 +5149,10 @@ fn find_matching_rule<'a, B>(
                     return Some(MatchedRoute {
                         targets: &rule.targets,
                         from_domain_rule: false,
-                        resolution: UrlResolution::StripPrefix(prefix.clone()),
-                        route_scripts: rule.scripts.clone(),
-                        auth: rule.auth.clone(),
-                        auth_exempt: rule.auth_exempt.clone(),
+                        resolution: UrlResolution::StripPrefix(prefix.as_str()),
+                        route_scripts: &rule.scripts,
+                        auth: &rule.auth,
+                        auth_exempt: &rule.auth_exempt,
                         forward_auth: rule.forward_auth.as_ref(),
                         load_balancing: &rule.load_balancing,
                         host: host.to_string(),
@@ -5165,9 +5167,9 @@ fn find_matching_rule<'a, B>(
                     targets: &rule.targets,
                     from_domain_rule: false,
                     resolution: UrlResolution::Regex(rm),
-                    route_scripts: rule.scripts.clone(),
-                    auth: rule.auth.clone(),
-                    auth_exempt: rule.auth_exempt.clone(),
+                    route_scripts: &rule.scripts,
+                    auth: &rule.auth,
+                    auth_exempt: &rule.auth_exempt,
                     forward_auth: rule.forward_auth.as_ref(),
                     load_balancing: &rule.load_balancing,
                     host: host.to_string(),
@@ -5186,9 +5188,9 @@ fn find_matching_rule<'a, B>(
                     targets: &rule.targets,
                     from_domain_rule: false,
                     resolution: UrlResolution::Identity,
-                    route_scripts: rule.scripts.clone(),
-                    auth: rule.auth.clone(),
-                    auth_exempt: rule.auth_exempt.clone(),
+                    route_scripts: &rule.scripts,
+                    auth: &rule.auth,
+                    auth_exempt: &rule.auth_exempt,
                     forward_auth: rule.forward_auth.as_ref(),
                     load_balancing: &rule.load_balancing,
                     host: host.to_string(),
@@ -5367,7 +5369,7 @@ fn find_target<B>(
         resolved,
         route.from_domain_rule,
         matched_prefix,
-        route.route_scripts,
+        route.route_scripts.to_vec(),
     ))
 }
 
@@ -5517,7 +5519,7 @@ mod tests {
     #[test]
     fn redirect_prefix_suffix_cannot_extend_the_authority() {
         let t = target("redirect://new.example");
-        let strip = UrlResolution::StripPrefix("/old/".to_string());
+        let strip = UrlResolution::StripPrefix("/old/");
         for (path, want) in [
             ("/old/.evil.com/", "redirect://new.example/.evil.com/"),
             ("/old/@evil.com", "redirect://new.example/@evil.com"),
@@ -5551,7 +5553,7 @@ mod tests {
 
     #[test]
     fn resolve_target_url_joins_with_exactly_one_slash() {
-        let strip = UrlResolution::StripPrefix("/api/".to_string());
+        let strip = UrlResolution::StripPrefix("/api/");
         assert_eq!(
             resolve_target_url(&target("http://h:8080"), "/api/users", None, &strip),
             "http://h:8080/users"
@@ -5565,7 +5567,7 @@ mod tests {
             resolve_target_url(&target("http://h/v2/"), "/api/users", None, &strip),
             "http://h/v2/users"
         );
-        let strip_no_slash = UrlResolution::StripPrefix("/api".to_string());
+        let strip_no_slash = UrlResolution::StripPrefix("/api");
         assert_eq!(
             resolve_target_url(&target("http://h/"), "/api/users", None, &strip_no_slash),
             "http://h/users"
@@ -5584,7 +5586,7 @@ mod tests {
                 &target("http://h/"),
                 "",
                 Some("a=1"),
-                &UrlResolution::StripPrefix("/x/".to_string())
+                &UrlResolution::StripPrefix("/x/")
             ),
             "http://h/?a=1"
         );
@@ -5771,9 +5773,9 @@ mod tests {
             targets: &targets,
             from_domain_rule: false,
             resolution: UrlResolution::AppendPath,
-            route_scripts: vec![],
-            auth: vec![],
-            auth_exempt: vec![],
+            route_scripts: &[],
+            auth: &[],
+            auth_exempt: &[],
             forward_auth: None,
             load_balancing: &strategy,
             host: "example.com".to_string(),
@@ -5797,9 +5799,9 @@ mod tests {
             targets,
             from_domain_rule: false,
             resolution: UrlResolution::AppendPath,
-            route_scripts: vec![],
-            auth: vec![],
-            auth_exempt: vec![],
+            route_scripts: &[],
+            auth: &[],
+            auth_exempt: &[],
             forward_auth: None,
             load_balancing: strategy,
             host: "example.com".to_string(),
