@@ -45,7 +45,12 @@ readiness_path = "/health/ready"
 # Limits Configuration
 [limits]
 max_connections = 10000
+# Simultaneous connections per client address (IPv6: per /64), across HTTP and
+# HTTPS. Excess connections are closed on accept. Default 256; 0 disables.
+# max_connections_per_ip = 256
 max_request_size = "10MB"
+# Header-read timeout for HTTP/1 (also bounds idle keep-alive connections) and
+# idle timeout for HTTP/2 connections, in seconds. Default 30.
 keep_alive_timeout = 30
 request_timeout = 60
 

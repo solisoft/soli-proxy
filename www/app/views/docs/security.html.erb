@@ -589,14 +589,16 @@
                                 <svg class="w-4 h-4 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                                 Slowloris Protection
                             </h3>
-                            <p class="text-gray-400 text-sm mb-4">The <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">keep_alive_timeout</code> setting limits how long a client can take to send headers. This prevents slowloris attacks where clients hold connections open indefinitely by sending headers one byte at a time.</p>
+                            <p class="text-gray-400 text-sm mb-4">The <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">keep_alive_timeout</code> setting (default 30 s) limits how long a client can take to send headers, and how long an idle connection is kept. This prevents slowloris attacks where clients hold connections open indefinitely by sending headers one byte at a time. HTTP/2 connections get the same bound: one with no request in flight for that long is sent GOAWAY, one that never sends a request is closed, and a peer that stops answering PINGs is dropped after 50 s.</p>
+                            <p class="text-gray-400 text-sm mb-4"><code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">max_connections_per_ip</code> (default 256, <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">0</code> = off) keeps a single client address &mdash; an IPv6 /64 &mdash; from taking every one of the <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">max_connections</code> slots. Both caps keep counting a WebSocket for as long as its tunnel is open.</p>
                             <div class="code-window rounded-lg border border-white/10 bg-black/30 overflow-hidden">
                                 <div class="flex items-center justify-between px-4 py-2 bg-black/30 border-b border-white/5">
                                     <span class="text-xs text-gray-500">config.toml</span>
                                     <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors px-2 py-1">Copy</button>
                                 </div>
                                 <pre class="p-4 text-sm leading-relaxed overflow-x-auto"><code>[<span class="tk">limits</span>]
-<span class="tf">keep_alive_timeout</span> = <span class="tn">30</span>   <span class="tc"># seconds to complete header transmission</span></code></pre>
+<span class="tf">keep_alive_timeout</span> = <span class="tn">30</span>   <span class="tc"># seconds to complete header transmission</span>
+<span class="tf">max_connections_per_ip</span> = <span class="tn">256</span></code></pre>
                             </div>
                         </div>
 
@@ -662,7 +664,7 @@
                                 <ul class="text-sm text-gray-400 space-y-1 list-disc list-inside">
                                     <li><code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">shared</code> state is in-memory and per-process — counters are not synchronized across multiple proxy instances.</li>
                                     <li>Shared keys have no automatic TTL. Bucketing by time window (as above) prevents unbounded growth in practice, but stale buckets are not reaped.</li>
-                                    <li><code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">X-Forwarded-For</code> is only trustworthy behind a proxy you control; otherwise clients can spoof the header to evade limits.</li>
+                                    <li>The proxy replaces any client-sent <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">X-Forwarded-For</code> / <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">X-Real-IP</code> with the connecting address before a script sees the request, so these headers name the real peer. Behind another load balancer that peer is the balancer.</li>
                                 </ul>
                             </div>
                         </div>

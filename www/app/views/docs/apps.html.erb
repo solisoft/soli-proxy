@@ -477,7 +477,7 @@ curl http://127.0.0.1:9090/api/v1/apps/myapp/logs</code></pre>
             <p class="text-gray-400 leading-relaxed mb-4">
                 WebSocket connections are transparently proxied to backend apps. The proxy detects the <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">Upgrade: websocket</code> header and establishes a bidirectional TCP tunnel between the client and backend. This works automatically for livereload, real-time updates, and any WebSocket protocol.
             </p>
-            <p class="text-sm text-gray-500">WebSocket proxying works on both HTTP and HTTPS connections. No additional configuration is needed.</p>
+            <p class="text-sm text-gray-500">WebSocket proxying works on both HTTP and HTTPS connections. No additional configuration is needed. An open tunnel keeps counting against <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">[limits] max_connections</code> and <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">max_connections_per_ip</code> until it closes, and the app receives the same <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">X-Forwarded-*</code> / <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">X-Real-IP</code> headers as a plain request, set by the proxy.</p>
         </div>
 
         <!-- Docker App Hosting -->

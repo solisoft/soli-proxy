@@ -18,15 +18,59 @@ pub type ProxyRequestBody = http_body_util::combinators::BoxBody<Bytes, BoxError
 /// targets (TLS via rustls with webpki roots).
 pub type ProxyClient = Client<HttpsConnector<HttpConnector>, ProxyRequestBody>;
 
+/// An error reading the *inbound* request body — the client reset the
+/// stream, closed the connection mid-upload, or sent a malformed chunk.
+///
+/// Wrapping the client side's errors in their own type is what lets a failed
+/// backend request be attributed: when `client.request` fails because this
+/// body failed, the backend did nothing wrong. Without the distinction a
+/// client that starts uploads and aborts them counts as backend failures, and
+/// five of them trip a healthy backend's circuit breaker — or, for an app,
+/// trigger a failover to the standby.
+#[derive(Debug)]
+pub struct ClientBodyError(pub BoxError);
+
+impl std::fmt::Display for ClientBodyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "client request body: {}", self.0)
+    }
+}
+
+impl std::error::Error for ClientBodyError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+
 /// Wrap an inbound `Incoming` body for outbound proxying, optionally enforcing
 /// a hard byte cap as frames are streamed (covers HTTP/2 and chunked bodies
-/// that omit or understate `Content-Length`).
+/// that omit or understate `Content-Length`). Read errors are tagged as
+/// `ClientBodyError` (see there).
 pub fn proxy_request_body(body: Incoming, max_size: Option<usize>) -> ProxyRequestBody {
+    let body = body.map_err(|e| ClientBodyError(Box::new(e)));
     match max_size {
         // `Limited`'s error type is already `BoxError`.
         Some(max) => http_body_util::Limited::new(body, max).boxed(),
         None => body.map_err(|e| -> BoxError { Box::new(e) }).boxed(),
     }
+}
+
+/// True when a `client.request` failure was caused by the inbound request
+/// body — the client aborted or reset its upload, or it hit
+/// `max_request_size` — rather than by the backend. Callers use it to keep
+/// such failures out of the circuit breaker and app failover.
+pub fn is_client_body_error(err: &(dyn std::error::Error + 'static)) -> bool {
+    if is_body_limit_error(err) {
+        return true;
+    }
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(e) = source {
+        if e.downcast_ref::<ClientBodyError>().is_some() {
+            return true;
+        }
+        source = e.source();
+    }
+    false
 }
 
 /// True when a client.request failure was caused by the inbound body exceeding
@@ -146,6 +190,36 @@ mod tests {
         impl std::error::Error for Fake {}
         let err: BoxError = Box::new(Fake);
         assert!(is_body_limit_error(err.as_ref()));
+    }
+
+    #[derive(Debug)]
+    struct Wrapper(BoxError);
+    impl std::fmt::Display for Wrapper {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "client error (SendRequest)")
+        }
+    }
+    impl std::error::Error for Wrapper {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(self.0.as_ref())
+        }
+    }
+
+    #[test]
+    fn client_body_error_is_found_through_the_chain() {
+        // hyper-util wraps hyper's error which wraps the body's: the tag must
+        // be found however deep it sits.
+        let reset = std::io::Error::from(std::io::ErrorKind::ConnectionReset);
+        let tagged: BoxError = Box::new(ClientBodyError(Box::new(reset)));
+        let err = Wrapper(Box::new(Wrapper(tagged)));
+        assert!(is_client_body_error(&err));
+    }
+
+    #[test]
+    fn backend_failure_is_not_a_client_body_error() {
+        let refused = std::io::Error::from(std::io::ErrorKind::ConnectionRefused);
+        let err = Wrapper(Box::new(refused));
+        assert!(!is_client_body_error(&err));
     }
 
     #[test]

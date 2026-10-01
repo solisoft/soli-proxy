@@ -184,6 +184,39 @@ app.example.com -> http://localhost:8080 @auth:admin:$2b$12$... \
                    @noauth:/webhooks/stripe,/hooks/*
 ```
 
+Rules, `@auth` and `@noauth` match a canonical form of the path: percent-encoded
+unreserved characters (`A-Z a-z 0-9 - . _ ~`) are decoded and repeated `/` collapse,
+so `//admin/x` and `/%61dmin/x` meet an `/admin/*` rule like `/admin/x` does. The
+backend still receives the path as sent.
+
+### What reaches the backend
+
+- **Forwarding headers come from the proxy, never the client.** Any `Forwarded`,
+  `X-Forwarded-*` or `X-Real-IP` the client sent is dropped, then `X-Forwarded-For` and
+  `X-Real-IP` (the connecting address), `X-Forwarded-Proto` and `X-Forwarded-Host` (the
+  Host the client asked for) are set — on rule routes, app domains and WebSocket
+  upgrades alike, before any Lua script sees the request.
+- **Hop-by-hop headers are removed at the door**, including every header the client
+  names in `Connection`, so a client cannot use `Connection: x-user` to delete a header
+  a script set.
+- **Malformed requests are refused up front**: `CONNECT` (405), authority-form and
+  asterisk-form targets (400; `OPTIONS *` is answered directly), more than one `Host`
+  header, or on HTTP/2 a `Host` that differs from `:authority` (400).
+- **WebSocket upgrades run the route's Lua hooks** (`on_request`, `on_route`) like any
+  other request, and an open tunnel keeps counting against the connection limits.
+
+### Connection limits
+
+```toml
+[limits]
+max_connections = 10000        # whole process
+max_connections_per_ip = 256   # per client address (IPv6: per /64); 0 = off
+keep_alive_timeout = 30        # header read / idle keep-alive (HTTP/1), idle (HTTP/2)
+```
+
+`[rate_limiting]` also keys IPv6 clients by /64: a subscriber can pick a new source
+address inside its /64 for every request, and per-address buckets were no limit at all.
+
 ## Architecture
 
 ```

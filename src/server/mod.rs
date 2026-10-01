@@ -7,7 +7,9 @@ use crate::auth;
 use crate::circuit_breaker::SharedCircuitBreaker;
 use crate::config::ConfigManager;
 use crate::metrics::SharedMetrics;
-use crate::pool::{is_body_limit_error, proxy_request_body, ConnectionPool, ProxyClient};
+use crate::pool::{
+    is_body_limit_error, is_client_body_error, proxy_request_body, ConnectionPool, ProxyClient,
+};
 use crate::shutdown::ShutdownCoordinator;
 use anyhow::Result;
 use bytes::Bytes;
@@ -22,7 +24,8 @@ use hyper_util::rt::TokioExecutor;
 use hyper_util::rt::TokioIo;
 use hyper_util::rt::TokioTimer;
 use socket2::{Domain, Protocol, Socket, Type};
-use std::net::{IpAddr, SocketAddr};
+use std::borrow::Cow;
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -44,7 +47,140 @@ pub type IpRateLimiter = GovernorRateLimiter<
 >;
 
 #[cfg(feature = "scripting")]
-use crate::scripting::{LuaEngine, LuaRequest, RequestHookResult, RouteHookResult};
+use crate::scripting::{Hook, LuaEngine, LuaRequest, RequestHookResult, RouteHookResult};
+
+/// The address a per-client budget is charged to: the rate limiter's key and
+/// the per-IP connection cap's.
+///
+/// IPv4 addresses count individually. An IPv6 client counts per /64: a single
+/// subscriber is routinely handed a whole /64 and can pick a fresh source
+/// address for every request, so keying the full 128 bits gave each client
+/// 2^64 independent budgets. An IPv4-mapped IPv6 address (what a dual-stack
+/// `[::]` listener reports for an IPv4 peer) is unwrapped to its IPv4 form so
+/// the same client is not counted under two keys.
+pub fn client_key(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V4(_) => ip,
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            None => IpAddr::V6(Ipv6Addr::from(
+                u128::from(v6) & 0xffff_ffff_ffff_ffff_0000_0000_0000_0000,
+            )),
+        },
+    }
+}
+
+/// Default for `[limits] max_connections_per_ip` when unset.
+const DEFAULT_MAX_CONNECTIONS_PER_IP: u64 = 256;
+
+/// Caps how many connections one client address (see `client_key`) may hold
+/// open at once, across every HTTP and HTTPS accept loop.
+///
+/// `max_connections` alone bounds the process, not the client: a single
+/// address could take every permit and lock everyone else out. Sharded so the
+/// accept loops on different cores rarely meet on the same lock.
+pub(crate) struct PerIpLimiter {
+    max: u32,
+    shards: Vec<parking_lot::Mutex<std::collections::HashMap<IpAddr, u32>>>,
+}
+
+const PER_IP_SHARDS: usize = 32;
+
+impl PerIpLimiter {
+    pub(crate) fn new(max: u32) -> Self {
+        Self {
+            max,
+            shards: (0..PER_IP_SHARDS)
+                .map(|_| parking_lot::Mutex::new(std::collections::HashMap::new()))
+                .collect(),
+        }
+    }
+
+    fn shard(&self, key: &IpAddr) -> &parking_lot::Mutex<std::collections::HashMap<IpAddr, u32>> {
+        let h = match key {
+            IpAddr::V4(a) => u32::from(*a) as u64,
+            IpAddr::V6(a) => (u128::from(*a) >> 64) as u64,
+        };
+        // Fibonacci hashing: the top bits of the product are well mixed even
+        // for sequential addresses.
+        let idx = (h.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 59) as usize;
+        &self.shards[idx % PER_IP_SHARDS]
+    }
+
+    /// Count one more connection for `ip`, or refuse it when the address is
+    /// already at the cap. The returned guard gives the slot back on drop.
+    pub(crate) fn try_acquire(self: &Arc<Self>, ip: IpAddr) -> Option<PerIpGuard> {
+        let key = client_key(ip);
+        let mut map = self.shard(&key).lock();
+        let count = map.entry(key).or_insert(0);
+        if *count >= self.max {
+            return None;
+        }
+        *count += 1;
+        Some(PerIpGuard {
+            limiter: self.clone(),
+            key,
+        })
+    }
+
+    #[cfg(test)]
+    fn tracked(&self) -> usize {
+        self.shards.iter().map(|s| s.lock().len()).sum()
+    }
+}
+
+/// One connection's slot in a `PerIpLimiter`.
+pub(crate) struct PerIpGuard {
+    limiter: Arc<PerIpLimiter>,
+    key: IpAddr,
+}
+
+impl Drop for PerIpGuard {
+    fn drop(&mut self) {
+        let mut map = self.limiter.shard(&self.key).lock();
+        if let Some(count) = map.get_mut(&self.key) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                // Forget the address entirely, or the map grows by one entry
+                // for every client that has ever connected.
+                map.remove(&self.key);
+            }
+        }
+    }
+}
+
+fn build_per_ip_limiter(config: &ConfigManager) -> Option<Arc<PerIpLimiter>> {
+    let max = config
+        .get_config()
+        .limits
+        .max_connections_per_ip
+        .unwrap_or(DEFAULT_MAX_CONNECTIONS_PER_IP);
+    (max > 0).then(|| Arc::new(PerIpLimiter::new(max.min(u32::MAX as u64) as u32)))
+}
+
+/// What one accepted connection holds against the proxy's connection limits:
+/// its `max_connections` permit and its per-IP slot. Shared (`Arc`) because a
+/// WebSocket tunnel outlives the HTTP connection it was upgraded from — hyper
+/// finishes serving the connection as soon as it hands the socket over — and
+/// the tunnel must keep holding both, or every upgraded socket would be an
+/// uncounted connection. The service inserts a clone into each request's
+/// extensions; the tunnel task takes one from there.
+#[derive(Clone)]
+struct ConnLease(#[allow(dead_code)] Arc<ConnGuard>);
+
+struct ConnGuard {
+    _permit: Option<OwnedSemaphorePermit>,
+    _per_ip: Option<PerIpGuard>,
+}
+
+impl ConnLease {
+    fn new(permit: Option<OwnedSemaphorePermit>, per_ip: Option<PerIpGuard>) -> Self {
+        Self(Arc::new(ConnGuard {
+            _permit: permit,
+            _per_ip: per_ip,
+        }))
+    }
+}
 
 type BoxBody = http_body_util::combinators::BoxBody<Bytes, std::convert::Infallible>;
 
@@ -587,11 +723,6 @@ async fn app_name_for_target(
     manager.get_app_name(port).await
 }
 
-static X_FORWARDED_PROTO_HTTPS: std::sync::LazyLock<HeaderValue> =
-    std::sync::LazyLock::new(|| HeaderValue::from_static("https"));
-static X_FORWARDED_PROTO_HTTP: std::sync::LazyLock<HeaderValue> =
-    std::sync::LazyLock::new(|| HeaderValue::from_static("http"));
-
 const MAX_HTML_REWRITE_SIZE: usize = 10 * 1024 * 1024;
 
 /// Default HSTS max-age (2 years) used when `tls.hsts_max_age_seconds` is
@@ -613,6 +744,220 @@ fn hsts_header_value(tls: &crate::config::TlsConfig) -> Option<HeaderValue> {
         value.push_str("; includeSubDomains");
     }
     HeaderValue::from_str(&value).ok()
+}
+
+/// The HSTS header for `config`, built once per loaded config rather than with
+/// a `format!` on every HTTPS response. The cache holds the config it was
+/// built from and is rebuilt when a reload swaps in a new one.
+fn hsts_for(config: &Arc<crate::config::Config>) -> Option<HeaderValue> {
+    type Cached = (Arc<crate::config::Config>, Option<HeaderValue>);
+    static CACHE: arc_swap::ArcSwapOption<Cached> = arc_swap::ArcSwapOption::const_empty();
+    if let Some(cached) = &*CACHE.load() {
+        if Arc::ptr_eq(&cached.0, config) {
+            return cached.1.clone();
+        }
+    }
+    let value = hsts_header_value(&config.tls);
+    CACHE.store(Some(Arc::new((config.clone(), value.clone()))));
+    value
+}
+
+/// The request path as rules match it: percent-encoded *unreserved*
+/// characters (`A-Z a-z 0-9 - . _ ~`) decoded, runs of `/` collapsed to one.
+///
+/// RFC 3986 §6.2.2 makes those spellings equivalent, and backends treat them
+/// so — `/%61dmin/x` and `//admin/x` both reach `/admin/x`. Matched raw, they
+/// missed an `/admin/* @auth` rule and fell through to a broader rule without
+/// it: a password-protected path served with no password. Everything else is
+/// left as sent: reserved characters stay encoded (`%2F` is not `/`), and case
+/// is not folded. Only matching uses this form; the backend still receives
+/// the path the client sent. Borrowed — no allocation — for the ordinary path
+/// that needs no change.
+fn canonical_match_path(path: &str) -> Cow<'_, str> {
+    fn hex(b: u8) -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    }
+    fn unreserved_at(bytes: &[u8], i: usize) -> Option<u8> {
+        if bytes.get(i) != Some(&b'%') {
+            return None;
+        }
+        let c = hex(*bytes.get(i + 1)?)? << 4 | hex(*bytes.get(i + 2)?)?;
+        (c.is_ascii_alphanumeric() || matches!(c, b'-' | b'.' | b'_' | b'~')).then_some(c)
+    }
+
+    let bytes = path.as_bytes();
+    let needs_work = bytes.iter().enumerate().any(|(i, &b)| {
+        (b == b'/' && bytes.get(i + 1) == Some(&b'/')) || unreserved_at(bytes, i).is_some()
+    });
+    if !needs_work {
+        return Cow::Borrowed(path);
+    }
+    let mut out = String::with_capacity(path.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if let Some(c) = unreserved_at(bytes, i) {
+            out.push(c as char);
+            i += 3;
+            continue;
+        }
+        let b = bytes[i];
+        if b == b'/' && out.ends_with('/') {
+            i += 1;
+            continue;
+        }
+        // Copy the (possibly multi-byte) character starting here intact.
+        let ch_len = path[i..].chars().next().map_or(1, char::len_utf8);
+        out.push_str(&path[i..i + ch_len]);
+        i += ch_len;
+    }
+    Cow::Owned(out)
+}
+
+/// The matching form (`canonical_match_path`) of a request's path.
+fn request_match_path<B>(req: &Request<B>) -> Cow<'_, str> {
+    canonical_match_path(req.uri().path())
+}
+
+/// Parse a `Host` value strictly as `host[:port]`: a DNS name or IPv4 literal
+/// made of `[A-Za-z0-9.-]`, or a bracketed IPv6 literal, then an optional
+/// all-digit port that fits in a `u16`. Returns the host and port as written.
+///
+/// Anything else — userinfo (`example.com:@evil.com`), a path, whitespace,
+/// a second colon — is refused, so a value taken from here can be pasted into
+/// a URL without changing which host the URL names.
+fn parse_host_port(value: &str) -> Option<(&str, Option<&str>)> {
+    let (host, port) = if let Some(rest) = value.strip_prefix('[') {
+        let end = rest.find(']')?;
+        let literal = &rest[..end];
+        literal.parse::<Ipv6Addr>().ok()?;
+        let host = &value[..end + 2];
+        match &rest[end + 1..] {
+            "" => (host, None),
+            tail => (host, Some(tail.strip_prefix(':')?)),
+        }
+    } else {
+        match value.split_once(':') {
+            Some((h, p)) => (h, Some(p)),
+            None => (value, None),
+        }
+    };
+    if host.is_empty() {
+        return None;
+    }
+    if !host.starts_with('[')
+        && !host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+    {
+        return None;
+    }
+    if let Some(p) = port {
+        if p.is_empty() || p.len() > 5 || !p.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        p.parse::<u16>().ok()?;
+    }
+    Some((host, port))
+}
+
+/// Response for a Lua hook that denied the request. A script chooses the
+/// status, and `Response::builder().status(n)` rejects anything outside
+/// 100..=999 — which used to reach an `.unwrap()` and panic the connection
+/// task. Only 200..=599 is honoured: a 1xx is not a final response, and the
+/// rest is not HTTP. Anything else is logged and answered 500.
+#[cfg(feature = "scripting")]
+fn lua_deny_response(status: u16, body: String) -> Response<BoxBody> {
+    let status = match hyper::StatusCode::from_u16(status) {
+        Ok(s) if (200..=599).contains(&status) => s,
+        _ => {
+            tracing::error!(
+                "Lua hook denied with invalid status {}; answering 500 instead",
+                status
+            );
+            hyper::StatusCode::INTERNAL_SERVER_ERROR
+        }
+    };
+    let mut resp = Response::new(http_body_util::Full::new(Bytes::from(body)).boxed());
+    *resp.status_mut() = status;
+    resp
+}
+
+fn plain_response(status: u16, body: &'static str) -> Response<BoxBody> {
+    Response::builder()
+        .status(status)
+        .header("Content-Type", "text/plain")
+        .body(http_body_util::Full::new(Bytes::from_static(body.as_bytes())).boxed())
+        .unwrap()
+}
+
+/// Refuse requests the proxy cannot route safely, before anything looks at
+/// them. Returns the response to send, or `None` to carry on.
+///
+/// - `CONNECT` (405): this is a reverse proxy, not a tunnel.
+/// - A request target that is not origin-form — authority-form
+///   (`GET example.com:443`) or asterisk-form (`*`) — has no path to route
+///   on, and the code below slices `path[1..]`. `OPTIONS *` is the one
+///   legitimate use of `*` (a server-wide capability probe) and is answered
+///   here directly; anything else is 400.
+/// - More than one `Host` header (400, RFC 9112 §3.2): the proxy and a
+///   backend could each pick a different one and disagree about which site
+///   the request is for.
+/// - On HTTP/2, a `Host` header that names a different authority than
+///   `:authority` (400, RFC 9113 §8.3.1): same disagreement, one layer down.
+fn reject_malformed_request<B>(req: &Request<B>) -> Option<Response<BoxBody>> {
+    if req.method() == hyper::Method::CONNECT {
+        let mut resp = plain_response(405, "Method Not Allowed");
+        resp.headers_mut().insert(
+            hyper::header::ALLOW,
+            HeaderValue::from_static("GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS"),
+        );
+        return Some(resp);
+    }
+    let path = req.uri().path();
+    if !path.starts_with('/') {
+        if req.method() == hyper::Method::OPTIONS && path == "*" {
+            let mut resp = Response::new(http_body_util::Full::new(Bytes::new()).boxed());
+            resp.headers_mut().insert(
+                hyper::header::ALLOW,
+                HeaderValue::from_static("GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS"),
+            );
+            return Some(resp);
+        }
+        return Some(plain_response(400, "Bad Request"));
+    }
+    let mut hosts = req.headers().get_all(hyper::header::HOST).iter();
+    let first_host = hosts.next();
+    if hosts.next().is_some() {
+        return Some(plain_response(400, "Bad Request"));
+    }
+    if req.version() == http::Version::HTTP_2 {
+        if let (Some(host), Some(authority)) = (first_host, req.uri().authority()) {
+            let same = host
+                .to_str()
+                .map(|h| h.eq_ignore_ascii_case(authority.as_str()))
+                .unwrap_or(false);
+            if !same {
+                return Some(plain_response(400, "Bad Request"));
+            }
+        }
+    }
+    None
+}
+
+/// The Host the client asked for, as sent: the `Host` header, or the request
+/// target's authority when there is none (HTTP/2's `:authority`). Used for
+/// `X-Forwarded-Host`, before any rewrite of `Host` for an https target.
+fn original_host<B>(req: &Request<B>) -> Option<String> {
+    req.headers()
+        .get(hyper::header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .map(str::to_string)
+        .or_else(|| req.uri().authority().map(|a| a.as_str().to_string()))
 }
 
 /// Verify Basic Auth credentials against stored hashes
@@ -784,6 +1129,10 @@ pub struct ProxyServer {
     /// semaphore therefore caps total simultaneous connections per process.
     /// `None` disables the cap (matches the prior behaviour).
     connection_limit: Option<Arc<Semaphore>>,
+    /// Per-client-address cap on simultaneous connections, shared by every
+    /// accept loop like `connection_limit`. `None` when
+    /// `[limits].max_connections_per_ip = 0`.
+    per_ip_limit: Option<Arc<PerIpLimiter>>,
     /// Per-IP rate limiter consulted at the top of every request. `None`
     /// when `[rate_limiting].enabled` is unset/false.
     rate_limiter: Option<Arc<IpRateLimiter>>,
@@ -818,6 +1167,10 @@ where
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut buf = [0u8; 16 * 1024];
     let mut total: u64 = 0;
+    // One timer for the life of the tunnel, pushed forward on every read,
+    // rather than a fresh `timeout` (a new timer-wheel entry) per frame.
+    let idle = tokio::time::sleep(idle_timeout);
+    tokio::pin!(idle);
     loop {
         let now = std::time::Instant::now();
         if now >= deadline {
@@ -825,12 +1178,17 @@ where
         }
         let until_deadline = deadline.saturating_duration_since(now);
         let next_timeout = std::cmp::min(idle_timeout, until_deadline);
+        idle.as_mut()
+            .reset(tokio::time::Instant::now() + next_timeout);
 
-        let n = match tokio::time::timeout(next_timeout, reader.read(&mut buf)).await {
-            Ok(Ok(0)) => return Ok(()),
-            Ok(Ok(n)) => n,
-            Ok(Err(e)) => return Err(e),
-            Err(_) => return Ok(()),
+        let n = tokio::select! {
+            biased;
+            read = reader.read(&mut buf) => match read {
+                Ok(0) => return Ok(()),
+                Ok(n) => n,
+                Err(e) => return Err(e),
+            },
+            _ = &mut idle => return Ok(()),
         };
         let new_total = total.saturating_add(n as u64);
         if new_total > max_bytes {
@@ -865,9 +1223,10 @@ pub fn build_rate_limiter(config: &ConfigManager) -> Option<Arc<IpRateLimiter>> 
 
 /// Build the trailing header lines for a forwarded WebSocket upgrade. Drops
 /// hop-by-hop headers (RFC 7230 §6.1) and any header nominated by the
-/// client's `Connection:` value, then re-injects proxy-derived
-/// `X-Forwarded-{For,Proto,Host}` so a client cannot spoof source IP /
-/// proto / host on the upgrade. `Host`, `Upgrade`, `Connection`, and the
+/// client's `Connection:` value, drops every `Forwarded` / `X-Forwarded-*` /
+/// `X-Real-IP` header, then re-injects proxy-derived
+/// `X-Forwarded-{For,Proto,Host}` and `X-Real-IP` so a client cannot spoof
+/// source IP / proto / host on the upgrade. `Host`, `Upgrade`, `Connection`, and the
 /// `Sec-WebSocket-*` framing headers are also skipped because the caller
 /// emits them explicitly. Output ends with each line CRLF-terminated; the
 /// caller appends the final blank-line terminator.
@@ -903,11 +1262,13 @@ fn build_ws_extra_headers(
             | "transfer-encoding"
             | "sec-websocket-key"
             | "sec-websocket-version"
-            | "sec-websocket-protocol"
-            | "x-forwarded-for"
-            | "x-forwarded-proto"
-            | "x-forwarded-host" => continue,
+            | "sec-websocket-protocol" => continue,
             _ => {}
+        }
+        // Every forwarding header is re-derived below from what the proxy
+        // saw, never relayed from the client (see `set_forwarding_headers`).
+        if crate::proxy_headers::is_forwarding_header(name_str) {
+            continue;
         }
         if connection_listed.iter().any(|n| n == name_str) {
             continue;
@@ -922,6 +1283,7 @@ fn build_ws_extra_headers(
 
     if let Some(peer) = peer_addr {
         out.push_str(&format!("X-Forwarded-For: {}\r\n", peer.ip()));
+        out.push_str(&format!("X-Real-IP: {}\r\n", peer.ip()));
     }
     out.push_str(&format!(
         "X-Forwarded-Proto: {}\r\n",
@@ -947,6 +1309,7 @@ impl ProxyServer {
     ) -> Result<Self> {
         let num_rules = config.get_config().rules.len();
         let connection_limit = build_connection_limit(&config);
+        let per_ip_limit = build_per_ip_limiter(&config);
         Ok(Self {
             config,
             shutdown,
@@ -959,6 +1322,7 @@ impl ProxyServer {
             app_manager,
             load_balancer: Arc::new(LoadBalancerState::new(num_rules)),
             connection_limit,
+            per_ip_limit,
             rate_limiter,
         })
     }
@@ -978,6 +1342,7 @@ impl ProxyServer {
     ) -> Result<Self> {
         let num_rules = config.get_config().rules.len();
         let connection_limit = build_connection_limit(&config);
+        let per_ip_limit = build_per_ip_limiter(&config);
         Ok(Self {
             config,
             shutdown,
@@ -990,6 +1355,7 @@ impl ProxyServer {
             app_manager,
             load_balancer: Arc::new(LoadBalancerState::new(num_rules)),
             connection_limit,
+            per_ip_limit,
             rate_limiter,
         })
     }
@@ -1036,6 +1402,7 @@ impl ProxyServer {
             let am_clone = app_manager.clone();
             let lb_clone = self.load_balancer.clone();
             let cl_clone = self.connection_limit.clone();
+            let ip_clone = self.per_ip_limit.clone();
             let rl_clone = self.rate_limiter.clone();
             let client = shared_client.clone();
 
@@ -1051,6 +1418,7 @@ impl ProxyServer {
                     am_clone,
                     lb_clone,
                     cl_clone,
+                    ip_clone,
                     rl_clone,
                     client,
                 )
@@ -1073,6 +1441,7 @@ impl ProxyServer {
                 let am_clone = app_manager.clone();
                 let lb_clone = self.load_balancer.clone();
                 let cl_clone = self.connection_limit.clone();
+                let ip_clone = self.per_ip_limit.clone();
                 let rl_clone = self.rate_limiter.clone();
                 let client = shared_client.clone();
 
@@ -1089,6 +1458,7 @@ impl ProxyServer {
                         am_clone,
                         lb_clone,
                         cl_clone,
+                        ip_clone,
                         rl_clone,
                         client,
                     )
@@ -1148,6 +1518,31 @@ impl ProxyServer {
     }
 }
 
+/// Build an accepted connection's lease from its `max_connections` permit and
+/// a per-IP slot, or `None` when its address is already at
+/// `max_connections_per_ip` (the caller drops the socket, which also returns
+/// the permit).
+fn lease_for(
+    permit: Option<OwnedSemaphorePermit>,
+    per_ip_limit: Option<&Arc<PerIpLimiter>>,
+    peer: SocketAddr,
+) -> Option<ConnLease> {
+    let per_ip = match per_ip_limit {
+        Some(limiter) => match limiter.try_acquire(peer.ip()) {
+            Some(guard) => Some(guard),
+            None => {
+                tracing::debug!(
+                    "refusing connection from {}: max_connections_per_ip reached",
+                    peer.ip()
+                );
+                return None;
+            }
+        },
+        None => None,
+    };
+    Some(ConnLease::new(permit, per_ip))
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_http_server(
     addr: SocketAddr,
@@ -1160,6 +1555,7 @@ async fn run_http_server(
     app_manager: Option<Arc<AppManager>>,
     load_balancer: Arc<LoadBalancerState>,
     connection_limit: Option<Arc<Semaphore>>,
+    per_ip_limit: Option<Arc<PerIpLimiter>>,
     rate_limiter: Option<Arc<IpRateLimiter>>,
     client: ProxyClient,
 ) -> Result<()> {
@@ -1184,7 +1580,10 @@ async fn run_http_server(
         tokio::select! {
             _ = shutdown_rx.recv() => break,
             accept_result = listener.accept() => match accept_result {
-                Ok((stream, _)) => {
+                Ok((stream, peer)) => {
+                    let Some(lease) = lease_for(permit, per_ip_limit.as_ref(), peer) else {
+                        continue; // over the per-IP cap: dropping closes it
+                    };
                     let _ = stream.set_nodelay(true);
                     let client = client.clone();
                     let config = config.clone();
@@ -1197,9 +1596,11 @@ async fn run_http_server(
                     let sd = shutdown.clone();
                     let rl = rate_limiter.clone();
                     tokio::spawn(async move {
-                        let _permit = permit; // released when this task ends
+                        // The lease (permit + per-IP slot) lives in the
+                        // connection's service; a WebSocket tunnel takes its
+                        // own clone, so it outlives this task when needed.
                         if let Err(e) = handle_http11_connection(
-                            stream, client, config, metrics, cs, lua, cb, am, lb, sd, rl,
+                            stream, client, config, metrics, cs, lua, cb, am, lb, sd, rl, lease,
                         )
                         .await
                         {
@@ -1232,6 +1633,7 @@ async fn run_https_server(
     app_manager: Option<Arc<AppManager>>,
     load_balancer: Arc<LoadBalancerState>,
     connection_limit: Option<Arc<Semaphore>>,
+    per_ip_limit: Option<Arc<PerIpLimiter>>,
     rate_limiter: Option<Arc<IpRateLimiter>>,
     client: ProxyClient,
 ) -> Result<()> {
@@ -1256,7 +1658,10 @@ async fn run_https_server(
         tokio::select! {
             _ = shutdown_rx.recv() => break,
             accept_result = listener.accept() => match accept_result {
-                Ok((stream, _)) => {
+                Ok((stream, peer)) => {
+                    let Some(lease) = lease_for(permit, per_ip_limit.as_ref(), peer) else {
+                        continue; // over the per-IP cap: dropping closes it
+                    };
                     let _ = stream.set_nodelay(true);
                     let client = client.clone();
                     let config = config.clone();
@@ -1270,7 +1675,8 @@ async fn run_https_server(
                     let sd = shutdown.clone();
                     let rl = rate_limiter.clone();
                     tokio::spawn(async move {
-                        let _permit = permit; // released when this task ends
+                        // Held through the handshake; then handed to the
+                        // connection's service (see run_http_server).
                         const TLS_HANDSHAKE_TIMEOUT: tokio::time::Duration =
                             tokio::time::Duration::from_secs(10);
                         match tokio::time::timeout(
@@ -1283,7 +1689,7 @@ async fn run_https_server(
                                 metrics.inc_tls_connections();
                                 if let Err(e) = handle_https2_connection(
                                     tls_stream, client, config, metrics, cs, lua, cb, am, lb, sd,
-                                    rl,
+                                    rl, lease,
                                 )
                                 .await
                                 {
@@ -1309,6 +1715,160 @@ async fn run_https_server(
     Ok(())
 }
 
+/// Default for `[limits].keep_alive_timeout` when unset: how long an HTTP/1
+/// connection may take to send a request head — which, since hyper re-arms
+/// the timer after every response, also bounds an idle keep-alive connection
+/// — and how long an HTTP/2 connection may sit with no request in flight.
+const DEFAULT_KEEP_ALIVE_TIMEOUT_SECS: u64 = 30;
+
+/// HTTP/2 PING cadence, and how long to wait for the answer before declaring
+/// the peer dead. Without them a client that vanished without a FIN (a phone
+/// switching networks) holds its connection — and its permit — until TCP
+/// keep-alive gives up hours later.
+const H2_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(30);
+const H2_KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// The idle bound for this config (see `DEFAULT_KEEP_ALIVE_TIMEOUT_SECS`).
+fn keep_alive_timeout(limits: &crate::config::LimitsConfig) -> Duration {
+    Duration::from_secs(
+        limits
+            .keep_alive_timeout
+            .filter(|&s| s > 0)
+            .unwrap_or(DEFAULT_KEEP_ALIVE_TIMEOUT_SECS),
+    )
+}
+
+/// Request activity on one HTTP/2 connection, for its idle timeout. hyper's
+/// HTTP/2 server has no idle or preface timeout of its own: a client that
+/// completes the TLS handshake, negotiates h2 and then sends nothing — not
+/// even the connection preface — kept its connection and its
+/// `max_connections` permit forever.
+struct H2Activity {
+    epoch: std::time::Instant,
+    /// Requests whose service future is running.
+    in_flight: AtomicUsize,
+    /// Milliseconds since `epoch` at the last request start or finish.
+    last_ms: AtomicU64,
+    /// Whether any request has arrived — i.e. the h2 handshake completed.
+    seen_request: std::sync::atomic::AtomicBool,
+}
+
+impl H2Activity {
+    fn new() -> Self {
+        Self {
+            epoch: std::time::Instant::now(),
+            in_flight: AtomicUsize::new(0),
+            last_ms: AtomicU64::new(0),
+            seen_request: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    fn touch(&self) {
+        self.last_ms
+            .store(self.epoch.elapsed().as_millis() as u64, Ordering::Relaxed);
+    }
+
+    fn start(self: &Arc<Self>) -> H2InFlight {
+        self.seen_request.store(true, Ordering::Relaxed);
+        self.in_flight.fetch_add(1, Ordering::AcqRel);
+        self.touch();
+        H2InFlight(self.clone())
+    }
+
+    /// How long the connection has had no request in flight (zero while one is).
+    fn idle_for(&self) -> Duration {
+        if self.in_flight.load(Ordering::Acquire) > 0 {
+            return Duration::ZERO;
+        }
+        let last = Duration::from_millis(self.last_ms.load(Ordering::Relaxed));
+        self.epoch.elapsed().saturating_sub(last)
+    }
+}
+
+/// Marks one request in flight; a drop (completion or a reset stream
+/// cancelling the future) ends it.
+struct H2InFlight(Arc<H2Activity>);
+
+impl Drop for H2InFlight {
+    fn drop(&mut self) {
+        self.0.touch();
+        self.0.in_flight.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Serve one HTTP/1.1 connection (plain or TLS) until it closes or the
+/// process shuts down.
+#[allow(clippy::too_many_arguments)]
+async fn serve_http1<I>(
+    io: TokioIo<I>,
+    label: &'static str,
+    is_tls: bool,
+    peer_addr: Option<SocketAddr>,
+    client: ProxyClient,
+    config: Arc<ConfigManager>,
+    metrics: SharedMetrics,
+    challenge_store: ChallengeStore,
+    lua_engine: OptionalLuaEngine,
+    circuit_breaker: SharedCircuitBreaker,
+    app_manager: Option<Arc<AppManager>>,
+    load_balancer: Arc<LoadBalancerState>,
+    shutdown: ShutdownCoordinator,
+    rate_limiter: Option<Arc<IpRateLimiter>>,
+    lease: ConnLease,
+) where
+    I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let header_timeout = keep_alive_timeout(&config.get_config().limits);
+    let svc = service_fn(move |mut req: Request<Incoming>| {
+        req.extensions_mut().insert(lease.clone());
+        handle_request(
+            req,
+            client.clone(),
+            config.clone(),
+            metrics.clone(),
+            challenge_store.clone(),
+            lua_engine.clone(),
+            circuit_breaker.clone(),
+            app_manager.clone(),
+            load_balancer.clone(),
+            is_tls,
+            peer_addr,
+            rate_limiter.clone(),
+        )
+    });
+
+    // `header_read_timeout` is always set: hyper re-arms it each time it
+    // starts reading the next request head, so it bounds both a slow head
+    // and an idle keep-alive connection. hyper 1.9 panics with "timeout
+    // `header_read_timeout` set, but no timer set" without `.timer(...)`.
+    let conn = hyper::server::conn::http1::Builder::new()
+        .timer(TokioTimer::new())
+        .keep_alive(true)
+        .pipeline_flush(true)
+        .header_read_timeout(header_timeout)
+        .serve_connection(io, svc)
+        .with_upgrades();
+    let mut conn = std::pin::pin!(conn);
+    let mut shutdown_rx = shutdown.subscribe();
+
+    tokio::select! {
+        res = conn.as_mut() => {
+            if let Err(e) = res {
+                tracing::debug!("{} connection error: {}", label, error_chain(&e));
+            }
+        }
+        _ = shutdown_rx.recv() => {
+            // Send Connection: close after the in-flight request completes
+            // so the Mac's browser knows to drop its keep-alive socket instead
+            // of detecting a dead peer on the next request (saves ~30s).
+            conn.as_mut().graceful_shutdown();
+            if let Err(e) = conn.await {
+                tracing::debug!("{} graceful shutdown error: {}", label, e);
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_http11_connection(
     stream: tokio::net::TcpStream,
@@ -1322,69 +1882,27 @@ async fn handle_http11_connection(
     load_balancer: Arc<LoadBalancerState>,
     shutdown: ShutdownCoordinator,
     rate_limiter: Option<Arc<IpRateLimiter>>,
+    lease: ConnLease,
 ) -> Result<()> {
     let peer_addr = stream.peer_addr().ok();
-    let io = TokioIo::new(stream);
-    let config_inner = config.get_config();
-    let header_timeout = config_inner
-        .limits
-        .keep_alive_timeout
-        .map(Duration::from_secs);
-    let svc = service_fn(move |req| {
-        handle_request(
-            req,
-            client.clone(),
-            config.clone(),
-            metrics.clone(),
-            challenge_store.clone(),
-            lua_engine.clone(),
-            circuit_breaker.clone(),
-            app_manager.clone(),
-            load_balancer.clone(),
-            false,
-            peer_addr,
-            rate_limiter.clone(),
-        )
-    });
-
-    let conn = match header_timeout {
-        // hyper 1.9 panics with "timeout `header_read_timeout` set, but no
-        // timer set" if `.timer(...)` isn't called when any time-based
-        // feature is enabled, so call it on both branches for symmetry.
-        Some(timeout) => hyper::server::conn::http1::Builder::new()
-            .timer(TokioTimer::new())
-            .keep_alive(true)
-            .pipeline_flush(true)
-            .header_read_timeout(timeout)
-            .serve_connection(io, svc)
-            .with_upgrades(),
-        None => hyper::server::conn::http1::Builder::new()
-            .timer(TokioTimer::new())
-            .keep_alive(true)
-            .pipeline_flush(true)
-            .serve_connection(io, svc)
-            .with_upgrades(),
-    };
-    let mut conn = std::pin::pin!(conn);
-    let mut shutdown_rx = shutdown.subscribe();
-
-    tokio::select! {
-        res = conn.as_mut() => {
-            if let Err(e) = res {
-                tracing::debug!("HTTP/1.1 connection error: {}", error_chain(&e));
-            }
-        }
-        _ = shutdown_rx.recv() => {
-            // Send Connection: close after the in-flight request completes
-            // so the Mac's browser knows to drop its keep-alive socket instead
-            // of detecting a dead peer on the next request (saves ~30s).
-            conn.as_mut().graceful_shutdown();
-            if let Err(e) = conn.await {
-                tracing::debug!("HTTP/1.1 graceful shutdown error: {}", e);
-            }
-        }
-    }
-
+    serve_http1(
+        TokioIo::new(stream),
+        "HTTP/1.1",
+        false,
+        peer_addr,
+        client,
+        config,
+        metrics,
+        challenge_store,
+        lua_engine,
+        circuit_breaker,
+        app_manager,
+        load_balancer,
+        shutdown,
+        rate_limiter,
+        lease,
+    )
+    .await;
     Ok(())
 }
 
@@ -1401,51 +1919,81 @@ async fn handle_https2_connection(
     load_balancer: Arc<LoadBalancerState>,
     shutdown: ShutdownCoordinator,
     rate_limiter: Option<Arc<IpRateLimiter>>,
+    lease: ConnLease,
 ) -> Result<()> {
     let is_h2 = stream.get_ref().1.alpn_protocol() == Some(b"h2");
 
     let peer_addr = stream.get_ref().0.peer_addr().ok();
     let io = TokioIo::new(stream);
+
+    if !is_h2 {
+        serve_http1(
+            io,
+            "HTTPS/1.1",
+            true,
+            peer_addr,
+            client,
+            config,
+            metrics,
+            challenge_store,
+            lua_engine,
+            circuit_breaker,
+            app_manager,
+            load_balancer,
+            shutdown,
+            rate_limiter,
+            lease,
+        )
+        .await;
+        return Ok(());
+    }
+
     let mut shutdown_rx = shutdown.subscribe();
+    let idle_timeout = keep_alive_timeout(&config.get_config().limits);
+    let activity = Arc::new(H2Activity::new());
+    let svc_activity = activity.clone();
+    let exec = TokioExecutor::new();
+    let svc = service_fn(move |mut req: Request<Incoming>| {
+        let in_flight = svc_activity.start();
+        req.extensions_mut().insert(lease.clone());
+        let fut = handle_request(
+            req,
+            client.clone(),
+            config.clone(),
+            metrics.clone(),
+            challenge_store.clone(),
+            lua_engine.clone(),
+            circuit_breaker.clone(),
+            app_manager.clone(),
+            load_balancer.clone(),
+            true,
+            peer_addr,
+            rate_limiter.clone(),
+        );
+        async move {
+            let _in_flight = in_flight;
+            fut.await
+        }
+    });
+    let conn = hyper::server::conn::http2::Builder::new(exec)
+        .timer(TokioTimer::new())
+        .keep_alive_interval(H2_KEEP_ALIVE_INTERVAL)
+        .keep_alive_timeout(H2_KEEP_ALIVE_TIMEOUT)
+        .initial_stream_window_size(1024 * 1024)
+        .initial_connection_window_size(2 * 1024 * 1024)
+        .max_concurrent_streams(250)
+        .serve_connection(io, svc);
+    let mut conn = std::pin::pin!(conn);
 
-    if is_h2 {
-        let exec = TokioExecutor::new();
-        let svc = service_fn(move |req| {
-            let cfg = config.clone();
-            let fut = handle_request(
-                req,
-                client.clone(),
-                config.clone(),
-                metrics.clone(),
-                challenge_store.clone(),
-                lua_engine.clone(),
-                circuit_breaker.clone(),
-                app_manager.clone(),
-                load_balancer.clone(),
-                true,
-                peer_addr,
-                rate_limiter.clone(),
-            );
-            async move {
-                let mut resp = fut.await?;
-                if let Some(v) = hsts_header_value(&cfg.get_config().tls) {
-                    resp.headers_mut().insert("Strict-Transport-Security", v);
-                }
-                Ok::<_, hyper::Error>(resp)
-            }
-        });
-        let conn = hyper::server::conn::http2::Builder::new(exec)
-            .initial_stream_window_size(1024 * 1024)
-            .initial_connection_window_size(2 * 1024 * 1024)
-            .max_concurrent_streams(250)
-            .serve_connection(io, svc);
-        let mut conn = std::pin::pin!(conn);
-
+    // Check for idleness a few times per timeout period.
+    let check_every = (idle_timeout / 4).max(Duration::from_millis(250));
+    loop {
         tokio::select! {
             res = conn.as_mut() => {
                 if let Err(e) = res {
                     tracing::debug!("HTTPS/2 connection error: {}", e);
                 }
+                break;
             }
             _ = shutdown_rx.recv() => {
                 // Emit HTTP/2 GOAWAY so the browser closes its multiplexed
@@ -1455,66 +2003,25 @@ async fn handle_https2_connection(
                 if let Err(e) = conn.await {
                     tracing::debug!("HTTPS/2 graceful shutdown error: {}", e);
                 }
+                break;
             }
-        }
-    } else {
-        let config_inner = config.get_config();
-        let header_timeout = config_inner
-            .limits
-            .keep_alive_timeout
-            .map(Duration::from_secs);
-        let svc = service_fn(move |req| {
-            let cfg = config.clone();
-            let fut = handle_request(
-                req,
-                client.clone(),
-                config.clone(),
-                metrics.clone(),
-                challenge_store.clone(),
-                lua_engine.clone(),
-                circuit_breaker.clone(),
-                app_manager.clone(),
-                load_balancer.clone(),
-                true,
-                peer_addr,
-                rate_limiter.clone(),
-            );
-            async move {
-                let mut resp = fut.await?;
-                if let Some(v) = hsts_header_value(&cfg.get_config().tls) {
-                    resp.headers_mut().insert("Strict-Transport-Security", v);
+            _ = tokio::time::sleep(check_every) => {
+                if activity.idle_for() < idle_timeout {
+                    continue;
                 }
-                Ok::<_, hyper::Error>(resp)
-            }
-        });
-        let conn = match header_timeout {
-            Some(timeout) => hyper::server::conn::http1::Builder::new()
-                .timer(TokioTimer::new())
-                .keep_alive(true)
-                .pipeline_flush(true)
-                .header_read_timeout(timeout)
-                .serve_connection(io, svc)
-                .with_upgrades(),
-            None => hyper::server::conn::http1::Builder::new()
-                .timer(TokioTimer::new())
-                .keep_alive(true)
-                .pipeline_flush(true)
-                .serve_connection(io, svc)
-                .with_upgrades(),
-        };
-        let mut conn = std::pin::pin!(conn);
-
-        tokio::select! {
-            res = conn.as_mut() => {
-                if let Err(e) = res {
-                    tracing::debug!("HTTPS/1.1 connection error: {}", e);
+                if !activity.seen_request.load(Ordering::Relaxed) {
+                    // Never sent a request — possibly not even the preface,
+                    // in which case hyper's graceful shutdown would wait for
+                    // a handshake that is not coming. Just drop it.
+                    tracing::debug!("HTTPS/2 connection sent no request in {:?}; closing", idle_timeout);
+                    break;
                 }
-            }
-            _ = shutdown_rx.recv() => {
+                // Idle: GOAWAY, and let any response still streaming finish.
                 conn.as_mut().graceful_shutdown();
                 if let Err(e) = conn.await {
-                    tracing::debug!("HTTPS/1.1 graceful shutdown error: {}", e);
+                    tracing::debug!("HTTPS/2 idle shutdown error: {}", e);
                 }
+                break;
             }
         }
     }
@@ -1522,23 +2029,80 @@ async fn handle_https2_connection(
     Ok(())
 }
 
-/// Extract headers from a hyper request into a HashMap for Lua consumption.
+/// Separator the Lua view uses to join repeated fields of one header: `; `
+/// for `Cookie` (how HTTP/2 split cookies are rejoined, RFC 9113 §8.2.3),
+/// `, ` for everything else (RFC 9110 §5.3).
 #[cfg(feature = "scripting")]
-fn extract_headers(req: &Request<Incoming>) -> std::collections::HashMap<String, String> {
-    req.headers()
-        .iter()
-        .map(|(k, v)| {
-            (
-                k.as_str().to_lowercase(),
-                v.to_str().unwrap_or("").to_string(),
-            )
-        })
-        .collect()
+fn lua_header_separator(name: &hyper::header::HeaderName) -> &'static str {
+    if name == hyper::header::COOKIE {
+        "; "
+    } else {
+        ", "
+    }
+}
+
+/// The Lua view of one header: every field of it, joined (see
+/// `lua_header_separator`). A non-UTF-8 field reads as "".
+///
+/// Repeated fields used to collapse to the *last* one, which hid duplicates
+/// from scripts: a client sending `X-User: evil` then `X-User: alice` showed
+/// the script `alice`, and the backend — which reads the first — got `evil`.
+#[cfg(feature = "scripting")]
+fn lua_header_view(headers: &hyper::HeaderMap, name: &hyper::header::HeaderName) -> String {
+    let sep = lua_header_separator(name);
+    let mut out = String::new();
+    for (i, v) in headers.get_all(name).iter().enumerate() {
+        if i > 0 {
+            out.push_str(sep);
+        }
+        out.push_str(v.to_str().unwrap_or(""));
+    }
+    out
+}
+
+/// Whether `value` is exactly what `lua_header_view` shows for `name` (and the
+/// header is present), compared without building the joined string.
+#[cfg(feature = "scripting")]
+fn lua_header_view_equals(
+    headers: &hyper::HeaderMap,
+    name: &hyper::header::HeaderName,
+    value: &str,
+) -> bool {
+    let sep = lua_header_separator(name);
+    let mut rest = value;
+    let mut seen = false;
+    for v in headers.get_all(name) {
+        if seen {
+            match rest.strip_prefix(sep) {
+                Some(r) => rest = r,
+                None => return false,
+            }
+        }
+        seen = true;
+        match rest.strip_prefix(v.to_str().unwrap_or("")) {
+            Some(r) => rest = r,
+            None => return false,
+        }
+    }
+    seen && rest.is_empty()
+}
+
+/// Extract headers from a hyper request into a HashMap for Lua consumption,
+/// one entry per header name (see `lua_header_view`).
+#[cfg(feature = "scripting")]
+fn extract_headers<B>(req: &Request<B>) -> std::collections::HashMap<String, String> {
+    let headers = req.headers();
+    let mut map = std::collections::HashMap::with_capacity(headers.keys_len());
+    for name in headers.keys() {
+        // `HeaderName::as_str` is already lower-case.
+        map.insert(name.as_str().to_string(), lua_header_view(headers, name));
+    }
+    map
 }
 
 /// Build a LuaRequest from a hyper Request.
 #[cfg(feature = "scripting")]
-fn build_lua_request(req: &Request<Incoming>) -> LuaRequest {
+fn build_lua_request<B>(req: &Request<B>) -> LuaRequest {
     let host = req
         .headers()
         .get("host")
@@ -1600,16 +2164,15 @@ async fn handle_request(
     peer_addr: Option<SocketAddr>,
     rate_limiter: Option<Arc<IpRateLimiter>>,
 ) -> Result<Response<BoxBody>, hyper::Error> {
-    let log_endpoints = config_manager
-        .get_config()
-        .logging
-        .log_endpoints
-        .unwrap_or(false);
+    // The config is loaded once per request and handed down, rather than
+    // re-loaded (an `ArcSwap` load plus an `Arc` clone) at each layer.
+    let config = config_manager.get_config();
+    let log_endpoints = config.logging.log_endpoints.unwrap_or(false);
     if !log_endpoints {
-        return handle_request_inner(
+        let result = handle_request_inner(
             req,
             client,
-            config_manager,
+            config.clone(),
             metrics,
             challenge_store,
             lua_engine,
@@ -1621,6 +2184,7 @@ async fn handle_request(
             rate_limiter,
         )
         .await;
+        return with_hsts(result, is_tls, &config);
     }
 
     // Capture identifying fields before `req` is moved into the handler.
@@ -1644,7 +2208,7 @@ async fn handle_request(
     let result = handle_request_inner(
         req,
         client,
-        config_manager,
+        config.clone(),
         metrics,
         challenge_store,
         lua_engine,
@@ -1682,14 +2246,32 @@ async fn handle_request(
             "endpoint request failed"
         ),
     }
-    result
+    with_hsts(result, is_tls, &config)
+}
+
+/// Add the configured `Strict-Transport-Security` header to a response served
+/// over TLS. RFC 6797 §7.2: browsers ignore it over plaintext, so plain HTTP
+/// responses never carry it (the force_https 308 sets its own).
+fn with_hsts(
+    result: Result<Response<BoxBody>, hyper::Error>,
+    is_tls: bool,
+    config: &Arc<crate::config::Config>,
+) -> Result<Response<BoxBody>, hyper::Error> {
+    let mut resp = result?;
+    if is_tls {
+        if let Some(v) = hsts_for(config) {
+            resp.headers_mut()
+                .insert(hyper::header::STRICT_TRANSPORT_SECURITY, v);
+        }
+    }
+    Ok(resp)
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn handle_request_inner(
     req: Request<Incoming>,
     client: ProxyClient,
-    config_manager: Arc<ConfigManager>,
+    config: Arc<crate::config::Config>,
     metrics: SharedMetrics,
     challenge_store: ChallengeStore,
     lua_engine: OptionalLuaEngine,
@@ -1702,7 +2284,14 @@ async fn handle_request_inner(
 ) -> Result<Response<BoxBody>, hyper::Error> {
     let start_time = std::time::Instant::now();
     metrics.inc_in_flight();
-    let config = config_manager.get_config();
+
+    // Requests with no routable path, CONNECT, duplicate or conflicting Host:
+    // refused before anything — ACME, rate limiting, routing — looks at them.
+    if let Some(response) = reject_malformed_request(&req) {
+        metrics.dec_in_flight();
+        metrics.record_request(0, 0, response.status().as_u16(), start_time.elapsed());
+        return Ok(response);
+    }
 
     // ACME challenge check — must come before all other routing.
     // ACME challenges originate from Let's Encrypt validators and are
@@ -1717,7 +2306,7 @@ async fn handle_request_inner(
     // never touch upstream connection pools or Lua hooks. Requests with
     // no observable peer (UNIX socket, error path) skip the check.
     if let (Some(limiter), Some(peer)) = (rate_limiter.as_ref(), peer_addr) {
-        if limiter.check_key(&peer.ip()).is_err() {
+        if limiter.check_key(&client_key(peer.ip())).is_err() {
             metrics.dec_in_flight();
             let duration = start_time.elapsed();
             metrics.record_request(0, 0, 429, duration);
@@ -1770,17 +2359,31 @@ async fn handle_request_inner(
         // Cluster-pushed domains count too. Without them a plain-HTTP request
         // for a domain the cluster routes was answered 400 here, before the
         // redirect to the HTTPS side that serves it.
-        let host_ok = is_configured_host(raw_host, &config)
-            || find_matching_rule(&req, &config.rules).is_some()
-            || match &app_manager {
-                Some(m) => {
-                    let bare = raw_host.split(':').next().unwrap_or(raw_host);
-                    m.app_name_for_host(bare).await.is_some() || m.external_routes.serves(bare)
-                }
-                None => false,
-            };
-        let host_for_redirect = if host_ok {
-            raw_host
+        // The Location is rebuilt from a strictly parsed host[:port], never
+        // from the raw header: `Host: example.com:@evil.com` passed the
+        // served-host check (everything before the first `:` is a served
+        // name) and became `https://example.com:@evil.com/` — userinfo
+        // `example.com:`, host `evil.com`. An open redirect.
+        let parsed = parse_host_port(raw_host);
+        let host_ok = match parsed {
+            Some((bare, _)) => {
+                is_configured_host(bare, &config)
+                    || find_matching_rule(&req, &config.rules).is_some()
+                    || match &app_manager {
+                        Some(m) => {
+                            m.app_name_for_host(bare).await.is_some()
+                                || m.external_routes.serves(bare)
+                        }
+                        None => false,
+                    }
+            }
+            None => false,
+        };
+        let host_for_redirect = if let (true, Some((bare, port))) = (host_ok, parsed) {
+            match port {
+                Some(p) => format!("{}:{}", bare, p),
+                None => bare.to_string(),
+            }
         } else {
             metrics.dec_in_flight();
             let duration = start_time.elapsed();
@@ -1799,15 +2402,19 @@ async fn handle_request_inner(
             .map(|q| format!("?{}", q))
             .unwrap_or_default();
         let location = format!("https://{}{}{}", host_for_redirect, path, query);
+        let Ok(location) = HeaderValue::from_str(&location) else {
+            metrics.dec_in_flight();
+            return Ok(plain_response(400, "Bad Request"));
+        };
         metrics.dec_in_flight();
         // RFC 6797 §7.2: HSTS over plaintext is ignored by browsers, so this
         // header on the 308 is non-load-bearing — the canonical home is the
-        // HTTPS path, set by the TLS service wrapper. Kept here for consistency
+        // HTTPS path, set by `with_hsts`. Kept here for consistency
         // with the configured policy in case any non-browser client honours it.
         let mut builder = Response::builder()
             .status(308)
             .header("Location", &location);
-        if let Some(v) = hsts_header_value(&config.tls) {
+        if let Some(v) = hsts_for(&config) {
             builder = builder.header("Strict-Transport-Security", v);
         }
         return Ok(builder
@@ -1873,9 +2480,36 @@ async fn handle_request_inner(
             .unwrap());
     }
 
-    // --- Lua on_request hook ---
-    #[cfg(feature = "scripting")]
+    // Decide this before the hop-by-hop strip below removes `Upgrade`. hyper
+    // has already recorded the upgrade on the request itself, so the header
+    // is not needed again: the tunnel writes its own.
+    let is_websocket = is_websocket_request(&req);
+
+    // Sanitise the inbound headers once, here, before any Lua hook or any
+    // proxying path sees them:
+    // - hop-by-hop headers, and every header the client nominated in
+    //   `Connection`, go now — not after the scripts ran, where a client's
+    //   `Connection: x-user` would delete the `x-user` a script had just set;
+    // - `Forwarded` / `X-Forwarded-*` / `X-Real-IP` are replaced by the
+    //   proxy's own view, so scripts and every backend path (rules, apps,
+    //   WebSocket) see the real client, never the client's claim about itself.
     let mut req = req;
+    {
+        let host = original_host(&req);
+        crate::proxy_headers::strip_hop_by_hop(req.headers_mut());
+        crate::proxy_headers::set_forwarding_headers(
+            req.headers_mut(),
+            peer_addr.map(|a| a.ip()),
+            is_tls,
+            host.as_deref(),
+        );
+    }
+
+    // --- Lua on_request hook ---
+    // The Lua view of the request, once built, is reused by the later hooks
+    // (on_request_end) instead of being rebuilt from the request.
+    #[cfg(feature = "scripting")]
+    let mut lua_view: Option<LuaRequest> = None;
     #[cfg(feature = "scripting")]
     if let Some(ref engine) = lua_engine {
         if engine.has_on_request() {
@@ -1884,22 +2518,24 @@ async fn handle_request_inner(
                 RequestHookResult::Deny { status, body } => {
                     metrics.dec_in_flight();
                     let duration = start_time.elapsed();
-                    metrics.record_request(0, body.len() as u64, status, duration);
-                    let resp_body = http_body_util::Full::new(Bytes::from(body)).boxed();
-                    return Ok(Response::builder().status(status).body(resp_body).unwrap());
+                    let len = body.len() as u64;
+                    let resp = lua_deny_response(status, body);
+                    metrics.record_request(0, len, resp.status().as_u16(), duration);
+                    return Ok(resp);
                 }
                 RequestHookResult::Continue(updated_req) => {
                     apply_lua_request_mods(&mut req, &updated_req);
+                    lua_view = Some(updated_req);
                 }
             }
         }
     }
 
-    let is_websocket = is_websocket_request(&req);
-
     if is_websocket {
         if let Some(matched) = find_matching_rule(&req, &config.rules) {
-            if matched.requires_auth(req.uri().path()) && !verify_basic_auth(&req, &matched.auth) {
+            if matched.requires_auth(&request_match_path(&req))
+                && !verify_basic_auth(&req, &matched.auth)
+            {
                 metrics.dec_in_flight();
                 return Ok(create_auth_required_response());
             }
@@ -1913,6 +2549,7 @@ async fn handle_request_inner(
             app_manager.clone(),
             is_tls,
             peer_addr,
+            &lua_engine,
         )
         .await;
     }
@@ -1925,10 +2562,21 @@ async fn handle_request_inner(
     let timeout_sec = Duration::from_secs(config.limits.request_timeout.unwrap_or(60));
 
     // Capture before `req` is moved into the handler, for the timeout log
-    // and byte accounting.
+    // and byte accounting. A `Method`/`Uri` clone is a refcount bump, not a
+    // copy of the path.
     let req_method = req.method().clone();
-    let req_path = req.uri().path().to_string();
+    let req_uri = req.uri().clone();
     let req_bytes_in = request_content_length(&req);
+
+    // What on_request_end will be shown: the request as the hooks left it.
+    // Only kept when some script defines that hook.
+    #[cfg(feature = "scripting")]
+    let lua_end_view: Option<LuaRequest> = match lua_engine {
+        Some(ref engine) if engine.may_run_on_request_end() => {
+            Some(lua_view.take().unwrap_or_else(|| build_lua_request(&req)))
+        }
+        _ => None,
+    };
 
     let handle_fut = handle_regular_request(
         req,
@@ -1939,7 +2587,6 @@ async fn handle_request_inner(
         app_manager.clone(),
         load_balancer.clone(),
         is_tls,
-        peer_addr,
     );
     let result = match timeout(timeout_sec, handle_fut).await {
         Ok(res) => res,
@@ -1950,7 +2597,7 @@ async fn handle_request_inner(
             tracing::warn!(
                 layer = "proxy",
                 method = %req_method,
-                path = %req_path,
+                path = %req_uri.path(),
                 timeout_secs = timeout_sec.as_secs(),
                 elapsed_ms = duration.as_millis() as u64,
                 "regular request timed out; returning 504"
@@ -1974,26 +2621,19 @@ async fn handle_request_inner(
 
             // --- Lua on_request_end hooks (global + route) ---
             #[cfg(feature = "scripting")]
-            if let Some(ref engine) = lua_engine {
-                let lua_req = LuaRequest {
-                    method: String::new(),
-                    path: String::new(),
-                    headers: std::collections::HashMap::new(),
-                    host: String::new(),
-                    content_length: 0,
-                };
+            if let (Some(ref engine), Some(lua_req)) = (&lua_engine, &lua_end_view) {
                 let duration_ms = duration.as_secs_f64() * 1000.0;
 
                 // Global on_request_end
                 if engine.has_on_request_end() {
-                    engine.call_on_request_end(&lua_req, status, duration_ms, &_target_url);
+                    engine.call_on_request_end(lua_req, status, duration_ms, &_target_url);
                 }
 
                 // Route-specific on_request_end
                 for script_name in &route_scripts {
                     engine.call_route_on_request_end(
                         script_name,
-                        &lua_req,
+                        lua_req,
                         status,
                         duration_ms,
                         &_target_url,
@@ -2054,6 +2694,12 @@ fn is_health_request(req: &Request<Incoming>, health_config: &crate::config::Hea
         .as_deref()
         .unwrap_or("/health/ready");
     path == liveness_path || path == readiness_path
+}
+
+/// `path` without its leading `/`, for joining onto a target URL that ends
+/// in one. Total — never panics — even on a path that has no leading slash.
+fn strip_leading_slash(path: &str) -> &str {
+    path.strip_prefix('/').unwrap_or(path)
 }
 
 /// True if `s` contains CR or LF (unsafe in raw HTTP request lines/headers).
@@ -2120,6 +2766,32 @@ fn payload_too_large() -> Response<BoxBody> {
         .unwrap()
 }
 
+/// Decode a buffered gzip/deflate body (`encoding` is the lower-cased
+/// `Content-Encoding`), producing at most `cap` bytes. `None` when the output
+/// would exceed `cap` or the stream is not valid: the caller then passes the
+/// body through untouched rather than buffer a decompression bomb.
+fn inflate_capped(body: &[u8], encoding: &str, cap: usize) -> Option<Bytes> {
+    use std::io::Read;
+    let mut decoded = Vec::new();
+    // One byte over the cap tells "exactly at the cap" from "over it".
+    let limit = cap as u64 + 1;
+    let read = if encoding.contains("gzip") {
+        flate2::read::GzDecoder::new(body)
+            .take(limit)
+            .read_to_end(&mut decoded)
+    } else if encoding.contains("deflate") {
+        flate2::read::DeflateDecoder::new(body)
+            .take(limit)
+            .read_to_end(&mut decoded)
+    } else {
+        return Some(Bytes::copy_from_slice(body));
+    };
+    match read {
+        Ok(_) if decoded.len() <= cap => Some(Bytes::from(decoded)),
+        _ => None,
+    }
+}
+
 /// Map a failed backend request to 413 when the inbound body hit max_request_size.
 fn backend_error_response(e: &(dyn std::error::Error + 'static)) -> Response<BoxBody> {
     let mut source: Option<&(dyn std::error::Error + 'static)> = Some(e);
@@ -2129,6 +2801,11 @@ fn backend_error_response(e: &(dyn std::error::Error + 'static)) -> Response<Box
         }
         source = err.source();
     }
+    if is_client_body_error(e) {
+        // The client broke off its own request body; nobody is likely
+        // listening, but the log and metrics should not say "Bad Gateway".
+        return plain_response(400, "Bad Request");
+    }
     Response::builder()
         .status(502)
         .body(http_body_util::Full::new(Bytes::from("Bad Gateway")).boxed())
@@ -2136,7 +2813,7 @@ fn backend_error_response(e: &(dyn std::error::Error + 'static)) -> Response<Box
 }
 
 #[cfg(feature = "scripting")]
-fn apply_lua_request_mods(req: &mut Request<Incoming>, lua_req: &LuaRequest) {
+fn apply_lua_request_mods<B>(req: &mut Request<B>, lua_req: &LuaRequest) {
     // Apply path rewrite from Lua (preserve query string).
     if lua_req.path != req.uri().path() {
         let mut parts = req.uri().clone().into_parts();
@@ -2171,30 +2848,214 @@ fn apply_lua_request_mods(req: &mut Request<Incoming>, lua_req: &LuaRequest) {
         headers.remove(name);
     }
     for (name, value) in &lua_req.headers {
-        // The Lua view of headers is a lossy `HashMap<String, String>`:
-        // duplicate-valued headers collapse to one entry and non-UTF8 values
-        // become "". Skip re-inserting a header Lua left unchanged so we keep
-        // the original bytes / duplicate values intact — only overwrite when
-        // the value genuinely differs from every value currently present.
-        let unchanged = {
-            let existing = headers.get_all(name.as_str());
-            let mut iter = existing.iter();
-            let has_any = iter.next().is_some();
-            (value.is_empty() && has_any)
-                || existing
-                    .iter()
-                    .any(|v| v.to_str().map(|s| s == value).unwrap_or(false))
+        let Ok(hn) = name.parse::<hyper::header::HeaderName>() else {
+            continue;
         };
-        if unchanged {
+        // The Lua view of a header joins its repeated fields and shows a
+        // non-UTF-8 value as "" (see `lua_header_view`). A header whose view
+        // Lua left exactly as it was is kept as is — original bytes and
+        // separate fields intact. Anything else is *replaced*, every field
+        // of it: a value Lua set must not travel next to a client duplicate
+        // the backend might read first.
+        if lua_header_view_equals(headers, &hn, value) {
             continue;
         }
-        if let (Ok(hn), Ok(hv)) = (
-            name.parse::<hyper::header::HeaderName>(),
-            HeaderValue::from_str(value),
-        ) {
+        if let Ok(hv) = HeaderValue::from_str(value) {
             headers.insert(hn, hv);
         }
     }
+}
+
+/// Run a matched route's Lua hooks, in order: each route script's
+/// `on_request` (deny, or header/path changes applied to `req`), the global
+/// `on_route`, then each route script's `on_route` (may override
+/// `target_url`). Returns the response to send when a hook denies.
+///
+/// Shared by the HTTP and the WebSocket paths. The upgrade path used to skip
+/// all of it: a route guarded by `@script:auth.lua` was open to anyone who
+/// added `Upgrade: websocket`, with whatever `X-User` they cared to send.
+///
+/// The Lua view of the request is built once, and only if some hook will run.
+#[cfg(feature = "scripting")]
+fn run_route_hooks(
+    engine: &LuaEngine,
+    req: &mut Request<Incoming>,
+    route_scripts: &[String],
+    target_url: &mut String,
+) -> Option<Response<BoxBody>> {
+    let mut view: Option<LuaRequest> = None;
+    for script_name in route_scripts {
+        if !engine.route_has_hook(script_name, Hook::Request) {
+            continue;
+        }
+        let mut lua_req = view.take().unwrap_or_else(|| build_lua_request(req));
+        match engine.call_route_on_request(script_name, &mut lua_req) {
+            RequestHookResult::Deny { status, body } => {
+                return Some(lua_deny_response(status, body));
+            }
+            // Apply the script's mutations to the real request so they feed
+            // the next script and the outbound build — same as the global
+            // on_request path. Without this a client-supplied header the
+            // script meant to overwrite (e.g. x-user) would be forwarded
+            // verbatim.
+            RequestHookResult::Continue(updated) => {
+                apply_lua_request_mods(req, &updated);
+                view = Some(updated);
+            }
+        }
+    }
+
+    let global = engine.has_on_route();
+    let any_route = route_scripts
+        .iter()
+        .any(|s| engine.route_has_hook(s, Hook::Route));
+    if !global && !any_route {
+        return None;
+    }
+    let lua_req = view.unwrap_or_else(|| build_lua_request(req));
+    if global {
+        let result = engine.call_on_route(&lua_req, target_url.as_str());
+        if let Some(resp) = apply_route_hook_result(result, target_url, "on_route") {
+            return Some(resp);
+        }
+    }
+    for script_name in route_scripts {
+        if !engine.route_has_hook(script_name, Hook::Route) {
+            continue;
+        }
+        let result = engine.call_route_on_route(script_name, &lua_req, target_url.as_str());
+        if let Some(resp) = apply_route_hook_result(result, target_url, script_name) {
+            return Some(resp);
+        }
+    }
+    None
+}
+
+/// Apply one `on_route` result: an override replaces the target if it is an
+/// allowed URL; a raised hook denies — fail closed rather than proxy to the
+/// default target it may have meant to steer away from.
+#[cfg(feature = "scripting")]
+fn apply_route_hook_result(
+    result: RouteHookResult,
+    target_url: &mut String,
+    hook: &str,
+) -> Option<Response<BoxBody>> {
+    match result {
+        RouteHookResult::Override(new_url) => {
+            if validate_proxy_target_url(&new_url) {
+                *target_url = new_url;
+            } else {
+                tracing::warn!(
+                    "Lua {} returned disallowed target URL, ignoring: {}",
+                    hook,
+                    new_url
+                );
+            }
+            None
+        }
+        RouteHookResult::Default => None,
+        RouteHookResult::Deny { status, body } => Some(lua_deny_response(status, body)),
+    }
+}
+
+/// Whether an `on_response` hook will run for a request on `route_scripts` —
+/// decided before the request is consumed, so its Lua view is only kept when
+/// it will be used.
+#[cfg(feature = "scripting")]
+fn wants_on_response(engine: &LuaEngine, route_scripts: &[String]) -> bool {
+    engine.has_on_response()
+        || route_scripts
+            .iter()
+            .any(|s| engine.route_has_hook(s, Hook::Response))
+}
+
+/// Run the global and route `on_response` hooks and merge what they asked
+/// for (later scripts win). `None` when no hook asked for anything.
+#[cfg(feature = "scripting")]
+fn lua_response_mods(
+    engine: &LuaEngine,
+    lua_req: &LuaRequest,
+    route_scripts: &[String],
+    status: u16,
+    headers: &hyper::HeaderMap,
+) -> Option<crate::scripting::ResponseMod> {
+    use crate::scripting::ResponseMod;
+    if !wants_on_response(engine, route_scripts) {
+        return None;
+    }
+    let resp_headers = extract_response_headers(headers);
+    let mut all_mods: Vec<ResponseMod> = Vec::new();
+    if engine.has_on_response() {
+        all_mods.push(engine.call_on_response(lua_req, status, &resp_headers));
+    }
+    for script_name in route_scripts {
+        if engine.route_has_hook(script_name, Hook::Response) {
+            all_mods.push(engine.call_route_on_response(
+                script_name,
+                lua_req,
+                status,
+                &resp_headers,
+            ));
+        }
+    }
+    let mut merged = ResponseMod::default();
+    for mods in all_mods {
+        merged.set_headers.extend(mods.set_headers);
+        merged.remove_headers.extend(mods.remove_headers);
+        if mods.replace_body.is_some() {
+            merged.replace_body = mods.replace_body;
+        }
+        if mods.override_status.is_some() {
+            merged.override_status = mods.override_status;
+        }
+    }
+    let changed = !merged.set_headers.is_empty()
+        || !merged.remove_headers.is_empty()
+        || merged.replace_body.is_some()
+        || merged.override_status.is_some();
+    changed.then_some(merged)
+}
+
+/// Apply merged `on_response` modifications to a backend response.
+#[cfg(feature = "scripting")]
+fn apply_response_mods(
+    response: Response<Incoming>,
+    merged: crate::scripting::ResponseMod,
+) -> Response<BoxBody> {
+    let (mut parts, body) = response.into_parts();
+
+    if let Some(status) = merged.override_status {
+        // Same range a deny may use (see `lua_deny_response`).
+        if (200..=599).contains(&status) {
+            parts.status = hyper::StatusCode::from_u16(status).unwrap_or(parts.status);
+        }
+    }
+
+    for name in &merged.remove_headers {
+        if let Ok(header_name) = name.parse::<hyper::header::HeaderName>() {
+            parts.headers.remove(header_name);
+        }
+    }
+
+    for (name, value) in &merged.set_headers {
+        if let (Ok(header_name), Ok(header_value)) = (
+            name.parse::<hyper::header::HeaderName>(),
+            value.parse::<HeaderValue>(),
+        ) {
+            parts.headers.insert(header_name, header_value);
+        }
+    }
+
+    if let Some(new_body) = merged.replace_body {
+        let new_bytes = Bytes::from(new_body);
+        parts.headers.insert(
+            hyper::header::CONTENT_LENGTH,
+            HeaderValue::from(new_bytes.len()),
+        );
+        return Response::from_parts(parts, http_body_util::Full::new(new_bytes).boxed());
+    }
+
+    Response::from_parts(parts, body.map_err(|_| unreachable!()).boxed())
 }
 
 /// True when `path` (the raw, undecoded request path) contains a dot
@@ -2318,6 +3179,7 @@ async fn handle_websocket_request(
     app_manager: Option<Arc<AppManager>>,
     is_tls: bool,
     peer_addr: Option<SocketAddr>,
+    lua_engine: &OptionalLuaEngine,
 ) -> Result<Response<BoxBody>, hyper::Error> {
     let host = req
         .headers()
@@ -2346,7 +3208,24 @@ async fn handle_websocket_request(
     };
 
     let target_url = match target_result {
-        Some((url, _, _, _)) => url,
+        // A matched route runs the same Lua hooks as a plain request —
+        // route on_request (deny / header rewrite), global and route
+        // on_route (deny / target override) — before anything is tunnelled.
+        #[cfg(feature = "scripting")]
+        Some((mut url, _, _, route_scripts)) => {
+            if let Some(engine) = lua_engine.as_ref() {
+                if let Some(resp) = run_route_hooks(engine, &mut req, &route_scripts, &mut url) {
+                    metrics.dec_in_flight();
+                    return Ok(resp);
+                }
+            }
+            url
+        }
+        #[cfg(not(feature = "scripting"))]
+        Some((url, _, _, _)) => {
+            let _ = lua_engine;
+            url
+        }
         None => {
             if let (Some(ref manager), Some(ref h)) = (app_manager, host) {
                 manager.note_activity(h).await;
@@ -2372,7 +3251,7 @@ async fn handle_websocket_request(
                         .map(|q| format!("?{}", q))
                         .unwrap_or_default();
                     if target.url.as_str().ends_with('/') {
-                        format!("{}{}{}", target.url, &path[1..], query)
+                        format!("{}{}{}", target.url, strip_leading_slash(path), query)
                     } else {
                         format!("{}{}{}", target.url, path, query)
                     }
@@ -2469,7 +3348,13 @@ async fn handle_websocket_request(
     // request-timeout wrapper, so an unbounded connect to a black-holed
     // backend would otherwise hang the upgrade indefinitely.
     let tcp = match timeout(Duration::from_secs(5), TcpStream::connect(&backend_addr)).await {
-        Ok(Ok(s)) => s,
+        Ok(Ok(s)) => {
+            // Frames are small and latency-bound; without TCP_NODELAY Nagle
+            // holds each one back waiting for the previous one's ACK. The
+            // client side and the HTTP pool already set it.
+            let _ = s.set_nodelay(true);
+            s
+        }
         Ok(Err(e)) => {
             tracing::error!("Failed to connect to backend for WebSocket: {}", e);
             metrics.inc_errors();
@@ -2673,6 +3558,12 @@ async fn handle_websocket_request(
             }
         });
 
+    // The tunnel outlives this request's connection — hyper finishes serving
+    // it once the socket is handed over — so it takes its own hold on the
+    // connection's `max_connections` permit and per-IP slot. Without it every
+    // open WebSocket was a connection the limits no longer counted.
+    let lease = req.extensions().get::<ConnLease>().cloned();
+
     // Use hyper::upgrade::on to get the client-side stream after we return 101
     let client_upgrade = hyper::upgrade::on(req);
 
@@ -2697,6 +3588,7 @@ async fn handle_websocket_request(
 
     // Spawn the bidirectional copy task
     tokio::spawn(async move {
+        let _lease = lease; // released when the tunnel closes
         match client_upgrade.await {
             Ok(upgraded) => {
                 let mut client_stream = TokioIo::new(upgraded);
@@ -2756,7 +3648,6 @@ async fn handle_regular_request(
     app_manager: Option<Arc<AppManager>>,
     load_balancer: Arc<LoadBalancerState>,
     is_tls: bool,
-    peer_addr: Option<SocketAddr>,
 ) -> Result<(Response<BoxBody>, String, Vec<String>), hyper::Error> {
     let route = find_matching_rule(&req, &config.rules);
     // Prefer the Host header over the URI authority. An HTTP/1.1 absolute-form
@@ -2795,124 +3686,65 @@ async fn handle_regular_request(
     match route {
         #[allow(unused_mut, unused_variables)]
         Some(matched_route) => {
-            let path = req.uri().path().to_string();
-            let from_domain_rule = matched_route.from_domain_rule;
             let matched_prefix = matched_route.matched_prefix(is_tls);
             let html_rewrite_prefix = matched_route.html_rewrite_prefix();
-
-            if matched_route.requires_auth(&path) && !verify_basic_auth(&req, &matched_route.auth) {
-                tracing::debug!("Basic auth failed for {}", req.uri().path());
-                return Ok((create_auth_required_response(), String::new(), vec![]));
-            }
             let route_scripts = matched_route.route_scripts.clone();
-            let query = req.uri().query().map(|q| q.to_string());
 
-            // Select an available target via circuit breaker
-            let target_selection = select_target(
-                &matched_route,
-                &path,
-                query.as_deref(),
-                circuit_breaker,
-                &load_balancer,
-            );
-            let (mut target_url, base_url) = match target_selection {
-                Some((url, base)) => (url, base),
-                None => {
-                    // All targets are circuit-broken
-                    let body =
-                        http_body_util::Full::new(Bytes::from("Service Unavailable")).boxed();
-                    return Ok((
-                        Response::builder()
-                            .status(503)
-                            .body(body)
-                            .expect("Failed to build response"),
-                        String::new(),
-                        route_scripts,
-                    ));
+            let (mut target_url, base_url) = {
+                let raw_path = req.uri().path();
+                // `@auth` / `@noauth` are judged on the same canonical path
+                // the rule was matched on (see `canonical_match_path`).
+                let match_path = canonical_match_path(raw_path);
+                if matched_route.requires_auth(&match_path)
+                    && !verify_basic_auth(&req, &matched_route.auth)
+                {
+                    tracing::debug!("Basic auth failed for {}", raw_path);
+                    return Ok((create_auth_required_response(), String::new(), vec![]));
+                }
+                // A prefix rule strips the prefix it matched, so it must strip
+                // it from the form it matched — slicing `prefix.len()` bytes
+                // off `//admin/x` or `/%61dmin/x` would cut in the wrong
+                // place. Every other resolution forwards the path as sent.
+                let target_path = match matched_route.resolution {
+                    UrlResolution::StripPrefix(_) => &*match_path,
+                    _ => raw_path,
+                };
+
+                // Select an available target via circuit breaker
+                let target_selection = select_target(
+                    &matched_route,
+                    target_path,
+                    req.uri().query(),
+                    circuit_breaker,
+                    &load_balancer,
+                );
+                match target_selection {
+                    Some((url, base)) => (url, base),
+                    None => {
+                        // All targets are circuit-broken
+                        let body =
+                            http_body_util::Full::new(Bytes::from("Service Unavailable")).boxed();
+                        return Ok((
+                            Response::builder()
+                                .status(503)
+                                .body(body)
+                                .expect("Failed to build response"),
+                            String::new(),
+                            route_scripts,
+                        ));
+                    }
                 }
             };
-            // --- Lua route-specific on_request hooks ---
+
+            // --- Lua route hooks: route on_request, global + route on_route ---
             #[cfg(feature = "scripting")]
             let mut req = req;
             #[cfg(feature = "scripting")]
             if let Some(ref engine) = lua_engine {
-                for script_name in &route_scripts {
-                    let mut lua_req = build_lua_request(&req);
-                    match engine.call_route_on_request(script_name, &mut lua_req) {
-                        RequestHookResult::Deny { status, body } => {
-                            let resp_body = http_body_util::Full::new(Bytes::from(body)).boxed();
-                            return Ok((
-                                Response::builder().status(status).body(resp_body).unwrap(),
-                                target_url,
-                                route_scripts.clone(),
-                            ));
-                        }
-                        // Apply the script's mutations to the real request so
-                        // they feed the next script and the outbound build —
-                        // same as the global on_request path. Without this a
-                        // client-supplied header the script meant to overwrite
-                        // (e.g. x-user) would be forwarded verbatim.
-                        RequestHookResult::Continue(updated_req) => {
-                            apply_lua_request_mods(&mut req, &updated_req);
-                        }
-                    }
-                }
-            }
-
-            // --- Lua on_route hook (global) ---
-            #[cfg(feature = "scripting")]
-            if let Some(ref engine) = lua_engine {
-                if engine.has_on_route() {
-                    let lua_req = build_lua_request(&req);
-                    match engine.call_on_route(&lua_req, &target_url) {
-                        RouteHookResult::Override(new_url) => {
-                            if validate_proxy_target_url(&new_url) {
-                                target_url = new_url;
-                            } else {
-                                tracing::warn!(
-                                    "Lua on_route returned disallowed target URL, ignoring: {}",
-                                    new_url
-                                );
-                            }
-                        }
-                        RouteHookResult::Default => {}
-                        // The hook raised — fail closed rather than proxy to
-                        // the default target it may have meant to steer away from.
-                        RouteHookResult::Deny { status, body } => {
-                            let resp_body = http_body_util::Full::new(Bytes::from(body)).boxed();
-                            return Ok((
-                                Response::builder().status(status).body(resp_body).unwrap(),
-                                target_url,
-                                route_scripts,
-                            ));
-                        }
-                    }
-                }
-                // Route-specific on_route hooks
-                for script_name in &route_scripts {
-                    let lua_req = build_lua_request(&req);
-                    match engine.call_route_on_route(script_name, &lua_req, &target_url) {
-                        RouteHookResult::Override(new_url) => {
-                            if validate_proxy_target_url(&new_url) {
-                                target_url = new_url;
-                            } else {
-                                tracing::warn!(
-                                    "Lua on_route ({}) returned disallowed target URL, ignoring: {}",
-                                    script_name,
-                                    new_url
-                                );
-                            }
-                        }
-                        RouteHookResult::Default => {}
-                        RouteHookResult::Deny { status, body } => {
-                            let resp_body = http_body_util::Full::new(Bytes::from(body)).boxed();
-                            return Ok((
-                                Response::builder().status(status).body(resp_body).unwrap(),
-                                target_url,
-                                route_scripts.clone(),
-                            ));
-                        }
-                    }
+                if let Some(resp) =
+                    run_route_hooks(engine, &mut req, &route_scripts, &mut target_url)
+                {
+                    return Ok((resp, target_url, route_scripts));
                 }
             }
 
@@ -2948,11 +3780,10 @@ async fn handle_regular_request(
             // original host is still passed via X-Forwarded-Host.
             let https_target = target_url.starts_with("https://");
 
-            // Only extract host_header when needed (domain rules and https
-            // targets). Prefer the Host header over URI authority so an
-            // absolute-form request cannot inject an arbitrary
-            // X-Forwarded-Host into the backend.
-            let host_header = if from_domain_rule || https_target {
+            // Only extract host_header when needed (https targets, for the
+            // Origin alignment below). Prefer the Host header over URI
+            // authority, as everywhere else.
+            let host_header = if https_target {
                 req.headers()
                     .get("host")
                     .and_then(|h| h.to_str().ok())
@@ -2960,6 +3791,16 @@ async fn handle_regular_request(
                     .or_else(|| req.uri().host().map(|h| h.to_string()))
             } else {
                 None
+            };
+
+            // What on_response will be shown, captured before the request is
+            // consumed — only when some on_response hook will run.
+            #[cfg(feature = "scripting")]
+            let lua_resp_view: Option<LuaRequest> = match lua_engine {
+                Some(ref engine) if wants_on_response(engine, &route_scripts) => {
+                    Some(build_lua_request(&req))
+                }
+                _ => None,
             };
 
             let (mut parts, body) = req.into_parts();
@@ -3007,39 +3848,19 @@ async fn handle_regular_request(
                 }
             }
 
+            // The client's hop-by-hop headers went at the door (see
+            // handle_request_inner); this pass only catches any a script added.
             crate::proxy_headers::strip_hop_by_hop(&mut parts.headers);
             // HTTP/2 browsers split cookies across multiple `cookie` fields;
             // join them before forwarding to the HTTP/1.1 upstream so servers
             // that read only the first Cookie header (redbean) see them all.
             crate::proxy_headers::coalesce_cookies(&mut parts.headers);
 
+            // X-Forwarded-For/-Proto/-Host and X-Real-IP were set from the
+            // proxy's own view when the request came in (handle_request_inner),
+            // with the client's original Host — before the https rewrite above.
             let outbound_body = proxy_request_body(body, config.limits.max_request_size);
-            let mut request = Request::from_parts(parts, outbound_body);
-
-            request.headers_mut().insert(
-                "X-Forwarded-For",
-                peer_addr
-                    .map(|addr| addr.ip().to_string())
-                    .unwrap_or_default()
-                    .parse()
-                    .unwrap_or_else(|_| HeaderValue::from_static("")),
-            );
-            request.headers_mut().insert(
-                "X-Forwarded-Proto",
-                if is_tls {
-                    X_FORWARDED_PROTO_HTTPS.clone()
-                } else {
-                    X_FORWARDED_PROTO_HTTP.clone()
-                },
-            );
-
-            if from_domain_rule || https_target {
-                if let Some(host) = host_header {
-                    if let Ok(v) = HeaderValue::from_str(&host) {
-                        request.headers_mut().insert("X-Forwarded-Host", v);
-                    }
-                }
-            }
+            let request = Request::from_parts(parts, outbound_body);
 
             match client.request(request).await {
                 Ok(mut response) => {
@@ -3060,106 +3881,19 @@ async fn handle_regular_request(
 
                     // --- Lua on_response hooks (global + route) ---
                     #[cfg(feature = "scripting")]
-                    if let Some(ref engine) = lua_engine {
-                        let has_global = engine.has_on_response();
-                        let has_route = !route_scripts.is_empty();
-
-                        if has_global || has_route {
-                            use crate::scripting::ResponseMod;
-
-                            let lua_req = LuaRequest {
-                                method: String::new(),
-                                path: String::new(),
-                                headers: std::collections::HashMap::new(),
-                                host: String::new(),
-                                content_length: 0,
-                            };
-                            let resp_headers = extract_response_headers(response.headers());
-                            let resp_status = response.status().as_u16();
-
-                            // Collect all mods: global first, then route scripts
-                            let mut all_mods: Vec<ResponseMod> = Vec::new();
-                            if has_global {
-                                all_mods.push(engine.call_on_response(
-                                    &lua_req,
-                                    resp_status,
-                                    &resp_headers,
-                                ));
-                            }
-                            for script_name in &route_scripts {
-                                all_mods.push(engine.call_route_on_response(
-                                    script_name,
-                                    &lua_req,
-                                    resp_status,
-                                    &resp_headers,
-                                ));
-                            }
-
-                            // Merge all mods
-                            let mut merged = ResponseMod::default();
-                            for mods in all_mods {
-                                merged.set_headers.extend(mods.set_headers);
-                                merged.remove_headers.extend(mods.remove_headers);
-                                if mods.replace_body.is_some() {
-                                    merged.replace_body = mods.replace_body;
-                                }
-                                if mods.override_status.is_some() {
-                                    merged.override_status = mods.override_status;
-                                }
-                            }
-
-                            // Apply modifications if any
-                            if !merged.set_headers.is_empty()
-                                || !merged.remove_headers.is_empty()
-                                || merged.replace_body.is_some()
-                                || merged.override_status.is_some()
-                            {
-                                let (mut parts, body) = response.into_parts();
-
-                                if let Some(status) = merged.override_status {
-                                    parts.status =
-                                        hyper::StatusCode::from_u16(status).unwrap_or(parts.status);
-                                }
-
-                                for name in &merged.remove_headers {
-                                    if let Ok(header_name) =
-                                        name.parse::<hyper::header::HeaderName>()
-                                    {
-                                        parts.headers.remove(header_name);
-                                    }
-                                }
-
-                                for (name, value) in &merged.set_headers {
-                                    if let (Ok(header_name), Ok(header_value)) = (
-                                        name.parse::<hyper::header::HeaderName>(),
-                                        value.parse::<HeaderValue>(),
-                                    ) {
-                                        parts.headers.insert(header_name, header_value);
-                                    }
-                                }
-
-                                if let Some(new_body) = merged.replace_body {
-                                    let new_bytes = Bytes::from(new_body);
-                                    parts.headers.remove("content-length");
-                                    parts.headers.insert(
-                                        "content-length",
-                                        new_bytes.len().to_string().parse().unwrap(),
-                                    );
-                                    let boxed = http_body_util::Full::new(new_bytes).boxed();
-                                    return Ok((
-                                        Response::from_parts(parts, boxed),
-                                        target_url,
-                                        route_scripts.clone(),
-                                    ));
-                                }
-
-                                let boxed = body.map_err(|_| unreachable!()).boxed();
-                                return Ok((
-                                    Response::from_parts(parts, boxed),
-                                    target_url,
-                                    route_scripts.clone(),
-                                ));
-                            }
+                    if let (Some(ref engine), Some(lua_req)) = (lua_engine, &lua_resp_view) {
+                        if let Some(mods) = lua_response_mods(
+                            engine,
+                            lua_req,
+                            &route_scripts,
+                            status_code,
+                            response.headers(),
+                        ) {
+                            return Ok((
+                                apply_response_mods(response, mods),
+                                target_url,
+                                route_scripts,
+                            ));
                         }
                     }
 
@@ -3260,97 +3994,94 @@ async fn handle_regular_request(
                                 ));
                             }
 
-                            // deflate (rare): fall back to the bounded buffered
-                            // decode + rewrite path below.
+                            // deflate (rare): bounded buffered decode + rewrite.
+                            // Bounded on both sides — a deflate stream inflates
+                            // ~1000:1, so a 10 MB cap on the compressed body
+                            // alone still let a backend have the proxy
+                            // allocate gigabytes:
+                            // - compressed body over the cap: part of it has
+                            //   been read, so it can no longer be passed
+                            //   through intact → 502;
+                            // - decoded body over the cap, or not valid
+                            //   deflate: passed through untouched, still
+                            //   compressed, unrewritten.
                             let (parts, body) = response.into_parts();
-                            let body_bytes = body
-                                .collect()
-                                .await
-                                .map(|collected| collected.to_bytes())
-                                .unwrap_or_default();
-
-                            if body_bytes.len() <= MAX_HTML_REWRITE_SIZE {
-                                let is_gzip = parts
-                                    .headers
-                                    .get("content-encoding")
-                                    .and_then(|v| v.to_str().ok())
-                                    .map(|v| v.contains("gzip"))
-                                    .unwrap_or(false);
-                                let is_deflate = parts
-                                    .headers
-                                    .get("content-encoding")
-                                    .and_then(|v| v.to_str().ok())
-                                    .map(|v| v.contains("deflate"))
-                                    .unwrap_or(false);
-
-                                let raw_bytes = if is_gzip {
-                                    use std::io::Read;
-                                    let mut decoder = flate2::read::GzDecoder::new(&body_bytes[..]);
-                                    let mut decoded = Vec::new();
-                                    decoder.read_to_end(&mut decoded).unwrap_or_default();
-                                    Bytes::from(decoded)
-                                } else if is_deflate {
-                                    use std::io::Read;
-                                    let mut decoder =
-                                        flate2::read::DeflateDecoder::new(&body_bytes[..]);
-                                    let mut decoded = Vec::new();
-                                    decoder.read_to_end(&mut decoded).unwrap_or_default();
-                                    Bytes::from(decoded)
-                                } else {
-                                    body_bytes.clone()
+                            let body_bytes =
+                                match http_body_util::Limited::new(body, MAX_HTML_REWRITE_SIZE)
+                                    .collect()
+                                    .await
+                                {
+                                    Ok(collected) => collected.to_bytes(),
+                                    Err(e) => {
+                                        tracing::warn!(
+                                        "Not rewriting deflate HTML for prefix {}: {} (target: {})",
+                                        prefix,
+                                        e,
+                                        target_url
+                                    );
+                                        let body =
+                                            http_body_util::Full::new(Bytes::from("Bad Gateway"))
+                                                .boxed();
+                                        return Ok((
+                                            Response::builder().status(502).body(body).unwrap(),
+                                            target_url,
+                                            route_scripts.clone(),
+                                        ));
+                                    }
                                 };
 
-                                let html = String::from_utf8_lossy(&raw_bytes);
-                                if html.contains("<script")
-                                    && (html.contains("integrity=") || html.contains("nonce="))
-                                {
-                                    tracing::warn!(
-                                        "Skipping HTML rewrite for prefix {} due to SRI/nonce attributes",
-                                        prefix
-                                    );
-                                    // raw_bytes is the *decoded* body — the
-                                    // original encoding/length headers no
-                                    // longer describe it.
-                                    let mut parts = parts;
-                                    parts.headers.remove("content-encoding");
-                                    parts.headers.remove("content-length");
-                                    parts.headers.insert(
-                                        "content-length",
-                                        raw_bytes.len().to_string().parse().unwrap(),
-                                    );
-                                    let body = http_body_util::Full::new(raw_bytes).boxed();
-                                    return Ok((
-                                        Response::from_parts(parts, body),
-                                        target_url,
-                                        route_scripts.clone(),
-                                    ));
-                                }
-                                let rewritten = html
-                                    .replace("href=\"/", &format!("href=\"{}/", prefix))
-                                    .replace("src=\"/", &format!("src=\"{}/", prefix))
-                                    .replace("action=\"/", &format!("action=\"{}/", prefix));
-                                let rewritten_bytes = Bytes::from(rewritten);
-                                let mut parts = parts;
-                                parts.headers.remove("content-encoding");
-                                parts.headers.remove("content-length");
-                                parts.headers.insert(
-                                    "content-length",
-                                    rewritten_bytes.len().to_string().parse().unwrap(),
-                                );
-                                let boxed = http_body_util::Full::new(rewritten_bytes).boxed();
-                                return Ok((
-                                    Response::from_parts(parts, boxed),
-                                    target_url,
-                                    route_scripts.clone(),
-                                ));
-                            } else {
+                            let Some(raw_bytes) =
+                                inflate_capped(&body_bytes, &encoding, MAX_HTML_REWRITE_SIZE)
+                            else {
                                 let body = http_body_util::Full::new(body_bytes).boxed();
                                 return Ok((
                                     Response::from_parts(parts, body),
                                     target_url,
                                     route_scripts.clone(),
                                 ));
+                            };
+
+                            let html = String::from_utf8_lossy(&raw_bytes);
+                            if html.contains("<script")
+                                && (html.contains("integrity=") || html.contains("nonce="))
+                            {
+                                tracing::warn!(
+                                    "Skipping HTML rewrite for prefix {} due to SRI/nonce attributes",
+                                    prefix
+                                );
+                                // raw_bytes is the *decoded* body — the
+                                // original encoding/length headers no
+                                // longer describe it.
+                                let mut parts = parts;
+                                parts.headers.remove("content-encoding");
+                                parts.headers.insert(
+                                    hyper::header::CONTENT_LENGTH,
+                                    HeaderValue::from(raw_bytes.len()),
+                                );
+                                let body = http_body_util::Full::new(raw_bytes).boxed();
+                                return Ok((
+                                    Response::from_parts(parts, body),
+                                    target_url,
+                                    route_scripts.clone(),
+                                ));
                             }
+                            let rewritten = html
+                                .replace("href=\"/", &format!("href=\"{}/", prefix))
+                                .replace("src=\"/", &format!("src=\"{}/", prefix))
+                                .replace("action=\"/", &format!("action=\"{}/", prefix));
+                            let rewritten_bytes = Bytes::from(rewritten);
+                            let mut parts = parts;
+                            parts.headers.remove("content-encoding");
+                            parts.headers.insert(
+                                hyper::header::CONTENT_LENGTH,
+                                HeaderValue::from(rewritten_bytes.len()),
+                            );
+                            let boxed = http_body_util::Full::new(rewritten_bytes).boxed();
+                            return Ok((
+                                Response::from_parts(parts, boxed),
+                                target_url,
+                                route_scripts.clone(),
+                            ));
                         }
                     }
 
@@ -3363,11 +4094,13 @@ async fn handle_regular_request(
                     ))
                 }
                 Err(e) => {
-                    // A body-limit rejection is the client's fault, not the
-                    // backend's — the backend never saw a completed request, so
-                    // do not count it against the circuit breaker (otherwise
-                    // oversized uploads could trip a healthy backend offline).
-                    if !is_body_limit_error(&e) {
+                    // A failure caused by the inbound body — over the size
+                    // limit, or the client aborting / resetting its upload —
+                    // is the client's fault, not the backend's: the backend
+                    // never saw a completed request. Do not count it against
+                    // the circuit breaker, or a client that starts uploads
+                    // and drops them could trip a healthy backend offline.
+                    if !is_client_body_error(&e) {
                         circuit_breaker.record_failure(&base_url);
                     }
                     tracing::error!(
@@ -3421,11 +4154,20 @@ async fn handle_regular_request(
                         .map(|q| format!("?{}", q))
                         .unwrap_or_default();
                     let target_url = if target.url.as_str().ends_with('/') {
-                        format!("{}{}{}", target.url, &path[1..], query)
+                        format!("{}{}{}", target.url, strip_leading_slash(path), query)
                     } else {
                         format!("{}{}{}", target.url, path, query)
                     };
-                    let forwarded_host = h.clone();
+
+                    // Global on_response runs for apps too (they have no
+                    // route scripts); its Lua view is kept only if it will.
+                    #[cfg(feature = "scripting")]
+                    let lua_resp_view: Option<LuaRequest> = match lua_engine {
+                        Some(ref engine) if engine.has_on_response() => {
+                            Some(build_lua_request(&req))
+                        }
+                        _ => None,
+                    };
 
                     let (mut parts, body) = req.into_parts();
                     let uri = match target_url.parse::<hyper::Uri>() {
@@ -3449,6 +4191,10 @@ async fn handle_regular_request(
                     parts.version = http::Version::HTTP_11;
                     parts.extensions = http::Extensions::new();
 
+                    // Same hygiene as the route path: hop-by-hop headers never
+                    // cross (the client's went at the door; this catches any a
+                    // script added).
+                    crate::proxy_headers::strip_hop_by_hop(&mut parts.headers);
                     // HTTP/2 browsers split cookies across multiple `cookie`
                     // fields; join them before forwarding to the HTTP/1.1
                     // upstream so servers that read only the first Cookie header
@@ -3456,27 +4202,10 @@ async fn handle_regular_request(
                     // proxy-deployed redbean apps (e.g. db.solisoft.test) use.
                     crate::proxy_headers::coalesce_cookies(&mut parts.headers);
 
+                    // X-Forwarded-* / X-Real-IP: set at the door from the
+                    // proxy's own view (handle_request_inner).
                     let outbound_body = proxy_request_body(body, config.limits.max_request_size);
-                    let mut request = Request::from_parts(parts, outbound_body);
-                    request.headers_mut().insert(
-                        "X-Forwarded-For",
-                        peer_addr
-                            .map(|addr| addr.ip().to_string())
-                            .unwrap_or_default()
-                            .parse()
-                            .unwrap_or_else(|_| HeaderValue::from_static("")),
-                    );
-                    request.headers_mut().insert(
-                        "X-Forwarded-Proto",
-                        if is_tls {
-                            X_FORWARDED_PROTO_HTTPS.clone()
-                        } else {
-                            X_FORWARDED_PROTO_HTTP.clone()
-                        },
-                    );
-                    if let Ok(v) = HeaderValue::from_str(&forwarded_host) {
-                        request.headers_mut().insert("X-Forwarded-Host", v);
-                    }
+                    let request = Request::from_parts(parts, outbound_body);
 
                     match client.request(request).await {
                         Ok(mut response) => {
@@ -3490,16 +4219,36 @@ async fn handle_regular_request(
                             } else {
                                 circuit_breaker.record_success(&base_url);
                             }
+
+                            #[cfg(feature = "scripting")]
+                            if let (Some(ref engine), Some(lua_req)) = (lua_engine, &lua_resp_view)
+                            {
+                                if let Some(mods) = lua_response_mods(
+                                    engine,
+                                    lua_req,
+                                    &[],
+                                    status_code,
+                                    response.headers(),
+                                ) {
+                                    return Ok((
+                                        apply_response_mods(response, mods),
+                                        target_url,
+                                        vec![],
+                                    ));
+                                }
+                            }
+
                             let (parts, body) = response.into_parts();
                             let boxed = body.map_err(|_| unreachable!()).boxed();
                             return Ok((Response::from_parts(parts, boxed), target_url, vec![]));
                         }
                         Err(e) => {
-                            // A body-limit rejection is client-caused (oversized
-                            // upload); the backend never saw a failed request, so
-                            // skip both the failure count and the async failover —
-                            // otherwise a client could trip a healthy app offline.
-                            let body_limit = is_body_limit_error(&e);
+                            // A body-limit rejection or an aborted upload is
+                            // client-caused; the backend never saw a failed
+                            // request, so skip both the failure count and the
+                            // async failover — otherwise a client could trip a
+                            // healthy app offline.
+                            let body_limit = is_client_body_error(&e);
                             if !body_limit {
                                 circuit_breaker.record_failure(&base_url);
                             }
@@ -3667,8 +4416,8 @@ fn build_redirect_response(target_url: &str) -> Response<BoxBody> {
 
 /// Pure routing: find which rule matches the request.
 /// Host matching is case-insensitive; the first matching rule wins.
-fn find_matching_rule<'a>(
-    req: &Request<Incoming>,
+fn find_matching_rule<'a, B>(
+    req: &Request<B>,
     rules: &'a [crate::config::ProxyRule],
 ) -> Option<MatchedRoute<'a>> {
     let host = req
@@ -3678,7 +4427,11 @@ fn find_matching_rule<'a>(
         .map(|h| h.split(':').next().unwrap_or(h).to_string())
         .or_else(|| req.uri().host().map(|h| h.to_string()))?;
 
-    let path = req.uri().path();
+    // Rules match the canonical form of the path (`canonical_match_path`):
+    // `//admin/x` and `/%61dmin/x` must hit an `/admin/*` rule exactly as
+    // `/admin/x` does, not slip past it to a broader rule without its @auth.
+    let match_path = request_match_path(req);
+    let path: &str = &match_path;
     // Domain / DomainPath — case-insensitive host match, first rule wins.
     // A single linear scan is used regardless of rule count: routing does one
     // lookup per request, so building a transient index (O(rules) allocations
@@ -3878,12 +4631,18 @@ fn select_target(
 }
 
 /// Backward-compatible wrapper: returns (target_url, from_domain_rule, matched_prefix, route_scripts)
-fn find_target(
-    req: &Request<Incoming>,
+fn find_target<B>(
+    req: &Request<B>,
     rules: &[crate::config::ProxyRule],
 ) -> Option<(String, bool, Option<String>, Vec<String>)> {
     let route = find_matching_rule(req, rules)?;
-    let path = req.uri().path();
+    // A prefix is stripped from the form it was matched on (see
+    // handle_regular_request); other resolutions forward the path as sent.
+    let match_path = request_match_path(req);
+    let path = match route.resolution {
+        UrlResolution::StripPrefix(_) => &*match_path,
+        _ => req.uri().path(),
+    };
     let query = req.uri().query();
     let target = route.targets.first()?;
     let resolved = resolve_target_url(target, path, query, &route.resolution);
@@ -4325,6 +5084,351 @@ mod tests {
         assert_eq!(xff_count(&out), 0);
         assert_eq!(header_value(&out, "X-Forwarded-Proto"), Some("http"));
         assert_eq!(header_value(&out, "X-Forwarded-Host"), Some("example"));
+    }
+
+    // ---- request hardening ----
+
+    fn rule(matcher: crate::config::RuleMatcher, auth: bool) -> crate::config::ProxyRule {
+        crate::config::ProxyRule {
+            matcher,
+            targets: vec![crate::config::Target {
+                url: url::Url::parse("http://127.0.0.1:3000/").unwrap(),
+                weight: 100,
+            }],
+            headers: vec![],
+            scripts: vec![],
+            auth: if auth {
+                vec![crate::auth::BasicAuth {
+                    username: "admin".into(),
+                    hash: "x".into(),
+                }]
+            } else {
+                vec![]
+            },
+            auth_exempt: vec![],
+            load_balancing: Default::default(),
+        }
+    }
+
+    fn get(path: &str, host: &str) -> Request<()> {
+        Request::builder()
+            .uri(path)
+            .header("host", host)
+            .body(())
+            .unwrap()
+    }
+
+    #[test]
+    fn canonical_path_decodes_unreserved_and_collapses_slashes() {
+        assert_eq!(canonical_match_path("/admin/x"), "/admin/x");
+        assert!(matches!(canonical_match_path("/admin/x"), Cow::Borrowed(_)));
+        assert_eq!(canonical_match_path("//admin/x"), "/admin/x");
+        assert_eq!(canonical_match_path("/admin///x"), "/admin/x");
+        assert_eq!(canonical_match_path("/%61dmin/x"), "/admin/x");
+        assert_eq!(canonical_match_path("/%41%2d%2E%5f%7E9"), "/A-._~9");
+        // Reserved characters stay encoded, case is not folded.
+        assert_eq!(canonical_match_path("/a%2Fb%3Fc%20d"), "/a%2Fb%3Fc%20d");
+        assert_eq!(canonical_match_path("/Admin"), "/Admin");
+        // Truncated or non-hex escapes are left alone.
+        assert_eq!(canonical_match_path("/a%6"), "/a%6");
+        assert_eq!(canonical_match_path("/a%zz"), "/a%zz");
+    }
+
+    #[test]
+    fn encoded_or_doubled_slash_paths_still_hit_the_protected_rule() {
+        use crate::config::RuleMatcher;
+        let rules = vec![
+            rule(RuleMatcher::Prefix("/admin/".into()), true),
+            rule(RuleMatcher::Prefix("/".into()), false),
+        ];
+        for path in [
+            "/admin/x",
+            "//admin/x",
+            "/%61dmin/x",
+            "/%61dmin//x",
+            "///admin/x",
+        ] {
+            let req = get(path, "example.com");
+            let m = find_matching_rule(&req, &rules).expect("a rule matches");
+            assert_eq!(m.rule_idx, 0, "{path} must match the /admin/ rule");
+            assert!(m.requires_auth(&request_match_path(&req)), "{path}");
+        }
+        let m = find_matching_rule(&get("/public", "example.com"), &rules).unwrap();
+        assert_eq!(m.rule_idx, 1);
+    }
+
+    #[test]
+    fn domain_path_and_exact_rules_match_canonically() {
+        use crate::config::RuleMatcher;
+        let rules = vec![
+            rule(
+                RuleMatcher::DomainPath("example.com".into(), "/admin/".into()),
+                true,
+            ),
+            rule(RuleMatcher::Exact("/secret".into()), true),
+            rule(RuleMatcher::Domain("example.com".into()), false),
+        ];
+        let m = find_matching_rule(&get("//%61dmin/users", "example.com"), &rules).unwrap();
+        assert_eq!(m.rule_idx, 0);
+        let m = find_matching_rule(&get("//%73ecret", "other.com"), &rules).unwrap();
+        assert_eq!(m.rule_idx, 1);
+    }
+
+    #[test]
+    fn strip_prefix_target_is_built_from_the_matched_form() {
+        use crate::config::RuleMatcher;
+        let rules = vec![rule(RuleMatcher::Prefix("/api/".into()), false)];
+        let (url, ..) = find_target(&get("//%61pi/users?x=1", "h"), &rules).unwrap();
+        assert_eq!(url, "http://127.0.0.1:3000/users?x=1");
+    }
+
+    #[test]
+    fn host_port_parser_is_strict() {
+        assert_eq!(parse_host_port("example.com"), Some(("example.com", None)));
+        assert_eq!(
+            parse_host_port("example.com:8443"),
+            Some(("example.com", Some("8443")))
+        );
+        assert_eq!(parse_host_port("[::1]:443"), Some(("[::1]", Some("443"))));
+        assert_eq!(parse_host_port("[::1]"), Some(("[::1]", None)));
+        for bad in [
+            "example.com:@evil.com",
+            "example.com@evil.com",
+            "example.com:80@evil.com",
+            "example.com/evil",
+            "example.com:",
+            "example.com:99999",
+            "example.com:1:2",
+            "example.com:+80",
+            "",
+            ":80",
+            "[::1",
+            "[nothex]:80",
+            "[::1]x",
+            "exa mple.com",
+        ] {
+            assert_eq!(parse_host_port(bad), None, "{bad:?} must be refused");
+        }
+    }
+
+    #[cfg(feature = "scripting")]
+    #[test]
+    fn lua_deny_status_is_clamped_not_panicking() {
+        assert_eq!(lua_deny_response(403, "no".into()).status(), 403);
+        assert_eq!(lua_deny_response(599, String::new()).status(), 599);
+        for bad in [0u16, 42, 101, 600, 999, 1000, u16::MAX] {
+            assert_eq!(lua_deny_response(bad, String::new()).status(), 500, "{bad}");
+        }
+    }
+
+    #[test]
+    fn malformed_targets_and_hosts_are_refused() {
+        let connect = Request::builder()
+            .method("CONNECT")
+            .uri("example.com:443")
+            .body(())
+            .unwrap();
+        assert_eq!(reject_malformed_request(&connect).unwrap().status(), 405);
+
+        let authority_form = Request::builder()
+            .uri("example.com:80")
+            .header("host", "example.com")
+            .body(())
+            .unwrap();
+        assert_eq!(
+            reject_malformed_request(&authority_form).unwrap().status(),
+            400
+        );
+
+        let star = Request::builder()
+            .method("OPTIONS")
+            .uri("*")
+            .body(())
+            .unwrap();
+        let resp = reject_malformed_request(&star).unwrap();
+        assert_eq!(resp.status(), 200);
+        assert!(resp.headers().contains_key("allow"));
+
+        let star_get = Request::builder().uri("*").body(()).unwrap();
+        assert_eq!(reject_malformed_request(&star_get).unwrap().status(), 400);
+
+        let two_hosts = Request::builder()
+            .uri("/")
+            .header("host", "a.example")
+            .header("host", "b.example")
+            .body(())
+            .unwrap();
+        assert_eq!(reject_malformed_request(&two_hosts).unwrap().status(), 400);
+
+        let h2_mismatch = Request::builder()
+            .version(http::Version::HTTP_2)
+            .uri("https://a.example/")
+            .header("host", "b.example")
+            .body(())
+            .unwrap();
+        assert_eq!(
+            reject_malformed_request(&h2_mismatch).unwrap().status(),
+            400
+        );
+
+        let h2_match = Request::builder()
+            .version(http::Version::HTTP_2)
+            .uri("https://a.example/")
+            .header("host", "A.example")
+            .body(())
+            .unwrap();
+        assert!(reject_malformed_request(&h2_match).is_none());
+        assert!(reject_malformed_request(&get("/x", "a.example")).is_none());
+    }
+
+    #[test]
+    fn strip_leading_slash_is_total() {
+        assert_eq!(strip_leading_slash("/a"), "a");
+        assert_eq!(strip_leading_slash(""), "");
+        assert_eq!(strip_leading_slash("*"), "*");
+    }
+
+    #[test]
+    fn ipv6_clients_are_keyed_per_64() {
+        let a: IpAddr = "2001:db8:1:2:aaaa::1".parse().unwrap();
+        let b: IpAddr = "2001:db8:1:2:bbbb::2".parse().unwrap();
+        let other: IpAddr = "2001:db8:1:3::1".parse().unwrap();
+        assert_eq!(client_key(a), client_key(b));
+        assert_ne!(client_key(a), client_key(other));
+        let v4: IpAddr = "192.0.2.7".parse().unwrap();
+        assert_eq!(client_key(v4), v4);
+        let mapped: IpAddr = "::ffff:192.0.2.7".parse().unwrap();
+        assert_eq!(client_key(mapped), v4);
+    }
+
+    #[test]
+    fn per_ip_limiter_caps_and_releases() {
+        let limiter = Arc::new(PerIpLimiter::new(2));
+        let ip: IpAddr = "198.51.100.1".parse().unwrap();
+        let g1 = limiter.try_acquire(ip).unwrap();
+        let g2 = limiter.try_acquire(ip).unwrap();
+        assert!(limiter.try_acquire(ip).is_none(), "third must be refused");
+        // Another address has its own budget; a sibling in the same /64 not.
+        assert!(limiter
+            .try_acquire("198.51.100.2".parse().unwrap())
+            .is_some());
+        let v6a = limiter.try_acquire("2001:db8::1".parse().unwrap()).unwrap();
+        let v6b = limiter.try_acquire("2001:db8::2".parse().unwrap()).unwrap();
+        assert!(limiter
+            .try_acquire("2001:db8::3".parse().unwrap())
+            .is_none());
+        drop(g1);
+        let g3 = limiter
+            .try_acquire(ip)
+            .expect("a released slot is reusable");
+        drop((g2, g3, v6a, v6b));
+        assert_eq!(limiter.tracked(), 0, "idle addresses are forgotten");
+    }
+
+    #[test]
+    fn inflate_is_capped_against_bombs() {
+        use std::io::Write;
+        let html = vec![b'a'; 100_000];
+        let mut e = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::best());
+        e.write_all(&html).unwrap();
+        let deflated = e.finish().unwrap();
+        assert!(deflated.len() < 1_000);
+        // Under the cap: decoded in full.
+        let out = inflate_capped(&deflated, "deflate", 100_000).unwrap();
+        assert_eq!(out.len(), 100_000);
+        // Over the cap: refused instead of buffered.
+        assert!(inflate_capped(&deflated, "deflate", 99_999).is_none());
+        // Garbage: refused.
+        assert!(inflate_capped(b"not deflate at all", "deflate", 1_000).is_none());
+        // Gzip goes through the same cap.
+        let gz = gzip(&html);
+        assert!(inflate_capped(&gz, "gzip", 1_000).is_none());
+        assert_eq!(inflate_capped(&gz, "gzip", 100_000).unwrap().len(), 100_000);
+    }
+
+    #[test]
+    fn ws_extra_headers_drop_every_forwarding_header() {
+        let mut h = hyper::HeaderMap::new();
+        h.insert("forwarded", "for=1.2.3.4".parse().unwrap());
+        h.insert("x-real-ip", "127.0.0.1".parse().unwrap());
+        h.insert("x-forwarded-port", "443".parse().unwrap());
+        h.insert("x-forwarded-prefix", "/admin".parse().unwrap());
+        let peer: SocketAddr = "9.9.9.9:1".parse().unwrap();
+        let out = build_ws_extra_headers(&h, Some(peer), false, "real.example");
+        assert!(header_value(&out, "Forwarded").is_none());
+        assert!(header_value(&out, "X-Forwarded-Port").is_none());
+        assert!(header_value(&out, "X-Forwarded-Prefix").is_none());
+        assert_eq!(header_value(&out, "X-Real-IP"), Some("9.9.9.9"));
+    }
+
+    #[test]
+    fn h2_activity_tracks_idleness() {
+        let a = Arc::new(H2Activity::new());
+        assert!(!a.seen_request.load(Ordering::Relaxed));
+        let guard = a.start();
+        assert!(a.seen_request.load(Ordering::Relaxed));
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(a.idle_for(), Duration::ZERO, "busy while in flight");
+        drop(guard);
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(a.idle_for() >= Duration::from_millis(15));
+    }
+
+    #[test]
+    fn keep_alive_timeout_defaults_to_thirty_seconds() {
+        let mut limits = crate::config::LimitsConfig::default();
+        assert_eq!(keep_alive_timeout(&limits), Duration::from_secs(30));
+        limits.keep_alive_timeout = Some(0);
+        assert_eq!(keep_alive_timeout(&limits), Duration::from_secs(30));
+        limits.keep_alive_timeout = Some(5);
+        assert_eq!(keep_alive_timeout(&limits), Duration::from_secs(5));
+    }
+
+    #[cfg(feature = "scripting")]
+    fn lua_req_with(headers: &[(&str, &str)]) -> LuaRequest {
+        LuaRequest {
+            method: "GET".into(),
+            path: "/".into(),
+            headers: headers
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            host: String::new(),
+            content_length: 0,
+        }
+    }
+
+    #[cfg(feature = "scripting")]
+    #[test]
+    fn lua_view_joins_duplicates_and_write_back_replaces_them() {
+        let mut req = Request::builder()
+            .uri("/")
+            .header("x-user", "evil")
+            .header("x-user", "alice")
+            .header("cookie", "a=1")
+            .header("cookie", "b=2")
+            .body(())
+            .unwrap();
+        let view = extract_headers(&req);
+        assert_eq!(view["x-user"], "evil, alice");
+        assert_eq!(view["cookie"], "a=1; b=2");
+
+        // Untouched by the script: every field kept as sent.
+        apply_lua_request_mods(
+            &mut req,
+            &lua_req_with(&[("x-user", "evil, alice"), ("cookie", "a=1; b=2")]),
+        );
+        assert_eq!(req.headers().get_all("x-user").iter().count(), 2);
+        assert_eq!(req.headers().get_all("cookie").iter().count(), 2);
+
+        // Set to one of the client's own values: still replaces all of them,
+        // so the backend cannot read the other one first.
+        apply_lua_request_mods(
+            &mut req,
+            &lua_req_with(&[("x-user", "alice"), ("cookie", "a=1; b=2")]),
+        );
+        let users: Vec<_> = req.headers().get_all("x-user").iter().collect();
+        assert_eq!(users, vec!["alice"]);
     }
 
     #[test]
