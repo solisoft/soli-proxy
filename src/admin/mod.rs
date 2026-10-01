@@ -1,4 +1,5 @@
 pub mod handlers;
+mod maintenance;
 
 use crate::app::AppManager;
 use crate::circuit_breaker::SharedCircuitBreaker;
@@ -564,6 +565,11 @@ async fn handle_admin_request(
         (Method::POST, "/api/v1/reload") => handlers::post_reload(&state).await,
         (Method::POST, "/api/v1/certs/reload") => handlers::post_certs_reload(&state),
         (Method::GET, "/api/v1/settings") => handlers::get_settings(&state),
+        (Method::GET, "/api/v1/maintenance") => maintenance::get(&state).await,
+        (Method::PUT, "/api/v1/maintenance") => match read_body(req).await {
+            Ok(body) => maintenance::put_global(&state, &body),
+            Err(e) => error_response(413, e),
+        },
 
         // App management endpoints
         (Method::GET, "/api/v1/apps") => handlers::get_apps(&state).await,
@@ -601,6 +607,19 @@ async fn handle_admin_request(
                     error_response(400, "Invalid app name or alias domain")
                 } else {
                     handlers::delete_app_alias(&state, name, domain).await
+                }
+            } else if method == Method::PUT && app_name.ends_with("/maintenance") {
+                let name = app_name
+                    .strip_suffix("/maintenance")
+                    .unwrap_or("")
+                    .to_string();
+                if name.is_empty() || name.contains('/') {
+                    error_response(400, "Invalid app name")
+                } else {
+                    match read_body(req).await {
+                        Ok(body) => maintenance::put_app(&state, &name, &body).await,
+                        Err(e) => error_response(413, e),
+                    }
                 }
             } else if method == Method::GET && !app_name.is_empty() && !app_name.contains('/') {
                 handlers::get_app(&state, app_name).await

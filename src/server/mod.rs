@@ -924,6 +924,8 @@ fn lua_deny_response(status: u16, body: String) -> Response<BoxBody> {
     };
     let mut resp = Response::new(full(Bytes::from(body)));
     *resp.status_mut() = status;
+    // The script chose this body: custom error pages leave it alone.
+    crate::response::mark_owned(&mut resp, crate::response::BodyOwner::Script);
     resp
 }
 
@@ -2195,6 +2197,22 @@ async fn handle_request(
     // The config is loaded once per request and handed down, rather than
     // re-loaded (an `ArcSwap` load plus an `Arc` clone) at each layer.
     let config = config_manager.get_config();
+
+    // Maintenance mode answers before anything looks at the request; it lets
+    // ACME challenges, the health endpoints and allowlisted traffic through.
+    if let Some(resp) = crate::response::maintenance::check(
+        &req,
+        &config,
+        &config_manager.maintenance,
+        app_manager.as_deref(),
+        peer_addr,
+    ) {
+        metrics.record_request(0, 0, 503, Duration::ZERO);
+        return with_hsts(Ok(resp), is_tls, &config);
+    }
+    // What a custom error page would need, kept only if one could be served.
+    let error_page = crate::response::error_pages::capture(&req, &config, app_manager.as_ref());
+
     let log_endpoints = config.logging.log_endpoints.unwrap_or(false);
     if !log_endpoints {
         let result = handle_request_inner(
@@ -2212,6 +2230,7 @@ async fn handle_request(
             rate_limiter,
         )
         .await;
+        let result = crate::response::error_pages::apply(result, error_page, &config);
         return with_hsts(result, is_tls, &config);
     }
 
@@ -2274,6 +2293,7 @@ async fn handle_request(
             "endpoint request failed"
         ),
     }
+    let result = crate::response::error_pages::apply(result, error_page, &config);
     with_hsts(result, is_tls, &config)
 }
 
@@ -2580,6 +2600,7 @@ async fn handle_request_inner(
     let req_method = req.method().clone();
     let req_uri = req.uri().clone();
     let req_bytes_in = request_content_length(&req);
+    let compression = crate::response::compress::Requested::capture(&req, &config.compression);
 
     // What on_request_end will be shown: the request as the hooks left it.
     // Only kept when some script defines that hook.
@@ -2666,6 +2687,10 @@ async fn handle_request_inner(
                 counters.push(metrics.app_bytes_sent_counter(name));
             }
 
+            // After the HTML rewrite (handle_regular_request), so a rewritten
+            // page is compressed; before counting, so bytes_sent is the wire.
+            let response =
+                crate::response::compress::apply(response, compression, &config.compression);
             let (parts, body) = response.into_parts();
             let boxed = body.map_err(BoxError::from).boxed();
             let counted = BodyExt::boxed(CountingBody::new(boxed, counters));
@@ -3063,10 +3088,16 @@ fn apply_response_mods(
             hyper::header::CONTENT_LENGTH,
             HeaderValue::from(new_bytes.len()),
         );
-        return Response::from_parts(parts, full(new_bytes));
+        let mut resp = Response::from_parts(parts, full(new_bytes));
+        // The script wrote this body: error pages leave it alone.
+        crate::response::mark_owned(&mut resp, crate::response::BodyOwner::Script);
+        return resp;
     }
 
-    Response::from_parts(parts, body.map_err(BoxError::from).boxed())
+    let mut resp = Response::from_parts(parts, body.map_err(BoxError::from).boxed());
+    // A status the script turned into an error is still the backend's body.
+    crate::response::mark_upstream(&mut resp, None);
+    resp
 }
 
 /// True when `path` (the raw, undecoded request path) contains a dot
@@ -3897,6 +3928,10 @@ async fn handle_regular_request(
                     // hyper has already de-chunked the body — re-sending it
                     // makes the h1 server abort with User(UnexpectedHeader).
                     crate::proxy_headers::strip_hop_by_hop(response.headers_mut());
+                    crate::response::mark_upstream(
+                        &mut response,
+                        config.rules[matched_route.rule_idx].compress,
+                    );
 
                     // --- Circuit breaker: record success or failure ---
                     let status_code = response.status().as_u16();
@@ -4158,6 +4193,7 @@ async fn handle_regular_request(
                     target,
                     app: served_app,
                     auth,
+                    compress,
                 }) = manager.resolve_app_request(h, &available).await
                 {
                     // App domains are routed here, not through `config.rules`
@@ -4241,6 +4277,7 @@ async fn handle_regular_request(
                             // Hop-by-hop headers must not be relayed (see the
                             // route path above).
                             crate::proxy_headers::strip_hop_by_hop(response.headers_mut());
+                            crate::response::mark_upstream(&mut response, compress);
 
                             let status_code = response.status().as_u16();
                             if circuit_breaker.is_failure_status(status_code) {
@@ -5467,6 +5504,7 @@ mod tests {
             },
             auth_exempt: vec![],
             load_balancing: Default::default(),
+            compress: None,
         }
     }
 

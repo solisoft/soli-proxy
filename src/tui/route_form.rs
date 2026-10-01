@@ -391,6 +391,7 @@ impl RouteForm {
             auth,
             auth_exempt,
             load_balancing,
+            compress: None,
         })
     }
 

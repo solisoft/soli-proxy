@@ -71,9 +71,21 @@ pub fn serialize_proxy_conf(rules: &[ProxyRule], global_scripts: &[String]) -> S
                 ""
             };
 
+        let compress_suffix = match rule.compress {
+            Some(true) => "  @compress:on",
+            Some(false) => "  @compress:off",
+            None => "",
+        };
+
         output.push_str(&format!(
-            "{} -> {}{}{}{}{}\n",
-            matcher_str, targets_joined, scripts_suffix, auth_suffix, noauth_suffix, lb_suffix
+            "{} -> {}{}{}{}{}{}\n",
+            matcher_str,
+            targets_joined,
+            scripts_suffix,
+            auth_suffix,
+            noauth_suffix,
+            lb_suffix,
+            compress_suffix
         ));
 
         if !rule.headers.is_empty() {
@@ -116,6 +128,7 @@ mod tests {
                 auth: vec![],
                 auth_exempt: vec![],
                 load_balancing: LoadBalancingStrategy::default(),
+                compress: None,
             },
             ProxyRule {
                 matcher: RuleMatcher::Prefix("/api/".to_string()),
@@ -125,6 +138,7 @@ mod tests {
                 auth: vec![],
                 auth_exempt: vec![],
                 load_balancing: LoadBalancingStrategy::default(),
+                compress: None,
             },
         ];
 
@@ -143,6 +157,7 @@ mod tests {
             auth: vec![],
             auth_exempt: vec![],
             load_balancing: LoadBalancingStrategy::default(),
+            compress: None,
         }];
 
         let output =
@@ -161,6 +176,7 @@ mod tests {
                 auth: vec![],
                 auth_exempt: vec![],
                 load_balancing: LoadBalancingStrategy::default(),
+                compress: None,
             },
             ProxyRule {
                 matcher: RuleMatcher::DomainPath("api.example.com".to_string(), "/v1/".to_string()),
@@ -170,6 +186,7 @@ mod tests {
                 auth: vec![],
                 auth_exempt: vec![],
                 load_balancing: LoadBalancingStrategy::default(),
+                compress: None,
             },
         ];
 
@@ -191,6 +208,7 @@ mod tests {
             }],
             auth_exempt: vec!["/webhooks/stripe".to_string(), "/hooks/*".to_string()],
             load_balancing: LoadBalancingStrategy::default(),
+            compress: None,
         }];
 
         let output = serialize_proxy_conf(&rules, &[]);
@@ -221,6 +239,7 @@ mod tests {
             auth: vec![],
             auth_exempt: vec!["/hooks/*".to_string()],
             load_balancing: LoadBalancingStrategy::default(),
+            compress: None,
         }];
 
         let output = serialize_proxy_conf(&rules, &[]);
@@ -271,6 +290,35 @@ headers {
         assert_eq!(reparsed[1].targets[0].weight, 7);
     }
 
+    /// `@compress:on|off` survives a parse → serialize → parse round trip;
+    /// a rule without it writes nothing.
+    #[test]
+    fn compress_directive_round_trips() {
+        let conf = "\
+a.example -> http://a:8080  @compress:off
+/b/* -> http://b:8080  @compress:on
+c.example -> http://c:8080
+";
+        let (rules, scripts) = crate::config::parse_proxy_config(conf).unwrap();
+        assert_eq!(
+            rules.iter().map(|r| r.compress).collect::<Vec<_>>(),
+            vec![Some(false), Some(true), None]
+        );
+        let output = serialize_proxy_conf(&rules, &scripts);
+        assert_eq!(output.matches("@compress:").count(), 2, "{output}");
+        let (reparsed, _) = crate::config::parse_proxy_config(&output).unwrap();
+        assert_eq!(
+            reparsed.iter().map(|r| r.compress).collect::<Vec<_>>(),
+            vec![Some(false), Some(true), None]
+        );
+        for bad in [
+            "a.example -> http://a  @compress:yes\n",
+            "a.example -> http://a  @compress:on @compress:off\n",
+        ] {
+            assert!(crate::config::parse_proxy_config(bad).is_err(), "{bad}");
+        }
+    }
+
     #[test]
     fn test_serialize_regex_rule() {
         let rules = vec![ProxyRule {
@@ -281,6 +329,7 @@ headers {
             auth: vec![],
             auth_exempt: vec![],
             load_balancing: LoadBalancingStrategy::default(),
+            compress: None,
         }];
 
         let output = serialize_proxy_conf(&rules, &[]);

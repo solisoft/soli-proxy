@@ -829,6 +829,11 @@ async fn run_server(
         config_manager.start_watcher()?;
     }
 
+    // Maintenance windows opened through the admin API outlive a restart.
+    config_manager
+        .maintenance
+        .persist_to(soli_proxy::response::maintenance::STATE_FILE)?;
+
     let shutdown = ShutdownCoordinator::new();
     let shutdown_for_signal = shutdown.clone();
     let config_ref = Arc::new(config_manager);

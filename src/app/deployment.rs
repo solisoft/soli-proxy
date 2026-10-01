@@ -2103,6 +2103,8 @@ mod tests {
             green: instance("green"),
             current_slot: "blue".to_string(),
             quarantined: false,
+            maintenance: false,
+            error_pages: None,
         }
     }
 

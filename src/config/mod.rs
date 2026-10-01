@@ -47,6 +47,12 @@ pub struct TomlConfig {
     pub logging: Option<LoggingConfig>,
     #[serde(default)]
     pub rate_limiting: Option<RateLimitingConfig>,
+    #[serde(default)]
+    pub compression: Option<crate::response::compress::CompressionConfig>,
+    #[serde(default)]
+    pub error_pages: Option<crate::response::error_pages::ErrorPagesConfig>,
+    #[serde(default)]
+    pub maintenance: Option<crate::response::maintenance::MaintenanceConfig>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -549,6 +555,13 @@ pub struct Config {
     pub metrics: MetricsConfig,
     pub logging: LoggingConfig,
     pub rate_limiting: RateLimitingConfig,
+    /// `[compression]`, validated (see `response::compress`).
+    pub compression: crate::response::compress::CompressionConfig,
+    /// `[error_pages]`, with its pages read at load time.
+    pub error_pages: crate::response::error_pages::ErrorPagesConfig,
+    /// `[maintenance]`: allowlists and defaults. The on/off state is not
+    /// configuration; it lives in `ConfigManager::maintenance`.
+    pub maintenance: crate::response::maintenance::MaintenanceConfig,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
@@ -647,6 +660,10 @@ pub struct ProxyRule {
     pub auth_exempt: Vec<String>,
     #[serde(default)]
     pub load_balancing: LoadBalancingStrategy,
+    /// `@compress:on` / `@compress:off`: compress this route's responses, or
+    /// never, whatever `[compression] enabled` says. `None` follows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compress: Option<bool>,
 }
 
 impl ProxyRule {
@@ -1018,6 +1035,9 @@ pub struct ConfigManager {
     /// change is already in memory — and reloads on anything else.
     own_write_hash: Arc<AtomicU64>,
     app_acme_domains: Arc<RwLock<Vec<String>>>,
+    /// Maintenance mode's on/off state: runtime state the admin API toggles,
+    /// not configuration, so it survives reloads. Shared by every clone.
+    pub maintenance: Arc<crate::response::maintenance::Maintenance>,
 }
 
 impl Clone for ConfigManager {
@@ -1028,6 +1048,7 @@ impl Clone for ConfigManager {
             _watcher: None,
             own_write_hash: self.own_write_hash.clone(),
             app_acme_domains: self.app_acme_domains.clone(),
+            maintenance: self.maintenance.clone(),
         }
     }
 }
@@ -1042,6 +1063,7 @@ impl ConfigManager {
             _watcher: None,
             own_write_hash: Arc::new(AtomicU64::new(0)),
             app_acme_domains: Arc::new(RwLock::new(Vec::new())),
+            maintenance: Arc::default(),
         })
     }
 
@@ -1242,6 +1264,9 @@ hook_timeout_ms = 10
             metrics: toml_config.metrics.unwrap_or_default(),
             logging: toml_config.logging.unwrap_or_default(),
             rate_limiting: toml_config.rate_limiting.unwrap_or_default(),
+            compression: toml_config.compression.unwrap_or_default().validated()?,
+            error_pages: toml_config.error_pages.unwrap_or_default().loaded()?,
+            maintenance: toml_config.maintenance.unwrap_or_default().validated()?,
         })
     }
 
@@ -1517,6 +1542,7 @@ struct RuleTail {
     load_balancing: Option<LoadBalancingStrategy>,
     /// Whether any target carried an explicit `weight:N`.
     weighted: bool,
+    compress: Option<bool>,
 }
 
 /// Parse the right-hand side of a rule.
@@ -1591,8 +1617,14 @@ fn parse_rule_tail(tail: &str) -> Result<RuleTail> {
                     anyhow::bail!("@lb: given more than once");
                 }
             }
+            "compress" => {
+                let on = crate::response::compress::parse_directive(value)?;
+                if out.compress.replace(on).is_some() {
+                    anyhow::bail!("@compress: given more than once");
+                }
+            }
             other => anyhow::bail!(
-                "unknown directive @{}: (expected @script:, @auth:, @noauth: or @lb:)",
+                "unknown directive @{}: (expected @script:, @auth:, @noauth:, @lb: or @compress:)",
                 other
             ),
         }
@@ -2049,6 +2081,7 @@ fn parse_rule(source: &str, target_str: &str) -> Result<ProxyRule> {
         auth: tail.auth,
         auth_exempt: tail.auth_exempt,
         load_balancing,
+        compress: tail.compress,
     })
 }
 
@@ -2647,6 +2680,7 @@ api_key = "secret123"
             auth,
             auth_exempt: vec![],
             load_balancing: LoadBalancingStrategy::default(),
+            compress: None,
         }
     }
 
