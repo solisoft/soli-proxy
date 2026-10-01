@@ -49,16 +49,8 @@ fn get_pid_dir() -> String {
     std::env::var("SOLI_PID_DIR").unwrap_or_else(|_| ".".to_string())
 }
 
-fn get_log_dir() -> String {
-    std::env::var("SOLI_LOG_DIR").unwrap_or_else(|_| ".".to_string())
-}
-
 fn get_pid_path() -> String {
     format!("{}/proxy.pid", get_pid_dir())
-}
-
-fn get_log_path() -> String {
-    format!("{}/proxy.log", get_log_dir())
 }
 
 fn write_pid_file() -> Result<String> {
@@ -113,32 +105,6 @@ fn kill_existing_daemon() -> Result<()> {
             }
         }
         let _ = fs::remove_file(&pid_path);
-    }
-    Ok(())
-}
-
-fn setup_logging(daemon: bool) -> Result<()> {
-    if daemon {
-        let log_path = get_log_path();
-        let log_dir = std::path::Path::new(&log_path).parent().unwrap();
-        fs::create_dir_all(log_dir).ok();
-
-        let file = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)?;
-
-        let subscriber = tracing_subscriber::fmt()
-            .json()
-            .with_max_level(tracing::Level::INFO)
-            .with_writer(file)
-            .finish();
-        tracing::subscriber::set_global_default(subscriber)?;
-    } else {
-        tracing_subscriber::fmt()
-            .json()
-            .with_max_level(tracing::Level::INFO)
-            .init();
     }
     Ok(())
 }
@@ -784,7 +750,12 @@ async fn run_server(
     watch: bool,
     sites_dir: &str,
 ) -> Result<()> {
-    setup_logging(daemon_mode)?;
+    // `[logging]` is read ahead of the rest of the config so that errors in
+    // the rest are reported in the configured format and place.
+    soli_proxy::logging::init(
+        &soli_proxy::config::read_logging_config(config_path),
+        daemon_mode,
+    )?;
 
     if daemon_mode {
         eprintln!("Started in daemon mode. PID: {}", std::process::id());
@@ -1228,6 +1199,8 @@ async fn run_server(
         if daemon_clone {
             cleanup_pid();
         }
+        // exit() skips destructors: flush the queued log lines first.
+        soli_proxy::logging::flush();
         std::process::exit(0);
     });
 
@@ -1237,6 +1210,7 @@ async fn run_server(
     if daemon_mode {
         cleanup_pid();
     }
+    soli_proxy::logging::flush();
 
     Ok(())
 }

@@ -60,6 +60,14 @@
   startup, a no-op on reload. **Operators upgrading:** a file that loaded before may now be
   refused — the log says which line. Also fixed: directives written after a `@script:` list were
   dropped, and `example.com/api` (no `/*`) became the unmatchable prefix `api`.
+* **`[logging]` is honoured, written off the request path, and rotated.** `level`, `format` and
+  `output` were ignored — the proxy always logged JSON at INFO, synchronously, to stdout or
+  (with `-d`) to a `proxy.log` that grew forever with umask permissions. Now `level` takes a level
+  or a `tracing` filter (falling back to `RUST_LOG`), `format` is `json` or `text`, `output` is
+  `stdout`, `stderr` or `file:/path`, every write goes through `tracing_appender::non_blocking`,
+  and file output rotates by size (`max_size`, default 100MB; `max_files`, default 5), creating
+  files `0640`. Defaults are unchanged: JSON, INFO, stdout. The TUI's error screen reads the
+  configured file.
 
 ## [0.35.2](https://github.com/solisoft/soli-proxy/compare/v0.35.1...v0.35.2) (2026-09-27)
 

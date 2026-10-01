@@ -21,11 +21,14 @@ staging = false
 email = "admin@example.com"
 terms_agreed = true
 
-# Logging Configuration
+# Logging Configuration (level/format/output/max_* are read at startup only)
 [logging]
-level = "info"
-format = "json"
-output = "stdout"  # or "file:/var/log/soli-proxy.log"
+level = "info"     # trace|debug|info|warn|error, or a filter: "info,soli_proxy::server=debug"
+format = "json"    # or "text"; the TUI's error screen needs json
+output = "stdout"  # "stderr", or "file:/var/log/soli-proxy/proxy.log"
+# File output rotates by size: proxy.log -> proxy.log.1 -> ... New files are 0640.
+# max_size = "100MB"   # "0" disables rotation
+# max_files = 5        # rotated files kept
 # Body logging flags are reserved for future use and currently have no effect.
 include_request_body = false
 include_response_body = false

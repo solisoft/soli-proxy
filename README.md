@@ -99,8 +99,11 @@ email = "admin@example.com"
 staging = false
 
 [logging]
-level = "info"
-format = "json"
+level = "info"        # or a tracing filter: "info,soli_proxy::server=debug"
+format = "json"       # or "text"
+output = "stdout"     # "stderr", or "file:/var/log/soli-proxy/proxy.log"
+max_size = "100MB"    # file output: rotate past this size ("0" = never)
+max_files = 5         # file output: rotated files kept (proxy.log.1 … proxy.log.5)
 log_endpoints = true  # log one line per request (method, path, host, status, latency)
 
 [metrics]
@@ -117,6 +120,25 @@ enabled = true
 requests_per_second = 1000
 burst_size = 2000
 ```
+
+### Logging
+
+`[logging]` controls the proxy's own log (apps log to `run/logs/<app>/<slot>.log`):
+
+- `level` — `trace` … `error`, `off`, or a `tracing` filter such as
+  `info,soli_proxy::server=debug`. When unset, `RUST_LOG` is used, then `info`. A bare word that
+  is not a level is refused rather than read as a module name (which would silence everything).
+- `format` — `json` (default; the TUI's error screen parses it) or `text`.
+- `output` — `stdout` (default), `stderr`, or `file:/path`. Under `-d` the process has no
+  terminal, so `stdout`/`stderr` mean `${SOLI_LOG_DIR:-.}/proxy.log`, as before.
+- `max_size` / `max_files` — file output rotates by size: once the file would pass `max_size`
+  (default `100MB`, `"0"` = never), `proxy.log` becomes `proxy.log.1`, `.1` becomes `.2`, and
+  the oldest beyond `max_files` (default 5) is deleted. New log files are created `0640`.
+
+Writes go through a background thread (`tracing_appender::non_blocking`), so a slow disk never
+stalls a request; if it falls far behind, lines are dropped rather than blocking traffic.
+`level`, `format`, `output` and the rotation keys are read at startup; `log_endpoints` follows
+hot reloads. An invalid value is a startup error.
 
 ### Admin credentials
 

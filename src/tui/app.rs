@@ -450,7 +450,12 @@ impl TuiApp {
         }
 
         // Parse individual request failures from proxy.log for the Errors screen.
-        self.errors = load_request_errors();
+        // The file the daemon writes: `[logging] output = "file:…"`, else the
+        // `-d` default `${SOLI_LOG_DIR:-.}/proxy.log`.
+        let log_path =
+            crate::logging::log_file_path(&self.ctx.config_manager.get_config().logging, true)
+                .unwrap_or_else(crate::logging::default_daemon_log_path);
+        self.errors = load_request_errors(&log_path);
 
         // Cached for the Config screen, which used to re-read the file on every
         // frame and had no way to know how far it could scroll.

@@ -429,6 +429,20 @@ pub fn read_worker_threads(config_path: &str) -> Option<WorkerThreads> {
     toml_config.server.worker_threads
 }
 
+/// Read just `[logging]` from the `config.toml` next to `config_path`, before
+/// the logger exists. Defaults when the file is missing; a file that does not
+/// parse also yields defaults here, and `ConfigManager::new` then reports the
+/// parse error through the logger this configured.
+pub fn read_logging_config(config_path: &str) -> LoggingConfig {
+    let path = PathBuf::from(config_path);
+    let toml_path = path.parent().unwrap_or(Path::new(".")).join("config.toml");
+    std::fs::read_to_string(&toml_path)
+        .ok()
+        .and_then(|content| toml::from_str::<TomlConfig>(&content).ok())
+        .and_then(|cfg| cfg.logging)
+        .unwrap_or_default()
+}
+
 /// Decide how many Tokio worker threads to use given the `--dev` flag and the
 /// `worker_threads` setting from `config.toml`. Returns `Some(n)` for an
 /// explicit count, or `None` to let Tokio auto-detect (one worker per core).
@@ -519,9 +533,18 @@ pub struct MetricsConfig {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 pub struct LoggingConfig {
+    /// `trace` … `error`, or a `tracing` filter directive. Default `info`
+    /// (or `RUST_LOG` when this is unset). Read at startup only.
     pub level: Option<String>,
+    /// `json` (default) or `text`. Read at startup only.
     pub format: Option<String>,
+    /// `stdout` (default), `stderr` or `file:/path`. Read at startup only.
     pub output: Option<String>,
+    /// File output: rotate past this size, e.g. `"100MB"` (the default);
+    /// `"0"` never rotates.
+    pub max_size: Option<String>,
+    /// File output: rotated files kept besides the live one. Default 5.
+    pub max_files: Option<u32>,
     pub include_request_body: Option<bool>,
     pub include_response_body: Option<bool>,
     /// When true, emit one structured log line per served request (method,

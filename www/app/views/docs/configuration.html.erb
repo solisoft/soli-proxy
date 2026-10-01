@@ -676,7 +676,7 @@
                         <h3 class="text-lg font-semibold text-white mb-1 flex items-center gap-2">
                             <span class="text-emerald-400 font-mono text-sm">[logging]</span>
                         </h3>
-                        <p class="text-gray-400 text-sm mb-3">Structured logging configuration.</p>
+                        <p class="text-gray-400 text-sm mb-3">The proxy's own log. Every line is written by a background thread (<code class="text-cyan-300 text-xs">tracing_appender::non_blocking</code>), so a slow disk never stalls a request; if that thread falls far behind, lines are dropped rather than blocking. <code class="text-cyan-300 text-xs">level</code>, <code class="text-cyan-300 text-xs">format</code> and <code class="text-cyan-300 text-xs">output</code> are read at startup; <code class="text-cyan-300 text-xs">log_endpoints</code> follows hot reloads.</p>
                         <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
                             <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
                                 <div class="flex items-center gap-2">
@@ -686,9 +686,12 @@
                                 <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
                             </div>
                             <pre class="p-4 text-sm overflow-x-auto"><code><span class="tk">[logging]</span>
-<span class="tf">level</span> = <span class="ts">"info"</span>                <span class="tc"># trace, debug, info, warn, error</span>
-<span class="tf">format</span> = <span class="ts">"json"</span>               <span class="tc"># "json" or "pretty"</span>
-<span class="tf">output</span> = <span class="ts">"stdout"</span>             <span class="tc"># "stdout" or "file:/var/log/soli-proxy.log"</span></code></pre>
+<span class="tf">level</span> = <span class="ts">"info"</span>                <span class="tc"># trace, debug, info, warn, error, or a filter</span>
+<span class="tf">format</span> = <span class="ts">"json"</span>               <span class="tc"># "json" or "text"</span>
+<span class="tf">output</span> = <span class="ts">"stdout"</span>             <span class="tc"># "stdout", "stderr" or "file:/var/log/soli-proxy/proxy.log"</span>
+<span class="tf">max_size</span> = <span class="ts">"100MB"</span>            <span class="tc"># file output: rotate past this size ("0" = never)</span>
+<span class="tf">max_files</span> = <span class="tn">5</span>                 <span class="tc"># file output: rotated files kept</span>
+<span class="tf">log_endpoints</span> = <span class="tn">true</span>          <span class="tc"># one line per request</span></code></pre>
                         </div>
                         <div class="mt-3 overflow-x-auto">
                             <table class="w-full text-sm text-left">
@@ -699,9 +702,12 @@
                                     <th class="py-2 font-medium">Description</th>
                                 </tr></thead>
                                 <tbody class="text-gray-300">
-                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">level</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"info"</td><td class="py-2">Log verbosity level</td></tr>
-                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">format</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"json"</td><td class="py-2">Output format (json or pretty)</td></tr>
-                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">output</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"stdout"</td><td class="py-2">Output target (stdout or file path)</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">level</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"info"</td><td class="py-2">Verbosity: <code class="text-cyan-300 text-xs">trace</code>&hellip;<code class="text-cyan-300 text-xs">error</code>, or a <code class="text-cyan-300 text-xs">tracing</code> filter such as <code class="text-cyan-300 text-xs">info,soli_proxy::server=debug</code>. When unset, <code class="text-cyan-300 text-xs">RUST_LOG</code> is used, then <code class="text-cyan-300 text-xs">info</code>. An invalid value stops startup.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">format</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"json"</td><td class="py-2"><code class="text-cyan-300 text-xs">json</code> (one object per line; the TUI error screen reads it) or <code class="text-cyan-300 text-xs">text</code>.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">output</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"stdout"</td><td class="py-2"><code class="text-cyan-300 text-xs">stdout</code>, <code class="text-cyan-300 text-xs">stderr</code> or <code class="text-cyan-300 text-xs">file:/path</code>. With <code class="text-cyan-300 text-xs">-d</code>, stdout/stderr mean <code class="text-cyan-300 text-xs">${SOLI_LOG_DIR:-.}/proxy.log</code>.</td></tr>
+<tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">max_size</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"100MB"</td><td class="py-2">File output: when the file would exceed this, <code class="text-cyan-300 text-xs">proxy.log</code> becomes <code class="text-cyan-300 text-xs">proxy.log.1</code>, <code class="text-cyan-300 text-xs">.1</code> becomes <code class="text-cyan-300 text-xs">.2</code>&hellip; <code class="text-cyan-300 text-xs">"0"</code> disables rotation. New files are created <code class="text-cyan-300 text-xs">0640</code>.</td></tr>
+<tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">max_files</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">5</td><td class="py-2">File output: rotated files kept; the oldest beyond this is deleted.</td></tr>
+<tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">log_endpoints</td><td class="py-2 pr-4">bool</td><td class="py-2 pr-4 text-gray-500">false</td><td class="py-2">Log one line per request (method, host, path, status, latency).</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -827,7 +833,9 @@
 <span class="tk">[logging]</span>
 <span class="tf">level</span> = <span class="ts">"info"</span>
 <span class="tf">format</span> = <span class="ts">"json"</span>
-<span class="tf">output</span> = <span class="ts">"stdout"</span>
+<span class="tf">output</span> = <span class="ts">"file:/var/log/soli-proxy/proxy.log"</span>
+<span class="tf">max_size</span> = <span class="ts">"100MB"</span>
+<span class="tf">max_files</span> = <span class="tn">5</span>
 
 <span class="tk">[limits]</span>
 <span class="tf">max_connections</span> = <span class="tn">10000</span>

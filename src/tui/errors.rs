@@ -36,19 +36,13 @@ const TAIL_BYTES: u64 = 256 * 1024;
 /// Cap on how many failures we keep in memory / show.
 const MAX_ERRORS: usize = 500;
 
-/// Resolve the daemon log path the same way `get_log_path()` does in `main.rs`:
-/// `${SOLI_LOG_DIR:-.}/proxy.log`.
-fn log_path() -> String {
-    let dir = std::env::var("SOLI_LOG_DIR").unwrap_or_else(|_| ".".to_string());
-    format!("{}/proxy.log", dir)
-}
-
-/// Read the tail of `proxy.log`, parse request-failure lines, and return them
-/// oldest-first (so `G`/scroll-to-bottom lands on the most recent, consistent
-/// with the log viewer). Best effort: returns empty on any IO/parse trouble.
-pub fn load_request_errors() -> Vec<ErrorEntry> {
-    let path = log_path();
-    let Ok(mut file) = std::fs::File::open(&path) else {
+/// Read the tail of the daemon's log at `path`, parse request-failure lines,
+/// and return them oldest-first (so `G`/scroll-to-bottom lands on the most
+/// recent, consistent with the log viewer). Best effort: returns empty on any
+/// IO/parse trouble — including a log in `format = "text"`, which has no
+/// fields to parse.
+pub fn load_request_errors(path: &std::path::Path) -> Vec<ErrorEntry> {
+    let Ok(mut file) = std::fs::File::open(path) else {
         return Vec::new();
     };
     let Ok(len) = file.metadata().map(|m| m.len()) else {
