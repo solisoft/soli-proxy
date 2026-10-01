@@ -2639,8 +2639,13 @@ async fn handle_request_inner(
             .unwrap());
     }
 
-    // HTTP to HTTPS redirect when TLS is off and force_https is enabled
-    if !is_tls && config.tls.force_https {
+    // HTTP to HTTPS redirect when TLS is off and force_https is enabled —
+    // unless a trusted proxy in front already terminated HTTPS (it would be
+    // redirected to where it already is, forever).
+    if !is_tls
+        && config.tls.force_https
+        && !crate::edge::forwarded_https(req.headers(), req.extensions())
+    {
         let raw_host = req
             .headers()
             .get("host")

@@ -589,6 +589,26 @@ pub fn client_info(ext: &http::Extensions) -> Option<&ClientInfo> {
     ext.get::<ClientInfo>()
 }
 
+/// Whether a trusted proxy in front says the client connected over HTTPS
+/// (`X-Forwarded-Proto: https`, first value).
+///
+/// What `force_https` must ask on a plain-HTTP connection: a CDN that
+/// terminates TLS and talks plain HTTP to the proxy (Cloudflare "Flexible")
+/// would otherwise be answered a redirect to HTTPS on every request — which it
+/// already was — and loop. Only a trusted peer is believed: from anyone else
+/// the header is the client's own claim, and honouring it would let a client
+/// opt out of the redirect.
+pub fn forwarded_https(headers: &http::HeaderMap, ext: &http::Extensions) -> bool {
+    if !client_info(ext).is_some_and(|c| c.trusted_peer) {
+        return false;
+    }
+    headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .is_some_and(|p| p.trim().eq_ignore_ascii_case("https"))
+}
+
 /// For a peer that is not trusted, remove the header `real_ip_header` names
 /// when it is not one the door already replaces. `CF-Connecting-IP` from an
 /// arbitrary client is as much a claim as `X-Forwarded-For`, and the
@@ -882,6 +902,30 @@ pub async fn read_proxy_header(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn forwarded_https_is_believed_only_from_a_trusted_peer() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-forwarded-proto", "https".parse().unwrap());
+        let mut ext = http::Extensions::new();
+        assert!(!forwarded_https(&headers, &ext), "no client record");
+
+        let peer: IpAddr = "203.0.113.7".parse().unwrap();
+        ext.insert(ClientInfo::direct(peer));
+        assert!(!forwarded_https(&headers, &ext), "untrusted peer");
+
+        ext.insert(ClientInfo {
+            ip: "198.51.100.1".parse().unwrap(),
+            peer,
+            trusted_peer: true,
+        });
+        assert!(forwarded_https(&headers, &ext));
+        headers.insert("x-forwarded-proto", "http".parse().unwrap());
+        assert!(!forwarded_https(&headers, &ext));
+        headers.insert("x-forwarded-proto", "HTTPS, http".parse().unwrap());
+        assert!(forwarded_https(&headers, &ext));
+    }
+
     use super::*;
 
     fn trusted(list: &[&str]) -> EdgeConfig {

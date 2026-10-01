@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+**Integration fixes**
+
+* **`force_https` no longer loops behind a TLS-terminating CDN.** A request from a trusted proxy
+  whose `X-Forwarded-Proto` is `https` is not redirected; from any other peer the header is
+  ignored, as before.
+* **Saving a route in the TUI keeps what the editor has no field for**: its `headers { }` block,
+  `@forward_auth`, `@compress` and target weights (`weight:N` is now read and written in the
+  targets field). Saving used to drop them.
+* **The health monitor falls back to `/health`**, like the deploy gate and adoption; it fell back
+  to `/`, so an app could be alive for one and dead for the other.
+* **An `accept()` that fails for lack of descriptors backs off 100 ms** instead of spinning a core.
+
 **Forward auth (gap/auth)**
 
 ### Features

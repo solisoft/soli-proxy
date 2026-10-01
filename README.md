@@ -188,7 +188,11 @@ exposed_env = ["BACKEND_TOKEN"] # the only variables Lua's `env` module can read
 ```
 
 `[tls] force_https` (default `true`) answers plaintext requests for hosts the proxy serves with
-a `308` to `https://`. The full key-by-key reference is on the
+a `308` to `https://` — except when the request comes from one of `[server] trusted_proxies` and
+its `X-Forwarded-Proto` says `https`: a CDN that terminates TLS and reaches the proxy over plain
+HTTP (Cloudflare "Flexible") would otherwise be redirected to where it already is, forever. From
+any other peer the header is the client's own claim and changes nothing. The full key-by-key
+reference is on the
 [configuration page](https://proxy.solisoft.net/docs/configuration).
 
 ### Logging
