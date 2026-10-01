@@ -1305,4 +1305,82 @@ mod routing_table_tests {
         assert!(text.contains("\"usernames\":[\"admin\"]"), "{text}");
         assert!(!text.contains("$2b$"), "{text}");
     }
+
+    /// A pushed domain may carry forward-auth alone (no Basic accounts): it
+    /// is kept, checked like `app.infos`, and enforced here.
+    #[tokio::test]
+    async fn pushed_forward_auth_is_validated_and_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(&dir);
+        let manager = state.app_manager.clone().unwrap();
+        let routes = serde_json::json!({ "x.soli.app": [ { "url": "http://10.0.0.1:1" } ] });
+
+        for auth in [
+            serde_json::json!({ "x.soli.app": { "forward": "file:///etc/passwd" } }),
+            serde_json::json!({ "x.soli.app": { "forward_headers": ["X-User"] } }),
+            serde_json::json!({ "x.soli.app": {
+                "forward": "http://auth:4180/", "forward_headers": ["Host"] } }),
+        ] {
+            let body = serde_json::json!({ "index": 1, "routes": routes, "auth": auth });
+            assert_eq!(push(&state, body).await, 400, "{auth} was accepted");
+        }
+
+        let body = serde_json::json!({
+            "index": 1,
+            "routes": routes,
+            "auth": { "x.soli.app": {
+                "forward": "http://auth:4180/", "forward_headers": ["X-Auth-Request-User"] } }
+        });
+        assert_eq!(push(&state, body).await, 200);
+        let auth = manager
+            .auth_for_host("x.soli.app")
+            .await
+            .expect("forward-auth alone must be kept");
+        assert_eq!(auth.forward.as_ref().unwrap().url(), "http://auth:4180/");
+        assert!(!auth.requires_auth("/"), "no Basic accounts");
+    }
+
+    /// A route's forward-auth is checked on the way in and survives the
+    /// admin API's rewrite of `proxy.conf`.
+    #[test]
+    fn admin_routes_carry_forward_auth() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(&dir);
+        let rule = |url: &str| {
+            serde_json::json!({
+                "matcher": { "type": "domain", "value": "app.example.com" },
+                "targets": [{ "url": "http://localhost:9999/", "weight": 100 }],
+                "headers": [],
+                "scripts": [],
+                "auth_exempt": ["/up"],
+                "forward_auth": { "url": url, "headers": ["X-Auth-User"] }
+            })
+        };
+        assert_eq!(
+            post_route(&state, &rule("ftp://auth/v").to_string()).status(),
+            400
+        );
+        assert_eq!(
+            post_route(&state, &rule("http://u:p@auth/v").to_string()).status(),
+            400
+        );
+        assert_eq!(
+            post_route(&state, &rule("http://auth:4180/v").to_string()).status(),
+            201
+        );
+
+        let written = std::fs::read_to_string(dir.path().join("proxy.conf")).unwrap();
+        assert!(
+            written.contains(
+                "@noauth:/up @forward_auth:http://auth:4180/v @forward_auth_headers:x-auth-user"
+            ),
+            "{written}"
+        );
+        let cfg = state.config_manager.get_config();
+        let added = cfg.rules.last().unwrap();
+        assert_eq!(
+            added.forward_auth.as_ref().unwrap().url(),
+            "http://auth:4180/v"
+        );
+    }
 }
