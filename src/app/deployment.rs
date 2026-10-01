@@ -1636,10 +1636,18 @@ impl DeploymentManager {
     /// "Listens on the app's port" is not "belongs to the app": the port may
     /// be held by a database, another service, or a process squatting it on
     /// purpose, and the old code killed whichever it found, process group and
-    /// all. A container slot is reclaimed by name when it starts instead, so
-    /// nothing is done for one here.
+    /// all. A container slot is reclaimed by its name, `<app>-<slot>`, which
+    /// only the proxy creates — never by whatever PID holds the port (for a
+    /// published port that is docker's own proxy process, not the app).
     pub async fn reclaim_port(&self, app: &AppInfo, slot: &str, port: u16) {
         if app.config.docker_image.is_some() {
+            let name = container_name(app, slot);
+            if let Err(e) = self
+                .stop_docker_container(&name, app.config.graceful_timeout)
+                .await
+            {
+                tracing::warn!("Failed to stop leftover container {}: {}", name, e);
+            }
             return;
         }
         let holder = tokio::task::spawn_blocking(move || super::find_pid_by_port(port))

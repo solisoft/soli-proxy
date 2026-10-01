@@ -2975,7 +2975,7 @@ impl AppManager {
 
     /// The domains a request for `config` may arrive on: the declared one, its
     /// `www.`-stripped twin, and the `.test` twin in dev — the same set
-    /// `running_app_domains` claims.
+    /// `build_routes` claims for it (aliases aside).
     fn domains_of(&self, config: &AppConfig) -> Vec<String> {
         let mut out = Vec::with_capacity(3);
         if config.domain.is_empty() {
