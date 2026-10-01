@@ -77,6 +77,12 @@
   and none of the IPv6 ones. It now listens on `bind`'s address; `bind = "[::]:80"` is
   dual-stack on both ports (`IPV6_V6ONLY` is cleared explicitly). **Operators:** HTTPS now follows
   `bind` — a loopback or single-interface `bind` narrows HTTPS too.
+* **The TUI's Circuits screen shows the daemon's circuit breakers.** It read a `CircuitBreaker`
+  the TUI process had just created — always empty, so every backend looked healthy. It now reads
+  `GET /api/v1/circuit-breaker` and says "unavailable" when it cannot. The TUI also works against
+  a Basic-auth admin API: it sent only `X-Api-Key`, so every call was a 401; it now reuses the
+  password typed at its login as HTTP Basic (polling every 5 s in that mode), sends
+  `X-Requested-With` on every request, and reports refused credentials as such.
 
 ## [0.35.2](https://github.com/solisoft/soli-proxy/compare/v0.35.1...v0.35.2) (2026-09-27)
 

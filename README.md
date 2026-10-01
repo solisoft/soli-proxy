@@ -77,6 +77,13 @@ soli-proxy tui [-c <conf>] [--sites-dir <DIR>] [--dev]   # Interactive terminal 
 soli-proxy update [--reinstall]                          # Self-update from GitHub releases
 ```
 
+The TUI is a separate process: traffic metrics and circuit-breaker state come from the running
+proxy's admin API (`/api/v1/metrics`, `/api/v1/app-metrics`, `/api/v1/circuit-breaker`), and
+show as unavailable — never as an empty list — when it cannot be reached. It authenticates with
+`[admin].api_key` when set; otherwise, with admin Basic auth (`ADMIN_USER` + hash), the
+password typed at its login prompt is reused as the Basic credential, and it polls every 5 s
+instead of every second because each request costs the daemon a bcrypt check.
+
 ## Configuration
 
 ### Main Config (config.toml)

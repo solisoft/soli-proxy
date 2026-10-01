@@ -10,12 +10,16 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::circuit_breaker::CircuitBreakerInfo;
 use crate::config::ConfigManager;
 use crate::metrics::{AppMetricsJson, MetricsSnapshot};
 
 use super::errors::{load_request_errors, ErrorEntry};
 use super::theme;
 use super::{route_form::RouteForm, screens, TuiContext};
+
+/// The daemon's circuit-breaker table, sorted by target URL.
+pub type CircuitList = Vec<(String, CircuitBreakerInfo)>;
 
 /// Per-app stats combining traffic (from admin API) and system (from /proc).
 #[derive(Clone, Default)]
@@ -39,6 +43,10 @@ const HISTORY_LEN: usize = 60; // 60 samples × 1s = 1 minute
 
 /// How often the background poller re-reads the daemon's admin API.
 const DAEMON_POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// The same, when authenticating with a password: each poll makes three
+/// requests and each one is a bcrypt verification on the daemon. Set
+/// `[admin] api_key` for one-second refreshes.
+const DAEMON_POLL_INTERVAL_BASIC: Duration = Duration::from_secs(5);
 
 /// State of the daemon's admin API. "Not reachable" and "not enabled" are
 /// different things: a proxy running with `admin.enabled = false` is perfectly
@@ -51,6 +59,8 @@ pub enum DaemonStatus {
     Ok,
     /// Admin API is enabled but did not answer.
     Unreachable,
+    /// The admin API answered 401: the TUI's credentials were refused.
+    Unauthorized,
     /// `admin.enabled = false` — nothing to connect to, nothing wrong.
     Disabled,
 }
@@ -62,6 +72,7 @@ impl DaemonStatus {
             DaemonStatus::Connecting => " daemon … ",
             DaemonStatus::Ok => " daemon ● ",
             DaemonStatus::Unreachable => " daemon ✕ ",
+            DaemonStatus::Unauthorized => " daemon ! ",
             DaemonStatus::Disabled => " daemon ○ ",
         }
     }
@@ -70,7 +81,7 @@ impl DaemonStatus {
         match self {
             DaemonStatus::Connecting => theme::MUTED,
             DaemonStatus::Ok => theme::SUCCESS,
-            DaemonStatus::Unreachable => theme::DANGER,
+            DaemonStatus::Unreachable | DaemonStatus::Unauthorized => theme::DANGER,
             DaemonStatus::Disabled => theme::MUTED,
         }
     }
@@ -81,6 +92,7 @@ impl DaemonStatus {
             DaemonStatus::Connecting => "connecting",
             DaemonStatus::Ok => "",
             DaemonStatus::Unreachable => "daemon unreachable",
+            DaemonStatus::Unauthorized => "admin api refused credentials",
             DaemonStatus::Disabled => "admin api off",
         }
     }
@@ -95,6 +107,9 @@ impl DaemonStatus {
 struct DaemonSample {
     apps: HashMap<String, AppMetricsJson>,
     global: Option<MetricsSnapshot>,
+    /// Circuit-breaker state per target; `None` when the daemon could not be
+    /// asked (shown as "unavailable", never as an empty list).
+    circuits: Option<CircuitList>,
     status: DaemonStatus,
     /// Incremented per completed poll so the UI can tell a fresh sample from a
     /// repeat read of the same one.
@@ -111,11 +126,20 @@ struct DaemonFeed {
 }
 
 impl DaemonFeed {
-    fn spawn(runtime: &tokio::runtime::Runtime, config_manager: Arc<ConfigManager>) -> Self {
+    fn spawn(
+        runtime: &tokio::runtime::Runtime,
+        config_manager: Arc<ConfigManager>,
+        creds: super::AdminCredentials,
+    ) -> Self {
         let latest = Arc::new(Mutex::new(DaemonSample::default()));
         let wake = Arc::new(tokio::sync::Notify::new());
         let cell = latest.clone();
         let signal = wake.clone();
+        let interval = if creds.is_basic_only() {
+            DAEMON_POLL_INTERVAL_BASIC
+        } else {
+            DAEMON_POLL_INTERVAL
+        };
 
         runtime.spawn(async move {
             // Off the render thread, so the timeout can be generous, and the
@@ -135,13 +159,13 @@ impl DaemonFeed {
             };
 
             loop {
-                let sample = poll_daemon(&client, &config_manager).await;
+                let sample = poll_daemon(&client, &config_manager, &creds).await;
                 if let Ok(mut slot) = cell.lock() {
                     let seq = slot.seq.wrapping_add(1);
                     *slot = DaemonSample { seq, ..sample };
                 }
                 tokio::select! {
-                    _ = tokio::time::sleep(DAEMON_POLL_INTERVAL) => {}
+                    _ = tokio::time::sleep(interval) => {}
                     _ = signal.notified() => {}
                 }
             }
@@ -159,7 +183,11 @@ impl DaemonFeed {
 /// Fetch per-app and global traffic metrics from the daemon's admin API.
 /// Best effort: an unreachable daemon yields an `Unreachable` sample rather
 /// than an error, so the UI keeps running with whatever it last knew.
-async fn poll_daemon(client: &reqwest::Client, config_manager: &ConfigManager) -> DaemonSample {
+async fn poll_daemon(
+    client: &reqwest::Client,
+    config_manager: &ConfigManager,
+    creds: &super::AdminCredentials,
+) -> DaemonSample {
     let cfg = config_manager.get_config();
     if !cfg.admin.enabled.unwrap_or(true) {
         return DaemonSample {
@@ -176,35 +204,77 @@ async fn poll_daemon(client: &reqwest::Client, config_manager: &ConfigManager) -
         .replace("[::]:", "127.0.0.1:");
     let apps_url = format!("http://{}/api/v1/app-metrics", admin_addr);
     let global_url = format!("http://{}/api/v1/metrics", admin_addr);
-    let api_key = cfg.admin.api_key.clone();
-
-    let with_key = |mut req: reqwest::RequestBuilder| {
-        if let Some(ref key) = api_key {
-            req = req.header("X-Api-Key", key);
-        }
-        req
-    };
+    let circuits_url = format!("http://{}/api/v1/circuit-breaker", admin_addr);
 
     // Admin API wraps JSON responses in {"ok": true, "data": ...}
     #[derive(serde::Deserialize)]
-    struct Envelope {
-        data: HashMap<String, AppMetricsJson>,
+    struct Envelope<T> {
+        data: T,
+    }
+    #[derive(serde::Deserialize)]
+    struct RemoteCircuit {
+        state: String,
+        consecutive_failures: u32,
+        consecutive_successes: u32,
     }
 
-    let (apps, global) = tokio::join!(
+    let unauthorized = std::sync::atomic::AtomicBool::new(false);
+    // A response the caller may read: 2xx only. A 401 is remembered so the
+    // footer can say "credentials refused" rather than "unreachable".
+    let fetch = |url: &str| {
+        let req = creds.apply(client.get(url));
+        let unauthorized = &unauthorized;
+        async move {
+            let resp = req.send().await.ok()?;
+            if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+                unauthorized.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            resp.error_for_status().ok()
+        }
+    };
+
+    let (apps, global, circuits) = tokio::join!(
         async {
-            let resp = with_key(client.get(&apps_url)).send().await.ok()?;
-            resp.json::<Envelope>().await.ok().map(|e| e.data)
+            let resp = fetch(&apps_url).await?;
+            resp.json::<Envelope<HashMap<String, AppMetricsJson>>>()
+                .await
+                .ok()
+                .map(|e| e.data)
         },
         async {
-            let resp = with_key(client.get(&global_url)).send().await.ok()?;
-            let text = resp.text().await.ok()?;
+            let text = fetch(&global_url).await?.text().await.ok()?;
             Some(parse_prometheus_snapshot(&text))
+        },
+        async {
+            let resp = fetch(&circuits_url).await?;
+            let data = resp
+                .json::<Envelope<HashMap<String, RemoteCircuit>>>()
+                .await
+                .ok()?
+                .data;
+            let mut list: CircuitList = data
+                .into_iter()
+                .map(|(url, c)| {
+                    (
+                        url,
+                        CircuitBreakerInfo {
+                            state: c.state,
+                            consecutive_failures: c.consecutive_failures,
+                            consecutive_successes: c.consecutive_successes,
+                        },
+                    )
+                })
+                .collect();
+            // HashMap order would reshuffle the rows on every poll.
+            list.sort_by(|a, b| a.0.cmp(&b.0));
+            Some(list)
         }
     );
 
-    let status = if apps.is_some() || global.is_some() {
+    let status = if apps.is_some() || global.is_some() || circuits.is_some() {
         DaemonStatus::Ok
+    } else if unauthorized.load(std::sync::atomic::Ordering::Relaxed) {
+        DaemonStatus::Unauthorized
     } else {
         DaemonStatus::Unreachable
     };
@@ -212,6 +282,7 @@ async fn poll_daemon(client: &reqwest::Client, config_manager: &ConfigManager) -
     DaemonSample {
         apps: apps.unwrap_or_default(),
         global,
+        circuits,
         status,
         seq: 0,
     }
@@ -269,6 +340,8 @@ pub struct TuiApp {
     /// Global traffic snapshot fetched from the daemon's admin API.
     /// The TUI runs in its own process, so the local metrics registry is empty.
     remote_snapshot: Option<MetricsSnapshot>,
+    /// Circuit-breaker state from the daemon; `None` = unavailable.
+    circuits: Option<CircuitList>,
     /// Tick counter driving the periodic full PID re-probe.
     ticks: u64,
     pending_action: Option<tokio::task::JoinHandle<Result<String, String>>>,
@@ -302,7 +375,11 @@ pub struct TuiApp {
 
 impl TuiApp {
     pub fn new(ctx: TuiContext) -> Self {
-        let daemon = DaemonFeed::spawn(&ctx.runtime, ctx.config_manager.clone());
+        let daemon = DaemonFeed::spawn(
+            &ctx.runtime,
+            ctx.config_manager.clone(),
+            ctx.admin_credentials(),
+        );
         let mut app = Self {
             ctx,
             current_screen: Screen::Dashboard,
@@ -316,6 +393,7 @@ impl TuiApp {
             app_stats: HashMap::new(),
             app_history: HashMap::new(),
             remote_snapshot: None,
+            circuits: None,
             ticks: 0,
             pending_action: None,
             filtered_apps_count: 0,
@@ -349,8 +427,9 @@ impl TuiApp {
     /// Collect all per-app stats: traffic from the background daemon poller +
     /// system stats from /proc. Never blocks on the network.
     fn collect_stats(&mut self) {
-        let (traffic, global, status, seq) = self.read_daemon_sample();
+        let (traffic, global, circuits, status, seq) = self.read_daemon_sample();
         self.daemon_status = status;
+        self.circuits = circuits;
 
         // Only fold a sample into the rate history once. Re-reading the same
         // sample would show a delta of zero over a growing interval.
@@ -474,15 +553,23 @@ impl TuiApp {
     ) -> (
         HashMap<String, AppMetricsJson>,
         Option<MetricsSnapshot>,
+        Option<CircuitList>,
         DaemonStatus,
         u64,
     ) {
         match self.daemon.latest.lock() {
-            Ok(slot) => (slot.apps.clone(), slot.global, slot.status, slot.seq),
+            Ok(slot) => (
+                slot.apps.clone(),
+                slot.global,
+                slot.circuits.clone(),
+                slot.status,
+                slot.seq,
+            ),
             // Poisoned only if the poller panicked mid-write; report it rather
             // than propagating the panic into the render loop.
             Err(_) => (
                 HashMap::new(),
+                None,
                 None,
                 DaemonStatus::Unreachable,
                 self.last_daemon_seq,
@@ -959,20 +1046,15 @@ impl TuiApp {
             _ => return,
         };
         let url = format!("http://{}/api/v1/apps/{}/{}", admin_addr, name, endpoint);
-        let api_key = cfg.admin.api_key.clone();
+        let creds = self.ctx.admin_credentials();
 
         let handle = self.ctx.runtime.spawn(async move {
             let client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(120))
                 .build()
                 .map_err(|e| e.to_string())?;
-            let mut req = client
-                .post(&url)
-                // Marks this as a non-browser mutation for the admin CSRF gate.
-                .header("X-Requested-With", "soli-tui");
-            if let Some(ref key) = api_key {
-                req = req.header("X-Api-Key", key);
-            }
+            // Adds X-Requested-With (the admin CSRF gate) and the credentials.
+            let req = creds.apply(client.post(&url));
             let resp = req.send().await.map_err(|e| e.to_string())?;
             if resp.status().is_success() {
                 Ok(format!("{} completed for {}", action, name))
@@ -1200,7 +1282,7 @@ impl TuiApp {
                 screens::routes::filter_indices(&rules, &self.search_query).len()
             }
             Screen::Apps => self.filtered_apps_count,
-            Screen::Circuits => self.ctx.circuit_breaker.get_states().len(),
+            Screen::Circuits => self.circuits.as_ref().map_or(0, Vec::len),
             Screen::Errors => self.errors.len(),
             Screen::Config => 0,
             Screen::Help => 0,
@@ -1388,6 +1470,7 @@ impl TuiApp {
                 area,
                 &self.ctx,
                 self.remote_snapshot.as_ref(),
+                self.circuits.as_deref(),
                 self.daemon_status,
                 &self.rps_history,
             ),
@@ -1438,7 +1521,8 @@ impl TuiApp {
             Screen::Circuits => screens::circuits::render(
                 f,
                 area,
-                &self.ctx,
+                self.circuits.as_deref(),
+                self.daemon_status,
                 self.selected_index,
                 self.scroll_offset,
             ),

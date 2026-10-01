@@ -5,12 +5,17 @@ use ratatui::{
     Frame,
 };
 
-use crate::tui::TuiContext;
+use crate::circuit_breaker::CircuitBreakerInfo;
+use crate::tui::app::DaemonStatus;
 
+/// `states` is the daemon's circuit-breaker table (`GET
+/// /api/v1/circuit-breaker`), or `None` when it could not be fetched — which
+/// is said as such, rather than shown as an empty (all-healthy) list.
 pub fn render(
     f: &mut Frame,
     area: Rect,
-    ctx: &TuiContext,
+    states: Option<&[(String, CircuitBreakerInfo)]>,
+    status: DaemonStatus,
     selected_index: usize,
     scroll_offset: usize,
 ) {
@@ -19,11 +24,25 @@ pub fn render(
 
     let inner = crate::tui::theme::body(area);
 
-    let states = ctx.circuit_breaker.get_states();
+    let Some(states) = states else {
+        let why = match status {
+            DaemonStatus::Ok => "the daemon did not return it",
+            other => other.explain(),
+        };
+        let text = Paragraph::new(format!(
+            "Circuit-breaker state unavailable ({why}). It lives in the running proxy and is \
+             read from its admin API (GET /api/v1/circuit-breaker)."
+        ))
+        .style(Style::default().fg(crate::tui::theme::MUTED));
+        f.render_widget(text, inner);
+        return;
+    };
 
     if states.is_empty() {
-        let text =
-            Paragraph::new("No circuit breakers active. Circuit breakers track backend failures.");
+        let text = Paragraph::new(
+            "No backend has been tracked yet. Circuit breakers appear here once a target \
+             has served (or failed) a request.",
+        );
         f.render_widget(text, inner);
         return;
     }
@@ -31,11 +50,8 @@ pub fn render(
     let header = Row::new(vec!["Target", "State", "Failures", "Successes"])
         .style(Style::default().fg(crate::tui::theme::ACCENT).bold());
 
-    let states_vec: Vec<(String, crate::circuit_breaker::CircuitBreakerInfo)> =
-        states.into_iter().collect();
-
     let max_rows = inner.height.saturating_sub(1) as usize;
-    let rows: Vec<Row> = states_vec
+    let rows: Vec<Row> = states
         .iter()
         .skip(scroll_offset)
         .take(max_rows)

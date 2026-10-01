@@ -7,6 +7,7 @@ use ratatui::{
     Frame,
 };
 
+use crate::circuit_breaker::CircuitBreakerInfo;
 use crate::metrics::MetricsSnapshot;
 use crate::tui::app::DaemonStatus;
 use crate::tui::theme;
@@ -20,6 +21,7 @@ pub fn render(
     area: Rect,
     ctx: &TuiContext,
     remote_snap: Option<&MetricsSnapshot>,
+    circuits: Option<&[(String, CircuitBreakerInfo)]>,
     status: DaemonStatus,
     rps_history: &VecDeque<u64>,
 ) {
@@ -39,7 +41,7 @@ pub fn render(
 
     render_kpis(f, rows[0], snap, have_metrics, status, rps_history);
     render_rps_and_status(f, rows[1], snap, have_metrics, rps_history);
-    render_meta(f, rows[2], ctx, status);
+    render_meta(f, rows[2], ctx, circuits, status);
 
     let bottom = Layout::default()
         .direction(Direction::Horizontal)
@@ -183,7 +185,13 @@ fn render_rps_and_status(
     );
 }
 
-fn render_meta(f: &mut Frame, area: Rect, ctx: &TuiContext, status: DaemonStatus) {
+fn render_meta(
+    f: &mut Frame,
+    area: Rect,
+    ctx: &TuiContext,
+    circuits: Option<&[(String, CircuitBreakerInfo)]>,
+    status: DaemonStatus,
+) {
     let cfg = ctx.config_manager.get_config();
     let apps = ctx
         .app_manager
@@ -201,9 +209,9 @@ fn render_meta(f: &mut Frame, area: Rect, ctx: &TuiContext, status: DaemonStatus
             matches!(inst.status, crate::app::InstanceStatus::Running)
         })
         .count();
-    let circuits = ctx.circuit_breaker.get_states();
-    let open = circuits.values().filter(|s| s.state == "open").count();
-    let half = circuits.values().filter(|s| s.state == "half_open").count();
+    let count =
+        |state: &str| circuits.map_or(0, |c| c.iter().filter(|(_, s)| s.state == state).count());
+    let (open, half) = (count("open"), count("half_open"));
 
     let cols = Layout::default()
         .direction(Direction::Horizontal)
@@ -237,16 +245,15 @@ fn render_meta(f: &mut Frame, area: Rect, ctx: &TuiContext, status: DaemonStatus
         theme::MAGENTA,
     );
 
-    let (cval, ccol) = if open > 0 {
-        (format!("{open} open"), theme::DANGER)
-    } else if half > 0 {
-        (format!("{half} half-open"), theme::WARN)
-    } else {
-        (circuits.len().to_string(), theme::SUCCESS)
+    // Circuit state lives in the daemon and comes from its admin API; without
+    // it there is nothing to count, which is not the same as "all closed".
+    let (cval, ccol) = match circuits {
+        None => ("—".to_string(), theme::MUTED),
+        Some(_) if open > 0 => (format!("{open} open"), theme::DANGER),
+        Some(_) if half > 0 => (format!("{half} half-open"), theme::WARN),
+        Some(c) => (c.len().to_string(), theme::SUCCESS),
     };
-    // Circuit state is local to this process, so it stays meaningful whatever
-    // the admin API is doing; only annotate when that distinction matters.
-    let clabel = if status.is_ok() {
+    let clabel = if circuits.is_some() {
         "circuits".to_string()
     } else {
         format!("circuits · {}", status.explain())

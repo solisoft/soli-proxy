@@ -10,25 +10,29 @@ use std::time::Instant;
 
 use crate::app::AppManager;
 use crate::auth::verify_password;
-use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 use crate::config::ConfigManager;
 use crate::metrics::Metrics;
 
+// The TUI is a separate process from the daemon. It used to build a fresh,
+// local `CircuitBreaker` for the Circuits screen — one that had never seen a
+// request, so the screen was always empty. Circuit state now comes from the
+// daemon's `GET /api/v1/circuit-breaker`, like the traffic metrics.
 pub struct TuiContext {
     pub config_manager: Arc<ConfigManager>,
     pub metrics: Metrics,
-    pub circuit_breaker: Arc<CircuitBreaker>,
     pub app_manager: Option<Arc<AppManager>>,
     pub start_time: Instant,
     pub auth_required: bool,
     pub runtime: tokio::runtime::Runtime,
+    /// The admin password typed at the login prompt, reused as the Basic
+    /// credential for the daemon's admin API when no `api_key` is set.
+    admin_password: std::sync::OnceLock<String>,
 }
 
 impl TuiContext {
     pub fn new(
         config_manager: Arc<ConfigManager>,
         metrics: Metrics,
-        circuit_breaker: Arc<CircuitBreaker>,
         app_manager: Option<Arc<AppManager>>,
         auth_required: bool,
         runtime: tokio::runtime::Runtime,
@@ -36,11 +40,24 @@ impl TuiContext {
         Self {
             config_manager,
             metrics,
-            circuit_breaker,
             app_manager,
             start_time: Instant::now(),
             auth_required,
             runtime,
+            admin_password: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// How the TUI authenticates to the daemon's admin API.
+    pub fn admin_credentials(&self) -> AdminCredentials {
+        let cfg = self.config_manager.get_config();
+        let basic = match (&cfg.admin.username, self.admin_password.get()) {
+            (Some(user), Some(password)) => Some((user.clone(), password.clone())),
+            _ => None,
+        };
+        AdminCredentials {
+            api_key: cfg.admin.api_key.clone(),
+            basic,
         }
     }
 
@@ -63,6 +80,40 @@ impl TuiContext {
         F: std::future::Future<Output = Result<T, anyhow::Error>>,
     {
         self.runtime.block_on(f)
+    }
+}
+
+/// Credentials the TUI presents to the daemon's admin API.
+///
+/// It used to send only `X-Api-Key`, so against an admin API secured with
+/// `ADMIN_USER` + a password hash every call failed with 401 and the TUI
+/// showed an empty, "unreachable" daemon. Now the password typed at the login
+/// prompt is sent as HTTP Basic, and every request carries
+/// `X-Requested-With`, which the admin API's CSRF gate requires on mutations
+/// authenticated by anything but an API key.
+#[derive(Clone, Default)]
+pub struct AdminCredentials {
+    api_key: Option<String>,
+    basic: Option<(String, String)>,
+}
+
+impl AdminCredentials {
+    /// True when the only credential is a password: every request then costs
+    /// the daemon a bcrypt verification (~0.25 s of CPU at cost 12), so the
+    /// background poller slows down.
+    pub fn is_basic_only(&self) -> bool {
+        self.api_key.is_none() && self.basic.is_some()
+    }
+
+    pub fn apply(&self, mut req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        req = req.header("X-Requested-With", "soli-tui");
+        if let Some(ref key) = self.api_key {
+            req = req.header("X-Api-Key", key);
+        }
+        if let Some((ref user, ref password)) = self.basic {
+            req = req.basic_auth(user, Some(password));
+        }
+        req
     }
 }
 
@@ -129,6 +180,7 @@ pub fn authenticate(ctx: &TuiContext, terminal: &mut ratatui::DefaultTerminal) -
                         }
                         KeyCode::Enter => {
                             if ctx.verify_password(&password) {
+                                let _ = ctx.admin_password.set(std::mem::take(&mut password));
                                 return Ok(true);
                             }
                             attempts += 1;
@@ -252,9 +304,6 @@ fn run_tui_loop(terminal: &mut ratatui::DefaultTerminal, ctx: TuiContext) -> Res
 pub fn run_tui_with_config(conf_path: &str, sites_dir: &str, dev_mode: bool) -> Result<()> {
     let config_manager = Arc::new(ConfigManager::new(conf_path)?);
     let metrics = crate::new_metrics();
-    let cb_config =
-        CircuitBreakerConfig::from_toml(config_manager.get_config().circuit_breaker.as_ref());
-    let circuit_breaker = Arc::new(CircuitBreaker::new(cb_config));
 
     let cfg = config_manager.get_config();
     let auth_required = cfg.admin.password_hash.is_some();
@@ -293,11 +342,53 @@ pub fn run_tui_with_config(conf_path: &str, sites_dir: &str, dev_mode: bool) -> 
     let ctx = TuiContext::new(
         config_manager,
         (*metrics).clone(),
-        circuit_breaker,
         app_manager,
         auth_required,
         rt,
     );
 
     run_tui(ctx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AdminCredentials;
+
+    fn headers(creds: &AdminCredentials) -> reqwest::header::HeaderMap {
+        let client = reqwest::Client::new();
+        creds
+            .apply(client.post("http://127.0.0.1:9090/api/v1/apps/x/restart"))
+            .build()
+            .unwrap()
+            .headers()
+            .clone()
+    }
+
+    /// The admin API refuses a Basic- or open-mode mutation without
+    /// `X-Requested-With`, and accepts Basic credentials the TUI never sent.
+    #[test]
+    fn admin_requests_carry_the_csrf_header_and_basic_credentials() {
+        let basic = AdminCredentials {
+            api_key: None,
+            basic: Some(("admin".into(), "s3cret".into())),
+        };
+        let h = headers(&basic);
+        assert_eq!(h["x-requested-with"], "soli-tui");
+        // base64("admin:s3cret")
+        assert_eq!(h["authorization"], "Basic YWRtaW46czNjcmV0");
+        assert!(h.get("x-api-key").is_none());
+        assert!(basic.is_basic_only());
+
+        let key = AdminCredentials {
+            api_key: Some("k".into()),
+            basic: None,
+        };
+        let h = headers(&key);
+        assert_eq!(h["x-api-key"], "k");
+        assert_eq!(h["x-requested-with"], "soli-tui");
+        assert!(!key.is_basic_only());
+
+        let open = AdminCredentials::default();
+        assert_eq!(headers(&open)["x-requested-with"], "soli-tui");
+    }
 }
