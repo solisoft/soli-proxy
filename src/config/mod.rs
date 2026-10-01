@@ -1077,6 +1077,9 @@ impl ConfigManager {
 bind = "0.0.0.0:80"
 https_port = 443
 worker_threads = 1  # dev default; set to "auto" or omit for one worker per CPU (production)
+# Behind a CDN/balancer: whose X-Forwarded-For to believe (CIDRs or "cloudflare").
+# trusted_proxies = []
+# request_id_header = "X-Request-Id"   # "" = off
 
 # TLS Configuration
 [tls]
@@ -1091,6 +1094,8 @@ output = "stdout"
 # Body logging flags are reserved; currently unused.
 include_request_body = false
 include_response_body = false
+# access_log = "off"         # "stdout", "stderr" or a file path
+# access_log_format = "json" # or "combined"
 
 # Metrics Configuration
 [metrics]

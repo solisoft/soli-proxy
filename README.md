@@ -12,6 +12,7 @@ reload, Lua scripting, and blue-green deploys for the apps it hosts.
 - **Load Balancing**: Round-robin, weighted and failover, with a per-backend circuit breaker
 - **WebSocket Support**: Full WebSocket proxy capabilities, with idle/lifetime/size limits
 - **Middleware**: HTTP Basic auth (per route, per app, admin API), per-IP rate limiting, request header rules, Lua hooks, JSON or text logging
+- **Behind a CDN or load balancer**: real client IP from trusted proxies (`X-Forwarded-For`, `CF-Connecting-IP`, PROXY protocol v1/v2), request IDs, and an access log (JSON or combined)
 - **Not included**: JWT/OIDC or API-key auth for proxied routes — use a Lua `on_request` hook or the backend
 - **Health Checks**: Kubernetes-compatible liveness and readiness probes
 - **App Health Monitoring**: Automatic health checks with auto-restart for managed apps
@@ -111,6 +112,11 @@ worker_threads = "auto"
 # any rule matches. So is an encoded slash (`%2F`) anywhere, unless the backend needs them as
 # data (GitLab's `group%2Fproject`, S3-style keys); `..%2F` stays rejected either way.
 allow_encoded_slash = false
+# Behind a CDN or balancer: whose forwarding headers to believe (see "Client IP behind a proxy").
+trusted_proxies = []                   # e.g. ["cloudflare"], ["10.0.0.0/8", "2400:cb00::/32"]
+real_ip_header = "X-Forwarded-For"     # or "CF-Connecting-IP", "X-Real-IP", "True-Client-IP"
+proxy_protocol = "off"                 # "v1" | "v2" | "any", or { http = "off", https = "v2" }
+request_id_header = "X-Request-Id"     # "" turns request IDs off
 
 [tls]
 mode = "auto"  # "auto" for dev, "letsencrypt" for production
@@ -128,6 +134,8 @@ output = "stdout"     # "stderr", or "file:/var/log/soli-proxy/proxy.log"
 max_size = "100MB"    # file output: rotate past this size ("0" = never)
 max_files = 5         # file output: rotated files kept (proxy.log.1 … proxy.log.5)
 log_endpoints = true  # log one line per request (method, path, host, status, latency)
+access_log = "off"    # "stdout", "stderr" or a path: one line per completed request
+access_log_format = "json"  # or "combined"
 
 [metrics]
 enabled = true
@@ -181,6 +189,37 @@ Writes go through a background thread (`tracing_appender::non_blocking`), so a s
 stalls a request; if it falls far behind, lines are dropped rather than blocking traffic.
 `level`, `format`, `output` and the rotation keys are read at startup; `log_endpoints` follows
 hot reloads. An invalid value is a startup error.
+
+#### Access log
+
+`access_log` (`off` by default; `stdout`, `stderr`, or a file path — `file:/path` works too)
+writes one line per request, separately from the proxy's own log. A file rotates by the same
+`max_size`/`max_files`; under `-d`, `stdout`/`stderr` mean `${SOLI_LOG_DIR:-.}/access.log`.
+The line is written once the response body has been sent — or abandoned — so it has the bytes
+actually sent and the whole duration:
+
+```json
+{"ts":"2026-10-01T12:34:56.789Z","client_ip":"203.0.113.9","method":"GET","host":"example.com",
+ "path":"/a?b=1","protocol":"HTTP/2.0","status":200,"bytes_in":0,"bytes_out":5120,
+ "duration_ms":12.345,"upstream":"http://127.0.0.1:3000/a?b=1","app":"blog",
+ "request_id":"5f0c…","user_agent":"curl/8.9","referer":null,"tls":true,"complete":true}
+```
+
+(one line in the file). `client_ip` is the real client (see [Client IP behind a
+proxy](#client-ip-behind-a-proxy-or-cdn)); `upstream` and `app` are set for proxied requests
+only; `complete` is `false` when the client went away or the backend failed mid-body;
+`bytes_in` is the request's `Content-Length` (0 for a chunked upload); for a WebSocket the line
+is the `101` — the tunnel's lifetime and traffic are not in it.
+`access_log_format = "combined"` writes the Apache/nginx combined format, followed by the
+proxy's own fields:
+
+```
+203.0.113.9 - - [01/Oct/2026:12:34:56 +0000] "GET /a?b=1 HTTP/2.0" 200 5120 "-" "curl/8.9" host="example.com" rt=0.012345 rid=5f0c… upstream="http://127.0.0.1:3000/a?b=1" app="blog" tls=y in=0
+```
+
+Lines are formatted into a per-thread buffer reused from request to request and queued to the
+same kind of background writer; like the proxy's log, the access log drops lines rather than
+slow traffic down if the disk cannot keep up. Both keys are read at startup.
 
 ### Admin credentials
 
@@ -300,7 +339,12 @@ backend still receives the path as sent.
   `X-Real-IP` (the connecting address), `X-Forwarded-Proto` and `X-Forwarded-Host` (the
   Host the client asked for) are set — on rule routes, app domains and WebSocket
   upgrades alike, before any Lua script sees the request, and on the admin API's
-  passthrough to the `_admin` app.
+  passthrough to the `_admin` app. The one exception is a peer listed in
+  `trusted_proxies`: see below.
+- **Every request carries a request ID** in `X-Request-Id` (or `request_id_header`), also
+  returned to the client on the response. A client's own `X-Request-Id` is replaced; one from
+  a trusted proxy is kept when it is 1–128 visible ASCII characters. W3C `traceparent` /
+  `tracestate` pass through untouched.
 - **Hop-by-hop headers are removed at the door**, including every header the client
   names in `Connection`, so a client cannot use `Connection: x-user` to delete a header
   a script set.
@@ -309,6 +353,60 @@ backend still receives the path as sent.
   header, or on HTTP/2 a `Host` that differs from `:authority` (400).
 - **WebSocket upgrades run the route's Lua hooks** (`on_request`, `on_route`) like any
   other request, and an open tunnel keeps counting against the connection limits.
+
+### Client IP behind a proxy or CDN
+
+By default the proxy is the edge: the TCP peer is the client. Put it behind Cloudflare or a
+load balancer and every client becomes the balancer — one rate-limit bucket for everyone, the
+balancer's address in logs and in `X-Real-IP`. List the peers whose word you take:
+
+```toml
+[server]
+trusted_proxies = ["cloudflare"]       # presets: "cloudflare", "private", "loopback"
+# trusted_proxies = ["10.0.0.0/8", "2400:cb00::/32", "192.0.2.10"]
+real_ip_header = "X-Forwarded-For"     # default; or "CF-Connecting-IP", "X-Real-IP", …
+```
+
+For a request from a trusted peer, the client is found by walking `X-Forwarded-For` from the
+right, skipping addresses that are themselves trusted: the first one that is not is the client
+(when every hop is trusted, the leftmost). Entries to its left were written by the client, and
+are not believed. With `real_ip_header` naming a single-address header such as
+`CF-Connecting-IP`, that header is read instead. That client is then used everywhere the
+proxy used the peer: the rate limiter, the `/metrics` loopback check, `X-Real-IP`, `$client_ip`
+in `headers { }`, Lua's `req.client_ip`, logs, and the admin API's budgets. Its forwarding
+headers are kept rather than replaced: `X-Forwarded-For` is the incoming chain with the peer
+appended, `X-Forwarded-Proto` stays as the trusted proxy set it (`http`/`https` only). A peer
+that is not trusted is handled exactly as before, and a `real_ip_header` such as
+`CF-Connecting-IP` it sends is removed.
+
+The `cloudflare` preset is Cloudflare's published ranges, compiled in
+(`CLOUDFLARE_IPV4`/`CLOUDFLARE_IPV6` in `src/edge.rs`; to refresh, compare with
+<https://www.cloudflare.com/ips-v4> and `/ips-v6`). The preset is only as good as that list: if
+your proxy is reachable without going through Cloudflare, firewall it to those ranges, or
+anyone can send a forged chain from an address you trust.
+
+**PROXY protocol.** A TCP balancer (AWS NLB, HAProxy in TCP mode) can prepend the client
+address to the connection instead:
+
+```toml
+[server]
+trusted_proxies = ["10.0.0.0/8"]
+proxy_protocol = "v2"                  # "v1", "v2", "any"; or { http = "off", https = "v2" }
+```
+
+On a listener with PROXY protocol on, every connection must start with a v1 or v2 header
+(within 5 s and 1 KiB) and come from a `trusted_proxies` address; anything else is closed. The
+header is read before TLS and HTTP, and the address it carries is the connection's peer from
+then on — including for `max_connections_per_ip`. A `LOCAL` header (the balancer's own health
+check) keeps the balancer as the peer. Enabling `proxy_protocol` with no `trusted_proxies` is a
+configuration error.
+
+**The per-IP connection cap** is applied when a connection is accepted, before any header is
+read, so without PROXY protocol it is keyed on the TCP peer. A trusted proxy is exempt from it —
+it carries everyone's connections — and stays bounded by `max_connections`; the clients behind
+it are still rate limited individually, per request.
+
+These keys are read for every connection and request, so a reload applies them.
 
 ### Connection limits
 
@@ -322,7 +420,9 @@ keep_alive_timeout = 30        # header read / idle keep-alive (HTTP/1), idle (H
 `max_connections` is one pool for both listeners. A connection takes its slot once accepted;
 when none is free the accept loop waits (up to 10 s, then closes that connection) and stops
 accepting meanwhile, so further connections queue in the kernel's listen backlog. A connection
-over `max_connections_per_ip` is closed at once.
+over `max_connections_per_ip` is closed at once. The per-IP cap is keyed on the TCP peer (or the
+PROXY protocol address), and a `trusted_proxies` peer is exempt from it — see [Client IP behind
+a proxy](#client-ip-behind-a-proxy-or-cdn).
 
 `[rate_limiting]` also keys IPv6 clients by /64: a subscriber can pick a new source
 address inside its /64 for every request, and per-address buckets were no limit at all.
@@ -376,7 +476,7 @@ override or remove those too. Values may use:
 
 | Variable | Value |
 |---|---|
-| `$client_ip` | The TCP peer's address (never a client-supplied header). |
+| `$client_ip` | The client's address: the TCP peer, or the client a trusted proxy names (never a header from an untrusted client). |
 | `$scheme` | `http` or `https`, as the client connected. |
 | `$host` | The host the request was routed on, without port. |
 
@@ -456,12 +556,14 @@ soli-proxy/
 │   ├── acme.rs               # ACME / Let's Encrypt, certificate resolver, rustls config
 │   ├── tls.rs                # Certificate loading and the TLS server config
 │   ├── logging.rs            # [logging]: subscriber, non-blocking writer, rotation
+│   ├── access_log.rs         # [logging] access_log: one line per completed request
+│   ├── edge.rs               # Client IP (trusted proxies, PROXY protocol), request IDs
 │   ├── circuit_breaker.rs
 │   ├── metrics.rs            # Prometheus-format metrics
 │   ├── pool.rs               # Upstream connection pool
-│   ├── proxy_headers.rs      # Hop-by-hop stripping, cookie coalescing, Origin rewrite
+│   ├── proxy_headers.rs      # Forwarding headers, hop-by-hop stripping, cookies, Origin
 │   └── shutdown.rs           # Graceful shutdown
-├── tests/                    # Integration tests (admin auth, routing, Lua scripts)
+├── tests/                    # Integration tests (admin auth, routing, Lua, edge)
 ├── benches/
 │   ├── routing.rs            # Rule matching & scaling benchmarks
 │   ├── components.rs         # Circuit breaker, load balancer, metrics
@@ -528,8 +630,10 @@ What a reload does **not** change — these are set up once at startup and need 
 listener addresses (`[server] bind`, `https_port`, `worker_threads`), the admin API's
 `enabled`/`bind`, TLS certificates (use `POST /api/v1/certs/reload` instead) and
 `[tls] min_version`, the Lua engine and its scripts, the rate limiter, `max_connections`, and
-`[logging]` `level`/`format`/`output`. Per-request settings — routes, `force_https`, HSTS,
-timeouts, body-size limit, `log_endpoints`, admin credentials — take effect on the next request.
+`[logging]` `level`/`format`/`output`/`access_log`/`access_log_format`. Per-request settings —
+routes, `force_https`, HSTS, timeouts, body-size limit, `log_endpoints`, admin credentials,
+`trusted_proxies`, `real_ip_header`, `request_id_header` — take effect on the next request, and
+`proxy_protocol` on the next connection.
 
 ## App Configuration (`app.infos`)
 
