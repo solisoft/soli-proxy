@@ -615,89 +615,42 @@ fn hsts_header_value(tls: &crate::config::TlsConfig) -> Option<HeaderValue> {
     HeaderValue::from_str(&value).ok()
 }
 
-/// Verify Basic Auth credentials against stored hashes
-/// Returns true if credentials are valid, false otherwise
-fn verify_basic_auth(req: &Request<Incoming>, auth_entries: &[crate::auth::BasicAuth]) -> bool {
-    if auth_entries.is_empty() {
-        return true;
+/// Check Basic Auth credentials against a route's or an app's accounts.
+///
+/// Resolves to `None` when the request may proceed, or to the response to send
+/// instead: 401 for a missing or wrong credential, 503 when the bcrypt pool
+/// stayed saturated (see `auth::Verdict::Busy`).
+///
+/// ⚠️ **Une vérification par identifiant, pas par requête — et jamais sur un
+/// worker tokio.** bcrypt coûte ~300 ms au facteur 12, par conception. Rejoué
+/// sur chaque requête, il le fait payer à la page, puis à sa feuille de style,
+/// puis à chacune de ses images ; exécuté sur un worker, une quarantaine de
+/// mauvais mots de passe par seconde suffisait à geler tout le proxy. Seuls les
+/// succès sont mémorisés, et bcrypt tourne sur le pool bloquant borné de
+/// `auth::run_bcrypt`. Voir `auth::verify_basic`.
+///
+/// Not an `async fn`: the header is copied out first, so the future borrows
+/// only the accounts and never the request, and stays `Send` whatever the body
+/// type.
+fn verify_basic_auth<'a>(
+    req: &Request<Incoming>,
+    auth_entries: &'a [crate::auth::BasicAuth],
+) -> impl std::future::Future<Output = Option<Response<BoxBody>>> + Send + 'a {
+    let authorization = req
+        .headers()
+        .get(hyper::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    async move {
+        if auth_entries.is_empty() {
+            return None;
+        }
+        match auth::verify_basic(auth_entries, authorization.as_deref()).await {
+            auth::Verdict::Granted => None,
+            auth::Verdict::Denied => Some(create_auth_required_response()),
+            auth::Verdict::Busy => Some(create_auth_busy_response()),
+        }
     }
-
-    let auth_header = req.headers().get("authorization");
-    if auth_header.is_none() {
-        return false;
-    }
-
-    let header_value = auth_header.unwrap().to_str().unwrap_or("");
-    if !header_value.starts_with("Basic ") {
-        return false;
-    }
-
-    let encoded = &header_value[6..];
-    let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
-        .unwrap_or_default();
-    let creds = String::from_utf8_lossy(&decoded);
-
-    if let Some((username, password)) = creds.split_once(':') {
-        // ⚠️ **Une vérification par identifiant, pas par requête.**
-        //
-        // bcrypt coûte ~300 ms au facteur 12, par conception. Rejoué sur chaque
-        // requête, il le fait payer à la page, puis à sa feuille de style, puis
-        // à chacune de ses images : mesuré sur un site protégé, 15 ms d'app
-        // pour 360 ms de portier. Seuls les succès sont mémorisés — un mot de
-        // passe faux repaie le prix fort, et c'est ce qui rend l'attaque par
-        // force brute toujours aussi chère. Voir `auth::verify_once`.
-        let fingerprint: Vec<u8> = auth_entries
-            .iter()
-            .flat_map(|entry| {
-                let mut bytes = entry.username.as_bytes().to_vec();
-                bytes.push(0);
-                bytes.extend_from_slice(entry.hash.as_bytes());
-                bytes.push(0);
-                bytes
-            })
-            .collect();
-
-        return auth::verify_once(&fingerprint, header_value, || {
-            let username_bytes = username.as_bytes();
-            // Locate the matching account without breaking early, so the loop's
-            // timing doesn't depend on which entry (if any) matched.
-            let mut matched_hash: Option<&str> = None;
-            for entry in auth_entries {
-                if constant_time_eq(entry.username.as_bytes(), username_bytes) {
-                    matched_hash = Some(entry.hash.as_str());
-                }
-            }
-            // Always run exactly one bcrypt verify — against the matched hash,
-            // or a dummy when the username is unknown — so a wrong username and
-            // a wrong password take the same time (no user enumeration via
-            // timing). The dummy follows the accounts' own cost, otherwise
-            // lowering a gate's cost would make the unknown-user path slower
-            // than the known one and give the enumeration back.
-            let fallback = auth::dummy_hash_at(
-                auth_entries
-                    .first()
-                    .map(|entry| auth::cost_of(&entry.hash))
-                    .unwrap_or(bcrypt::DEFAULT_COST),
-            );
-            let hash = matched_hash.unwrap_or(fallback.as_str());
-            let password_ok = auth::verify_password(password, hash);
-            matched_hash.is_some() && password_ok
-        });
-    }
-
-    false
-}
-
-/// Constant-time byte comparison to prevent timing attacks on username comparison.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff: u8 = 0;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
 }
 
 /// Create 401 Unauthorized response with WWW-Authenticate header
@@ -706,6 +659,19 @@ fn create_auth_required_response() -> Response<BoxBody> {
     Response::builder()
         .status(401)
         .header("WWW-Authenticate", "Basic realm=\"Restricted\"")
+        .body(body)
+        .unwrap()
+}
+
+/// 503 for a credential that could not be checked: every bcrypt slot stayed
+/// busy (a password-guessing flood, most likely). Not 401 — the client did
+/// nothing wrong, and a browser shown 401 would prompt for a password it has.
+fn create_auth_busy_response() -> Response<BoxBody> {
+    let body =
+        http_body_util::Full::new(Bytes::from("Authentication temporarily unavailable")).boxed();
+    Response::builder()
+        .status(503)
+        .header("Retry-After", "1")
         .body(body)
         .unwrap()
 }
@@ -1899,9 +1865,11 @@ async fn handle_request_inner(
 
     if is_websocket {
         if let Some(matched) = find_matching_rule(&req, &config.rules) {
-            if matched.requires_auth(req.uri().path()) && !verify_basic_auth(&req, &matched.auth) {
-                metrics.dec_in_flight();
-                return Ok(create_auth_required_response());
+            if matched.requires_auth(req.uri().path()) {
+                if let Some(denied) = verify_basic_auth(&req, &matched.auth).await {
+                    metrics.dec_in_flight();
+                    return Ok(denied);
+                }
             }
         }
         return handle_websocket_request(
@@ -2358,11 +2326,11 @@ async fn handle_websocket_request(
                     // Same gate as the HTTP path: an upgrade must not be a way
                     // around the app's Basic Auth.
                     if let Some(auth) = manager.auth_for_host(h).await {
-                        if auth.requires_auth(req.uri().path())
-                            && !verify_basic_auth(&req, &auth.users)
-                        {
-                            metrics.inc_errors();
-                            return Ok(create_auth_required_response());
+                        if auth.requires_auth(req.uri().path()) {
+                            if let Some(denied) = verify_basic_auth(&req, &auth.users).await {
+                                metrics.inc_errors();
+                                return Ok(denied);
+                            }
                         }
                     }
                     let path = req.uri().path();
@@ -2800,9 +2768,11 @@ async fn handle_regular_request(
             let matched_prefix = matched_route.matched_prefix(is_tls);
             let html_rewrite_prefix = matched_route.html_rewrite_prefix();
 
-            if matched_route.requires_auth(&path) && !verify_basic_auth(&req, &matched_route.auth) {
-                tracing::debug!("Basic auth failed for {}", req.uri().path());
-                return Ok((create_auth_required_response(), String::new(), vec![]));
+            if matched_route.requires_auth(&path) {
+                if let Some(denied) = verify_basic_auth(&req, &matched_route.auth).await {
+                    tracing::debug!("Basic auth failed for {}", req.uri().path());
+                    return Ok((denied, String::new(), vec![]));
+                }
             }
             let route_scripts = matched_route.route_scripts.clone();
             let query = req.uri().query().map(|q| q.to_string());
@@ -3406,11 +3376,15 @@ async fn handle_regular_request(
                     // route's `@auth` can never cover an app. `[auth]` in
                     // app.infos is where an app declares its own.
                     if let Some(auth) = manager.auth_for_host(h).await {
-                        if auth.requires_auth(req.uri().path())
-                            && !verify_basic_auth(&req, &auth.users)
-                        {
-                            tracing::debug!("Basic auth failed for app {} {}", h, req.uri().path());
-                            return Ok((create_auth_required_response(), String::new(), vec![]));
+                        if auth.requires_auth(req.uri().path()) {
+                            if let Some(denied) = verify_basic_auth(&req, &auth.users).await {
+                                tracing::debug!(
+                                    "Basic auth failed for app {} {}",
+                                    h,
+                                    req.uri().path()
+                                );
+                                return Ok((denied, String::new(), vec![]));
+                            }
                         }
                     }
                     let base_url = target.url.to_string();

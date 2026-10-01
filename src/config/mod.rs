@@ -1324,6 +1324,10 @@ fn extract_auth(s: &str) -> (String, Vec<BasicAuth>) {
         // Parse username:hash - hash is everything after the first colon
         match auth_part.split_once(':') {
             Some((username, hash)) if !username.is_empty() && !hash.is_empty() => {
+                // Kept (fail closed: nobody gets in) but never handed to bcrypt.
+                if let Err(e) = crate::auth::validate_hash(hash) {
+                    tracing::warn!("@auth entry for {:?} will never match: {}", username, e);
+                }
                 auth_entries.push(BasicAuth {
                     username: username.to_string(),
                     hash: hash.to_string(),
