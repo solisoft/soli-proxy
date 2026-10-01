@@ -11,6 +11,12 @@ default -> http://localhost:8080/
 # /app/* -> weight:70 http://10.0.0.10:8080, weight:30 http://10.0.0.11:8080
 # /app/* -> http://10.0.0.10:8080, http://10.0.0.11:8080 @lb:failover
 
+# Response compression per route: @compress:on compresses even when
+# [compression] enabled = false in config.toml, @compress:off never does
+# (already-compressed media, BREACH-sensitive pages).
+# static.example.com -> http://localhost:9001 @compress:on
+# /reports/* -> http://localhost:9002 @compress:off
+
 # Regex rules can substitute their capture groups ($1, ${name}) into the
 # target's path and query; the client's query string is appended.
 # ~^/users/(\d+)$ -> http://user-service:8080/users/$1

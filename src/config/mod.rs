@@ -1178,6 +1178,19 @@ enabled = false
 scripts_dir = "./scripts/lua"
 hook_timeout_ms = 10
 
+# Response compression (gzip/brotli/zstd). Off by default; see the README.
+# [compression]
+# enabled = true
+
+# Custom HTML pages for the proxy's own errors: 502.html, 5xx.html, ...
+# [error_pages]
+# dir = "./errors"
+
+# Maintenance mode allowlists (toggle with PUT /api/v1/maintenance).
+# [maintenance]
+# allow_ips = ["10.0.0.0/8"]
+# allow_paths = ["/up"]
+
 # Authentication: HTTP Basic only, per route (@auth:user:hash in proxy.conf),
 # per app ([auth.users] in app.infos) and for the admin API (api_key above, or
 # ADMIN_USER + ADMIN_PASSWORD_HASH). Hashes: `soli-proxy hash-password`.

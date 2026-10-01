@@ -13,6 +13,7 @@ reload, Lua scripting, and blue-green deploys for the apps it hosts.
 - **WebSocket Support**: Full WebSocket proxy capabilities, with idle/lifetime/size limits
 - **Middleware**: HTTP Basic auth (per route, per app, admin API), per-IP rate limiting, request header rules, Lua hooks, JSON or text logging
 - **Not included**: JWT/OIDC or API-key auth for proxied routes — use a Lua `on_request` hook or the backend
+- **Responses**: gzip / brotli / zstd compression (opt-in), custom HTML error pages, maintenance mode (global or per app)
 - **Health Checks**: Kubernetes-compatible liveness and readiness probes
 - **App Health Monitoring**: Automatic health checks with auto-restart for managed apps
 - **High Performance**: Built on Tokio and Hyper for maximum throughput
@@ -362,6 +363,7 @@ host are taken verbatim from the target.
 | `@script:a.lua,b.lua` | Lua scripts for this route (see `[scripting]`). |
 | `@auth:user:bcrypt-hash` | HTTP Basic Auth; repeat for several users. |
 | `@noauth:/path,/prefix/*` | Paths on a protected rule served without credentials. |
+| `@compress:on` / `@compress:off` | Compress this route's responses, or never, whatever `[compression] enabled` says. See [Compression](#compression). |
 
 Every target is also tracked by the circuit breaker (`[circuit_breaker]`): a target whose
 breaker is open is skipped by every strategy, and a rule whose targets are all open answers 503.
@@ -392,6 +394,120 @@ directive, an invalid `weight:`, a malformed `@auth` entry, an unknown `@lb` str
 name that is not a plain `*.lua` file, an unterminated `headers` block. At startup that is fatal;
 on a hot reload the previous configuration stays in force and the error is logged. (Earlier
 versions skipped such lines, which could silently drop a route or the `@auth` protecting it.)
+
+## Responses: compression, error pages, maintenance
+
+### Compression
+
+```toml
+[compression]
+enabled = true                       # default false
+algorithms = ["br", "zstd", "gzip"]  # offered, in this order of preference on a tie
+gzip_level = 5                       # 1–9
+brotli_level = 4                     # 0–11
+zstd_level = 3                       # 1–19
+min_length = 1024                    # smaller responses are sent as they are
+types = ["text/*", "application/json", "application/javascript", "image/svg+xml", "*+json", "*+xml"]
+```
+
+The proxy compresses a backend's response when the client asks for it in `Accept-Encoding`
+(q-values honoured: `q=0` refuses a coding, `identity;q=…` or `*` ranks identity against
+them; a tie goes to the order of `algorithms`) and all of these hold: the backend did not
+already set `Content-Encoding`; the status is not 1xx, 204, 206 or 304; the `Content-Type` is in
+`types` (`type/*` for a whole type, `*+json` for a suffix; the default list covers text, JSON,
+JavaScript, XML, SVG, wasm, icons and TrueType/OpenType fonts) and is not `text/event-stream`;
+the `Content-Length`, when there is one, is at least `min_length`; and the response does not say
+`Cache-Control: no-transform`. A compressed response gets `Content-Encoding`, loses
+`Content-Length` and `Accept-Ranges`, and a strong `ETag` becomes weak (`W/"…"`). Every response
+that *could* be compressed carries `Vary: Accept-Encoding`, even when this client did not ask —
+caches must keep the variants apart. A `HEAD` is never compressed (there is no body) but still
+gets `Vary`. WebSocket tunnels are never touched.
+
+Per route, `@compress:on` / `@compress:off` override `enabled`; per app, `compress = false` in
+`app.infos` opts out (`compress = true` opts in, except in multi-tenant mode, where spending the
+proxy's CPU is the operator's call). On a path-prefix mount whose HTML is rewritten, the rewrite
+happens first and the rewritten page is what gets compressed.
+
+**Why it is off by default.** Passthrough moves gigabytes per second per core; compression does
+not — roughly 50–80 MB/s for gzip at 5, 60–100 MB/s for brotli at 4, 300 MB/s for zstd at 3. An
+upgrade that switched it on would multiply the proxy's CPU per text byte by one to two orders of
+magnitude without anyone deciding to. It also changes what caches see (`Vary`, weak ETags), and
+compressing a page that reflects request input next to a secret is what BREACH exploits — an
+app that does not compress may not by accident. Caddy (`encode`), nginx (`gzip on`) and Traefik
+(the `compress` middleware) are opt-in too. Encoding runs on the request's worker, at most
+64 KiB of input per poll before it yields, so a large body never holds a worker for more than a
+fraction of a millisecond; and the encoder is flushed whenever the backend pauses, so a streamed
+or progressively rendered response reaches the client as it is produced. Each response being
+compressed holds an encoder: about 256 KiB for gzip, 1–2 MiB for brotli (1 MiB window) or zstd.
+
+### Custom error pages
+
+```toml
+[error_pages]
+dir = "/etc/soli-proxy/errors"     # relative paths are from the working directory
+intercept_upstream_errors = false  # true: replace backends' error responses too
+```
+
+The proxy's own errors — 502 for a backend it cannot reach, 503 when every target's circuit is
+open, 504 on a timeout, 421 for a host it does not serve, 401, 413, 429… — are short plain-text
+bodies. A browser (any client whose `Accept` lists `text/html`) gets a page from `dir` instead:
+`502.html` for that status, else `5xx.html` / `4xx.html`, else `default.html`; with no page, the
+plain text. Clients that do not ask for HTML — APIs, `curl` — keep the plain text. The status
+and the other headers (`Retry-After`, `WWW-Authenticate`…) are kept.
+
+Only errors the proxy generated are replaced: a backend's own 404 page, or the body of a Lua
+`deny`, is left as it is (unless `intercept_upstream_errors = true`, which extends the pages to
+backends' 4xx/5xx). Templates may use `{{status}}`, `{{reason}}`, `{{host}}` and
+`{{request_id}}` — the response's `X-Request-Id` if the proxy set one, else the request's — and
+every value is HTML-escaped. The pages are read when the configuration is loaded (at startup, on
+`SIGUSR1` or `POST /api/v1/reload`), never per request; each is capped at 64 KiB, and a missing
+directory or an oversized page is a configuration error.
+
+An app can bring its own pages in `<site>/error_pages/` (same names), used first for requests to
+its hosts. They are read at discovery — when the site appears or its `app.infos` or
+`maintenance.flag` changes — capped at 64 KiB each and 256 KiB together. In multi-tenant mode the
+directory and the pages must not be symlinks: the directory is opened without following one and
+the pages are read through that open descriptor, so a tenant cannot swap in a link to a file of
+the operator's and get it served back as an error page.
+
+### Maintenance mode
+
+```toml
+[maintenance]
+retry_after = 300                 # Retry-After, when a toggle does not say (seconds, max a week)
+allow_ips = ["203.0.113.7", "10.0.0.0/8"]   # served normally (IP or CIDR, v4 or v6)
+allow_paths = ["/up", "/status/*"]          # served normally (exact, or prefix ending in *)
+```
+
+In maintenance, requests get **503** with `Retry-After` and a page: `maintenance.html` from the
+app's `error_pages/`, else from `[error_pages] dir`, else a built-in one (`{{message}}` is the
+toggle's message). Non-HTML clients get `Service Unavailable: <message>` as text. Requests from
+`allow_ips`, to `allow_paths`, to `/.well-known/acme-challenge/` and to the proxy's own health and
+metrics endpoints go through as usual. The check is the client's TCP address; `allow_paths`
+compares the path literally (a percent-encoded or dot-segment spelling is not allowed through).
+
+Two ways to switch it:
+
+- **The admin API**, for the whole proxy or one app, persisted to `run/maintenance.json` so a
+  restart in the middle of a window does not reopen the site:
+
+  ```bash
+  curl -X PUT http://127.0.0.1:9090/api/v1/maintenance -H 'X-Requested-With: cli' \
+       -d '{"enabled": true, "retry_after": 600, "message": "Back at 14:00 UTC"}'
+  curl -X PUT http://127.0.0.1:9090/api/v1/apps/shop.example.com/maintenance \
+       -H 'X-Requested-With: cli' -d '{"enabled": false}'
+  curl http://127.0.0.1:9090/api/v1/maintenance     # what is closed, and why
+  ```
+
+- **A flag file**, for deploy scripts on the box that have no admin credentials (a tenant's, in
+  multi-tenant mode): `touch sites/<domain>/maintenance.flag` closes that app, `rm` reopens it.
+  The sites watcher picks the change up within a couple of seconds.
+
+There is deliberately no `app.infos` key: maintenance is a state a site is in for an hour, not
+part of its configuration, and a script creating or removing a file is simpler and safer than one
+rewriting TOML. A `run/maintenance.json` that does not parse stops the proxy from starting rather
+than silently reopening every site. `GET /api/v1/apps` reports `"maintenance": true` for an app
+closed either way (or by the global window).
 
 ## Architecture
 
@@ -460,8 +576,9 @@ soli-proxy/
 │   ├── metrics.rs            # Prometheus-format metrics
 │   ├── pool.rs               # Upstream connection pool
 │   ├── proxy_headers.rs      # Hop-by-hop stripping, cookie coalescing, Origin rewrite
+│   ├── response/             # Compression, custom error pages, maintenance mode
 │   └── shutdown.rs           # Graceful shutdown
-├── tests/                    # Integration tests (admin auth, routing, Lua scripts)
+├── tests/                    # Integration tests (admin auth, routing, Lua scripts, responses)
 ├── benches/
 │   ├── routing.rs            # Rule matching & scaling benchmarks
 │   ├── components.rs         # Circuit breaker, load balancer, metrics
@@ -529,7 +646,9 @@ listener addresses (`[server] bind`, `https_port`, `worker_threads`), the admin 
 `enabled`/`bind`, TLS certificates (use `POST /api/v1/certs/reload` instead) and
 `[tls] min_version`, the Lua engine and its scripts, the rate limiter, `max_connections`, and
 `[logging]` `level`/`format`/`output`. Per-request settings — routes, `force_https`, HSTS,
-timeouts, body-size limit, `log_endpoints`, admin credentials — take effect on the next request.
+timeouts, body-size limit, `log_endpoints`, admin credentials, `[compression]`,
+`[maintenance]` allowlists, and `[error_pages]` (whose pages are re-read) — take effect on the
+next request. Maintenance mode's on/off state is not configuration: a reload leaves it alone.
 
 ## App Configuration (`app.infos`)
 
@@ -584,6 +703,7 @@ admin = "$2b$12$..."   # generate with: hash-password (cost 4..=13)
 | `docker_image` | string | _none_ | If set, the app runs inside Docker using this image instead of a host process. |
 | `docker_options` | string | _none_ | Extra flags appended to `docker run`. Whitespace-split, no shell. Single-tenant: a denylist rejects `--privileged`, `--cap-add`, `--device`, `--security-opt`, `--userns`, `--volumes-from`, `--env-file`, `--group-add`, joining the `host` or another container's namespaces, and docker-socket / root mounts in every spelling (`-v/:/x`, `--mount type=bind,source=/`, `/./`, `/etc/..`). Multi-tenant: only the allowlist below is accepted. |
 | `docker_network` | string | `"soli-apps"` | Docker network the container joins (created automatically if missing). A plain network name only: `host` and `container:<id>` are refused in every mode, since the value goes straight to `--network`. Ignored in multi-tenant mode, where each app gets a private network. |
+| `compress` | bool | _unset_ | `false`: never compress this app's responses. `true`: compress them even with `[compression] enabled = false` — ignored in multi-tenant mode. Unset follows `[compression]`. See [Compression](#compression). |
 | `idle_timeout` | int (seconds) | `[apps].idle_timeout` from `config.toml`, itself `0` | Scale to zero: after this many seconds without a request the proxy stops the app and starts it again on the next one, holding that request until the app is healthy. `0` means the app never sleeps. See [Scale to zero](#scale-to-zero). |
 | `[auth.users]` | table | _empty_ | `username = "bcrypt hash"` entries. When non-empty, every request to this app's domains must present matching HTTP Basic Auth credentials. Generate a hash with `hash-password`; only bcrypt hashes at cost 4 to 13 are accepted. |
 | `[auth] noauth` | list of strings | _empty_ | Paths served without credentials, for callers that cannot send a password (a payment webhook, a health probe). Exact path, or a prefix ending in `*` — the same syntax as the `@noauth:` route directive, and the same fail-closed rule: a path carrying percent-encoding or a `..` segment is never exempt. |
@@ -905,6 +1025,8 @@ Served on `[admin] bind` (loopback `127.0.0.1:9090` by default); see
 | GET / PUT | `/api/v1/acme-challenges` | HTTP-01 tokens pushed by an external ACME orderer |
 | POST | `/api/v1/hash-password` | `{"password": ...}` → bcrypt hash |
 | GET / PUT | `/api/v1/settings` | Admin UI settings (`{"theme": ...}`) |
+| GET / PUT | `/api/v1/maintenance` | Maintenance mode for the whole proxy: `{"enabled", "retry_after"?, "message"?}` (see [Maintenance mode](#maintenance-mode)) |
+| PUT | `/api/v1/apps/{name}/maintenance` | Maintenance mode for one app, same body |
 
 Any other path is proxied to the bundled `_admin` UI app, when one is installed.
 

@@ -118,6 +118,37 @@ hook_timeout_ms = 10  # Max execution time per hook call in milliseconds
 # Environment variables Lua's `env` module may read; everything else reads nil.
 # exposed_env = ["API_BACKEND_TOKEN"]
 
+# Response compression (gzip, brotli, zstd) of backends' responses, when the
+# client accepts it and the backend did not compress. Off by default: it costs
+# 10-100x the CPU of passthrough per text byte, changes caching headers (Vary,
+# weak ETags), and compressing pages that reflect input next to secrets is
+# what BREACH exploits. Per route: @compress:on|off; per app: compress = false.
+# [compression]
+# enabled = true
+# algorithms = ["br", "zstd", "gzip"]   # preference order on a tie
+# gzip_level = 5                        # 1-9
+# brotli_level = 4                      # 0-11
+# zstd_level = 3                        # 1-19
+# min_length = 1024                     # bytes; smaller responses are left alone
+# types = ["text/*", "application/json", "application/javascript", "image/svg+xml", "*+json", "*+xml"]
+
+# Custom HTML pages for the proxy's own errors (502, 503, 504, 421, 401, 413,
+# 429...), for clients whose Accept lists text/html. Files: <status>.html,
+# 4xx.html, 5xx.html, default.html, maintenance.html; variables {{status}},
+# {{reason}}, {{host}}, {{request_id}} (escaped). Read at load/reload, 64 KiB
+# max each. Apps may add their own in <site>/error_pages/.
+# [error_pages]
+# dir = "/etc/soli-proxy/errors"
+# intercept_upstream_errors = false     # true: also replace backends' 4xx/5xx
+
+# Maintenance mode policy. The on/off switch is runtime state, not config:
+# PUT /api/v1/maintenance or /api/v1/apps/<name>/maintenance on the admin API
+# (persisted to run/maintenance.json), or touch sites/<domain>/maintenance.flag.
+# [maintenance]
+# retry_after = 300                     # seconds
+# allow_ips = ["10.0.0.0/8"]            # IPs / CIDRs served normally
+# allow_paths = ["/up"]                 # exact paths, or prefixes ending in *
+
 # Authentication
 # There is no [auth] section: the proxy implements HTTP Basic auth only, set
 # where it applies —
