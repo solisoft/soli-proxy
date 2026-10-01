@@ -654,7 +654,8 @@
                             <pre class="p-4 text-sm overflow-x-auto"><code><span class="tk">[scripting]</span>
 <span class="tf">enabled</span> = <span class="tn">true</span>                <span class="tc"># Enable Lua scripting engine</span>
 <span class="tf">scripts_dir</span> = <span class="ts">"./scripts/lua"</span>  <span class="tc"># Directory containing Lua scripts</span>
-<span class="tf">hook_timeout_ms</span> = <span class="tn">10</span>         <span class="tc"># Max execution time per hook (ms)</span></code></pre>
+<span class="tf">hook_timeout_ms</span> = <span class="tn">10</span>         <span class="tc"># Max execution time per hook (ms)</span>
+<span class="tf">exposed_env</span> = [<span class="ts">"BACKEND_TOKEN"</span>] <span class="tc"># Variables Lua's env module may read</span></code></pre>
                         </div>
                         <div class="mt-3 overflow-x-auto">
                             <table class="w-full text-sm text-left">
@@ -668,6 +669,7 @@
                                     <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">enabled</td><td class="py-2 pr-4">bool</td><td class="py-2 pr-4 text-gray-500">false</td><td class="py-2">Enable or disable scripting engine</td></tr>
                                     <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">scripts_dir</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"./scripts/lua"</td><td class="py-2">Path to Lua script files</td></tr>
                                     <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">hook_timeout_ms</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">10</td><td class="py-2">Max execution time per hook call</td></tr>
+<tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">exposed_env</td><td class="py-2 pr-4">array</td><td class="py-2 pr-4 text-gray-500">[]</td><td class="py-2">Environment variables the Lua <code class="text-cyan-300 text-xs">env</code> module may read; any other name reads <code class="text-cyan-300 text-xs">nil</code>. Scripts are loaded at startup; changing them needs a restart.</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -733,7 +735,10 @@
 <span class="tf">max_connections</span> = <span class="tn">10000</span>      <span class="tc"># Maximum concurrent connections</span>
 <span class="tf">max_request_size</span> = <span class="ts">"10MB"</span>    <span class="tc"># Maximum request body size</span>
 <span class="tf">keep_alive_timeout</span> = <span class="tn">30</span>     <span class="tc"># Keep-alive timeout in seconds</span>
-<span class="tf">request_timeout</span> = <span class="tn">60</span>        <span class="tc"># Total request timeout in seconds</span></code></pre>
+<span class="tf">request_timeout</span> = <span class="tn">60</span>        <span class="tc"># Total request timeout in seconds</span>
+<span class="tf">websocket_idle_timeout_secs</span> = <span class="tn">300</span>
+<span class="tf">websocket_max_lifetime_secs</span> = <span class="tn">3600</span>
+<span class="tf">websocket_max_bytes_per_direction</span> = <span class="tn">1073741824</span></code></pre>
                         </div>
                         <div class="mt-3 overflow-x-auto">
                             <table class="w-full text-sm text-left">
@@ -744,10 +749,13 @@
                                     <th class="py-2 font-medium">Description</th>
                                 </tr></thead>
                                 <tbody class="text-gray-300">
-                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">max_connections</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">10000</td><td class="py-2">Max concurrent connections</td></tr>
-                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">max_request_size</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">"10MB"</td><td class="py-2">Max request body size</td></tr>
-                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">keep_alive_timeout</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">30</td><td class="py-2">Keep-alive timeout (seconds)</td></tr>
-                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">request_timeout</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">60</td><td class="py-2">Total request timeout (seconds)</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">max_connections</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">none</td><td class="py-2">Simultaneous client connections across HTTP and HTTPS; further connections wait in the accept queue. Read at startup.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">max_request_size</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">none</td><td class="py-2">Request bodies above this are refused with 413 (<code class="text-cyan-300 text-xs">KB</code>/<code class="text-cyan-300 text-xs">MB</code>/<code class="text-cyan-300 text-xs">GB</code> suffixes).</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">keep_alive_timeout</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">none</td><td class="py-2">Seconds allowed to receive a request's headers; also closes idle keep-alive connections.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">request_timeout</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">60</td><td class="py-2">Seconds for the upstream exchange before the client gets 504.</td></tr>
+<tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">websocket_idle_timeout_secs</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">300</td><td class="py-2">Close a forwarded WebSocket when both directions have been silent this long.</td></tr>
+<tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">websocket_max_lifetime_secs</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">3600</td><td class="py-2">Absolute lifetime of a forwarded WebSocket.</td></tr>
+<tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">websocket_max_bytes_per_direction</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">1073741824</td><td class="py-2">Close a forwarded WebSocket once either direction has carried this many bytes.</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -863,7 +871,10 @@
                         Hot Reloading
                     </h2>
                     <p class="text-gray-400 mb-8 ml-11">
-                        Configuration changes are applied without restarting the proxy or dropping active connections. There are three ways to trigger a reload.
+                        Configuration changes are applied without restarting the proxy or dropping active connections. There are three ways to trigger a reload. Both files are parsed into a new configuration that replaces the old one in one atomic swap: requests already in flight finish under the old rules, the next request sees the new ones, and nothing is drained or closed. If either file fails to parse, the previous configuration stays in force and the error is logged.
+                    </p>
+                    <p class="text-gray-400 mb-8 ml-11">
+                        A reload does <em>not</em> change what is set up at startup: listener addresses (<code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">bind</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">https_port</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">worker_threads</code>), the admin API's <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">enabled</code>/<code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">bind</code>, TLS certificates (use <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">POST /api/v1/certs/reload</code>) and <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">min_version</code>, the Lua engine and its scripts, the rate limiter, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">max_connections</code>, and <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">[logging]</code> level/format/output. Those need a restart. The file watcher only watches <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">proxy.conf</code>; after editing <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">config.toml</code>, send SIGUSR1 or call the admin endpoint.
                     </p>
 
                     <!-- Three methods grid -->
@@ -889,7 +900,7 @@
                                 <h4 class="font-semibold text-white">Admin API</h4>
                             </div>
                             <p class="text-sm text-gray-400 mb-3">HTTP endpoint for programmatic reload from scripts or CI/CD.</p>
-                            <code class="text-xs text-cyan-300 bg-cyan-500/10 px-2 py-1 rounded block">POST http://localhost:9090/reload</code>
+                            <code class="text-xs text-cyan-300 bg-cyan-500/10 px-2 py-1 rounded block">POST http://localhost:9090/api/v1/reload</code>
                         </div>
 
                         <!-- File Watcher -->
@@ -937,11 +948,12 @@
                                 </div>
                                 <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
                             </div>
-                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tc"># Without API key</span>
-<span class="tf">curl</span> <span class="tk">-X POST</span> <span class="ts">http://localhost:9090/reload</span>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tc"># Without API key (loopback only): mutations need X-Requested-With</span>
+<span class="tf">curl</span> <span class="tk">-X POST</span> <span class="ts">http://localhost:9090/api/v1/reload</span> \
+  <span class="tk">-H</span> <span class="ts">"X-Requested-With: curl"</span>
 
 <span class="tc"># With API key authentication</span>
-<span class="tf">curl</span> <span class="tk">-X POST</span> <span class="ts">http://localhost:9090/reload</span> \
+<span class="tf">curl</span> <span class="tk">-X POST</span> <span class="ts">http://localhost:9090/api/v1/reload</span> \
   <span class="tk">-H</span> <span class="ts">"X-API-Key: your-secret-key"</span></code></pre>
                         </div>
                     </div>

@@ -92,7 +92,9 @@
 <span class="tk">EXPOSE</span> <span class="tn">80</span> <span class="tn">443</span> <span class="tn">9090</span>
 
 <span class="tk">ENTRYPOINT</span> [<span class="ts">"soli-proxy"</span>]
-<span class="tk">CMD</span> [<span class="ts">"--config"</span>, <span class="ts">"/etc/soli-proxy/config.toml"</span>]</code></pre>
+<span class="tc"># --conf takes proxy.conf; config.toml is read from the same directory</span>
+<span class="tk">WORKDIR</span> /etc/soli-proxy
+<span class="tk">CMD</span> [<span class="ts">"--conf"</span>, <span class="ts">"/etc/soli-proxy/proxy.conf"</span>, <span class="ts">"--sites-dir"</span>, <span class="ts">"/etc/soli-proxy/sites"</span>]</code></pre>
                         </div>
 
                         <!-- docker-compose Tab -->

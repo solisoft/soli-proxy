@@ -83,6 +83,23 @@
   a Basic-auth admin API: it sent only `X-Api-Key`, so every call was a 401; it now reuses the
   password typed at its login as HTTP Basic (polling every 5 s in that mode), sends
   `X-Requested-With` on every request, and reports refused credentials as such.
+* **`soli-proxy hash-password` exists.** The README, `app.infos` docs and the admin API hints all
+  named it; only a separate `hash-password` binary did. The subcommand prompts twice without echo
+  (or reads stdin when it is not a terminal), prints only the hash, never takes the password from
+  argv, and accepts `--cost 4..31` (default 12).
+* **Lua examples named in `config.toml` ship, and `rate_limit.lua` is not spoofable.**
+  `scripts/lua/cors.lua` (allowlisted origins, preflights answered with 204 and the
+  `Access-Control-Allow-*` headers) and `scripts/lua/logging.lua` now exist. `rate_limit.lua`
+  keyed its buckets on the client-supplied `X-Forwarded-For`, so every request could claim a fresh
+  budget; it now keys on `req.client_ip` when the proxy provides it, else one bucket per host.
+* **Documentation matches the code.** The README no longer claims API-key/JWT auth for routes,
+  "graceful draining" on reload, a `soli-proxy [dev|prod]` CLI or `SOLI_CONFIG_PATH`, or calls
+  the project a forward proxy; the dead `[auth]` block (with `jwt`/`jwks_url`) is gone from
+  `config.toml` and from the generated default. Newly documented: `[limits]` WebSocket keys,
+  `[scripting] exposed_env`, `force_https`, `max_connections`, `request_timeout`, every admin
+  endpoint (`routing-table`, `acme-challenges`, `app-metrics*`, `events/apps`, `settings`, …),
+  what a hot reload does and does not change, and the real project layout. The www docs' reload
+  examples now use `/api/v1/reload` and the Docker example the real `--conf` flag.
 
 ## [0.35.2](https://github.com/solisoft/soli-proxy/compare/v0.35.1...v0.35.2) (2026-09-27)
 

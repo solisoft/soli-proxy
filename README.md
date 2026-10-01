@@ -1,16 +1,18 @@
 # Soli Proxy
 
-A high-performance, production-ready forward proxy server built in Rust with HTTP/2+ support, automatic HTTPS, and hot config reload.
+A high-performance reverse proxy built in Rust, with HTTP/2 support, automatic HTTPS, hot config
+reload, Lua scripting, and blue-green deploys for the apps it hosts.
 
 ## Features
 
 - **HTTP/2+ Support**: Native HTTP/2 with automatic fallback to HTTP/1.1
 - **Automatic HTTPS**: Self-signed certificates for development, Let's Encrypt for production
-- **Hot Config Reload**: Update configuration without dropping connections
+- **Hot Config Reload**: Routing rules swap atomically, without dropping connections (see [Hot Reload](#hot-reload) for what needs a restart)
 - **Simple Configuration**: Custom config format with comments support
-- **Load Balancing**: Round-robin, weighted, and health-checked backends
-- **WebSocket Support**: Full WebSocket proxy capabilities
-- **Middleware**: Authentication (Basic, API Key, JWT), Rate Limiting, JSON Logging
+- **Load Balancing**: Round-robin, weighted and failover, with a per-backend circuit breaker
+- **WebSocket Support**: Full WebSocket proxy capabilities, with idle/lifetime/size limits
+- **Middleware**: HTTP Basic auth (per route, per app, admin API), per-IP rate limiting, request header rules, Lua hooks, JSON or text logging
+- **Not included**: JWT/OIDC or API-key auth for proxied routes — use a Lua `on_request` hook or the backend
 - **Health Checks**: Kubernetes-compatible liveness and readiness probes
 - **App Health Monitoring**: Automatic health checks with auto-restart for managed apps
 - **High Performance**: Built on Tokio and Hyper for maximum throughput
@@ -49,14 +51,18 @@ cargo build --release
 soli-proxy [OPTIONS] [COMMAND]
 
 Options:
-  -c, --conf <CONF>            Config file [default: ./proxy.conf]
-  -d, --daemon                 Run as daemon
-      --dev                    Development mode
-      --watch <WATCH>          Watch config & sites for changes [default: true]
-      --sites-dir <SITES_DIR>  Sites directory [default: ./sites]
+  -c, --conf <CONF>            Routing rules; config.toml and .env are read from the same
+                               directory [default: ./proxy.conf]
+  -d, --daemon                 Fork into the background (proxy.pid, proxy.log)
+      --dev                    Development mode (.test aliases, one worker, apps get --dev)
+      --watch <WATCH>          Reload proxy.conf and rescan sites on change [default: true]
+      --sites-dir <SITES_DIR>  One sub-directory per app, named after its domain [default: ./sites]
   -h, --help                   Print help
   -V, --version                Print version
 ```
+
+There are no `dev`/`prod` positional modes and no `--config` flag: production vs development is
+`--dev` plus `[tls] mode` in `config.toml`.
 
 ### Subcommands
 
@@ -74,8 +80,13 @@ Other subcommands:
 
 ```
 soli-proxy tui [-c <conf>] [--sites-dir <DIR>] [--dev]   # Interactive terminal UI
-soli-proxy update [--reinstall]                          # Self-update from GitHub releases
+soli-proxy update [--reinstall] [--allow-unverified]     # Self-update from GitHub releases
+soli-proxy hash-password [--cost N]                      # bcrypt hash for @auth / [auth.users] / ADMIN_PASSWORD_HASH
 ```
+
+`hash-password` prompts twice without echo (or reads the first line of stdin when it is not a
+terminal — `echo "$PW" | soli-proxy hash-password`), prints only the hash on stdout, and never
+takes the password from the command line. `--cost` defaults to 12 (4–31).
 
 The TUI is a separate process: traffic metrics and circuit-breaker state come from the running
 proxy's admin API (`/api/v1/metrics`, `/api/v1/app-metrics`, `/api/v1/circuit-breaker`), and
@@ -125,10 +136,29 @@ liveness_path = "/health/live"
 readiness_path = "/health/ready"
 
 [rate_limiting]
-enabled = true
+enabled = true            # per client IP, token bucket, shared by the proxy and admin API
 requests_per_second = 1000
 burst_size = 2000
+
+[limits]
+max_connections = 10000   # simultaneous client connections; further ones wait to be accepted
+max_request_size = "10MB" # request bodies above this get 413
+keep_alive_timeout = 30   # seconds to receive a request's headers (closes idle keep-alives)
+request_timeout = 60      # seconds for the upstream exchange before a 504 (default 60)
+websocket_idle_timeout_secs = 300           # close a forwarded WebSocket silent this long
+websocket_max_lifetime_secs = 3600          # absolute cap per WebSocket
+websocket_max_bytes_per_direction = 1073741824
+
+[scripting]
+enabled = true
+scripts_dir = "./scripts/lua"   # cors.lua, logging.lua, rate_limit.lua ship here
+hook_timeout_ms = 10
+exposed_env = ["BACKEND_TOKEN"] # the only variables Lua's `env` module can read
 ```
+
+`[tls] force_https` (default `true`) answers plaintext requests for hosts the proxy serves with
+a `308` to `https://`. The full key-by-key reference is on the
+[configuration page](https://proxy.solisoft.net/docs/configuration).
 
 ### Logging
 
@@ -331,48 +361,55 @@ versions skipped such lines, which could silently drop a route or the `@auth` pr
 └─────────────────────────────────────────────────────┘
 ```
 
-## Command Line Options
+## Environment Variables
 
-```bash
-soli-proxy [dev|prod] [OPTIONS]
+| Variable | Effect |
+|---|---|
+| `ADMIN_USER`, `ADMIN_PASSWORD_HASH`, `ADMIN_PASSWORD` | Admin API Basic credentials (see [Admin credentials](#admin-credentials)); also read from `<config dir>/.env`. |
+| `RUST_LOG` | Log filter when `[logging] level` is not set. |
+| `SOLI_LOG_DIR` | Directory of `proxy.log` under `-d` when `[logging] output` names no file (default `.`). |
+| `SOLI_PID_DIR` | Directory of `proxy.pid` under `-d` (default `.`). |
+| `XDG_CACHE_HOME`, `SOLI_RELEASE_BASE_URL`, `SOLI_NO_PIN`, `HTTP(S)_PROXY`, `NO_PROXY`, `SSL_CERT_FILE`, `SSL_CERT_DIR` | Passed through to spawned apps (see [The app's environment](#the-apps-environment)). |
 
-Modes:
-  dev   Development mode with self-signed certificates
-  prod  Production mode with Let's Encrypt support
-
-Environment Variables:
-  SOLI_CONFIG_PATH    Path to proxy.conf (default: ./proxy.conf)
-```
+The config location is set with `--conf` only.
 
 ## Project Structure
 
 ```
 soli-proxy/
 ├── Cargo.toml
-├── config.toml           # Main configuration
-├── proxy.conf            # Proxy rules
+├── config.toml               # Main configuration (example)
+├── proxy.conf.sample         # Routing rules (example)
 ├── src/
-│   ├── main.rs           # Entry point
-│   ├── lib.rs            # Library root
+│   ├── main.rs               # CLI, startup, signals, self-update, hash-password
+│   ├── lib.rs                # Library root
 │   ├── bin/
-│   │   ├── httptest.rs   # End-to-end proxy throughput test
-│   │   └── hash-password.rs
-│   ├── config/           # Config parsing & hot reload
-│   ├── server/           # HTTP/HTTPS server
-│   ├── admin/            # Admin API server
-│   ├── acme/             # ACME / Let's Encrypt
-│   ├── tls.rs            # TLS & certificate management
+│   │   ├── httptest.rs       # End-to-end proxy throughput test
+│   │   └── hash-password.rs  # Standalone hasher (same as `soli-proxy hash-password`)
+│   ├── config/               # config.toml + proxy.conf parsing, serializer, hot reload
+│   ├── server/               # HTTP/HTTPS listeners, routing, forwarding, WebSockets
+│   ├── admin/                # Admin REST API (+ proxy to the bundled _admin UI app)
+│   ├── app/                  # App discovery, blue-green deploys, ports, cluster routes
+│   ├── auth/                 # bcrypt hashing and Basic-auth verification cache
+│   ├── scripting/            # Lua engine and hooks (feature "scripting")
+│   ├── tui/                  # `soli-proxy tui` terminal UI
+│   ├── acme.rs               # ACME / Let's Encrypt, certificate resolver, rustls config
+│   ├── tls.rs                # Certificate loading and the TLS server config
+│   ├── logging.rs            # [logging]: subscriber, non-blocking writer, rotation
 │   ├── circuit_breaker.rs
-│   ├── metrics.rs        # Prometheus-format metrics
-│   ├── pool.rs           # Connection pool
-│   ├── auth.rs           # Authentication
-│   ├── app/              # App management & blue-green deploy
-│   └── shutdown.rs       # Graceful shutdown
+│   ├── metrics.rs            # Prometheus-format metrics
+│   ├── pool.rs               # Upstream connection pool
+│   ├── proxy_headers.rs      # Hop-by-hop stripping, cookie coalescing, Origin rewrite
+│   └── shutdown.rs           # Graceful shutdown
+├── tests/                    # Integration tests (admin auth, routing, Lua scripts)
 ├── benches/
-│   ├── routing.rs        # Rule matching & scaling benchmarks
-│   ├── components.rs     # Circuit breaker, load balancer, metrics
-│   └── config_parsing.rs # Config file parsing benchmarks
-└── scripts/              # Helper scripts
+│   ├── routing.rs            # Rule matching & scaling benchmarks
+│   ├── components.rs         # Circuit breaker, load balancer, metrics
+│   └── config_parsing.rs     # Config file parsing benchmarks
+├── scripts/                  # systemd unit, Lua examples (scripts/lua), helper scripts
+├── deploy/                   # sudoers grant for setcap
+├── docs/                     # Workstation setup, mkcert
+└── www/                      # Documentation site (a Soli app)
 ```
 
 ## Performance
@@ -412,12 +449,27 @@ cargo run --release --bin httptest -- --requests 50000 --concurrency 200
 
 ## Hot Reload
 
-Configuration changes are detected automatically:
-1. File watcher monitors proxy.conf
-2. On change, config is reloaded atomically
-3. New connections use new config
-4. Existing connections continue with old config
-5. Graceful draining of old connections
+What triggers a reload:
+
+1. A change to `proxy.conf`, picked up by a file watcher (on by default; `--watch false`
+   disables it). `config.toml` is **not** watched.
+2. `SIGUSR1` (`systemctl reload soli-proxy`), or `POST /api/v1/reload` on the admin API — both
+   re-read `proxy.conf` **and** `config.toml`.
+3. Admin API route edits, which rewrite `proxy.conf` and swap the rules in directly.
+
+What happens: both files are parsed into a new configuration, which replaces the old one in a
+single atomic swap. Each request reads the configuration once, when it starts, so requests
+already in flight finish under the old rules and the next request on the same connection sees
+the new ones. No connection is closed or drained — the listeners do not depend on the rules. If
+either file fails to parse, nothing changes: the error is logged (or returned by the admin
+endpoint) and the previous configuration stays in force.
+
+What a reload does **not** change — these are set up once at startup and need a restart:
+listener addresses (`[server] bind`, `https_port`, `worker_threads`), the admin API's
+`enabled`/`bind`, TLS certificates (use `POST /api/v1/certs/reload` instead) and
+`[tls] min_version`, the Lua engine and its scripts, the rate limiter, `max_connections`, and
+`[logging]` `level`/`format`/`output`. Per-request settings — routes, `force_https`, HSTS,
+timeouts, body-size limit, `log_endpoints`, admin credentials — take effect on the next request.
 
 ## App Configuration (`app.infos`)
 
@@ -700,6 +752,35 @@ With it on:
 
 > Docker has a long history of container escapes. This raises the cost of one; it is not a VM
 > boundary. For genuinely hostile code, treat it as the first step toward gVisor or Firecracker.
+
+## Admin API
+
+Served on `[admin] bind` (loopback `127.0.0.1:9090` by default); see
+[Admin credentials](#admin-credentials) for authentication and the CSRF rule for mutations
+(`X-Requested-With`, below under Domain Aliases). Responses are `{"ok": true, "data": ...}`.
+
+| Method | Path | |
+|---|---|---|
+| GET | `/api/v1/status` | Version, uptime, route and app counts |
+| GET / PUT | `/api/v1/config` | Rules and global scripts as JSON / replace them |
+| GET / POST | `/api/v1/routes` | List / add a route |
+| GET / PUT / DELETE | `/api/v1/routes/{index}` | One route |
+| POST | `/api/v1/reload` | Re-read `proxy.conf` and `config.toml` |
+| POST | `/api/v1/certs/reload` | Rescan `certs/` |
+| GET | `/api/v1/metrics` | Prometheus metrics |
+| GET | `/api/v1/app-metrics`, `/api/v1/app-metrics/system`, `/api/v1/apps/{name}/metrics` | Per-app traffic, memory and CPU |
+| GET | `/api/v1/events/apps` | Server-Sent Events: app deploys, status changes, quarantine |
+| GET | `/api/v1/apps`, `/api/v1/apps/{name}`, `/api/v1/apps/by-domain` | Managed apps |
+| POST | `/api/v1/apps/{name}/deploy` \| `restart` \| `rollback` \| `stop` | App lifecycle |
+| GET | `/api/v1/apps/{name}/logs` | Deployment logs |
+| GET / POST / DELETE | `/api/v1/aliases`, `/api/v1/apps/{name}/aliases[/{domain}]` | Domain aliases |
+| GET / POST | `/api/v1/circuit-breaker`, `/api/v1/circuit-breaker/reset` | Circuit-breaker state / reset |
+| GET / PUT | `/api/v1/routing-table` | Cluster-pushed routes (complete set, increasing `index`; a stale push gets 409) |
+| GET / PUT | `/api/v1/acme-challenges` | HTTP-01 tokens pushed by an external ACME orderer |
+| POST | `/api/v1/hash-password` | `{"password": ...}` → bcrypt hash |
+| GET / PUT | `/api/v1/settings` | Admin UI settings (`{"theme": ...}`) |
+
+Any other path is proxied to the bundled `_admin` UI app, when one is installed.
 
 ## Reloading Certificates
 

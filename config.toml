@@ -52,10 +52,14 @@ readiness_path = "/health/ready"
 
 # Limits Configuration
 [limits]
-max_connections = 10000
-max_request_size = "10MB"
-keep_alive_timeout = 30
-request_timeout = 60
+max_connections = 10000      # concurrent client connections; extra ones wait to be accepted
+max_request_size = "10MB"    # request bodies above this get 413
+keep_alive_timeout = 30      # seconds to receive request headers (closes idle keep-alives)
+request_timeout = 60         # seconds for the upstream exchange before a 504
+# Forwarded WebSockets:
+# websocket_idle_timeout_secs = 300            # close if both directions are silent this long
+# websocket_max_lifetime_secs = 3600           # absolute cap per connection
+# websocket_max_bytes_per_direction = 1073741824
 
 # Rate Limiting Configuration (in-process token bucket; redis_url is unused)
 [rate_limiting]
@@ -90,7 +94,8 @@ bind = "127.0.0.1:9090"
 
 # Lua Scripting Configuration
 # When enabled, scripts are loaded from scripts_dir.
-# Scripts can be assigned globally or per-route in proxy.conf:
+# Scripts can be assigned globally or per-route in proxy.conf
+# (cors.lua, logging.lua and rate_limit.lua ship in scripts/lua/):
 #   [global] @script:cors.lua,logging.lua
 #   /api/* -> http://localhost:3000  @script:auth.lua,rate_limit.lua
 # Built-in modules: log, base64, crypto, env, time, shared
@@ -98,15 +103,14 @@ bind = "127.0.0.1:9090"
 enabled = false
 scripts_dir = "./scripts/lua"
 hook_timeout_ms = 10  # Max execution time per hook call in milliseconds
+# Environment variables Lua's `env` module may read; everything else reads nil.
+# exposed_env = ["API_BACKEND_TOKEN"]
 
-# Authentication Configuration
-[auth]
-enabled = false
-auth_type = "basic"
-realm = "Restricted"
-# Uncomment and configure for production
-# enabled = true
-# auth_type = "jwt"
-# issuer = "https://auth.example.com"
-# audience = "soli-proxy"
-# jwks_url = "https://auth.example.com/.well-known/jwks.json"
+# Authentication
+# There is no [auth] section: the proxy implements HTTP Basic auth only, set
+# where it applies —
+#   * per route in proxy.conf:      app.example.com -> http://... @auth:user:<bcrypt>
+#   * per app in its app.infos:     [auth.users] user = "<bcrypt>"
+#   * for the admin API:            [admin] api_key, or ADMIN_USER + ADMIN_PASSWORD_HASH
+# Hashes come from `soli-proxy hash-password`. JWT / API-key auth for proxied
+# routes is not implemented; do it in a Lua on_request hook or in the backend.

@@ -1068,11 +1068,9 @@ enabled = false
 scripts_dir = "./scripts/lua"
 hook_timeout_ms = 10
 
-# Authentication Configuration
-[auth]
-enabled = false
-auth_type = "basic"
-realm = "Restricted"
+# Authentication: HTTP Basic only, per route (@auth:user:hash in proxy.conf),
+# per app ([auth.users] in app.infos) and for the admin API (api_key above, or
+# ADMIN_USER + ADMIN_PASSWORD_HASH). Hashes: `soli-proxy hash-password`.
 "#;
             std::fs::write(&config_toml_path, default_config).ok();
             default_config.to_string()
