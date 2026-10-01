@@ -180,7 +180,16 @@ that one file. Edit the path inside if your binary does not live at
 
 ## 3. Browser-trusted certs with mkcert
 
-Generate one wildcard per parent domain and drop it in `certs/`:
+`scripts/local-test-certs.sh` does this whole section — create the CA, fill
+both trust stores, mint a wildcard per `.test` parent the proxy actually
+serves, reload, and verify each hostname against the CA:
+
+```bash
+scripts/local-test-certs.sh
+```
+
+It is idempotent, so it is also the way to re-mint after a CA rotation. By hand
+it is one wildcard per parent domain, dropped in `certs/`:
 
 ```bash
 mkcert -install
@@ -190,8 +199,15 @@ mkcert -cert-file _wildcard.solisoft.test.cert.pem \
        "*.solisoft.test" "solisoft.test"
 ```
 
-Restart the proxy — cert files are scanned once at startup and are **not**
-hot-reloaded; see [`tls-mkcert.md`](tls-mkcert.md#why-a-full-restart-not-a-reload).
+Then `curl -fsS -X POST -H 'X-Requested-With: cli' \
+http://127.0.0.1:9090/api/v1/certs/reload` — no restart needed; see
+[`tls-mkcert.md`](tls-mkcert.md#reloading-certificates-without-a-restart).
+
+There is deliberately no `*.test` catch-all. A wildcard sitting directly under
+the TLD is refused by OpenSSL and by browsers — mkcert warns when it mints one
+— so it would look like coverage while serving nothing. A one-label host such
+as `pdfx.test` needs its own exact certificate, which the resolver prefers over
+any wildcard anyway.
 
 ### The Linux gotcha: two trust stores, and mkcert only fills one
 

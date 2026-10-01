@@ -139,14 +139,23 @@ clients are good to go.
 To add a new parent domain, edit the `PARENTS=(...)` array at the top of
 the script.
 
-## Why a full restart, not a reload
+## Reloading certificates without a restart
 
-`AcmeCertResolver` is built from a one-shot scan of `certs/` in
-`main.rs::main`. Hot-reload paths (config file watcher, `SIGUSR1`, admin
-`POST /api/v1/reload`) only re-parse `config.toml` and rebuild routing —
-they do not call `TlsManager::load_all_cached_certs` again. Until that
-gap is closed, treat cert changes as a restart-required operation.
+`POST /api/v1/certs/reload` on the admin API re-runs
+`TlsManager::load_all_cached_certs`, which rescans `certs/` and replaces every
+entry in `AcmeCertResolver` — per-domain and wildcard alike — in place. Live
+connections are not dropped. The generic reload paths (config file watcher,
+`SIGUSR1`, `POST /api/v1/reload`) still only re-parse `config.toml` and rebuild
+routing; it is the dedicated `certs/reload` route that touches TLS.
 
-If you need a smoother reload story, the work is small: invoke
-`load_all_cached_certs` + `build()` from the reload path and swap the
-`Arc<ServerConfig>` atomically. File an issue or PR if it starts to bite.
+Like every mutation on the admin API it needs an `X-Requested-With` header —
+without one it answers `403 cross-site request rejected`:
+
+```bash
+curl -fsS -X POST -H 'X-Requested-With: cli' \
+  http://127.0.0.1:9090/api/v1/certs/reload
+```
+
+A reload only ever *adds or replaces*. A cert whose file you deleted stays
+registered until the process restarts, so removing coverage — as opposed to
+renewing it — is still a restart.
