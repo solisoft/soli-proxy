@@ -2,6 +2,7 @@ use bcrypt::{hash, verify, DEFAULT_COST};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
@@ -193,9 +194,23 @@ const CACHE_TTL: Duration = Duration::from_secs(300);
 /// cheapest sane answer.
 const CACHE_CAPACITY: usize = 4096;
 
-/// How long a credential check may wait for a free bcrypt slot before the
-/// request is answered 503.
-const BCRYPT_QUEUE_WAIT: Duration = Duration::from_secs(1);
+/// How long a queued credential check may wait for a free bcrypt slot before
+/// the request is answered 503.
+///
+/// Long enough for a burst of real logins to clear on a small machine: with
+/// two slots and ~300 ms per check, the sixteenth caller in line is served
+/// after about two and a half seconds. A 1 s limit turned that burst away —
+/// three people logging in at once on a two-core box got a 503.
+const BCRYPT_QUEUE_WAIT: Duration = Duration::from_secs(10);
+
+/// Queued checks allowed per bcrypt slot. Past `slots × this`, a check is
+/// answered 503 at once instead of joining the queue: what bounds a flood is
+/// the queue's length, so it can never grow without limit, while the wait
+/// above stays generous for whoever got in line.
+const BCRYPT_QUEUE_PER_SLOT: usize = 16;
+
+/// Credential checks waiting for a bcrypt slot right now.
+static BCRYPT_WAITING: AtomicUsize = AtomicUsize::new(0);
 
 /// The outcome of a credential check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -204,8 +219,8 @@ pub enum Verdict {
     Granted,
     /// Missing, malformed or wrong.
     Denied,
-    /// Every bcrypt slot stayed busy for [`BCRYPT_QUEUE_WAIT`]: the credential
-    /// was not checked. Answer 503 with `Retry-After`, never 401 — the client
+    /// The bcrypt queue was full, or every slot stayed busy for
+    /// [`BCRYPT_QUEUE_WAIT`]: the credential was not checked. Answer 503 with `Retry-After`, never 401 — the client
     /// did nothing wrong, and a browser shown 401 would prompt for a password
     /// it already has.
     Busy,
@@ -220,20 +235,45 @@ pub enum Verdict {
 /// pool, and this semaphore bounds how many run at once, so a flood of guesses
 /// costs at most half the machine and the other half keeps serving.
 fn bcrypt_slots() -> &'static Arc<Semaphore> {
-    static SLOTS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| {
-        let cores = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(2);
-        Arc::new(Semaphore::new((cores / 2).max(2)))
-    });
+    static SLOTS: LazyLock<Arc<Semaphore>> =
+        LazyLock::new(|| Arc::new(Semaphore::new(bcrypt_slot_count())));
     &SLOTS
+}
+
+fn bcrypt_slot_count() -> usize {
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(2);
+    (cores / 2).max(2)
+}
+
+/// One place in the bcrypt queue, released when the check gets a slot or
+/// gives up.
+struct QueuePlace;
+
+impl QueuePlace {
+    fn take() -> Option<Self> {
+        let limit = bcrypt_slot_count() * BCRYPT_QUEUE_PER_SLOT;
+        BCRYPT_WAITING
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < limit).then_some(n + 1)
+            })
+            .ok()
+            .map(|_| QueuePlace)
+    }
+}
+
+impl Drop for QueuePlace {
+    fn drop(&mut self) {
+        BCRYPT_WAITING.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 /// Run a bcrypt operation off the async workers, bounded by [`bcrypt_slots`].
 ///
-/// Returns `None` when no slot frees up within [`BCRYPT_QUEUE_WAIT`] — the
-/// caller answers 503 rather than queueing without bound — or if the work
-/// panicked. The slot is held by the blocking task itself, so a client that
+/// Returns `None` — the caller answers 503 — when the queue already holds
+/// [`BCRYPT_QUEUE_PER_SLOT`] checks per slot, when no slot frees up within
+/// [`BCRYPT_QUEUE_WAIT`], or if the work panicked. The slot is held by the blocking task itself, so a client that
 /// disconnects mid-check does not free it early: what is bounded is CPU actually
 /// in use, not requests still listening.
 pub async fn run_bcrypt<T, F>(work: F) -> Option<T>
@@ -241,10 +281,19 @@ where
     T: Send + 'static,
     F: FnOnce() -> T + Send + 'static,
 {
-    let permit = tokio::time::timeout(BCRYPT_QUEUE_WAIT, bcrypt_slots().clone().acquire_owned())
-        .await
-        .ok()?
-        .ok()?;
+    let permit = match bcrypt_slots().clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            let place = QueuePlace::take()?;
+            let permit =
+                tokio::time::timeout(BCRYPT_QUEUE_WAIT, bcrypt_slots().clone().acquire_owned())
+                    .await
+                    .ok()?
+                    .ok()?;
+            drop(place);
+            permit
+        }
+    };
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         work()

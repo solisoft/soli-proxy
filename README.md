@@ -369,9 +369,11 @@ dashboard.example.com -> http://localhost:3000 \
 
 - **bcrypt never runs on the request workers.** Each check goes to a blocking pool bounded to
   half the cores (at least two), so a flood of wrong passwords costs at most that share of the
-  CPU and every other site keeps answering. When no slot frees up within a second the request
-  gets **`503` with `Retry-After: 1`** rather than queueing without bound (not 401: the client
-  did nothing wrong, and a browser would prompt for a password it already has).
+  CPU and every other site keeps answering. A check waits up to 10 s for a slot, so a burst of
+  real logins on a small machine is served; but the queue holds at most 16 checks per slot, and
+  past that a request gets **`503` with `Retry-After: 1`** at once rather than queueing without
+  bound (not 401: the client did nothing wrong, and a browser would prompt for a password it
+  already has).
 - **Successes are remembered for five minutes, failures never.** A page and its sub-resources
   pay bcrypt once; a wrong password pays it every time. The cache key covers the configured
   hashes, so rotating a password takes effect immediately, and a remembered credential gets in

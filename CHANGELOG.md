@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Bug Fixes
+
+* **A burst of real logins is no longer turned away on a small machine.** 1.0.0 answered 503 to a
+  Basic-auth check that could not get a bcrypt slot within one second. With two slots and
+  ~300 ms per check, three people logging in at once on a two-core box could get a 503 — and CI's
+  two-core runner did, failing a test on `main`. A check now waits up to 10 s; what bounds a
+  flood is the queue's length instead: at most 16 waiting checks per slot, and past that a 503 at
+  once. Ordinary traffic is unaffected either way, since bcrypt never runs on the request
+  workers.
+
 ## [1.0.0](https://github.com/solisoft/soli-proxy/compare/v0.35.2...v1.0.0) (2026-10-01)
 
 1.0 closes a full security and performance audit of 0.35 and adds what a proxy fronting a fleet of
