@@ -1,4 +1,4 @@
-use super::{LoadBalancingStrategy, ProxyRule, RuleMatcher};
+use super::{LoadBalancingStrategy, ProxyRule, RuleMatcher, DEFAULT_TARGET_WEIGHT};
 
 /// Serialize proxy rules and global scripts back to the proxy.conf text format.
 pub fn serialize_proxy_conf(rules: &[ProxyRule], global_scripts: &[String]) -> String {
@@ -19,7 +19,22 @@ pub fn serialize_proxy_conf(rules: &[ProxyRule], global_scripts: &[String]) -> S
             RuleMatcher::DomainPath(domain, path) => format!("{}{}", domain, path),
         };
 
-        let targets_str: Vec<String> = rule.targets.iter().map(|t| t.url.to_string()).collect();
+        // Weights are written whenever they mean something (a weighted rule)
+        // or differ from the default, so what the admin API stored survives
+        // the next reload — they used to be dropped, and every target came
+        // back at 100.
+        let weighted = rule.load_balancing == LoadBalancingStrategy::Weighted;
+        let targets_str: Vec<String> = rule
+            .targets
+            .iter()
+            .map(|t| {
+                if weighted || t.weight != DEFAULT_TARGET_WEIGHT {
+                    format!("weight:{} {}", t.weight, t.url)
+                } else {
+                    t.url.to_string()
+                }
+            })
+            .collect();
         let targets_joined = targets_str.join(", ");
 
         let scripts_suffix = if rule.scripts.is_empty() {
@@ -42,23 +57,36 @@ pub fn serialize_proxy_conf(rules: &[ProxyRule], global_scripts: &[String]) -> S
             format!(" @noauth:{}", rule.auth_exempt.join(","))
         };
 
-        let lb_suffix = match rule.load_balancing {
-            LoadBalancingStrategy::RoundRobin if rule.targets.len() > 1 => {
-                "  @lb:round-robin".to_string()
-            }
-            LoadBalancingStrategy::Weighted if rule.targets.len() > 1 => {
-                "  @lb:weighted".to_string()
-            }
-            LoadBalancingStrategy::Failover if rule.targets.len() > 1 => {
-                "  @lb:failover".to_string()
-            }
-            _ => String::new(),
-        };
+        // Written for any multi-target rule, and for a single-target rule
+        // whose strategy is not the default (a written `weight:` would
+        // otherwise read back as weighted).
+        let lb_suffix =
+            if rule.targets.len() > 1 || rule.load_balancing != LoadBalancingStrategy::default() {
+                match rule.load_balancing {
+                    LoadBalancingStrategy::RoundRobin => "  @lb:round-robin",
+                    LoadBalancingStrategy::Weighted => "  @lb:weighted",
+                    LoadBalancingStrategy::Failover => "  @lb:failover",
+                }
+            } else {
+                ""
+            };
 
         output.push_str(&format!(
             "{} -> {}{}{}{}{}\n",
             matcher_str, targets_joined, scripts_suffix, auth_suffix, noauth_suffix, lb_suffix
         ));
+
+        if !rule.headers.is_empty() {
+            output.push_str("headers {\n");
+            for header in &rule.headers {
+                if header.remove {
+                    output.push_str(&format!("    -{}\n", header.name));
+                } else {
+                    output.push_str(&format!("    {}: {}\n", header.name, header.value));
+                }
+            }
+            output.push_str("}\n");
+        }
     }
 
     output
@@ -197,6 +225,50 @@ mod tests {
 
         let output = serialize_proxy_conf(&rules, &[]);
         assert!(!output.contains("@noauth"), "{output}");
+    }
+
+    /// Weights and `headers { }` blocks were dropped on the way back to disk,
+    /// so the first admin-API edit of any rule erased them.
+    #[test]
+    fn test_weights_and_headers_roundtrip() {
+        let conf = "\
+/api/* -> weight:70 http://heavy:8080/, weight:30 http://light:8080/  @lb:weighted
+headers {
+    X-Real-IP: $client_ip
+    -Cookie
+}
+/solo/* -> weight:7 http://solo:8080/
+~^/u/(\\d+)$ -> http://u:8080/users/$1
+";
+        let (rules, scripts) = crate::config::parse_proxy_config(conf).unwrap();
+        let output = serialize_proxy_conf(&rules, &scripts);
+        assert!(output.contains("weight:70 http://heavy:8080/"), "{output}");
+        assert!(output.contains("    X-Real-IP: $client_ip\n"), "{output}");
+        assert!(output.contains("    -Cookie\n"), "{output}");
+
+        let (reparsed, _) = crate::config::parse_proxy_config(&output).unwrap();
+        assert_eq!(reparsed.len(), rules.len());
+        for (a, b) in rules.iter().zip(&reparsed) {
+            assert_eq!(a.matcher, b.matcher);
+            assert_eq!(a.load_balancing, b.load_balancing, "{output}");
+            let w = |r: &ProxyRule| {
+                r.targets
+                    .iter()
+                    .map(|t| (t.url.to_string(), t.weight))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(w(a), w(b));
+            let h = |r: &ProxyRule| {
+                r.headers
+                    .iter()
+                    .map(|h| (h.name.clone(), h.value.clone(), h.remove))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(h(a), h(b));
+        }
+        // A lone weighted target keeps its strategy and its weight.
+        assert_eq!(reparsed[1].load_balancing, LoadBalancingStrategy::Weighted);
+        assert_eq!(reparsed[1].targets[0].weight, 7);
     }
 
     #[test]

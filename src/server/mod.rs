@@ -3041,6 +3041,21 @@ async fn handle_regular_request(
                 }
             }
 
+            // The rule's `headers { }` block, applied last so it can override
+            // the forwarding headers normalised above.
+            let header_rules = &config.rules[matched_route.rule_idx].headers;
+            if !header_rules.is_empty() {
+                crate::config::apply_header_rules(
+                    request.headers_mut(),
+                    header_rules,
+                    &crate::config::HeaderVars {
+                        client_ip: peer_addr.map(|a| a.ip()),
+                        scheme: if is_tls { "https" } else { "http" },
+                        host: &matched_route.host,
+                    },
+                );
+            }
+
             match client.request(request).await {
                 Ok(mut response) => {
                     // Hop-by-hop headers are per-connection and must not be
@@ -3542,20 +3557,23 @@ async fn handle_regular_request(
 }
 
 /// How the target URL is resolved from the matched route
-enum UrlResolution {
+enum UrlResolution<'a> {
     /// Domain, Default: append full request path
     AppendPath,
     /// DomainPath, Prefix: strip prefix, append suffix
     StripPrefix(String),
-    /// Exact, Regex: use target URL as-is
+    /// Exact: use target URL as-is
     Identity,
+    /// Regex: substitute the pattern's capture groups (`$1`, `${name}`) into
+    /// the target's path and query
+    Regex(&'a crate::config::RegexMatcher),
 }
 
 /// A matched routing rule with all the info needed to resolve a target URL
 struct MatchedRoute<'a> {
     targets: &'a [crate::config::Target],
     from_domain_rule: bool,
-    resolution: UrlResolution,
+    resolution: UrlResolution<'a>,
     route_scripts: Vec<String>,
     auth: Vec<crate::auth::BasicAuth>,
     auth_exempt: Vec<String>,
@@ -3650,6 +3668,22 @@ fn resolve_target_url(
             push_joined_path(&mut out, base, suffix)
         }
         UrlResolution::Identity => out.push_str(base),
+        UrlResolution::Regex(rm) => {
+            // Captures go into the path and query only: the scheme and
+            // authority are copied verbatim, so a capture can never change
+            // which host the request is sent to.
+            let head = &target.url[..url::Position::BeforePath];
+            let tail = &base[head.len()..];
+            out.push_str(head);
+            match tail
+                .contains('$')
+                .then(|| rm.regex.captures(path))
+                .flatten()
+            {
+                Some(caps) => crate::config::expand_captures(tail, &caps, &mut out),
+                None => out.push_str(tail),
+            }
+        }
     }
     if let Some(q) = query {
         // A target that carries its own query string gets the client's
@@ -3799,7 +3833,7 @@ fn find_matching_rule<'a>(
                 return Some(MatchedRoute {
                     targets: &rule.targets,
                     from_domain_rule: false,
-                    resolution: UrlResolution::Identity,
+                    resolution: UrlResolution::Regex(rm),
                     route_scripts: rule.scripts.clone(),
                     auth: rule.auth.clone(),
                     auth_exempt: rule.auth_exempt.clone(),
@@ -3834,8 +3868,37 @@ fn find_matching_rule<'a>(
     None
 }
 
+fn gcd(mut a: usize, mut b: usize) -> usize {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
+}
+
+/// Stride for the weighted schedule: the integer coprime with `total`
+/// closest to `total / φ`. Stepping through `0..total` by it visits every
+/// slot once per cycle (so each target gets exactly its weight) and spreads
+/// consecutive picks across the targets' ranges instead of sending a run of
+/// `weight` requests to each in turn — for 70:30 (reduced to 7:3 first)
+/// the sequence is A B A A B A A B A A, the same as nginx's smooth weighted
+/// round-robin, without a lock or per-rule mutable state.
+fn weighted_stride(total: usize) -> usize {
+    if total <= 2 {
+        return 1;
+    }
+    let ideal = (total as f64 * 0.618_033_988_75).round() as usize;
+    (0..total)
+        .flat_map(|d| [ideal.saturating_add(d), ideal.saturating_sub(d)])
+        .find(|&c| c > 0 && c < total && gcd(c, total) == 1)
+        .unwrap_or(1)
+}
+
 /// Select a target based on the load balancing strategy.
 /// Returns (resolved_url, base_url) for logging and circuit breaker tracking.
+///
+/// Candidates are checked against the circuit breaker by `&str`; only the
+/// chosen target's URL is copied (this used to allocate a `String` for every
+/// candidate examined).
 fn select_target(
     route: &MatchedRoute<'_>,
     path: &str,
@@ -3844,69 +3907,63 @@ fn select_target(
     load_balancer: &LoadBalancerState,
 ) -> Option<(String, String)> {
     let targets = route.targets;
-    if targets.is_empty() {
+    let num_targets = targets.len();
+    if num_targets == 0 {
         return None;
     }
+    let pick = |target: &crate::config::Target| {
+        let resolved = resolve_target_url(target, path, query, &route.resolution);
+        (resolved, target.url.as_str().to_owned())
+    };
+    let available =
+        |target: &crate::config::Target| circuit_breaker.is_available(target.url.as_str());
 
     match route.load_balancing {
         crate::config::LoadBalancingStrategy::Failover => {
             // Failover: use first available target (circuit breaker aware)
-            for target in targets {
-                let base_url = target.url.as_str().to_owned();
-                if circuit_breaker.is_available(&base_url) {
-                    let resolved = resolve_target_url(target, path, query, &route.resolution);
-                    return Some((resolved, base_url));
-                }
-            }
-            None
+            targets.iter().find(|t| available(t)).map(pick)
         }
         crate::config::LoadBalancingStrategy::RoundRobin => {
             // Round-robin: cycle through all targets, skip unhealthy ones
-            let num_targets = targets.len();
-            if num_targets == 0 {
-                return None;
-            }
             let start_idx = load_balancer.select_index(route.rule_idx, num_targets);
-
-            for i in 0..num_targets {
-                let idx = (start_idx + i) % num_targets;
-                let target = &targets[idx];
-                let base_url = target.url.as_str().to_owned();
-                if circuit_breaker.is_available(&base_url) {
-                    let resolved = resolve_target_url(target, path, query, &route.resolution);
-                    return Some((resolved, base_url));
-                }
-            }
-            None
+            (0..num_targets)
+                .map(|i| &targets[(start_idx + i) % num_targets])
+                .find(|t| available(t))
+                .map(pick)
         }
         crate::config::LoadBalancingStrategy::Weighted => {
-            // Weighted: use weights to determine distribution, skip unhealthy
-            let total_weight: u32 = targets.iter().map(|t| t.weight as u32).sum();
-            // All weights zero: fall through to "first available" below instead
-            // of recursing on the same Weighted route (which would loop forever).
-            if total_weight > 0 {
-                let start_idx = (load_balancer.bump(route.rule_idx) % total_weight as usize) as u32;
-                let mut cumulative = 0u32;
-
-                for target in targets.iter() {
-                    cumulative += target.weight as u32;
-                    let base_url = target.url.as_str().to_owned();
-                    if cumulative > start_idx && circuit_breaker.is_available(&base_url) {
-                        let resolved = resolve_target_url(target, path, query, &route.resolution);
-                        return Some((resolved, base_url));
-                    }
+            // Weighted: slot `k` of each cycle of `total` requests maps, via
+            // the stride permutation, onto the target whose cumulative weight
+            // range holds it. Weight 0 means drained: never chosen while a
+            // weighted target is available.
+            // Weights are reduced by their common divisor first, so 70:30
+            // cycles like 7:3 — a short cycle interleaves more evenly.
+            let divisor = targets.iter().fold(0, |g, t| gcd(g, t.weight as usize));
+            if divisor > 0 {
+                let total: usize = targets.iter().map(|t| t.weight as usize / divisor).sum();
+                let k = load_balancer.bump(route.rule_idx) % total;
+                let slot = ((k as u64 * weighted_stride(total) as u64) % total as u64) as usize;
+                let mut cumulative = 0;
+                let chosen = targets
+                    .iter()
+                    .position(|t| {
+                        cumulative += t.weight as usize / divisor;
+                        slot < cumulative
+                    })
+                    .unwrap_or(0);
+                // The chosen target, or — if its breaker is open — the next
+                // weighted one along that is available.
+                if let Some(target) = (0..num_targets)
+                    .map(|i| &targets[(chosen + i) % num_targets])
+                    .find(|t| t.weight > 0 && available(t))
+                {
+                    return Some(pick(target));
                 }
             }
 
-            // Fallback: try any available target
-            for target in targets {
-                let base_url = target.url.as_str().to_owned();
-                if circuit_breaker.is_available(&base_url) {
-                    let resolved = resolve_target_url(target, path, query, &route.resolution);
-                    return Some((resolved, base_url));
-                }
-            }
-            None
+            // Every weighted target is down (or all weights are zero): any
+            // available target, drained ones included, beats a 503.
+            targets.iter().find(|t| available(t)).map(pick)
         }
     }
 }
@@ -4326,6 +4383,145 @@ mod tests {
         // returns the first one (rather than looping forever).
         let selected = select_target(&route, "/p", None, &cb, &lb);
         assert_eq!(selected.unwrap().1, "http://127.0.0.1:3001/");
+    }
+
+    fn weighted_route<'a>(
+        targets: &'a [crate::config::Target],
+        strategy: &'a crate::config::LoadBalancingStrategy,
+    ) -> MatchedRoute<'a> {
+        MatchedRoute {
+            targets,
+            from_domain_rule: false,
+            resolution: UrlResolution::AppendPath,
+            route_scripts: vec![],
+            auth: vec![],
+            auth_exempt: vec![],
+            load_balancing: strategy,
+            host: "example.com".to_string(),
+            rule_idx: 0,
+        }
+    }
+
+    fn weighted(url: &str, weight: u8) -> crate::config::Target {
+        crate::config::Target {
+            url: url::Url::parse(url).unwrap(),
+            weight,
+        }
+    }
+
+    /// `weight:70` / `weight:30` must split traffic 70/30 exactly over each
+    /// cycle, and interleave rather than send 70 in a row to one target.
+    #[test]
+    fn weighted_selection_follows_the_weights_and_interleaves() {
+        let targets = vec![
+            weighted("http://heavy:8080", 70),
+            weighted("http://light:8080", 30),
+        ];
+        let strategy = crate::config::LoadBalancingStrategy::Weighted;
+        let route = weighted_route(&targets, &strategy);
+        let cb = crate::circuit_breaker::CircuitBreaker::new(
+            crate::circuit_breaker::CircuitBreakerConfig::default(),
+        );
+        let lb = LoadBalancerState::new(1);
+        let picks: Vec<bool> = (0..1000)
+            .map(|_| select_target(&route, "/x", None, &cb, &lb).unwrap().1 == "http://heavy:8080/")
+            .collect();
+        assert_eq!(picks.iter().filter(|h| **h).count(), 700);
+        // Smoothness: no run of the heavy target longer than 3, and every
+        // window of 10 holds exactly 3 light picks (7:3 reduces to a cycle of
+        // 10 at the stride used).
+        let longest_run = picks.split(|h| !*h).map(|run| run.len()).max().unwrap();
+        assert!(longest_run <= 3, "longest run {longest_run}");
+        for window in picks.chunks(100) {
+            assert_eq!(window.iter().filter(|h| !**h).count(), 30);
+        }
+
+        // Three targets, uneven weights.
+        let targets = vec![
+            weighted("http://a:1", 5),
+            weighted("http://b:1", 3),
+            weighted("http://c:1", 2),
+        ];
+        let route = weighted_route(&targets, &strategy);
+        let lb = LoadBalancerState::new(1);
+        let mut counts = std::collections::HashMap::new();
+        for _ in 0..1000 {
+            let (_, base) = select_target(&route, "/", None, &cb, &lb).unwrap();
+            *counts.entry(base).or_insert(0) += 1;
+        }
+        assert_eq!(counts["http://a:1/"], 500);
+        assert_eq!(counts["http://b:1/"], 300);
+        assert_eq!(counts["http://c:1/"], 200);
+    }
+
+    #[test]
+    fn weight_zero_drains_a_target() {
+        let targets = vec![weighted("http://old:1", 0), weighted("http://new:1", 10)];
+        let strategy = crate::config::LoadBalancingStrategy::Weighted;
+        let route = weighted_route(&targets, &strategy);
+        let cb = crate::circuit_breaker::CircuitBreaker::new(
+            crate::circuit_breaker::CircuitBreakerConfig::default(),
+        );
+        let lb = LoadBalancerState::new(1);
+        for _ in 0..50 {
+            assert_eq!(
+                select_target(&route, "/", None, &cb, &lb).unwrap().1,
+                "http://new:1/"
+            );
+        }
+    }
+
+    #[test]
+    fn weighted_stride_is_coprime_with_the_total() {
+        for total in 1..2000 {
+            let s = weighted_stride(total);
+            let mut seen = vec![false; total];
+            for k in 0..total {
+                seen[(k * s) % total] = true;
+            }
+            assert!(seen.iter().all(|v| *v), "total {total} stride {s}");
+        }
+    }
+
+    #[test]
+    fn regex_target_substitutes_captures_and_keeps_the_query() {
+        let rm = crate::config::RegexMatcher::new(r"^/users/(\d+)(?:/(?P<tab>\w+))?$").unwrap();
+        let resolution = UrlResolution::Regex(&rm);
+        let t = target("http://user-service:8080/users/$1/${tab}");
+        assert_eq!(
+            resolve_target_url(&t, "/users/42/posts", Some("page=2"), &resolution),
+            "http://user-service:8080/users/42/posts?page=2"
+        );
+        // A group that did not take part expands to nothing.
+        assert_eq!(
+            resolve_target_url(&t, "/users/7", None, &resolution),
+            "http://user-service:8080/users/7/"
+        );
+        // A target without references is used as-is.
+        assert_eq!(
+            resolve_target_url(
+                &target("http://u:8080/fixed"),
+                "/users/7",
+                None,
+                &resolution
+            ),
+            "http://u:8080/fixed"
+        );
+    }
+
+    /// A capture lands in the path, never the authority, whatever the
+    /// pattern and target look like.
+    #[test]
+    fn regex_captures_cannot_change_the_target_host() {
+        let rm = crate::config::RegexMatcher::new(r"^/go/(.*)$").unwrap();
+        let resolution = UrlResolution::Regex(&rm);
+        let t = target("http://backend:8080/$1");
+        let resolved = resolve_target_url(&t, "/go/@evil.com/x", None, &resolution);
+        assert_eq!(resolved, "http://backend:8080/@evil.com/x");
+        assert_eq!(
+            url::Url::parse(&resolved).unwrap().host_str(),
+            Some("backend")
+        );
     }
 
     fn xff_count(s: &str) -> usize {

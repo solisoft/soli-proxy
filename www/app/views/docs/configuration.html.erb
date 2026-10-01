@@ -177,6 +177,21 @@
 <span class="tc"># Match UUID-based resource paths</span>
 <span class="tf">~^/resources/[0-9a-f]{8}-[0-9a-f]{4}-.*$</span> <span class="tk">-></span> <span class="ts">http://resources:8092</span></code></pre>
                         </div>
+                        <p class="text-gray-400 text-sm mt-3 mb-3">A regex rule's target may use the pattern's capture groups &mdash; <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">$1</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">${1}</code>, or <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">${name}</code> for <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">(?P&lt;name&gt;...)</code> &mdash; in its path and query; the client's query string is appended. A group that did not take part in the match expands to nothing, and naming a group the pattern does not have is a load error. Captures never reach the scheme or host, which are taken verbatim from the target.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">proxy.conf</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tc"># /users/42?tab=posts -> http://user-service:8080/users/42?tab=posts</span>
+<span class="tf">~^/users/(\d+)$</span> <span class="tk">-></span> <span class="ts">http://user-service:8080/users/$1</span>
+
+<span class="tc"># Named groups</span>
+<span class="tf">~^/u/(?P&lt;id&gt;\d+)/(?P&lt;tab&gt;\w+)$</span> <span class="tk">-></span> <span class="ts">http://user-service:8080/users/${id}/${tab}</span></code></pre>
+                        </div>
                     </div>
 
                     <!-- HTML URL Rewriting -->
@@ -229,6 +244,24 @@
           <span class="ts">http://backend2:8080</span>, \
           <span class="ts">http://backend3:8080</span></code></pre>
                         </div>
+                        <p class="text-gray-400 text-sm mt-3 mb-3">Prefix a target with <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">weight:N</code> (0&ndash;255, default 100) for weighted balancing; a rule with any weight uses <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@lb:weighted</code> unless it names another strategy. Weights are reduced by their common divisor and interleaved &mdash; 70:30 sends A B A A B A A B A A rather than 70 requests then 30. <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">weight:0</code> drains a target: it takes no traffic while another weighted target is up, and serves only as a last resort. <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@lb:round-robin</code> (the default) and <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@lb:failover</code> (first available target) are the other strategies; every strategy skips a target whose circuit breaker is open.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">proxy.conf</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tc"># 70% / 30%</span>
+<span class="tf">/api/heavy</span> <span class="tk">-></span> weight:70 <span class="ts">http://heavy:8080</span>, weight:30 <span class="ts">http://light:8080</span>
+
+<span class="tc"># Drain the old backend before removing it</span>
+<span class="tf">/app/*</span> <span class="tk">-></span> weight:0 <span class="ts">http://old:8080</span>, weight:1 <span class="ts">http://new:8080</span>
+
+<span class="tc"># All traffic to the first target that is up</span>
+<span class="tf">/db/*</span> <span class="tk">-></span> <span class="ts">http://primary:8080</span>, <span class="ts">http://replica:8080</span> <span class="tt">@lb:failover</span></code></pre>
+                        </div>
                     </div>
 
                     <!-- Per-route Lua scripts -->
@@ -280,6 +313,28 @@
 <span class="tf">app.example.com</span> <span class="tk">-></span> <span class="ts">http://app:8080</span> <span class="tt">@auth:admin:$2b$12$...</span> \
                   <span class="tt">@noauth:/webhooks/stripe,/hooks/*,/healthz</span></code></pre>
                         </div>
+                    </div>
+
+                    <!-- Request headers -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-3">Request Headers</h3>
+                        <p class="text-gray-400 text-sm mb-3">A <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">headers {</code> block applies to the <em>rule right above it</em> and ends with <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">}</code> on its own line. <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Name: value</code> sets a header on the request sent upstream, replacing what the client sent; <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">-Name</code> removes one. The block runs after the proxy has set <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">X-Forwarded-For</code>/<code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">-Proto</code>/<code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">-Host</code>, so it can override those too. Values may use <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">$client_ip</code> (the TCP peer, never a client header), <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">$scheme</code> and <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">$host</code>; <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">$$</code> is a literal dollar. Hop-by-hop and framing headers (<code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Connection</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Transfer-Encoding</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Content-Length</code>&hellip;) cannot be set. WebSocket upgrades and app-managed domains are not affected.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">proxy.conf</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tf">api.example.com</span> <span class="tk">-></span> <span class="ts">http://api:3000</span>
+<span class="tk">headers {</span>
+    X-Real-IP: $client_ip
+    X-Forwarded-Proto: $scheme
+    -X-Debug-Token
+<span class="tk">}</span></code></pre>
+                        </div>
+                        <p class="text-gray-400 text-sm mt-3">Any line the parser does not understand &mdash; an unknown directive, a bad <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">weight:</code>, a malformed <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@auth</code>, an unclosed block &mdash; is an error naming its line number: fatal at startup, and on a hot reload the previous rules stay in force. Earlier versions skipped such lines.</p>
                     </div>
 
                     <!-- Global scripts -->

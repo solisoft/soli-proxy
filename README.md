@@ -167,19 +167,19 @@ For a single Arch/Omarchy workstation — wildcard `.test` DNS, binding 80/443 a
 ### Proxy Rules (proxy.conf)
 
 ```proxy
-# Comments are supported
+# Comments are supported (whole lines only)
 default -> http://localhost:3000
 
 /api/* -> http://localhost:8080
 /ws -> ws://localhost:9000
 
-# Load balancing
+# Load balancing (round-robin by default)
 /api/* -> http://10.0.0.10:8080, http://10.0.0.11:8080, http://10.0.0.12:8080
 
-# Weighted routing
+# Weighted routing: 70% / 30%, interleaved
 /api/heavy -> weight:70 http://heavy:8080, weight:30 http://light:8080
 
-# Regex routing
+# Regex routing with capture substitution
 ~^/users/(\d+)$ -> http://user-service:8080/users/$1
 
 # External https backend (Host/Origin are rewritten to the target's own
@@ -189,10 +189,12 @@ mirror.example.com -> https://origin.example.net
 # Permanent redirect to a new canonical domain (301, path and query preserved)
 old.example.com -> redirect://new.example.com
 
-# Headers to add
+# Request headers for the rule right above
+api.example.com -> http://localhost:8080
 headers {
-    X-Forwarded-For: $client_ip
+    X-Real-IP: $client_ip
     X-Forwarded-Proto: $scheme
+    -X-Debug-Token
 }
 
 # HTTP Basic Auth on a route (hash from: soli-proxy hash-password)
@@ -203,6 +205,72 @@ secure.example.com -> http://localhost:9000 @auth:admin:$2b$12$...
 app.example.com -> http://localhost:8080 @auth:admin:$2b$12$... \
                    @noauth:/webhooks/stripe,/hooks/*
 ```
+
+#### Sources (left of `->`)
+
+| Source | Matches |
+|---|---|
+| `default` or `*` | Anything no other rule matched. Like an exact rule, the target is used as-is: the request path is **not** appended (only the query string is). |
+| `example.com` | Every request whose `Host` is that domain; the full path is appended to the target. |
+| `example.com/api/*`, `example.com/api` | That domain, under that path prefix; the prefix is stripped before forwarding. |
+| `/api/*` | That path prefix on any host; the prefix is stripped. |
+| `/health` | Exactly that path, on any host; the target is used as-is. |
+| `~^/users/(\d+)$` | A regular expression on the path ([Rust `regex` syntax](https://docs.rs/regex)). |
+
+Domain rules are tried first, then exact/prefix/regex rules in file order, then `default`.
+
+#### Targets (right of `->`)
+
+Comma-separated URLs (`http://`, `https://`, `ws://`, `redirect://`), each optionally preceded by
+`weight:N`. A line ending in `\` continues on the next one. After a stripped prefix, the rest of
+the path is always joined to the target as a path (`/api/x` on `/api/* -> http://h/v2` goes to
+`http://h/v2/x`), and a target's own query string gets the client's appended with `&`.
+
+**Regex captures.** A regex rule's target may use `$1`, `${1}` or `${name}` (for
+`(?P<name>...)` groups) in its path and query; the client's query string is appended. A group
+that did not take part in the match expands to nothing, and naming a group the pattern does not
+have is a load error. Captures are substituted into the path and query only — the scheme and
+host are taken verbatim from the target.
+
+**Directives**, anywhere after the arrow:
+
+| Directive | Effect |
+|---|---|
+| `@lb:round-robin` / `@lb:weighted` / `@lb:failover` | Load-balancing strategy for multi-target rules. Default `round-robin`, or `weighted` when any target has a `weight:`. `failover` sends everything to the first available target. |
+| `weight:N` (before a target) | Share of traffic under `@lb:weighted`, 0–255, default 100. Weights are reduced by their common divisor and spread evenly (70:30 sends A B A A B A A B A A, not 70 then 30). **`weight:0` drains** a target: it gets no traffic while any weighted target is available, and serves only as a last resort when every other one's circuit breaker is open. |
+| `@script:a.lua,b.lua` | Lua scripts for this route (see `[scripting]`). |
+| `@auth:user:bcrypt-hash` | HTTP Basic Auth; repeat for several users. |
+| `@noauth:/path,/prefix/*` | Paths on a protected rule served without credentials. |
+
+Every target is also tracked by the circuit breaker (`[circuit_breaker]`): a target whose
+breaker is open is skipped by every strategy, and a rule whose targets are all open answers 503.
+
+#### `headers { }` blocks
+
+A `headers {` line opens a block that applies to the **rule right above it**, closed by `}` on a
+line of its own. Each line is either `Name: value`, which sets the header on the request sent
+upstream (replacing whatever the client sent), or `-Name`, which removes it. The block is applied
+after the proxy has set `X-Forwarded-For`, `X-Forwarded-Proto` and `X-Forwarded-Host`, so it can
+override or remove those too. Values may use:
+
+| Variable | Value |
+|---|---|
+| `$client_ip` | The TCP peer's address (never a client-supplied header). |
+| `$scheme` | `http` or `https`, as the client connected. |
+| `$host` | The host the request was routed on, without port. |
+
+`$$` is a literal `$`. Hop-by-hop and framing headers (`Connection`, `Keep-Alive`,
+`Transfer-Encoding`, `TE`, `Trailer`, `Upgrade`, `Content-Length`, `Proxy-Connection`) cannot
+be set. Blocks apply to proxied HTTP requests; WebSocket upgrades and app-managed domains are
+not affected.
+
+#### Errors
+
+A line the parser does not understand is an error naming its line number — an unknown
+directive, an invalid `weight:`, a malformed `@auth` entry, an unknown `@lb` strategy, a script
+name that is not a plain `*.lua` file, an unterminated `headers` block. At startup that is fatal;
+on a hot reload the previous configuration stays in force and the error is logged. (Earlier
+versions skipped such lines, which could silently drop a route or the `@auth` protecting it.)
 
 ## Architecture
 

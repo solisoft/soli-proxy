@@ -36,6 +36,30 @@
   targeted `/home/soli/.local/bin/soli-proxy`, which the grantee can replace with a symlink —
   `setcap` follows it, so the account could give `cap_net_bind_service` to any binary on the
   machine. It now names `/usr/local/bin/soli-proxy`; install the binary there, root-owned.
+* **`weight:N` is parsed, round-tripped and honoured.** The README's
+  `/api -> weight:70 http://a, weight:30 http://b` never parsed (every target was stored at
+  weight 100), and the admin API's rewrite of `proxy.conf` dropped weights anyway. Targets now
+  take `weight:0`–`255`; any weight implies `@lb:weighted` unless the rule names a strategy;
+  `weight:0` drains a target (last resort only). The weighted picker reduces weights by their
+  common divisor and interleaves them with a coprime stride — 70:30 goes A B A A B A A B A A,
+  exactly 70/30 per cycle, with no lock — and the picker no longer allocates a `String` per
+  candidate examined.
+* **`headers { }` blocks work.** They were documented and silently ignored. A block now applies
+  to the rule above it: `Name: value` sets an upstream request header (after the proxy's own
+  `X-Forwarded-*`, so it can override them), `-Name` removes one, and values may use
+  `$client_ip`, `$scheme`, `$host`. Hop-by-hop/framing headers are refused. Blocks round-trip
+  through the admin API.
+* **Regex rules substitute their captures.** `~^/users/(\d+)$ -> http://svc/users/$1` sent the
+  literal `$1`. `$N`, `${N}` and `${name}` are now expanded in the target's path and query (never
+  its host), the client's query string is kept, and a reference to a group the pattern lacks is
+  a load error.
+* **`proxy.conf` lines the parser cannot read are errors.** Lines without `->`, unknown `@`
+  directives, unknown `@lb` strategies, invalid `@script` names, malformed `@auth` entries (which
+  left the route *unprotected*), invalid `@noauth` paths and junk after `[global]` were all
+  skipped or defaulted, at most with a warning. Each is now an error naming its line: fatal at
+  startup, a no-op on reload. **Operators upgrading:** a file that loaded before may now be
+  refused — the log says which line. Also fixed: directives written after a `@script:` list were
+  dropped, and `example.com/api` (no `/*`) became the unmatchable prefix `api`.
 
 ## [0.35.2](https://github.com/solisoft/soli-proxy/compare/v0.35.1...v0.35.2) (2026-09-27)
 

@@ -1,3 +1,25 @@
+# Soli Proxy routing rules. The full reference is the "Proxy Rules" section of
+# README.md. Any line the parser does not understand is an error naming its
+# line number: fatal at startup, and on a hot reload the previous rules stay.
+
 default -> http://localhost:8080/
 /api/* -> http://localhost:8888/
 /ws -> ws://localhost:8888/
+
+# Several targets: round-robin by default, or weighted when any target has a
+# `weight:` (0-255, default 100; weight:0 drains a target).
+# /app/* -> weight:70 http://10.0.0.10:8080, weight:30 http://10.0.0.11:8080
+# /app/* -> http://10.0.0.10:8080, http://10.0.0.11:8080 @lb:failover
+
+# Regex rules can substitute their capture groups ($1, ${name}) into the
+# target's path and query; the client's query string is appended.
+# ~^/users/(\d+)$ -> http://user-service:8080/users/$1
+
+# A `headers {` block applies to the rule right above it: `Name: value` sets
+# a request header sent upstream, `-Name` removes one. Variables: $client_ip,
+# $scheme, $host ($$ for a literal $).
+# api.example.com -> http://localhost:9000
+# headers {
+#     X-Real-IP: $client_ip
+#     -X-Debug-Token
+# }
