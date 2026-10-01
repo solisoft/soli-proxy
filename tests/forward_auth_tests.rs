@@ -336,6 +336,44 @@ async fn denied_request_gets_the_auth_services_401() {
     );
 }
 
+/// Custom error pages leave the auth service's denial alone: it is the
+/// service's answer (a login form, a JSON error), relayed like a backend's,
+/// and only `intercept_upstream_errors` replaces it. It used to be taken for
+/// one of the proxy's own 401s and swapped for the proxy's page.
+#[tokio::test]
+async fn custom_error_pages_do_not_replace_the_auth_services_denial() {
+    let pages = tempfile::tempdir().unwrap();
+    std::fs::write(pages.path().join("401.html"), "proxy page").unwrap();
+    for intercept in [false, true] {
+        let (backend, _seen_backend) = spawn_backend().await;
+        let (auth, _seen_auth) = spawn_auth().await;
+        let proxy = start_proxy(
+            &format!(
+                "/app/* -> http://127.0.0.1:{backend}/ \
+                 @forward_auth:http://127.0.0.1:{auth}/verify\n"
+            ),
+            &format!(
+                "[error_pages]\ndir = \"{}\"\nintercept_upstream_errors = {intercept}\n",
+                pages.path().display()
+            ),
+        )
+        .await;
+        let resp = raw(
+            proxy.port,
+            "GET /app/page HTTP/1.1\r\nHost: h\r\nAccept: text/html\r\n\
+             Cookie: session=bad\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert_eq!(status(&resp), 401, "{resp}");
+        let expected = if intercept {
+            "proxy page"
+        } else {
+            "please log in"
+        };
+        assert_eq!(body(&resp), expected, "intercept = {intercept}: {resp}");
+    }
+}
+
 /// 3xx: the redirect to the login page reaches the browser intact —
 /// `Location`, `Set-Cookie` and body.
 #[tokio::test]

@@ -38,45 +38,147 @@ pub(crate) struct ClientKey {
     unix: Option<PathBuf>,
 }
 
-/// The TLS side of a [`ClientKey`]. Files are part of the key with a digest
-/// of their contents, so a reload after a CA or certificate was replaced on
-/// disk builds a new client rather than reusing the one with the old trust.
+/// The TLS side of a [`ClientKey`]. Files are part of the key with their
+/// contents, so a reload after a CA or certificate was replaced on disk
+/// builds a new client rather than reusing the one with the old trust.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 struct TlsKey {
-    ca: Option<(PathBuf, u64)>,
+    ca: Option<TlsFile>,
     insecure: bool,
     sni: Option<String>,
-    client_cert: Option<(PathBuf, PathBuf, u64)>,
+    client_cert: Option<(TlsFile, TlsFile)>,
 }
 
-fn digest(bytes: &[&[u8]]) -> u64 {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    for b in bytes {
-        b.hash(&mut h);
+/// A TLS file as read once, when the key is made: the client is built from
+/// these very bytes. The digest and the trust store used to come from two
+/// separate reads, so a file replaced in between gave a client whose trust
+/// did not match its key — and the second read ran inside the registry lock.
+#[derive(Clone, Debug)]
+struct TlsFile {
+    path: PathBuf,
+    /// What the directive names it, for messages (`@tls_ca`, …).
+    what: &'static str,
+    bytes: Arc<[u8]>,
+    digest: u64,
+}
+
+impl PartialEq for TlsFile {
+    fn eq(&self, other: &Self) -> bool {
+        self.path == other.path && self.bytes == other.bytes
     }
-    h.finish()
 }
 
-fn read(path: &str, what: &str) -> Result<Vec<u8>> {
-    std::fs::read(path).with_context(|| format!("cannot read {} {}", what, path))
+impl Eq for TlsFile {}
+
+impl Hash for TlsFile {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.path.hash(state);
+        self.digest.hash(state);
+    }
+}
+
+/// Largest TLS file read. A CA bundle — the whole public root set included —
+/// or a certificate chain is a few hundred KiB at most.
+const MAX_TLS_FILE: u64 = 1024 * 1024;
+
+impl TlsFile {
+    /// Read `path` for the directive `what`.
+    ///
+    /// Only a regular file of at most [`MAX_TLS_FILE`] is read, and it is
+    /// opened non-blocking, so a FIFO cannot hold the load (or the admin
+    /// request that triggered it) forever, nor `/dev/zero` fill the memory.
+    /// The read happens off the async workers when called on one.
+    ///
+    /// ⚠️ **The error says which file, never why.** It reaches the admin
+    /// API's answers (`POST /api/v1/routes`, `POST /api/v1/config/validate`):
+    /// "no such file" vs "permission denied" vs "not a certificate" — or a
+    /// PEM parser quoting the line it choked on — would make the proxy a
+    /// probe of its own filesystem. The reason goes to the log.
+    fn read(path: &str, what: &'static str) -> Result<Self> {
+        let bytes = off_the_workers(|| read_bounded(std::path::Path::new(path)))
+            .map_err(|e| unusable(std::path::Path::new(path), what, e))?;
+        let digest = {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            bytes.hash(&mut h);
+            h.finish()
+        };
+        Ok(Self {
+            path: PathBuf::from(path),
+            what,
+            bytes: bytes.into(),
+            digest,
+        })
+    }
+
+    /// The generic error for a file that cannot be used, with `detail` logged.
+    fn unusable(&self, detail: impl std::fmt::Display) -> anyhow::Error {
+        unusable(&self.path, self.what, detail)
+    }
+}
+
+/// See [`TlsFile::read`]: `detail` is logged, the error names the file only.
+fn unusable(path: &std::path::Path, what: &str, detail: impl std::fmt::Display) -> anyhow::Error {
+    tracing::warn!("{} {}: {:#}", what, path.display(), detail);
+    anyhow::anyhow!(
+        "cannot load TLS file {} ({}); the proxy's log says why",
+        path.display(),
+        what
+    )
+}
+
+/// Read a regular file of at most [`MAX_TLS_FILE`] bytes.
+fn read_bounded(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    use std::io::{Error, ErrorKind, Read};
+    use std::os::unix::fs::OpenOptionsExt;
+    // O_NONBLOCK: opening a FIFO for reading otherwise waits for a writer.
+    // On a regular file it changes nothing.
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        return Err(Error::new(ErrorKind::InvalidInput, "not a regular file"));
+    }
+    if meta.len() > MAX_TLS_FILE {
+        return Err(Error::new(ErrorKind::InvalidInput, "larger than 1 MiB"));
+    }
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    file.take(MAX_TLS_FILE + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_TLS_FILE {
+        return Err(Error::new(ErrorKind::InvalidInput, "larger than 1 MiB"));
+    }
+    Ok(bytes)
+}
+
+/// Run blocking file I/O. A configuration is loaded from async code too — a
+/// reload, an admin API write, `POST /api/v1/config/validate` — and a read
+/// there would stall a tokio worker and every connection queued on it; on a
+/// multi-threaded runtime the worker hands its tasks over first
+/// (`block_in_place`). Elsewhere (startup, the CLI, tests on a
+/// current-thread runtime) it simply runs.
+fn off_the_workers<T>(f: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(f)
+        }
+        _ => f(),
+    }
 }
 
 impl ClientKey {
-    /// The key for a rule's TCP targets.
+    /// The key for a rule's TCP targets. Reads the TLS files the options
+    /// name — here, once, and not under the registry lock.
     pub(crate) fn for_options(opts: &UpstreamOptions) -> Result<Self> {
         let ca = match &opts.tls_ca {
-            Some(path) => {
-                let pem = read(path, "@tls_ca")?;
-                Some((PathBuf::from(path), digest(&[&pem])))
-            }
+            Some(path) => Some(TlsFile::read(path, "@tls_ca")?),
             None => None,
         };
         let client_cert = match (&opts.tls_client_cert, &opts.tls_client_key) {
-            (Some(cert), Some(key)) => {
-                let c = read(cert, "@tls_client_cert certificate")?;
-                let k = read(key, "@tls_client_cert key")?;
-                Some((PathBuf::from(cert), PathBuf::from(key), digest(&[&c, &k])))
-            }
+            (Some(cert), Some(key)) => Some((
+                TlsFile::read(cert, "@tls_client_cert certificate")?,
+                TlsFile::read(key, "@tls_client_cert key")?,
+            )),
             _ => None,
         };
         Ok(Self {
@@ -270,19 +372,17 @@ fn tls_config(key: &TlsKey) -> Result<ClientConfig> {
         match &key.ca {
             // A private CA replaces the public roots: the point of naming
             // one is to trust that PKI, not that PKI *and* every public CA.
-            Some((path, _)) => {
-                let pem = read(&path.to_string_lossy(), "@tls_ca")?;
+            Some(ca) => {
                 let mut n = 0;
-                for cert in CertificateDer::pem_slice_iter(&pem) {
-                    let cert =
-                        cert.with_context(|| format!("invalid PEM in {}", path.display()))?;
+                for cert in CertificateDer::pem_slice_iter(&ca.bytes) {
+                    let cert = cert.map_err(|e| ca.unusable(format!("invalid PEM: {e}")))?;
                     roots
                         .add(cert)
-                        .with_context(|| format!("invalid CA certificate in {}", path.display()))?;
+                        .map_err(|e| ca.unusable(format!("invalid CA certificate: {e}")))?;
                     n += 1;
                 }
                 if n == 0 {
-                    anyhow::bail!("{} holds no certificate", path.display());
+                    return Err(ca.unusable("holds no certificate"));
                 }
             }
             None => roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned()),
@@ -290,20 +390,18 @@ fn tls_config(key: &TlsKey) -> Result<ClientConfig> {
         builder.with_root_certificates(roots)
     };
     Ok(match &key.client_cert {
-        Some((cert, key_path, _)) => {
-            let pem = read(&cert.to_string_lossy(), "@tls_client_cert certificate")?;
-            let chain = CertificateDer::pem_slice_iter(&pem)
+        Some((cert, private_key)) => {
+            let chain = CertificateDer::pem_slice_iter(&cert.bytes)
                 .collect::<std::result::Result<Vec<_>, _>>()
-                .with_context(|| format!("invalid PEM in {}", cert.display()))?;
+                .map_err(|e| cert.unusable(format!("invalid PEM: {e}")))?;
             if chain.is_empty() {
-                anyhow::bail!("{} holds no certificate", cert.display());
+                return Err(cert.unusable("holds no certificate"));
             }
-            let key_pem = read(&key_path.to_string_lossy(), "@tls_client_cert key")?;
-            let private = PrivateKeyDer::from_pem_slice(&key_pem)
-                .with_context(|| format!("no usable private key in {}", key_path.display()))?;
+            let private = PrivateKeyDer::from_pem_slice(&private_key.bytes)
+                .map_err(|e| private_key.unusable(format!("no usable private key: {e}")))?;
             builder
                 .with_client_auth_cert(chain, private)
-                .context("client certificate and key do not match")?
+                .map_err(|e| cert.unusable(format!("certificate and key do not match: {e}")))?
         }
         None => builder.with_no_client_auth(),
     })
@@ -415,6 +513,71 @@ mod tests {
         };
         let key = ClientKey::for_options(&opts).unwrap();
         assert!(get_or_build(&key).is_err());
+    }
+
+    /// Every way a TLS file can be unusable gives the same answer, naming
+    /// the file and nothing else: the admin API relays it, and "missing" vs
+    /// "unreadable" vs "not a certificate" — or the PEM line the parser choked
+    /// on — would make the proxy a probe of its own filesystem.
+    #[test]
+    fn unusable_tls_files_all_fail_alike_and_quote_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let garbage = dir.path().join("garbage.pem");
+        std::fs::write(
+            &garbage,
+            "-----BEGIN CERTIFICATE-----\nSECRET-LINE\n-----END NOPE-----\n",
+        )
+        .unwrap();
+        let empty = dir.path().join("empty.pem");
+        std::fs::write(&empty, "SECRET-LINE\n").unwrap();
+        let big = dir.path().join("big.pem");
+        std::fs::write(&big, vec![b'a'; (MAX_TLS_FILE + 1) as usize]).unwrap();
+        let fifo = dir.path().join("fifo.pem");
+        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let missing = dir.path().join("missing.pem");
+
+        for path in [
+            &garbage,
+            &empty,
+            &big,
+            &fifo,
+            &missing,
+            &dir.path().to_path_buf(),
+        ] {
+            let opts = UpstreamOptions {
+                tls_ca: Some(path.to_string_lossy().into_owned()),
+                ..Default::default()
+            };
+            // A FIFO with no writer must not block: this returns at once.
+            let err = ClientKey::for_options(&opts)
+                .and_then(|key| get_or_build(&key).map(|_| ()))
+                .unwrap_err();
+            assert_eq!(
+                format!("{:#}", err),
+                format!(
+                    "cannot load TLS file {} (@tls_ca); the proxy's log says why",
+                    path.display()
+                )
+            );
+        }
+    }
+
+    /// The client is built from the bytes the key was made from: one read.
+    #[test]
+    fn the_key_carries_the_bytes_the_client_is_built_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ca.pem");
+        let ca = rcgen::generate_simple_self_signed(vec!["ca.test".into()]).unwrap();
+        std::fs::write(&path, ca.serialize_pem().unwrap()).unwrap();
+        let opts = UpstreamOptions {
+            tls_ca: Some(path.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        let key = ClientKey::for_options(&opts).unwrap();
+        // Replaced after the key was made: the build does not read it again.
+        std::fs::write(&path, "not a certificate").unwrap();
+        assert!(get_or_build(&key).is_ok());
     }
 
     #[test]

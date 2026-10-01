@@ -21,6 +21,36 @@
   the apex. Both now ask `AppManager::serving_route`, which applies routing's own precedence, and
   routing uses it too. A yielding app is also no longer woken or counted active by those requests.
 
+* **`$client_ip` in a `headers { }` block is the forwarded client again.** It was read after the
+  request's extensions were cleared, so behind a trusted proxy it was always the proxy.
+* **Custom error pages no longer replace a forward-auth denial.** The auth service's 401/403 (its
+  login form, its JSON) was taken for one of the proxy's own errors, and its body swapped for the
+  proxy's page under the service's headers; it is now relayed like a backend's answer, replaced
+  only under `intercept_upstream_errors`.
+* **A forwarded client can no longer be this host.** A trusted peer's `X-Forwarded-For` (or
+  `real_ip_header`) naming a loopback, unspecified, link-local, multicast or broadcast address is
+  a forgery: the peer is the client instead. `/metrics` is judged on the connection itself — the
+  TCP peer (or PROXY source) and the client must both be loopback — so a tenant container on a
+  trusted Docker range sending `X-Forwarded-For: 127.0.0.1` no longer reads it, and neither does
+  a remote client relayed by a front proxy on this host. **`soli-proxy check` warns** when
+  `multi_tenant` is on and `trusted_proxies` covers loopback or Docker's `172.16.0.0/12` /
+  `192.168.0.0/16` pools (the `"private"` and `"loopback"` presets do): tenants would be trusted
+  proxies.
+* **The admin API writes a route only once it loads.** `proxy.conf` was written (and marked as the
+  proxy's own write) before the route's `@tls_ca` / `@tls_client_cert` files were read, so a route
+  answered 500 yet sat on disk and failed the next reload. And every string the serializer writes
+  verbatim — TLS and health paths, `@tls_sni`, matchers, `@auth` users, `@noauth` paths, script
+  names, global scripts — is refused (400) when it holds whitespace, a control character, `->`
+  or a trailing backslash: a `\n` in a route's JSON injected a `proxy.conf` line of the caller's
+  choosing. The `.conf` parser refuses the same values.
+* **TLS files are read safely, and fail quietly.** Only a regular file of at most 1 MiB is read,
+  opened non-blocking (a FIFO used to hang the load — and the admin request behind it), off the
+  async workers, outside the client registry's lock, and once: the trust store is built from the
+  bytes the client's key was hashed from. A file that cannot be used — missing, unreadable, not a
+  certificate — is reported as `cannot load TLS file <path>` by the admin API and
+  `POST /api/v1/config/validate`; the reason goes to the log. The distinct errors (and a PEM
+  parser quoting the line it choked on) made the API a probe of the proxy's filesystem.
+
 **Forward auth (gap/auth)**
 
 ### Features

@@ -551,3 +551,67 @@ async fn the_access_log_has_one_line_per_request() {
     }
     assert!(found, "no access-log line for the upgrade");
 }
+
+/// `$client_ip` in a `headers { }` block is the client a trusted proxy names,
+/// not the proxy: it was read after the request's extensions were cleared,
+/// so it always fell back to the TCP peer.
+#[tokio::test]
+async fn headers_block_client_ip_is_the_forwarded_client() {
+    let (backend, mut seen) = spawn_backend().await;
+    let proxy = start_proxy(
+        &format!(
+            "default -> http://127.0.0.1:{}\nheaders {{\n    X-Client: $client_ip\n}}\n",
+            backend
+        ),
+        "trusted_proxies = [\"127.0.0.1\"]",
+        &[],
+    )
+    .await;
+    let resp = raw(
+        proxy.port,
+        "GET / HTTP/1.1\r\nHost: h\r\nX-Forwarded-For: 203.0.113.9\r\n\r\n",
+    )
+    .await;
+    assert_eq!(status(&resp), 200, "{resp}");
+    let head = next_head(&mut seen).await;
+    assert_eq!(header(&head, "x-client"), Some("203.0.113.9"), "{head}");
+}
+
+/// `/metrics` is for this host only, judged on the connection — never on a
+/// forwarded claim. A tenant container on a trusted Docker range (here the
+/// PROXY header's source, 172.18.0.5) saying `X-Forwarded-For: 127.0.0.1`
+/// used to read it; a request relayed for a remote client by a front proxy
+/// on this host is not local either.
+#[tokio::test]
+async fn metrics_are_not_opened_by_a_forwarded_loopback_claim() {
+    let (backend, _seen) = spawn_backend().await;
+    let proxy = start_proxy(
+        &format!("default -> http://127.0.0.1:{}\n", backend),
+        "trusted_proxies = [\"127.0.0.1\", \"172.16.0.0/12\"]\nproxy_protocol = \"any\"",
+        &[],
+    )
+    .await;
+    let get = |pp: &str, xff: &str| {
+        format!(
+            "PROXY TCP4 {pp} 127.0.0.1 40000 80\r\nGET /metrics HTTP/1.1\r\nHost: h\r\n\
+             {xff}Connection: close\r\n\r\n"
+        )
+    };
+    // From a tenant's range, forging this host.
+    let resp = raw(
+        proxy.port,
+        &get("172.18.0.5", "X-Forwarded-For: 127.0.0.1\r\n"),
+    )
+    .await;
+    assert_eq!(status(&resp), 403, "{resp}");
+    // From this host, relaying a remote client.
+    let resp = raw(
+        proxy.port,
+        &get("127.0.0.1", "X-Forwarded-For: 203.0.113.9\r\n"),
+    )
+    .await;
+    assert_eq!(status(&resp), 403, "{resp}");
+    // From this host, for itself.
+    let resp = raw(proxy.port, &get("127.0.0.1", "")).await;
+    assert_eq!(status(&resp), 200, "{resp}");
+}

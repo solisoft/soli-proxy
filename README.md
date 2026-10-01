@@ -550,9 +550,13 @@ For a request from a trusted peer, the client is found by walking `X-Forwarded-F
 right, skipping addresses that are themselves trusted: the first one that is not is the client
 (when every hop is trusted, the leftmost). Entries to its left were written by the client, and
 are not believed. With `real_ip_header` naming a single-address header such as
-`CF-Connecting-IP`, that header is read instead. That client is then used everywhere the
-proxy used the peer: the rate limiter, the `/metrics` loopback check, `X-Real-IP`, `$client_ip`
-in `headers { }`, Lua's `req.client_ip`, logs, and the admin API's budgets. Its forwarding
+`CF-Connecting-IP`, that header is read instead. A forwarded address that cannot be a remote
+client — loopback, unspecified, link-local, multicast, broadcast — is a forgery, and the peer is
+taken as the client instead. That client is then used everywhere the proxy used the peer: the
+rate limiter, `[maintenance] allow_ips`, `X-Real-IP`, `$client_ip` in `headers { }`, Lua's
+`req.client_ip`, logs, and the admin API's budgets. What is local-only (`/metrics`) is judged on
+the connection itself: the TCP peer (or the PROXY header's source) must be loopback, and so must
+the client — a front proxy on this host relaying a remote client does not open it. Its forwarding
 headers are kept rather than replaced: `X-Forwarded-For` is the incoming chain with the peer
 appended, `X-Forwarded-Proto` stays as the trusted proxy set it (`http`/`https` only). A peer
 that is not trusted is handled exactly as before, and a `real_ip_header` such as
@@ -563,6 +567,14 @@ The `cloudflare` preset is Cloudflare's published ranges, compiled in
 <https://www.cloudflare.com/ips-v4> and `/ips-v6`). The preset is only as good as that list: if
 your proxy is reachable without going through Cloudflare, firewall it to those ranges, or
 anyone can send a forged chain from an address you trust.
+
+**Multi-tenant mode: do not trust your tenants' networks.** A tenant's native app connects from
+loopback, and its container from a Docker bridge (by default in `172.16.0.0/12` or
+`192.168.0.0/16`). With `trusted_proxies` covering either — the `"private"` and `"loopback"`
+presets do — a tenant is a "trusted proxy": the `X-Forwarded-For`, request ID and
+`X-Forwarded-Proto` it sends are believed, so it can pose as any client to the rate limiter,
+`[maintenance] allow_ips` and the backends. List your balancer's own addresses instead;
+`soli-proxy check` warns about every such entry when `multi_tenant` is on.
 
 **PROXY protocol.** A TCP balancer (AWS NLB, HAProxy in TCP mode) can prepend the client
 address to the connection instead:
@@ -657,7 +669,10 @@ host are taken verbatim from the target.
 | `@health:/path` / `@health:off` | Probe each target at this path / opt out of `[health_checks] default_path`. |
 | `@health_interval:10s` | Time between probes. |
 
-Durations take a unit: `500ms`, `2s`, `5m`. Paths cannot contain spaces.
+Durations take a unit: `500ms`, `2s`, `5m`. Paths cannot contain spaces, control characters or
+a trailing backslash (and the certificate and key of `@tls_client_cert` no comma): the proxy
+writes them back to `proxy.conf` as they are when a route is saved through the admin API or the
+TUI, so such a value is refused there too, with a 400.
 
 Every target is also tracked by the circuit breaker (`[circuit_breaker]`): a target whose
 breaker is open — or that an active health check marked down — is skipped by every strategy, and
@@ -734,8 +749,12 @@ tunnelled over HTTP/1.1, whatever `@h2` says.
 presents a client certificate. `@tls_insecure` turns verification off — anyone on the path to the
 upstream can then read and change the traffic, so the proxy warns each time it loads such a rule;
 prefer `@tls_ca`. Files are read when the configuration loads, so a missing or invalid one is a load
-error (fatal at startup, the previous configuration stays on reload), and a replaced file is picked
-up on the next reload. Rules with the same options share one client and its connection pool. A
+error (fatal at startup, the previous configuration stays on reload; a route saved through the
+admin API is refused and `proxy.conf` is left untouched), and a replaced file is picked up on the
+next reload. Each must be a regular file of at most 1 MiB, read once. The error names the file but
+not the reason — the admin API relays it, and "missing", "unreadable" or "not a certificate" would
+let an API client probe the proxy's filesystem — the reason is in the proxy's log (on stderr for
+`soli-proxy check`). Rules with the same options share one client and its connection pool. A
 WebSocket upgrade to the rule's `https://` target uses the same TLS settings.
 
 **Unix sockets.** `unix:/run/app.sock` must be an absolute path. The request URI is built on a
@@ -806,9 +825,10 @@ bodies. A browser (any client whose `Accept` lists `text/html`) gets a page from
 plain text. Clients that do not ask for HTML — APIs, `curl` — keep the plain text. The status
 and the other headers (`Retry-After`, `WWW-Authenticate`…) are kept.
 
-Only errors the proxy generated are replaced: a backend's own 404 page, or the body of a Lua
-`deny`, is left as it is (unless `intercept_upstream_errors = true`, which extends the pages to
-backends' 4xx/5xx). Templates may use `{{status}}`, `{{reason}}`, `{{host}}` and
+Only errors the proxy generated are replaced: a backend's own 404 page, a forward-auth service's
+denial (its login form or 401 body), or the body of a Lua `deny`, is left as it is (unless
+`intercept_upstream_errors = true`, which extends the pages to backends' and auth services'
+4xx/5xx). Templates may use `{{status}}`, `{{reason}}`, `{{host}}` and
 `{{request_id}}` — the response's `X-Request-Id` if the proxy set one, else the request's — and
 every value is HTML-escaped. The pages are read when the configuration is loaded (at startup, on
 `SIGUSR1` or `POST /api/v1/reload`), never per request; each is capped at 64 KiB, and a missing

@@ -477,6 +477,12 @@ async fn relay_denial(
     let mut response = Response::new(full(body));
     *response.status_mut() = parts.status;
     *response.headers_mut() = headers;
+    // The auth service's answer — a login form, a JSON error — is relayed like
+    // a backend's: custom error pages replace it only under
+    // `intercept_upstream_errors`. Untagged, a 401/403 was taken for one of
+    // the proxy's own and its body swapped for the proxy's page, under the
+    // auth service's headers.
+    crate::response::mark_owned(&mut response, crate::response::BodyOwner::Upstream);
     response
 }
 

@@ -377,25 +377,32 @@ impl UpstreamOptions {
         if self.tls_insecure && self.tls_ca.is_some() {
             bail!("@tls_insecure and @tls_ca contradict each other: pick one");
         }
-        for (what, path) in [
-            ("@tls_ca", &self.tls_ca),
-            ("@tls_client_cert", &self.tls_client_cert),
-            ("@tls_client_cert key", &self.tls_client_key),
+        // Paths are written back to proxy.conf verbatim, as one token (the
+        // certificate and key as `cert,key`): no whitespace, no control
+        // character — a `\n` arriving through the admin API's JSON would
+        // inject a proxy.conf line — and no comma in the pair.
+        for (what, path, also) in [
+            ("@tls_ca", &self.tls_ca, &[][..]),
+            ("@tls_client_cert", &self.tls_client_cert, &[','][..]),
+            ("@tls_client_cert key", &self.tls_client_key, &[','][..]),
         ] {
             if let Some(path) = path {
-                if !path.starts_with('/') || path.contains('\0') {
+                if !path.starts_with('/') {
                     bail!("{} path {:?} must be absolute", what, path);
                 }
+                crate::config::check_conf_token(what, path, also)?;
             }
         }
         if self.tls_client_cert.is_some() != self.tls_client_key.is_some() {
             bail!("a client certificate needs both its certificate and its key");
         }
         if let Some(name) = &self.tls_sni {
+            crate::config::check_conf_token("@tls_sni", name, &[])?;
             rustls_pki_types::ServerName::try_from(name.as_str())
                 .map_err(|_| anyhow::anyhow!("@tls_sni:{} is not a DNS name or IP", name))?;
         }
         if let Some(path) = &self.health {
+            crate::config::check_conf_token("@health", path, &[])?;
             if path != "off" {
                 validate_health_path(path)?;
             }
@@ -760,6 +767,27 @@ mod tests {
         assert!(o
             .apply_directive("tls_client_cert", "/only-one.pem")
             .is_err());
+    }
+
+    /// Paths are written back verbatim: a control character or a trailing
+    /// backslash (a line continuation) is refused by the parser too, and a
+    /// comma in the certificate pair.
+    #[test]
+    fn directive_paths_must_survive_a_rewrite() {
+        let https = [target("https://a.example")];
+        for (kind, value) in [
+            ("tls_ca", "/etc/ca\u{1}.pem"),
+            ("tls_ca", "/etc/ca.pem\\"),
+            ("tls_ca", "/etc/ca\u{7f}.pem"),
+            ("tls_client_cert", "/c.pem,/k,2.pem"),
+            ("health", "/up\u{1}"),
+        ] {
+            let mut o = UpstreamOptions::default();
+            o.apply_directive(kind, value).unwrap();
+            assert!(o.validate(&https).is_err(), "{kind}:{value:?}");
+        }
+        let line = "/x/* -> https://a.example @tls_ca:/etc/ca\u{1}.pem";
+        assert!(crate::config::parse_proxy_config(line).is_err());
     }
 
     #[test]

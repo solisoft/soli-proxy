@@ -2746,7 +2746,13 @@ async fn handle_request_inner(
         &req,
         config.metrics.endpoint.as_deref().unwrap_or("/metrics"),
     ) {
-        let is_loopback = client_info.is_some_and(|who| who.ip.is_loopback());
+        // Local means the connection itself comes from this host: the TCP
+        // peer (or the PROXY header's source), never a forwarded claim — a
+        // trusted range that covers a tenant's container would otherwise let
+        // it say `X-Forwarded-For: 127.0.0.1`. And the client too, so a
+        // front proxy on this host relaying a remote client is not local.
+        let is_loopback =
+            client_info.is_some_and(|who| who.peer.is_loopback() && who.ip.is_loopback());
         if !is_loopback {
             let duration = start_time.elapsed();
             metrics.record_request(0, 0, 403, duration);
@@ -4226,6 +4232,11 @@ async fn handle_regular_request(
                 _ => None,
             };
 
+            // `$client_ip` for a `headers { }` block: the client the door
+            // resolved (behind a trusted proxy, the address it forwarded) —
+            // read before the extensions that carry it are dropped below, or
+            // it was always the TCP peer.
+            let client_ip = crate::edge::client_ip(req.extensions()).or(peer_addr.map(|a| a.ip()));
             let (mut parts, body) = req.into_parts();
             parts.extensions = http::Extensions::new();
             // The client's hop-by-hop headers went at the door (see
@@ -4240,7 +4251,7 @@ async fn handle_regular_request(
             // with the client's original Host — before the https rewrite below.
 
             let header_vars = crate::config::HeaderVars {
-                client_ip: crate::edge::client_ip(&parts.extensions).or(peer_addr.map(|a| a.ip())),
+                client_ip,
                 scheme: if is_tls { "https" } else { "http" },
                 host: &matched_route.host,
             };

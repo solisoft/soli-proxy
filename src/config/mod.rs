@@ -790,6 +790,7 @@ impl ProxyRule {
     /// satisfy before it is written to disk.
     pub fn validate(&self) -> Result<()> {
         self.validate_auth_exempt()?;
+        self.validate_conf_tokens()?;
         if let Some(forward_auth) = &self.forward_auth {
             forward_auth.validate()?;
         }
@@ -802,6 +803,54 @@ impl ProxyRule {
             }
         }
         self.upstream.validate(&self.targets)?;
+        Ok(())
+    }
+
+    /// Refuse a string the `proxy.conf` serializer would write verbatim but
+    /// could not read back as the same token: whitespace splits a token, a
+    /// newline starts a new line — a whole rule, injected — `->` moves the
+    /// arrow, a trailing backslash continues the line onto the next rule.
+    /// Run on rules from the admin API (through [`Self::validate`]) and by the
+    /// parser. (Targets and forward-auth URLs are written from parsed `Url`s,
+    /// header lines are checked by `HeaderRule::validate`, upstream
+    /// directives by `UpstreamOptions::validate`.)
+    pub fn validate_conf_tokens(&self) -> Result<()> {
+        fn matcher(value: &str) -> Result<()> {
+            check_conf_token("route matcher", value, &[])?;
+            if value.contains("->") || value.starts_with('#') {
+                anyhow::bail!("route matcher {:?} cannot be written to proxy.conf", value);
+            }
+            Ok(())
+        }
+        match &self.matcher {
+            RuleMatcher::Default => {}
+            RuleMatcher::Exact(v) | RuleMatcher::Prefix(v) | RuleMatcher::Domain(v) => matcher(v)?,
+            RuleMatcher::DomainPath(domain, path) => {
+                matcher(domain)?;
+                matcher(path)?;
+            }
+            // A pattern may hold spaces (the matcher is everything before the
+            // arrow), but no line break, no arrow and no edge whitespace.
+            RuleMatcher::Regex(rm) => {
+                let p = &rm.pattern;
+                if p.chars().any(char::is_control) || p.contains("->") || p.trim() != p {
+                    anyhow::bail!("regex {:?} cannot be written to proxy.conf", p);
+                }
+            }
+        }
+        for entry in &self.auth {
+            check_conf_token("auth username", &entry.username, &[':'])?;
+            check_conf_token("auth hash", &entry.hash, &[])?;
+        }
+        for pattern in &self.auth_exempt {
+            check_conf_token("auth_exempt path", pattern, &[','])?;
+        }
+        for script in &self.scripts {
+            if validate_script_name(script).is_none() {
+                anyhow::bail!("invalid script name {:?}", script);
+            }
+            check_conf_token("script", script, &[','])?;
+        }
         Ok(())
     }
 
@@ -1560,6 +1609,7 @@ hook_timeout_ms = 10
         // next reload and the route ends up unprotected. Callers are expected
         // to have resolved empty hashes (`carry_forward_auth_hashes`) already;
         // this is the last line of defence.
+        validate_global_scripts(&global_scripts)?;
         for rule in &rules {
             rule.validate()?;
             if let Some(entry) = rule.auth.iter().find(|a| a.hash.is_empty()) {
@@ -1571,13 +1621,18 @@ hook_timeout_ms = 10
             }
         }
         let content = serializer::serialize_proxy_conf(&rules, &global_scripts);
-        self.own_write_hash
-            .store(content_hash(content.as_bytes()), Ordering::SeqCst);
-        write_atomic(&self.config_path, content.as_bytes())?;
+        // Build the candidate first — `prepare` reads `@tls_ca` /
+        // `@tls_client_cert` files and builds the clients — and write only a
+        // configuration that loads. The file used to be written (and recorded
+        // as our own write) before, so a route whose TLS file was missing
+        // answered 500 yet sat in proxy.conf, failing the next reload.
         let mut config = (*self.config.load().as_ref()).clone();
         config.rules = rules;
         config.global_scripts = global_scripts;
         crate::upstream::prepare(&mut config)?;
+        self.own_write_hash
+            .store(content_hash(content.as_bytes()), Ordering::SeqCst);
+        write_atomic(&self.config_path, content.as_bytes())?;
         self.config.store(Arc::new(config));
         tracing::info!("Configuration persisted to {}", self.config_path.display());
         Ok(())
@@ -1656,6 +1711,45 @@ impl ConfigManagerTrait for ConfigManager {
     fn get_all_acme_domains(&self) -> Vec<String> {
         self.get_all_acme_domains()
     }
+}
+
+/// Refuse a value the `proxy.conf` serializer writes verbatim as one token
+/// (or one item of a comma list, with `,` in `also`) if it could not come
+/// back as the same token: whitespace or a control character in it — a `\n`
+/// injects a line of the attacker's choosing — or a trailing backslash, which
+/// the parser takes for a line continuation.
+pub(crate) fn check_conf_token(what: &str, value: &str, also: &[char]) -> Result<()> {
+    if let Some(c) = value
+        .chars()
+        .find(|c| c.is_whitespace() || c.is_control() || also.contains(c))
+    {
+        anyhow::bail!(
+            "{} {:?} contains {:?}, which cannot be written to proxy.conf",
+            what,
+            value,
+            c
+        );
+    }
+    if value.ends_with('\\') {
+        anyhow::bail!(
+            "{} {:?} cannot end in a backslash (a proxy.conf line continuation)",
+            what,
+            value
+        );
+    }
+    Ok(())
+}
+
+/// `[global] @script:` names arriving through the admin API: written to
+/// `proxy.conf` verbatim, as a comma list, like a rule's.
+pub fn validate_global_scripts(scripts: &[String]) -> Result<()> {
+    for script in scripts {
+        if validate_script_name(script).is_none() {
+            anyhow::bail!("invalid global script name {:?}", script);
+        }
+        check_conf_token("global script", script, &[','])?;
+    }
+    Ok(())
 }
 
 /// Validate a script name: must end in .lua, no path traversal chars, no null bytes.
@@ -2250,7 +2344,7 @@ fn parse_rule(source: &str, target_str: &str) -> Result<ProxyRule> {
     } else {
         LoadBalancingStrategy::default()
     });
-    Ok(ProxyRule {
+    let rule = ProxyRule {
         matcher,
         targets: tail.targets,
         headers: vec![],
@@ -2261,7 +2355,10 @@ fn parse_rule(source: &str, target_str: &str) -> Result<ProxyRule> {
         forward_auth: tail.forward_auth,
         compress: tail.compress,
         upstream: tail.upstream,
-    })
+    };
+    // What a rewrite would write back must read back the same.
+    rule.validate_conf_tokens()?;
+    Ok(rule)
 }
 
 #[cfg(test)]
