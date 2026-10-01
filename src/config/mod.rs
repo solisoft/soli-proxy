@@ -171,6 +171,7 @@ impl AppsTomlConfig {
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct LimitsTomlConfig {
     pub max_connections: Option<u64>,
+    pub max_connections_per_ip: Option<u64>,
     pub max_request_size: Option<String>,
     pub keep_alive_timeout: Option<u64>,
     pub request_timeout: Option<u64>,
@@ -461,6 +462,9 @@ pub struct Config {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 pub struct LimitsConfig {
     pub max_connections: Option<u64>,
+    /// Simultaneous connections one client address may hold (an IPv6 client
+    /// counts per /64). Unset = 256; 0 disables the cap. Read at startup.
+    pub max_connections_per_ip: Option<u64>,
     pub max_request_size: Option<usize>,
     pub keep_alive_timeout: Option<u64>,
     pub request_timeout: Option<u64>,
@@ -934,8 +938,9 @@ readiness_path = "/health/ready"
 # Limits Configuration
 [limits]
 max_connections = 10000
+# max_connections_per_ip = 256   # per client address (IPv6: per /64); 0 = off
 max_request_size = "10MB"
-keep_alive_timeout = 30
+keep_alive_timeout = 30          # header read / idle connection timeout, seconds
 request_timeout = 60
 
 # Rate Limiting Configuration (in-process; redis_url is unused if present)
@@ -1041,6 +1046,10 @@ realm = "Restricted"
             global_scripts,
             limits: LimitsConfig {
                 max_connections: toml_config.limits.as_ref().and_then(|l| l.max_connections),
+                max_connections_per_ip: toml_config
+                    .limits
+                    .as_ref()
+                    .and_then(|l| l.max_connections_per_ip),
                 max_request_size: toml_config
                     .limits
                     .as_ref()

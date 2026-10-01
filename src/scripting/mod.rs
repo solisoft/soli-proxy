@@ -56,10 +56,70 @@ pub struct ResponseMod {
 /// Shared state for cross-worker counters (used by `shared` Lua module).
 type SharedState = Arc<std::sync::RwLock<HashMap<String, f64>>>;
 
-/// Lua registry key under which each state stores the snapshot of its
-/// post-setup globals, so `cleanup_lua_state` can tell built-ins/stdlib/hook
-/// functions (keep) apart from request-scoped script globals (clear).
-const BASELINE_GLOBALS_KEY: &str = "__soli_baseline_globals";
+/// One pooled Lua state plus the snapshot of the globals it had once set up
+/// (built-in modules, the loaded stdlib, base library functions and the
+/// script's own hook functions). `cleanup_lua_state` clears every global
+/// *not* in `baseline` after each hook call. The table is kept here rather
+/// than in the Lua registry so the cleanup does not pay a registry lookup per
+/// call, and it is keyed by the global's own key value so the comparison
+/// needs no string conversion.
+struct LuaSlot {
+    lua: Lua,
+    baseline: Table,
+}
+
+type StatePool = Vec<std::sync::Mutex<LuaSlot>>;
+
+/// Which of the four hooks a script defines, probed once at load time so the
+/// request path can skip building a request table for a script that has no
+/// such hook — and skip locking one of its states at all.
+#[derive(Clone, Copy, Debug, Default)]
+struct HookSet {
+    on_request: bool,
+    on_route: bool,
+    on_response: bool,
+    on_request_end: bool,
+}
+
+impl HookSet {
+    fn probe(lua: &Lua) -> Self {
+        let has = |name: &str| lua.globals().get::<Function>(name).is_ok();
+        Self {
+            on_request: has("on_request"),
+            on_route: has("on_route"),
+            on_response: has("on_response"),
+            on_request_end: has("on_request_end"),
+        }
+    }
+
+    fn has(&self, hook: Hook) -> bool {
+        match hook {
+            Hook::Request => self.on_request,
+            Hook::Route => self.on_route,
+            Hook::Response => self.on_response,
+            Hook::RequestEnd => self.on_request_end,
+        }
+    }
+}
+
+/// The four request-lifecycle hooks a script may define.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hook {
+    /// `on_request(req)`
+    Request,
+    /// `on_route(req, target)`
+    Route,
+    /// `on_response(req, resp)`
+    Response,
+    /// `on_request_end(req, resp, duration_ms, target)`
+    RequestEnd,
+}
+
+/// A route script's per-worker states and the hooks it defines.
+struct RouteScript {
+    states: StatePool,
+    hooks: HookSet,
+}
 
 /// The Lua scripting engine. Thread-safe, cheaply cloneable.
 ///
@@ -72,15 +132,17 @@ pub struct LuaEngine {
 
 struct LuaEngineInner {
     /// Global hook pool — all .lua files from scripts_dir loaded together
-    states: Vec<std::sync::Mutex<Lua>>,
-    has_on_request: bool,
-    has_on_route: bool,
-    has_on_response: bool,
-    has_on_request_end: bool,
+    states: StatePool,
+    hooks: HookSet,
     /// Max execution time per hook call; re-armed before every invocation.
     hook_timeout: Duration,
     /// Per-script hook pool (script_name -> per-worker Lua states)
-    route_scripts: HashMap<String, Vec<std::sync::Mutex<Lua>>>,
+    route_scripts: HashMap<String, RouteScript>,
+    /// Whether any route script defines `on_response` / `on_request_end`, so
+    /// the proxy knows up front whether it must keep a copy of the request
+    /// for those late hooks.
+    any_route_on_response: bool,
+    any_route_on_request_end: bool,
     /// Shared state for cross-worker counters (kept alive via Arc)
     _shared_state: SharedState,
 }
@@ -130,20 +192,14 @@ impl LuaEngine {
         // Create the first Lua state to probe which hooks exist
         let probe_lua =
             Self::create_lua_state(&script_sources, hook_timeout, &shared_state, exposed_env)?;
-        let has_on_request = probe_lua.globals().get::<Function>("on_request").is_ok();
-        let has_on_route = probe_lua.globals().get::<Function>("on_route").is_ok();
-        let has_on_response = probe_lua.globals().get::<Function>("on_response").is_ok();
-        let has_on_request_end = probe_lua
-            .globals()
-            .get::<Function>("on_request_end")
-            .is_ok();
+        let hooks = HookSet::probe(&probe_lua.lua);
 
         tracing::info!(
             "Lua hooks: on_request={}, on_route={}, on_response={}, on_request_end={}",
-            has_on_request,
-            has_on_route,
-            has_on_response,
-            has_on_request_end
+            hooks.on_request,
+            hooks.on_route,
+            hooks.on_response,
+            hooks.on_request_end
         );
 
         // Build the pool of Lua states
@@ -158,12 +214,11 @@ impl LuaEngine {
         Ok(Self {
             inner: Arc::new(LuaEngineInner {
                 states,
-                has_on_request,
-                has_on_route,
-                has_on_response,
-                has_on_request_end,
+                hooks,
                 hook_timeout,
                 route_scripts: HashMap::new(),
+                any_route_on_response: false,
+                any_route_on_request_end: false,
                 _shared_state: shared_state,
             }),
         })
@@ -201,20 +256,14 @@ impl LuaEngine {
         // Probe global hooks
         let probe_lua =
             Self::create_lua_state(&global_sources, hook_timeout, &shared_state, exposed_env)?;
-        let has_on_request = probe_lua.globals().get::<Function>("on_request").is_ok();
-        let has_on_route = probe_lua.globals().get::<Function>("on_route").is_ok();
-        let has_on_response = probe_lua.globals().get::<Function>("on_response").is_ok();
-        let has_on_request_end = probe_lua
-            .globals()
-            .get::<Function>("on_request_end")
-            .is_ok();
+        let hooks = HookSet::probe(&probe_lua.lua);
 
         tracing::info!(
             "Global Lua hooks: on_request={}, on_route={}, on_response={}, on_request_end={}",
-            has_on_request,
-            has_on_route,
-            has_on_response,
-            has_on_request_end
+            hooks.on_request,
+            hooks.on_route,
+            hooks.on_response,
+            hooks.on_request_end
         );
 
         // Build global pool
@@ -227,7 +276,7 @@ impl LuaEngine {
         }
 
         // Build per-route-script pools
-        let mut route_scripts: HashMap<String, Vec<std::sync::Mutex<Lua>>> = HashMap::new();
+        let mut route_scripts: HashMap<String, RouteScript> = HashMap::new();
         for name in route_script_names {
             if global_scripts.contains(name) {
                 continue;
@@ -282,18 +331,29 @@ impl LuaEngine {
                 )?;
                 script_states.push(std::sync::Mutex::new(lua));
             }
-            route_scripts.insert(name.clone(), script_states);
+            let script_hooks = script_states
+                .first()
+                .map(|m| HookSet::probe(&m.lock().unwrap_or_else(|p| p.into_inner()).lua))
+                .unwrap_or_default();
+            route_scripts.insert(
+                name.clone(),
+                RouteScript {
+                    states: script_states,
+                    hooks: script_hooks,
+                },
+            );
         }
 
+        let any_route_on_response = route_scripts.values().any(|r| r.hooks.on_response);
+        let any_route_on_request_end = route_scripts.values().any(|r| r.hooks.on_request_end);
         Ok(Self {
             inner: Arc::new(LuaEngineInner {
                 states,
-                has_on_request,
-                has_on_route,
-                has_on_response,
-                has_on_request_end,
+                hooks,
                 hook_timeout,
                 route_scripts,
+                any_route_on_response,
+                any_route_on_request_end,
                 _shared_state: shared_state,
             }),
         })
@@ -304,7 +364,7 @@ impl LuaEngine {
         hook_timeout: Duration,
         shared_state: &SharedState,
         exposed_env: &[String],
-    ) -> anyhow::Result<Lua> {
+    ) -> anyhow::Result<LuaSlot> {
         // COROUTINE is intentionally excluded: mlua's set_hook does not
         // propagate to coroutine threads, so a script could escape the
         // execution-timeout guard via `coroutine.wrap(function() while
@@ -373,13 +433,11 @@ impl LuaEngine {
         let baseline = lua.create_table()?;
         for pair in globals.pairs::<mlua::Value, mlua::Value>() {
             let (key, _) = pair?;
-            if let Ok(name) = key.to_string() {
-                baseline.set(name, true)?;
-            }
+            baseline.raw_set(key, true)?;
         }
-        lua.set_named_registry_value(BASELINE_GLOBALS_KEY, baseline)?;
+        drop(globals);
 
-        Ok(lua)
+        Ok(LuaSlot { lua, baseline })
     }
 
     /// (Re-)arm the per-call execution timeout on a pooled state.
@@ -597,50 +655,94 @@ impl LuaEngine {
         Ok(())
     }
 
-    /// Get a Lua state from the pool, using a simple round-robin.
-    /// This uses a global counter to distribute across states.
-    fn get_state_index(&self) -> usize {
+    /// Lock a state from `pool` for one hook call.
+    ///
+    /// Starts at a round-robin index but takes the first state that is free:
+    /// hooks run synchronously on the async workers, so blocking on a state
+    /// another worker holds would stall every connection on this worker for
+    /// the length of someone else's hook. Only when every state is busy does
+    /// it wait, on the round-robin one. A poisoned state (a panic mid-hook) is
+    /// reused rather than taken out of service: `cleanup_lua_state` runs after
+    /// every call, and the alternative is a pool that shrinks to nothing.
+    fn acquire(pool: &StatePool) -> std::sync::MutexGuard<'_, LuaSlot> {
+        use std::sync::TryLockError;
         static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let idx = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        idx % self.inner.states.len()
+        let n = pool.len();
+        let start = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % n;
+        for i in 0..n {
+            match pool[(start + i) % n].try_lock() {
+                Ok(guard) => return guard,
+                Err(TryLockError::Poisoned(p)) => return p.into_inner(),
+                Err(TryLockError::WouldBlock) => continue,
+            }
+        }
+        pool[start].lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Run `f` on a state from `pool`, then clear the globals it left behind
+    /// — whatever `f` returned, error included. A hook that raises halfway
+    /// has had as much chance to set request-scoped globals as one that
+    /// returns, and those must not reach the next request served by this
+    /// state.
+    fn with_state<R>(pool: &StatePool, f: impl FnOnce(&Lua) -> R) -> R {
+        let slot = Self::acquire(pool);
+        let result = f(&slot.lua);
+        Self::cleanup_lua_state(&slot);
+        result
+    }
+
+    /// The route script `name`, if it is loaded and defines `hook`.
+    fn route_script_with(&self, name: &str, hook: Hook) -> Option<&RouteScript> {
+        self.inner
+            .route_scripts
+            .get(name)
+            .filter(|r| r.hooks.has(hook))
     }
 
     // --- Hook accessors ---
 
     pub fn has_on_request(&self) -> bool {
-        self.inner.has_on_request
+        self.inner.hooks.on_request
     }
 
     pub fn has_on_route(&self) -> bool {
-        self.inner.has_on_route
+        self.inner.hooks.on_route
     }
 
     pub fn has_on_response(&self) -> bool {
-        self.inner.has_on_response
+        self.inner.hooks.on_response
     }
 
     pub fn has_on_request_end(&self) -> bool {
-        self.inner.has_on_request_end
+        self.inner.hooks.on_request_end
     }
 
-    /// Check if a named route script has a specific hook.
-    fn route_script_has_hook(lua: &Lua, hook_name: &str) -> bool {
-        lua.globals().get::<Function>(hook_name).is_ok()
+    /// Whether the route script `name` is loaded and defines `hook`. Lets the
+    /// caller skip building a request table for a script that would ignore it.
+    pub fn route_has_hook(&self, name: &str, hook: Hook) -> bool {
+        self.route_script_with(name, hook).is_some()
+    }
+
+    /// Whether `on_response` would run anywhere — globally or in some route
+    /// script — so the proxy only keeps a copy of the request when it will.
+    pub fn may_run_on_response(&self) -> bool {
+        self.inner.hooks.on_response || self.inner.any_route_on_response
+    }
+
+    /// Same as `may_run_on_response`, for `on_request_end`.
+    pub fn may_run_on_request_end(&self) -> bool {
+        self.inner.hooks.on_request_end || self.inner.any_route_on_request_end
     }
 
     // --- Hook calls ---
 
     /// Call on_request(req). Returns Continue or Deny.
     pub fn call_on_request(&self, req: &mut LuaRequest) -> RequestHookResult {
-        if !self.inner.has_on_request {
+        if !self.inner.hooks.on_request {
             return RequestHookResult::Continue(req.clone());
         }
 
-        let idx = self.get_state_index();
-        let lua = self.inner.states[idx].lock().unwrap();
-
-        let result = self.do_on_request(&lua, req);
-        Self::cleanup_lua_state(&lua);
+        let result = Self::with_state(&self.inner.states, |lua| self.do_on_request(lua, req));
         match result {
             Ok(result) => result,
             Err(e) => {
@@ -664,19 +766,11 @@ impl LuaEngine {
         script_name: &str,
         req: &mut LuaRequest,
     ) -> RequestHookResult {
-        let Some(script_states) = self.inner.route_scripts.get(script_name) else {
+        let Some(script) = self.route_script_with(script_name, Hook::Request) else {
             return RequestHookResult::Continue(req.clone());
         };
 
-        let idx = self.get_state_index() % script_states.len();
-        let lua = script_states[idx].lock().unwrap();
-
-        if !Self::route_script_has_hook(&lua, "on_request") {
-            return RequestHookResult::Continue(req.clone());
-        }
-
-        let result = self.do_on_request(&lua, req);
-        Self::cleanup_lua_state(&lua);
+        let result = Self::with_state(&script.states, |lua| self.do_on_request(lua, req));
         match result {
             Ok(result) => result,
             Err(e) => {
@@ -690,24 +784,28 @@ impl LuaEngine {
     /// Preserves everything present at state-creation time (built-in modules, the loaded
     /// stdlib, base library functions, and hook functions) via the baseline snapshot taken
     /// in `create_lua_state`; only globals a script created at request time are cleared.
-    fn cleanup_lua_state(lua: &Lua) {
-        let globals = lua.globals();
-        let baseline: Option<Table> = lua.named_registry_value(BASELINE_GLOBALS_KEY).ok();
-        if let Ok(keys) = globals
-            .pairs::<mlua::Value, mlua::Value>()
-            .collect::<Result<Vec<_>, _>>()
-        {
-            for (key, _) in keys {
-                if let Ok(key_str) = key.to_string() {
-                    let is_baseline = baseline
-                        .as_ref()
-                        .and_then(|b| b.contains_key(key_str.as_str()).ok())
-                        .unwrap_or(false);
-                    if !is_baseline {
-                        let _ = globals.set(key_str.as_str(), mlua::Value::Nil);
-                    }
-                }
+    ///
+    /// Runs after every hook call, so it is kept cheap: one raw lookup per global
+    /// against the baseline, keyed by the global's own key value — no string
+    /// conversion, and no allocation unless a stray global actually exists.
+    fn cleanup_lua_state(slot: &LuaSlot) {
+        let globals = slot.lua.globals();
+        let mut stray: Vec<Value> = Vec::new();
+        for pair in globals.pairs::<Value, Value>() {
+            let Ok((key, _)) = pair else {
+                break;
+            };
+            let known = slot
+                .baseline
+                .raw_get::<Value>(key.clone())
+                .map(|v| !v.is_nil())
+                .unwrap_or(false);
+            if !known {
+                stray.push(key);
             }
+        }
+        for key in stray {
+            let _ = globals.raw_set(key, Value::Nil);
         }
     }
 
@@ -745,14 +843,14 @@ impl LuaEngine {
 
     /// Call on_route(req, matched_target). Returns Override(url) or Default.
     pub fn call_on_route(&self, req: &LuaRequest, matched_target: &str) -> RouteHookResult {
-        if !self.inner.has_on_route {
+        if !self.inner.hooks.on_route {
             return RouteHookResult::Default;
         }
 
-        let idx = self.get_state_index();
-        let lua = self.inner.states[idx].lock().unwrap();
-
-        match self.do_on_route(&lua, req, matched_target) {
+        let result = Self::with_state(&self.inner.states, |lua| {
+            self.do_on_route(lua, req, matched_target)
+        });
+        match result {
             Ok(result) => result,
             Err(e) => {
                 tracing::error!("Lua on_route error: {}", e);
@@ -776,22 +874,15 @@ impl LuaEngine {
         req: &LuaRequest,
         matched_target: &str,
     ) -> RouteHookResult {
-        let Some(script_states) = self.inner.route_scripts.get(script_name) else {
+        let Some(script) = self.route_script_with(script_name, Hook::Route) else {
             return RouteHookResult::Default;
         };
 
-        let idx = self.get_state_index() % script_states.len();
-        let lua = script_states[idx].lock().unwrap();
-
-        if !Self::route_script_has_hook(&lua, "on_route") {
-            return RouteHookResult::Default;
-        }
-
-        match self.do_on_route(&lua, req, matched_target) {
-            Ok(result) => {
-                Self::cleanup_lua_state(&lua);
-                result
-            }
+        let result = Self::with_state(&script.states, |lua| {
+            self.do_on_route(lua, req, matched_target)
+        });
+        match result {
+            Ok(result) => result,
             Err(e) => {
                 tracing::error!("Lua on_route error in {}: {}", script_name, e);
                 Self::route_script_error_deny()
@@ -824,18 +915,15 @@ impl LuaEngine {
         status: u16,
         headers: &HashMap<String, String>,
     ) -> ResponseMod {
-        if !self.inner.has_on_response {
+        if !self.inner.hooks.on_response {
             return ResponseMod::default();
         }
 
-        let idx = self.get_state_index();
-        let lua = self.inner.states[idx].lock().unwrap();
-
-        match self.do_on_response(&lua, req, status, headers) {
-            Ok(result) => {
-                Self::cleanup_lua_state(&lua);
-                result
-            }
+        let result = Self::with_state(&self.inner.states, |lua| {
+            self.do_on_response(lua, req, status, headers)
+        });
+        match result {
+            Ok(result) => result,
             Err(e) => {
                 tracing::error!("Lua on_response error: {}", e);
                 ResponseMod::default()
@@ -851,22 +939,15 @@ impl LuaEngine {
         status: u16,
         headers: &HashMap<String, String>,
     ) -> ResponseMod {
-        let Some(script_states) = self.inner.route_scripts.get(script_name) else {
+        let Some(script) = self.route_script_with(script_name, Hook::Response) else {
             return ResponseMod::default();
         };
 
-        let idx = self.get_state_index() % script_states.len();
-        let lua = script_states[idx].lock().unwrap();
-
-        if !Self::route_script_has_hook(&lua, "on_response") {
-            return ResponseMod::default();
-        }
-
-        match self.do_on_response(&lua, req, status, headers) {
-            Ok(result) => {
-                Self::cleanup_lua_state(&lua);
-                result
-            }
+        let result = Self::with_state(&script.states, |lua| {
+            self.do_on_response(lua, req, status, headers)
+        });
+        match result {
+            Ok(result) => result,
             Err(e) => {
                 tracing::error!("Lua on_response error in {}: {}", script_name, e);
                 ResponseMod::default()
@@ -983,14 +1064,14 @@ impl LuaEngine {
         duration_ms: f64,
         target: &str,
     ) {
-        if !self.inner.has_on_request_end {
+        if !self.inner.hooks.on_request_end {
             return;
         }
 
-        let idx = self.get_state_index();
-        let lua = self.inner.states[idx].lock().unwrap();
-
-        if let Err(e) = self.do_on_request_end(&lua, req, status, duration_ms, target) {
+        let result = Self::with_state(&self.inner.states, |lua| {
+            self.do_on_request_end(lua, req, status, duration_ms, target)
+        });
+        if let Err(e) = result {
             tracing::error!("Lua on_request_end error: {}", e);
         }
     }
@@ -1004,18 +1085,14 @@ impl LuaEngine {
         duration_ms: f64,
         target: &str,
     ) {
-        let Some(script_states) = self.inner.route_scripts.get(script_name) else {
+        let Some(script) = self.route_script_with(script_name, Hook::RequestEnd) else {
             return;
         };
 
-        let idx = self.get_state_index() % script_states.len();
-        let lua = script_states[idx].lock().unwrap();
-
-        if !Self::route_script_has_hook(&lua, "on_request_end") {
-            return;
-        }
-
-        if let Err(e) = self.do_on_request_end(&lua, req, status, duration_ms, target) {
+        let result = Self::with_state(&script.states, |lua| {
+            self.do_on_request_end(lua, req, status, duration_ms, target)
+        });
+        if let Err(e) = result {
             tracing::error!("Lua on_request_end error in {}: {}", script_name, e);
         }
     }
@@ -1144,6 +1221,129 @@ impl Default for ScriptingConfig {
             enabled: false,
             scripts_dir: PathBuf::from("./scripts/lua"),
             hook_timeout_ms: 10,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn req() -> LuaRequest {
+        LuaRequest {
+            method: "GET".into(),
+            path: "/".into(),
+            headers: HashMap::new(),
+            host: "h".into(),
+            content_length: 0,
+        }
+    }
+
+    fn engine_with(src: &str) -> (tempfile::TempDir, LuaEngine) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("s.lua"), src).unwrap();
+        let engine = LuaEngine::new(dir.path(), 1, Duration::from_millis(100), &[]).unwrap();
+        (dir, engine)
+    }
+
+    /// Reads the global `leaked` through on_request: "nil" when the previous
+    /// hook's request-scoped global was cleaned up.
+    const PROBE: &str = r#"
+        function on_request(req)
+            req:set_header("x-leaked", tostring(leaked))
+        end
+    "#;
+
+    fn probe(engine: &LuaEngine) -> String {
+        let mut r = req();
+        match engine.call_on_request(&mut r) {
+            RequestHookResult::Continue(r) => r.headers["x-leaked"].clone(),
+            RequestHookResult::Deny { status, body } => panic!("denied {status} {body}"),
+        }
+    }
+
+    #[test]
+    fn globals_do_not_leak_from_a_failing_on_route() {
+        let (_dir, engine) = engine_with(&format!(
+            "{PROBE}\nfunction on_route(req, target) leaked = 'secret'; error('boom') end"
+        ));
+        assert!(matches!(
+            engine.call_on_route(&req(), "http://t"),
+            RouteHookResult::Deny { .. }
+        ));
+        assert_eq!(probe(&engine), "nil");
+    }
+
+    #[test]
+    fn globals_do_not_leak_from_on_request_end() {
+        let (_dir, engine) = engine_with(&format!(
+            "{PROBE}\nfunction on_request_end(req, resp, ms, target) leaked = 'secret' end"
+        ));
+        engine.call_on_request_end(&req(), 200, 1.0, "http://t");
+        assert_eq!(probe(&engine), "nil");
+    }
+
+    #[test]
+    fn globals_do_not_leak_from_a_failing_on_response() {
+        let (_dir, engine) = engine_with(&format!(
+            "{PROBE}\nfunction on_response(req, resp) leaked = 'secret'; error('boom') end"
+        ));
+        let _ = engine.call_on_response(&req(), 200, &HashMap::new());
+        assert_eq!(probe(&engine), "nil");
+    }
+
+    #[test]
+    fn load_time_globals_and_stdlib_survive_cleanup() {
+        let (_dir, engine) = engine_with(
+            r#"
+            config_value = "kept"
+            function on_request(req)
+                req:set_header("x-v", config_value .. math.floor(1.5))
+            end
+            "#,
+        );
+        for _ in 0..3 {
+            let mut r = req();
+            match engine.call_on_request(&mut r) {
+                RequestHookResult::Continue(r) => assert_eq!(r.headers["x-v"], "kept1"),
+                RequestHookResult::Deny { body, .. } => panic!("{body}"),
+            }
+        }
+    }
+
+    #[test]
+    fn route_hook_presence_is_known_without_running_the_script() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("r.lua"),
+            "function on_route(req, t) return nil end",
+        )
+        .unwrap();
+        let engine = LuaEngine::with_route_scripts(
+            dir.path(),
+            1,
+            Duration::from_millis(100),
+            &[],
+            &["r.lua".to_string()],
+            &[],
+        )
+        .unwrap();
+        assert!(engine.route_has_hook("r.lua", Hook::Route));
+        assert!(!engine.route_has_hook("r.lua", Hook::Request));
+        assert!(!engine.route_has_hook("missing.lua", Hook::Route));
+        assert!(!engine.may_run_on_response());
+        assert!(!engine.may_run_on_request_end());
+    }
+
+    #[test]
+    fn a_busy_state_is_skipped_for_a_free_one() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("s.lua"), PROBE).unwrap();
+        let engine = LuaEngine::new(dir.path(), 2, Duration::from_millis(100), &[]).unwrap();
+        // Hold one state; every call must still get the other without waiting.
+        let _held = engine.inner.states[0].lock().unwrap();
+        for _ in 0..4 {
+            assert_eq!(probe(&engine), "nil");
         }
     }
 }

@@ -39,6 +39,82 @@
 * `soli-proxy hash-password` never existed: the hasher is the separate `hash-password` binary
   (or `POST /api/v1/hash-password`). README, site docs and error messages now say so.
 
+**Request path (fix/request)**
+
+### Security
+
+* **WebSocket upgrades run the route's Lua scripts.** The upgrade branch returned before
+  route `on_request`, global `on_route` and route `on_route` ran, so a route protected by
+  `@script:auth.lua` was open to anyone adding `Upgrade: websocket` — with whatever
+  `X-User` they cared to send. The same hooks now run (deny, header rewrite, target
+  override) before anything is tunnelled.
+* **Forwarding headers are the proxy's, never the client's.** `X-Forwarded-Host` was only
+  overwritten on domain rules and https targets, and `Forwarded`, `X-Real-IP`,
+  `X-Forwarded-Port`, `-Prefix` and `-Ssl` were relayed verbatim (`X-Real-IP: 127.0.0.1`
+  passed "localhost only" checks). Every inbound `Forwarded` / `X-Forwarded-*` /
+  `X-Real-IP` is now dropped and `X-Forwarded-For`, `X-Real-IP`, `X-Forwarded-Proto`,
+  `X-Forwarded-Host` set from what the proxy saw — on rules, app domains and WebSockets,
+  before Lua runs. `X-Forwarded-Host` now always carries the Host as sent, port included.
+* **Hop-by-hop headers are stripped before Lua, on every path.** The app-managed path did
+  not strip them at all; only the first `Connection` header was read; and the strip ran
+  after the scripts, so `Connection: x-user` deleted the `x-user` a script had set.
+* **Rules match a canonical path.** `//admin/x` and `/%61dmin/x` missed an `/admin/* @auth`
+  rule and fell through to an unprotected one. Matching (and `@auth`/`@noauth`) now decodes
+  percent-encoded unreserved characters and collapses repeated `/`; the backend still gets
+  the path as sent.
+* **CONNECT, authority-form and asterisk-form targets are refused** (405 / 400, `OPTIONS *`
+  answered directly) instead of panicking on `path[1..]`.
+* **More than one `Host` header is a 400**, as is an HTTP/2 `Host` that names a different
+  authority than `:authority`.
+* **The `force_https` redirect can no longer be pointed elsewhere.** `Host:
+  example.com:@evil.com` passed the served-host check and became
+  `Location: https://example.com:@evil.com/`. The Location is rebuilt from a strictly
+  parsed `host[:port]`; anything else is a 400.
+* **Deflate HTML rewriting is bounded.** The body was collected before the 10 MB check and
+  decoded with an unbounded `read_to_end` — a decompression bomb. A compressed body over
+  10 MB is now a 502; a decoded body over 10 MB (or invalid deflate) passes through
+  untouched, still compressed.
+* **A Lua header write-back replaces client duplicates.** A script setting `x-user` to one
+  of the values the client had sent twice left both in place. Scripts now see repeated
+  headers joined (`, `, or `; ` for `Cookie`), and any change replaces every copy.
+* **A Lua deny with an impossible status answers 500** instead of panicking the
+  connection; only 200–599 is honoured.
+* **Lua state hygiene.** Request-scoped globals were left behind when `on_route` raised and
+  after every `on_request_end`; they are now cleared after every hook call, whatever it
+  returned.
+* **WebSocket tunnels keep their connection slot**, and **`[limits]
+  max_connections_per_ip`** (default 256, `0` = off; IPv6 per /64) caps one address's
+  connections across both listeners. An open WebSocket used to stop counting against
+  `max_connections` the moment it was upgraded.
+* **HTTP/2 connections are bounded.** They had no idle or preface timeout: a client that
+  negotiated h2 and sent nothing held its connection and permit forever. Idle connections
+  now get GOAWAY after `keep_alive_timeout` (default 30 s), silent ones are closed, and
+  PING keep-alives drop dead peers. HTTP/1's header-read timeout is now always set (30 s
+  default), which also bounds idle keep-alive connections.
+* **Client aborts no longer count against backends.** An upload the client broke off was
+  recorded as a backend failure (and, for apps, triggered failover); only an over-size body
+  was recognised as the client's doing.
+* **The rate limiter keys IPv6 clients by /64**, not by full address.
+
+### Bug Fixes
+
+* `on_response` and `on_request_end` receive the real request (method, path, host,
+  headers) instead of an empty one, and the global `on_response` now runs for app-managed
+  domains too.
+* WebSocket backend sockets set `TCP_NODELAY`.
+
+### Performance Improvements
+
+* Lua: hook presence is probed once per script, so no request table is built — and no
+  state locked — for a script without that hook; the request view is built once per
+  request; global cleanup is one raw lookup per global instead of a string conversion each;
+  a free Lua state is taken before waiting on a busy one.
+* The HSTS header is built once per loaded config, not per HTTPS response; the config is
+  loaded once per request instead of three times.
+* `strip_hop_by_hop` uses static header names; the circuit breaker uses a `parking_lot`
+  lock and skips a redundant store on success; WebSocket idle timers are reset rather than
+  re-created per frame; the backend pool keeps up to 256 idle connections per host (was 64).
+
 ## [0.35.2](https://github.com/solisoft/soli-proxy/compare/v0.35.1...v0.35.2) (2026-09-27)
 
 ### Bug Fixes

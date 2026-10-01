@@ -171,6 +171,9 @@
                     <p class="text-gray-400 mb-6 leading-relaxed">
                         Each hook runs in a sandboxed Lua 5.4 environment with access to the request context and built-in modules.
                     </p>
+                    <p class="text-gray-400 mb-6 leading-relaxed">
+                        What a script sees in <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">req.headers</code> has been cleaned first: hop-by-hop headers (and any the client named in <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">Connection</code>) are gone, and <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">X-Forwarded-For</code>, <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">X-Real-IP</code>, <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">X-Forwarded-Proto</code> and <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">X-Forwarded-Host</code> hold the proxy's own view of the client. A header the client sent more than once appears once, its values joined with <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">, </code> (<code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">; </code> for <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">Cookie</code>); setting a header replaces every copy the client sent. Globals a hook creates are cleared after every call, whether it returned or raised.
+                    </p>
 
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <!-- on_request -->
@@ -184,7 +187,7 @@
                                     <span class="text-xs text-gray-500">Pre-routing</span>
                                 </div>
                             </div>
-                            <p class="text-sm text-gray-400 mb-4">Authentication, WAF rules, request validation. Runs before the target backend is resolved.</p>
+                            <p class="text-sm text-gray-400 mb-4">Authentication, WAF rules, request validation. Runs before the target backend is resolved &mdash; for WebSocket upgrades too, so a route guarded by a script stays guarded on <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 py-0.5 rounded">Upgrade: websocket</code>. A deny status outside 200&ndash;599 is answered 500.</p>
                             <div class="rounded-lg bg-black/30 border border-white/5 p-3">
                                 <code class="text-xs text-gray-300 leading-relaxed block">
                                     <span class="tk">function</span> <span class="tf">on_request</span>(<span class="tt">req</span>)<br>
@@ -229,7 +232,7 @@
                                     <span class="text-xs text-gray-500">Post-backend</span>
                                 </div>
                             </div>
-                            <p class="text-sm text-gray-400 mb-4">CORS headers, header stripping, body transforms. Modify the response before it reaches the client.</p>
+                            <p class="text-sm text-gray-400 mb-4">CORS headers, header stripping, body transforms. Modify the response before it reaches the client. Runs for app-managed domains too (global hook only &mdash; apps have no route scripts), and <code class="text-teal-300 text-xs bg-teal-500/10 px-1 py-0.5 rounded">req</code> carries the request's method, path, host and headers.</p>
                             <div class="rounded-lg bg-black/30 border border-white/5 p-3">
                                 <code class="text-xs text-gray-300 leading-relaxed block">
                                     <span class="tc">-- Available methods:</span><br>
@@ -252,7 +255,7 @@
                                     <span class="text-xs text-gray-500">Fire-and-forget</span>
                                 </div>
                             </div>
-                            <p class="text-sm text-gray-400 mb-4">Logging, metrics collection, analytics. Receives <code class="text-orange-300 text-xs bg-orange-500/10 px-1 py-0.5 rounded">duration_ms</code> and <code class="text-orange-300 text-xs bg-orange-500/10 px-1 py-0.5 rounded">target_url</code>. Cannot modify the response.</p>
+                            <p class="text-sm text-gray-400 mb-4">Logging, metrics collection, analytics. Receives <code class="text-orange-300 text-xs bg-orange-500/10 px-1 py-0.5 rounded">duration_ms</code> and <code class="text-orange-300 text-xs bg-orange-500/10 px-1 py-0.5 rounded">target_url</code>, and a <code class="text-orange-300 text-xs bg-orange-500/10 px-1 py-0.5 rounded">req</code> with the request's method, path, host and headers. Cannot modify the response.</p>
                             <div class="rounded-lg bg-black/30 border border-white/5 p-3">
                                 <code class="text-xs text-gray-300 leading-relaxed block">
                                     <span class="tk">function</span> <span class="tf">on_request_end</span>(<span class="tt">req</span>, <span class="tt">resp</span>,<br>

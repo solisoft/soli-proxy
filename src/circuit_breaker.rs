@@ -1,7 +1,8 @@
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const STATE_CLOSED: u8 = 0;
@@ -74,6 +75,10 @@ pub struct CircuitBreakerInfo {
 }
 
 pub struct CircuitBreaker {
+    /// `parking_lot` rather than `std`: this read lock is taken on every
+    /// proxied request (availability check, then the outcome), and the
+    /// uncontended parking_lot read path is a single atomic with no poisoning
+    /// bookkeeping.
     targets: RwLock<HashMap<String, Arc<TargetState>>>,
     config: CircuitBreakerConfig,
     epoch_start: Instant,
@@ -93,7 +98,7 @@ impl CircuitBreaker {
     /// Pre-register targets so the first request does not take the write lock
     /// on a cold map under load (e.g. after startup or config reload).
     pub fn prewarm(&self, target_urls: impl IntoIterator<Item = impl AsRef<str>>) {
-        let mut targets = self.targets.write().unwrap();
+        let mut targets = self.targets.write();
         for url in target_urls {
             targets
                 .entry(url.as_ref().to_string())
@@ -104,13 +109,13 @@ impl CircuitBreaker {
     fn get_or_create(&self, target_url: &str) -> Arc<TargetState> {
         // Fast path: read lock
         {
-            let targets = self.targets.read().unwrap();
+            let targets = self.targets.read();
             if let Some(state) = targets.get(target_url) {
                 return state.clone();
             }
         }
         // Slow path: write lock for new target
-        let mut targets = self.targets.write().unwrap();
+        let mut targets = self.targets.write();
         targets
             .entry(target_url.to_string())
             .or_insert_with(|| Arc::new(TargetState::new()))
@@ -181,7 +186,13 @@ impl CircuitBreaker {
 
         match current {
             STATE_CLOSED => {
-                state.consecutive_failures.store(0, Ordering::Release);
+                // The common case — a healthy backend answering — leaves the
+                // counter at 0 already. Skip the store so concurrent requests
+                // to the same backend don't bounce its cache line between
+                // cores on every response.
+                if state.consecutive_failures.load(Ordering::Relaxed) != 0 {
+                    state.consecutive_failures.store(0, Ordering::Release);
+                }
             }
             STATE_HALF_OPEN => {
                 let successes = state.consecutive_successes.fetch_add(1, Ordering::AcqRel) + 1;
@@ -271,7 +282,7 @@ impl CircuitBreaker {
     }
 
     pub fn get_states(&self) -> HashMap<String, CircuitBreakerInfo> {
-        let targets = self.targets.read().unwrap();
+        let targets = self.targets.read();
         targets
             .iter()
             .map(|(url, state)| {
@@ -295,7 +306,7 @@ impl CircuitBreaker {
     }
 
     pub fn reset(&self) {
-        let targets = self.targets.read().unwrap();
+        let targets = self.targets.read();
         for (url, state) in targets.iter() {
             state.state.store(STATE_CLOSED, Ordering::Release);
             state.consecutive_failures.store(0, Ordering::Release);
@@ -307,7 +318,7 @@ impl CircuitBreaker {
 
     /// Reset circuit breaker state for a specific target URL.
     pub fn reset_target(&self, target_url: &str) {
-        let targets = self.targets.read().unwrap();
+        let targets = self.targets.read();
         if let Some(state) = targets.get(target_url) {
             let prev = state.state.load(Ordering::Acquire);
             if prev != STATE_CLOSED {

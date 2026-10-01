@@ -1,39 +1,129 @@
 //! Shared header-handling helpers used by both the public proxy
 //! (`src/server/mod.rs`) and the admin app passthrough (`src/admin/mod.rs`).
 
+use hyper::header::{
+    HeaderName, HeaderValue, CONNECTION, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION, TE, TRAILER,
+    TRANSFER_ENCODING, UPGRADE,
+};
+use std::net::IpAddr;
+
 /// Headers that must never cross the proxy/upstream boundary, per RFC 7230 §6.1.
-/// `connection` is captured separately because we need to read its value (to
+/// `connection` is handled separately because we need to read its value (to
 /// strip Connection-listed headers) before removing the header itself.
-const HOP_BY_HOP: &[&str] = &[
-    "keep-alive",
-    "proxy-authenticate",
-    "proxy-authorization",
-    "te",
-    "trailer",
-    "transfer-encoding",
-    "upgrade",
+/// `proxy-connection` is not in the RFC but is the pre-standard spelling some
+/// clients still send, and no backend has a use for it.
+///
+/// Static `HeaderName`s rather than `&str`: `HeaderMap::remove(&str)` parses
+/// and validates the name on every call, eight times per request.
+static HOP_BY_HOP: [HeaderName; 8] = [
+    HeaderName::from_static("keep-alive"),
+    PROXY_AUTHENTICATE,
+    PROXY_AUTHORIZATION,
+    TE,
+    TRAILER,
+    TRANSFER_ENCODING,
+    UPGRADE,
+    HeaderName::from_static("proxy-connection"),
 ];
 
 /// Strip RFC 7230 §6.1 hop-by-hop headers and any header whose name appears in
-/// the request's `Connection:` header before forwarding upstream.
+/// the request's `Connection:` header(s) before forwarding upstream.
 ///
-/// Order matters: the `Connection` value must be captured before `connection`
+/// Order matters: the `Connection` values must be read before `connection`
 /// is removed, otherwise the Connection-listed strip becomes a no-op and
-/// client-nominated hop-by-hop headers leak through.
+/// client-nominated hop-by-hop headers leak through. *Every* `Connection`
+/// field is read, not just the first — `Connection: keep-alive` followed by
+/// `Connection: x-secret` is two fields of one list (RFC 9110 §5.3).
+///
+/// The proxy runs this on the inbound request *before* any Lua hook sees it,
+/// so a client's `Connection: x-user` cannot delete a header a script set —
+/// it would otherwise be applied after the script, to the script's output.
 pub fn strip_hop_by_hop(headers: &mut hyper::HeaderMap) {
-    let conn_header = headers
-        .get("connection")
-        .and_then(|v| v.to_str().ok().map(String::from));
-    for h in HOP_BY_HOP {
-        headers.remove(*h);
+    let listed: Vec<HeaderName> = headers
+        .get_all(CONNECTION)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .filter_map(|n| HeaderName::from_bytes(n.as_bytes()).ok())
+        .collect();
+    for h in &HOP_BY_HOP {
+        headers.remove(h);
     }
-    headers.remove("connection");
-    if let Some(conn) = conn_header {
-        for name in conn.split(',').map(str::trim) {
-            if !name.is_empty() {
-                headers.remove(name);
-            }
+    headers.remove(CONNECTION);
+    for name in listed {
+        headers.remove(name);
+    }
+}
+
+/// Whether `name` (lower-case, as `HeaderName::as_str` yields it) is one of
+/// the headers a proxy uses to describe the client to the backend:
+/// `Forwarded`, any `X-Forwarded-*`, `X-Real-IP`. A client must never be the
+/// one supplying them — see `set_forwarding_headers`.
+pub fn is_forwarding_header(name: &str) -> bool {
+    name == "forwarded" || name == "x-real-ip" || name.starts_with("x-forwarded-")
+}
+
+static X_FORWARDED_FOR: HeaderName = HeaderName::from_static("x-forwarded-for");
+static X_FORWARDED_PROTO: HeaderName = HeaderName::from_static("x-forwarded-proto");
+static X_FORWARDED_HOST: HeaderName = HeaderName::from_static("x-forwarded-host");
+static X_REAL_IP: HeaderName = HeaderName::from_static("x-real-ip");
+
+/// Replace every client-supplied forwarding header with the proxy's own view
+/// of the connection.
+///
+/// Backends trust these headers — for the client address in logs and rate
+/// limits, for "was this HTTPS" in secure-cookie and redirect logic, for the
+/// public host in absolute URLs. Anything the client sent under these names
+/// is a claim, not a fact: `X-Real-IP: 127.0.0.1` would otherwise reach the
+/// backend verbatim and pass an "admin from localhost only" check. So all of
+/// `Forwarded`, `X-Forwarded-*` and `X-Real-IP` are removed first, then
+/// `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host` (the Host the
+/// client asked for, before any rewrite) and `X-Real-IP` are set from what the
+/// proxy itself observed.
+///
+/// The proxy is the edge: the chain starts here, so `X-Forwarded-For` is the
+/// peer address alone, not appended to. (Trusting an upstream load balancer's
+/// chain needs an explicit list of trusted proxy addresses; `client_ip` is the
+/// hook for that — the caller decides which address is the client.)
+pub fn set_forwarding_headers(
+    headers: &mut hyper::HeaderMap,
+    client_ip: Option<IpAddr>,
+    is_tls: bool,
+    original_host: Option<&str>,
+) {
+    strip_forwarding_headers(headers);
+    if let Some(ip) = client_ip {
+        if let Ok(v) = HeaderValue::from_str(&ip.to_string()) {
+            headers.insert(X_FORWARDED_FOR.clone(), v.clone());
+            headers.insert(X_REAL_IP.clone(), v);
         }
+    }
+    headers.insert(
+        X_FORWARDED_PROTO.clone(),
+        HeaderValue::from_static(if is_tls { "https" } else { "http" }),
+    );
+    if let Some(host) = original_host {
+        if let Ok(v) = HeaderValue::from_str(host) {
+            headers.insert(X_FORWARDED_HOST.clone(), v);
+        }
+    }
+}
+
+/// Remove `Forwarded`, every `X-Forwarded-*` and `X-Real-IP`.
+pub fn strip_forwarding_headers(headers: &mut hyper::HeaderMap) {
+    // Fast path: most requests carry none, and collecting names allocates.
+    if !headers.keys().any(|k| is_forwarding_header(k.as_str())) {
+        return;
+    }
+    let names: Vec<HeaderName> = headers
+        .keys()
+        .filter(|k| is_forwarding_header(k.as_str()))
+        .cloned()
+        .collect();
+    for name in names {
+        headers.remove(name);
     }
 }
 
@@ -65,7 +155,7 @@ pub fn coalesce_cookies(headers: &mut hyper::HeaderMap) {
         .join("; ");
     // Only rewrite if the joined value is a valid header value; otherwise leave
     // the originals untouched rather than dropping the cookies entirely.
-    if let Ok(value) = hyper::header::HeaderValue::from_str(&joined) {
+    if let Ok(value) = HeaderValue::from_str(&joined) {
         headers.remove(COOKIE);
         headers.insert(COOKIE, value);
     }
@@ -110,7 +200,7 @@ pub fn rewrite_same_origin(
     if !host_part(origin_authority).eq_ignore_ascii_case(host_part(client_host)) {
         return;
     }
-    if let Ok(v) = hyper::header::HeaderValue::from_str(backend_origin) {
+    if let Ok(v) = HeaderValue::from_str(backend_origin) {
         headers.insert(ORIGIN, v);
     }
 }
@@ -169,6 +259,87 @@ mod tests {
         h.insert("x-foo", "v".parse().unwrap());
         strip_hop_by_hop(&mut h);
         assert!(h.get("x-foo").is_none());
+    }
+
+    #[test]
+    fn reads_every_connection_field_not_just_the_first() {
+        let mut h = HeaderMap::new();
+        h.append("connection", "keep-alive".parse().unwrap());
+        h.append("connection", "x-secret".parse().unwrap());
+        h.insert("x-secret", "1".parse().unwrap());
+        h.insert("x-keep", "yes".parse().unwrap());
+        strip_hop_by_hop(&mut h);
+        assert!(
+            h.get("x-secret").is_none(),
+            "a header named in the second Connection field must be stripped"
+        );
+        assert_eq!(h.get("x-keep").unwrap(), "yes");
+    }
+
+    #[test]
+    fn strips_proxy_connection() {
+        let mut h = HeaderMap::new();
+        h.insert("proxy-connection", "keep-alive".parse().unwrap());
+        strip_hop_by_hop(&mut h);
+        assert!(h.get("proxy-connection").is_none());
+    }
+
+    #[test]
+    fn forwarding_headers_replace_every_client_claim() {
+        let mut h = HeaderMap::new();
+        h.insert("forwarded", "for=1.1.1.1;proto=https".parse().unwrap());
+        h.append("x-forwarded-for", "1.1.1.1".parse().unwrap());
+        h.append("x-forwarded-for", "2.2.2.2".parse().unwrap());
+        h.insert("x-forwarded-proto", "https".parse().unwrap());
+        h.insert("x-forwarded-host", "evil.example".parse().unwrap());
+        h.insert("x-forwarded-port", "443".parse().unwrap());
+        h.insert("x-forwarded-prefix", "/admin".parse().unwrap());
+        h.insert("x-forwarded-ssl", "on".parse().unwrap());
+        h.insert("x-real-ip", "127.0.0.1".parse().unwrap());
+        h.insert("x-keep", "yes".parse().unwrap());
+        set_forwarding_headers(
+            &mut h,
+            Some("9.9.9.9".parse().unwrap()),
+            false,
+            Some("real.example"),
+        );
+        assert!(h.get("forwarded").is_none());
+        assert!(h.get("x-forwarded-port").is_none());
+        assert!(h.get("x-forwarded-prefix").is_none());
+        assert!(h.get("x-forwarded-ssl").is_none());
+        assert_eq!(h.get_all("x-forwarded-for").iter().count(), 1);
+        assert_eq!(h.get("x-forwarded-for").unwrap(), "9.9.9.9");
+        assert_eq!(h.get("x-real-ip").unwrap(), "9.9.9.9");
+        assert_eq!(h.get("x-forwarded-proto").unwrap(), "http");
+        assert_eq!(h.get("x-forwarded-host").unwrap(), "real.example");
+        assert_eq!(h.get("x-keep").unwrap(), "yes");
+    }
+
+    #[test]
+    fn forwarding_headers_without_peer_or_host_set_no_address() {
+        let mut h = HeaderMap::new();
+        h.insert("x-real-ip", "127.0.0.1".parse().unwrap());
+        h.insert("x-forwarded-host", "evil.example".parse().unwrap());
+        set_forwarding_headers(&mut h, None, true, None);
+        assert!(h.get("x-real-ip").is_none());
+        assert!(h.get("x-forwarded-for").is_none());
+        assert!(h.get("x-forwarded-host").is_none());
+        assert_eq!(h.get("x-forwarded-proto").unwrap(), "https");
+    }
+
+    #[test]
+    fn is_forwarding_header_matches_the_family() {
+        for n in [
+            "forwarded",
+            "x-forwarded-for",
+            "x-forwarded-whatever",
+            "x-real-ip",
+        ] {
+            assert!(is_forwarding_header(n), "{n}");
+        }
+        for n in ["x-forwarded", "x-real", "forwarded-for", "host"] {
+            assert!(!is_forwarding_header(n), "{n}");
+        }
     }
 
     #[test]
