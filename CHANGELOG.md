@@ -1,127 +1,59 @@
 # Changelog
 
-## Unreleased
+## [1.0.0](https://github.com/solisoft/soli-proxy/compare/v0.35.2...v1.0.0) (2026-10-01)
 
-**Integration fixes**
+1.0 closes a full security and performance audit of 0.35 and adds what a proxy fronting a fleet of
+apps was missing. Every finding of the audit is fixed — bcrypt that could freeze the whole proxy,
+a WebSocket path around route scripts, tenants able to hang it, reach each other or take over a
+domain, client-controlled forwarding headers — and an independent review of the result found and
+fixed the remaining seams. Apps now survive a proxy restart. The proxy understands the CDN in
+front of it, compresses, retries, health-checks its targets, speaks HTTP/2 and gRPC to them,
+gates routes behind an SSO service, and `soli-proxy check` validates a configuration before it is
+loaded. Every dependency advisory is gone (`cargo audit --deny warnings` is clean) and the test
+suite went from 317 to 606.
 
-* **`force_https` no longer loops behind a TLS-terminating CDN.** A request from a trusted proxy
-  whose `X-Forwarded-Proto` is `https` is not redirected; from any other peer the header is
-  ignored, as before.
-* **Saving a route in the TUI keeps what the editor has no field for**: its `headers { }` block,
-  `@forward_auth`, `@compress` and target weights (`weight:N` is now read and written in the
-  targets field). Saving used to drop them.
-* **The health monitor falls back to `/health`**, like the deploy gate and adoption; it fell back
-  to `/`, so an app could be alive for one and dead for the other.
-* **An `accept()` that fails for lack of descriptors backs off 100 ms** instead of spinning a core.
-* **Multi-tenant: a tenant's derived apex no longer lends its error pages or maintenance flag to
-  the operator's site.** A tenant's `www.victim.com/` derives a claim on `victim.com`; routing
-  let it yield to the operator's `proxy.conf` rule or a cluster push for that apex, but custom
-  error pages and `maintenance.flag` looked the host up by name — so the tenant's `error_pages/`
-  (its HTML and scripts, on the victim's origin) answered the apex's errors, and its flag closed
-  the apex. Both now ask `AppManager::serving_route`, which applies routing's own precedence, and
-  routing uses it too. A yielding app is also no longer woken or counted active by those requests.
+Measured against 0.35.2 on the same machine (fat-LTO builds, 200 connections over loopback):
 
-* **`$client_ip` in a `headers { }` block is the forwarded client again.** It was read after the
-  request's extensions were cleared, so behind a trusted proxy it was always the proxy.
-* **Custom error pages no longer replace a forward-auth denial.** The auth service's 401/403 (its
-  login form, its JSON) was taken for one of the proxy's own errors, and its body swapped for the
-  proxy's page under the service's headers; it is now relayed like a backend's answer, replaced
-  only under `intercept_upstream_errors`.
-* **A forwarded client can no longer be this host.** A trusted peer's `X-Forwarded-For` (or
-  `real_ip_header`) naming a loopback, unspecified, link-local, multicast or broadcast address is
-  a forgery: the peer is the client instead. `/metrics` is judged on the connection itself — the
-  TCP peer (or PROXY source) and the client must both be loopback — so a tenant container on a
-  trusted Docker range sending `X-Forwarded-For: 127.0.0.1` no longer reads it, and neither does
-  a remote client relayed by a front proxy on this host. **`soli-proxy check` warns** when
-  `multi_tenant` is on and `trusted_proxies` covers loopback or Docker's `172.16.0.0/12` /
-  `192.168.0.0/16` pools (the `"private"` and `"loopback"` presets do): tenants would be trusted
-  proxies.
-* **The admin API writes a route only once it loads.** `proxy.conf` was written (and marked as the
-  proxy's own write) before the route's `@tls_ca` / `@tls_client_cert` files were read, so a route
-  answered 500 yet sat on disk and failed the next reload. And every string the serializer writes
-  verbatim — TLS and health paths, `@tls_sni`, matchers, `@auth` users, `@noauth` paths, script
-  names, global scripts — is refused (400) when it holds whitespace, a control character, `->`
-  or a trailing backslash: a `\n` in a route's JSON injected a `proxy.conf` line of the caller's
-  choosing. The `.conf` parser refuses the same values.
-* **TLS files are read safely, and fail quietly.** Only a regular file of at most 1 MiB is read,
-  opened non-blocking (a FIFO used to hang the load — and the admin request behind it), off the
-  async workers, outside the client registry's lock, and once: the trust store is built from the
-  bytes the client's key was hashed from. A file that cannot be used — missing, unreadable, not a
-  certificate — is reported as `cannot load TLS file <path>` by the admin API and
-  `POST /api/v1/config/validate`; the reason goes to the log. The distinct errors (and a PEM
-  parser quoting the line it choked on) made the API a probe of the proxy's filesystem.
+```
+static route              127,343 → 158,842 req/s   +25%
+managed app's domain      125,176 → 167,551 req/s   +34%
+normal traffic while wrong passwords flood an @auth route
+                               30 → 87,385 req/s    median 1,463 ms → 0.48 ms
+```
 
-* **A PROXY header that names no client no longer vouches for the connection.** On v1 `UNKNOWN`,
-  v2 `LOCAL` or an address-less v2 header the balancer stayed a trusted peer, so the client's own
-  `X-Forwarded-For`, `real_ip_header`, request ID and `X-Forwarded-Proto` were believed and the
-  per-IP cap skipped. Such a connection is still served (health checks) but trusted for nothing,
-  and counted per IP against the balancer's address.
-* **`X-Forwarded-Proto` is read one way.** `force_https` took the first value while the forwarding
-  headers dropped a multi-valued header; both now take the last value — the nearest proxy's.
-* **The admin listener strips an untrusted client's `real_ip_header`** (`CF-Connecting-IP`…)
-  before the `_admin` passthrough, like the proxy's listeners do.
-* **Userinfo in a request's host is a 400**, in the HTTP/2 `:authority` and in `Host` alike;
-  maintenance used to judge `x@site.example` raw while routing used `site.example`. A malformed
-  request is no longer looked at by maintenance at all.
-* **A Lua `on_route` override keeps the rule's upstream client only for the rule's own origins.**
-  Sent anywhere else, it used to take the rule's mTLS certificate, `@tls_insecure` and
-  `@tls_sni` along (HTTP and WebSocket alike); it now gets the shared pool's defaults.
-* **WebSocket upgrades are routed like requests.** When an app takes a whole-domain rule over,
-  only the app's gates apply (the rule's ran too, so forward-auth was asked twice); the target is
-  chosen by the rule's balancing past open breakers and down targets, with the rule's
-  `@connect_timeout` (it was always the first target, 5 s), and the tunnel's connect/handshake
-  outcome feeds the breaker; the rule's `headers { }` block applies to the upgrade.
-* **A pushed domain's retry is no longer dropped by a half-open breaker:** the next instance was
-  checked twice, and the second check refused what the first had just let through as the probe.
-* Smaller seams: a rule's `@timeout` no longer applies when an app takes the rule over; error and
-  maintenance pages show the request ID under `request_id_header`, not always `X-Request-Id`;
-  `soli-proxy check` files assembly errors under the right file (a route's TLS file was blamed on
-  `.env`); a response with any non-`identity` coding in any `Content-Encoding` field (`identity,
-  gzip`) is no longer compressed again; a backend error page replaced under
-  `intercept_upstream_errors` drops its `ETag`, `Last-Modified`, `Content-Disposition`,
-  `Content-Range` and `Content-Encoding`. The README now says that forward-auth's
-  `X-Forwarded-Uri` is the raw request target, for redirects, not for authorization.
+### Upgrading from 0.35
 
-**Forward auth (gap/auth)**
+Run `soli-proxy check -c <proxy.conf> --sites-dir <sites>` with the new binary first: it loads
+every file the way a start would and names each problem with its line.
 
-### Features
+* **`proxy.conf` is parsed strictly.** A line or directive the parser does not understand —
+  `@lb:unknown`, a malformed `@auth`, a line without `->` — is an error instead of being skipped.
+  Fatal at startup; on a reload the previous configuration stays.
+* **bcrypt hashes above cost 13 are refused** (4 to 13 are accepted). Regenerate them with
+  `soli-proxy hash-password`.
+* **Apps outlive the proxy.** Stopping or restarting the proxy leaves its apps running, and the
+  next start adopts them. `soli-proxy stop --all` stops them too; `[apps] stop_on_shutdown = true`
+  restores the old behaviour. The first restart into 1.0 still restarts every app once (0.35 kept
+  no adoption records).
+* **The systemd unit changed**: it runs as a `soli-proxy` user with `CAP_NET_BIND_SERVICE` and
+  `KillMode=process`. Re-copy `scripts/soli-proxy.service`, create the user and give it the config
+  and sites directories. Running native apps as other users needs the root variant documented in
+  the unit.
+* **Forwarding headers are the proxy's.** Client-sent `X-Forwarded-*`, `Forwarded` and
+  `X-Real-IP` are always replaced. Behind a CDN or load balancer, list it in
+  `[server] trusted_proxies` so its chain is kept.
+* **Every request and response carries `X-Request-Id`** (`request_id_header = ""` turns it off).
+* **The HTTPS listener follows `[server] bind`** instead of always binding `0.0.0.0`.
+* **One client address may hold 256 connections** (`[limits] max_connections_per_ip`, 0 = off).
+* **`.env` is read from the configuration directory only**, never from its parents.
+* **Multi-tenant mode:** tenant port ranges, `docker_network`, `--restart` and the operator's
+  proxy environment are ignored or refused; each app gets its own Docker network.
+* **Cluster pushes** must carry a strictly increasing index, `http`/`https` targets and weights up
+  to 255. A pushed domain is protected only once `soli-oned` sends its `auth`.
 
-* **Forward authentication: one SSO service can gate any route or app.** The README used to
-  claim JWT auth the proxy never had; it now delegates the decision the way Traefik's
-  ForwardAuth, nginx's `auth_request` and Caddy's `forward_auth` do. A route takes
-  `@forward_auth:http://auth.internal:4180/verify` and, optionally,
-  `@forward_auth_headers:X-Auth-User,X-Auth-Email`; an app takes `[auth] forward = "…"` and
-  `forward_headers = […]` in `app.infos` (cluster pushes accept the same keys). Before proxying —
-  and before a WebSocket upgrade — the proxy sends the auth service a bodiless `GET` with the
-  client's `Cookie`, `Authorization`, `Accept`, `User-Agent`, `X-Requested-With`, its own
-  `X-Forwarded-For`/`-Proto`/`-Host`/`X-Real-IP`, and `X-Forwarded-Method`/`X-Forwarded-Uri`.
-  **2xx** lets the request through with the named response headers copied onto it; **any other
-  answer** (401, 403, a 302 to the login page) is relayed to the client — status, headers
-  including `Location` and `Set-Cookie`, body capped at 64 KiB — and the upstream is never
-  contacted; **no answer** within `[forward_auth] timeout_secs` (default 5) is a **503**, never a
-  pass. The subrequest uses the shared upstream connection pool; no verdict is cached, so a
-  revoked session stops working on the next request.
-* **The copied header names are stripped from every client request first**, whatever the auth
-  service answers and on `@noauth` paths too, so a client cannot forge `X-Auth-User`. Naming a
-  hop-by-hop or framing header, `Host` or a forwarding header is refused.
-* **Basic Auth and forward-auth combine:** Basic runs first and both must pass; the client's
-  `Authorization` (the Basic password) is then not sent to the auth service. `@noauth` /
-  `[auth] noauth` paths skip both.
-* **Multi-tenant mode: `[forward_auth] allowed_urls`.** A tenant's `[auth] forward` is a URL the
-  proxy fetches with the visitor's cookies and whose denials it relays — a server-side request
-  forgery if left open (`http://169.254.169.254/…`, an internal admin port). In multi-tenant mode
-  an app whose `forward` no entry covers (same scheme, host and port; an entry ending in `/`
-  covers the paths below it) fails to load. Empty by default: no tenant can use forward-auth
-  until the operator lists a service.
-* Forward-auth URLs must be `http`/`https` with a host, and carry no credentials or fragment —
-  checked by the `proxy.conf` parser, `rule.validate()` (admin API), `app.infos` loading and
-  cluster pushes. Routes round-trip through the admin API as
-  `"forward_auth": {"url": …, "headers": […]}`, and through `proxy.conf` rewrites; the TUI's
-  route editor keeps a route's forward-auth when it saves.
+### Authentication and the admin API
 
-**Authentication and admin API (fix/auth)**
-
-### Security
+#### Security
 
 * **bcrypt no longer runs on the request workers.** Route `@auth`, app `[auth]` and the admin
   API's Basic credential verified bcrypt inline on a tokio worker, so some 40–50 wrong passwords
@@ -152,14 +84,14 @@
   accepts an optional `auth` object per domain (the `app.infos` shape and validation), which this
   proxy enforces; a pushed domain without one is still served open, and the pusher must send it.
 
-### Documentation
+#### Documentation
 
 * `soli-proxy hash-password`, which the README documented, now exists as a subcommand; the
   standalone `hash-password` binary and `POST /api/v1/hash-password` remain.
 
-**Request path (fix/request)**
+### The request path
 
-### Security
+#### Security
 
 * **WebSocket upgrades run the route's Lua scripts.** The upgrade branch returned before
   route `on_request`, global `on_route` and route `on_route` ran, so a route protected by
@@ -214,14 +146,14 @@
   was recognised as the client's doing.
 * **The rate limiter keys IPv6 clients by /64**, not by full address.
 
-### Bug Fixes
+#### Bug Fixes
 
 * `on_response` and `on_request_end` receive the real request (method, path, host,
   headers) instead of an empty one, and the global `on_response` now runs for app-managed
   domains too.
 * WebSocket backend sockets set `TCP_NODELAY`.
 
-### Performance Improvements
+#### Performance Improvements
 
 * Lua: hook presence is probed once per script, so no request table is built — and no
   state locked — for a script without that hook; the request view is built once per
@@ -233,9 +165,9 @@
   lock and skips a redundant store on success; WebSocket idle timers are reset rather than
   re-created per frame; the backend pool keeps up to 256 idle connections per host (was 64).
 
-**Apps (multi-tenant hardening, routing and supervision)**
+### Apps: multi-tenant isolation, routing and supervision
 
-### Security
+#### Security
 
 * **A tenant's `app.infos` can no longer hang or exhaust the proxy.** It was read whole, with
   `read_to_string`, on an async worker while holding the lock every proxied request takes: a
@@ -271,7 +203,7 @@
   `HTTP(S)_PROXY`/`NO_PROXY` reach containers only with `[apps] tenant_proxy_env = true`, and a
   value carrying `user:password@` only with `tenant_proxy_env_credentials = true` too.
 
-### Performance
+#### Performance
 
 * **An app request no longer takes the global apps lock.** Each one locked the apps map up to
   five times — and rebuilt a table of every app's domains, formatted and parsed a URL, and
@@ -284,7 +216,7 @@
 * **Per-app metrics take a read lock**, not the write lock every proxied request used to queue
   behind; the write lock is taken once per app, the first time it is seen.
 
-### Bug Fixes
+#### Bug Fixes
 
 * **One bad health check no longer restarts an app.** The monitor failed an app over on the
   first error or non-2xx answer, while the README promised it only reacted to actual failures.
@@ -307,7 +239,7 @@
   coalesces bursts (500 ms quiet, 5 s max) and spaces rediscoveries at least 2 s apart.
 * **Docs: an auto-detected Soli app's health check is `/up`**, not `/` as the README said.
 
-**Config, routing and packaging (fix/config)**
+### Configuration, routing and packaging
 
 * **A prefix rule pointing at `redirect://` can no longer redirect off-site.** The part of the
   path left after the prefix was glued straight onto the target, and a `redirect://` target has
@@ -406,7 +338,7 @@
   what a hot reload does and does not change, and the real project layout. The www docs' reload
   examples now use `/api/v1/reload` and the Docker example the real `--conf` flag.
 
-**Follow-ups (fix/followups)**
+### Robustness
 
 * **A backend that fails mid-body no longer panics the connection.** The response body type
   declared its error `Infallible`, so a backend's body error — a reset, a truncated chunk — went
@@ -441,9 +373,9 @@
   capture the pattern lacks was written to `proxy.conf`, which the next load then refused. They
   now get the same checks as a `proxy.conf` line, and a 400 up front.
 
-**Ops & lifecycle (gap/ops)**
+### Restarts, upgrades and `soli-proxy check`
 
-### Features
+#### Features
 
 * **A proxy restart no longer takes every app down.** SIGTERM used to send GOAWAY, sleep a fixed
   2 s and stop every managed app, so each restart, upgrade or crash-and-restart was a fleet-wide
@@ -483,7 +415,7 @@
 * **`soli-proxy update`** no longer prints a fake "Restarting soli-proxy..." (`--reinstall` just
   exited); it explains the restart, which is now safe at any time, and suggests `check` first.
 
-### Bug Fixes
+#### Bug Fixes
 
 * **`--watch false` works.** The flag was a bare `bool`, so clap refused any value: the
   documented way to turn the file watchers off made the proxy exit with a usage error.
@@ -491,7 +423,7 @@
 * Docs: the daemon's PID file is `$SOLI_PID_DIR/proxy.pid` (default: the working directory),
   not `/var/run/soli-proxy/soli-proxy.pid`.
 
-### Operators upgrading
+#### Operators upgrading
 
 * **The systemd unit sets `KillMode=process`.** The default (`control-group`) SIGTERMs the whole
   cgroup — every native app — on stop/restart. Copy the new `scripts/soli-proxy.service` (or add
@@ -506,9 +438,9 @@
 * Two proxies side by side (an overlapping blue/green start using `SO_REUSEPORT`) is **not**
   supported: the admin port is not shared and both would supervise the same apps.
 
-**Edge: client identity, request IDs, access log (gap/edge)**
+### Behind a CDN or load balancer: client identity, request IDs, access log
 
-### Features
+#### Features
 
 * **The real client behind a CDN or load balancer.** The proxy replaced `X-Forwarded-For` with
   the TCP peer, so behind Cloudflare or a balancer every client was the balancer: one rate-limit
@@ -539,7 +471,7 @@
   ones; formatted into a reused per-thread buffer and queued to a non-blocking writer that drops
   rather than blocks; a file rotates by `max_size`/`max_files`. Read at startup.
 
-### Behaviour changes
+#### Behaviour changes
 
 * **Responses now carry `X-Request-Id`, and upstream requests too**, by default. A client's own
   `X-Request-Id` no longer reaches the backend (it is replaced); set `request_id_header = ""` for
@@ -549,9 +481,9 @@
   the PROXY protocol address); clients behind a trusted proxy that does not speak PROXY protocol
   are limited per request by `[rate_limiting]`, not per connection.
 
-**Responses: compression, error pages, maintenance (gap/response)**
+### Responses: compression, error pages, maintenance mode
 
-### Features
+#### Features
 
 * **Response compression: gzip, brotli and zstd** (`[compression]`, **off by default**). A
   backend's response is compressed when the client asks (`Accept-Encoding`, q-values honoured, a
@@ -588,16 +520,16 @@
   (IPs/CIDRs) and `allow_paths`; ACME challenges and the proxy's health and metrics endpoints are
   always served. `GET /api/v1/apps` reports `"maintenance"` per app.
 
-### Operators
+#### Operators
 
 * Nothing changes until a section is configured. A `run/maintenance.json` that does not parse
   stops the proxy at startup rather than reopening sites closed on purpose; a missing
   `[error_pages] dir` or an oversized page is a configuration error like any other.
 * New dependencies: `brotli` 8 and `zstd` 0.13 (libzstd, built from source by `zstd-sys`).
 
-**Upstreams: retries, health checks, protocols (gap/upstream)**
+### Upstreams: retries, health checks, HTTP/2, TLS, Unix sockets
 
-### Features
+#### Features
 
 * **A failed attempt is retried on the next target when that is safe.** A request used to get one
   try and a 502; an app's failover only helped the *next* request. Now an attempt that fails
@@ -641,6 +573,123 @@
   new directives are validated by the parser and for admin-API rules, written back by the
   serializer, and kept by the TUI's route editor. `validate_proxy_target_url` accepts `h2c://` and
   `unix:` targets.
+
+### Forward authentication
+
+#### Features
+
+* **Forward authentication: one SSO service can gate any route or app.** The README used to
+  claim JWT auth the proxy never had; it now delegates the decision the way Traefik's
+  ForwardAuth, nginx's `auth_request` and Caddy's `forward_auth` do. A route takes
+  `@forward_auth:http://auth.internal:4180/verify` and, optionally,
+  `@forward_auth_headers:X-Auth-User,X-Auth-Email`; an app takes `[auth] forward = "…"` and
+  `forward_headers = […]` in `app.infos` (cluster pushes accept the same keys). Before proxying —
+  and before a WebSocket upgrade — the proxy sends the auth service a bodiless `GET` with the
+  client's `Cookie`, `Authorization`, `Accept`, `User-Agent`, `X-Requested-With`, its own
+  `X-Forwarded-For`/`-Proto`/`-Host`/`X-Real-IP`, and `X-Forwarded-Method`/`X-Forwarded-Uri`.
+  **2xx** lets the request through with the named response headers copied onto it; **any other
+  answer** (401, 403, a 302 to the login page) is relayed to the client — status, headers
+  including `Location` and `Set-Cookie`, body capped at 64 KiB — and the upstream is never
+  contacted; **no answer** within `[forward_auth] timeout_secs` (default 5) is a **503**, never a
+  pass. The subrequest uses the shared upstream connection pool; no verdict is cached, so a
+  revoked session stops working on the next request.
+* **The copied header names are stripped from every client request first**, whatever the auth
+  service answers and on `@noauth` paths too, so a client cannot forge `X-Auth-User`. Naming a
+  hop-by-hop or framing header, `Host` or a forwarding header is refused.
+* **Basic Auth and forward-auth combine:** Basic runs first and both must pass; the client's
+  `Authorization` (the Basic password) is then not sent to the auth service. `@noauth` /
+  `[auth] noauth` paths skip both.
+* **Multi-tenant mode: `[forward_auth] allowed_urls`.** A tenant's `[auth] forward` is a URL the
+  proxy fetches with the visitor's cookies and whose denials it relays — a server-side request
+  forgery if left open (`http://169.254.169.254/…`, an internal admin port). In multi-tenant mode
+  an app whose `forward` no entry covers (same scheme, host and port; an entry ending in `/`
+  covers the paths below it) fails to load. Empty by default: no tenant can use forward-auth
+  until the operator lists a service.
+* Forward-auth URLs must be `http`/`https` with a host, and carry no credentials or fragment —
+  checked by the `proxy.conf` parser, `rule.validate()` (admin API), `app.infos` loading and
+  cluster pushes. Routes round-trip through the admin API as
+  `"forward_auth": {"url": …, "headers": […]}`, and through `proxy.conf` rewrites; the TUI's
+  route editor keeps a route's forward-auth when it saves.
+
+### Fixes across the new features
+
+* **`force_https` no longer loops behind a TLS-terminating CDN.** A request from a trusted proxy
+  whose `X-Forwarded-Proto` is `https` is not redirected; from any other peer the header is
+  ignored, as before.
+* **Saving a route in the TUI keeps what the editor has no field for**: its `headers { }` block,
+  `@forward_auth`, `@compress` and target weights (`weight:N` is now read and written in the
+  targets field). Saving used to drop them.
+* **The health monitor falls back to `/health`**, like the deploy gate and adoption; it fell back
+  to `/`, so an app could be alive for one and dead for the other.
+* **An `accept()` that fails for lack of descriptors backs off 100 ms** instead of spinning a core.
+* **Multi-tenant: a tenant's derived apex no longer lends its error pages or maintenance flag to
+  the operator's site.** A tenant's `www.victim.com/` derives a claim on `victim.com`; routing
+  let it yield to the operator's `proxy.conf` rule or a cluster push for that apex, but custom
+  error pages and `maintenance.flag` looked the host up by name — so the tenant's `error_pages/`
+  (its HTML and scripts, on the victim's origin) answered the apex's errors, and its flag closed
+  the apex. Both now ask `AppManager::serving_route`, which applies routing's own precedence, and
+  routing uses it too. A yielding app is also no longer woken or counted active by those requests.
+
+* **`$client_ip` in a `headers { }` block is the forwarded client again.** It was read after the
+  request's extensions were cleared, so behind a trusted proxy it was always the proxy.
+* **Custom error pages no longer replace a forward-auth denial.** The auth service's 401/403 (its
+  login form, its JSON) was taken for one of the proxy's own errors, and its body swapped for the
+  proxy's page under the service's headers; it is now relayed like a backend's answer, replaced
+  only under `intercept_upstream_errors`.
+* **A forwarded client can no longer be this host.** A trusted peer's `X-Forwarded-For` (or
+  `real_ip_header`) naming a loopback, unspecified, link-local, multicast or broadcast address is
+  a forgery: the peer is the client instead. `/metrics` is judged on the connection itself — the
+  TCP peer (or PROXY source) and the client must both be loopback — so a tenant container on a
+  trusted Docker range sending `X-Forwarded-For: 127.0.0.1` no longer reads it, and neither does
+  a remote client relayed by a front proxy on this host. **`soli-proxy check` warns** when
+  `multi_tenant` is on and `trusted_proxies` covers loopback or Docker's `172.16.0.0/12` /
+  `192.168.0.0/16` pools (the `"private"` and `"loopback"` presets do): tenants would be trusted
+  proxies.
+* **The admin API writes a route only once it loads.** `proxy.conf` was written (and marked as the
+  proxy's own write) before the route's `@tls_ca` / `@tls_client_cert` files were read, so a route
+  answered 500 yet sat on disk and failed the next reload. And every string the serializer writes
+  verbatim — TLS and health paths, `@tls_sni`, matchers, `@auth` users, `@noauth` paths, script
+  names, global scripts — is refused (400) when it holds whitespace, a control character, `->`
+  or a trailing backslash: a `\n` in a route's JSON injected a `proxy.conf` line of the caller's
+  choosing. The `.conf` parser refuses the same values.
+* **TLS files are read safely, and fail quietly.** Only a regular file of at most 1 MiB is read,
+  opened non-blocking (a FIFO used to hang the load — and the admin request behind it), off the
+  async workers, outside the client registry's lock, and once: the trust store is built from the
+  bytes the client's key was hashed from. A file that cannot be used — missing, unreadable, not a
+  certificate — is reported as `cannot load TLS file <path>` by the admin API and
+  `POST /api/v1/config/validate`; the reason goes to the log. The distinct errors (and a PEM
+  parser quoting the line it choked on) made the API a probe of the proxy's filesystem.
+
+* **A PROXY header that names no client no longer vouches for the connection.** On v1 `UNKNOWN`,
+  v2 `LOCAL` or an address-less v2 header the balancer stayed a trusted peer, so the client's own
+  `X-Forwarded-For`, `real_ip_header`, request ID and `X-Forwarded-Proto` were believed and the
+  per-IP cap skipped. Such a connection is still served (health checks) but trusted for nothing,
+  and counted per IP against the balancer's address.
+* **`X-Forwarded-Proto` is read one way.** `force_https` took the first value while the forwarding
+  headers dropped a multi-valued header; both now take the last value — the nearest proxy's.
+* **The admin listener strips an untrusted client's `real_ip_header`** (`CF-Connecting-IP`…)
+  before the `_admin` passthrough, like the proxy's listeners do.
+* **Userinfo in a request's host is a 400**, in the HTTP/2 `:authority` and in `Host` alike;
+  maintenance used to judge `x@site.example` raw while routing used `site.example`. A malformed
+  request is no longer looked at by maintenance at all.
+* **A Lua `on_route` override keeps the rule's upstream client only for the rule's own origins.**
+  Sent anywhere else, it used to take the rule's mTLS certificate, `@tls_insecure` and
+  `@tls_sni` along (HTTP and WebSocket alike); it now gets the shared pool's defaults.
+* **WebSocket upgrades are routed like requests.** When an app takes a whole-domain rule over,
+  only the app's gates apply (the rule's ran too, so forward-auth was asked twice); the target is
+  chosen by the rule's balancing past open breakers and down targets, with the rule's
+  `@connect_timeout` (it was always the first target, 5 s), and the tunnel's connect/handshake
+  outcome feeds the breaker; the rule's `headers { }` block applies to the upgrade.
+* **A pushed domain's retry is no longer dropped by a half-open breaker:** the next instance was
+  checked twice, and the second check refused what the first had just let through as the probe.
+* Smaller seams: a rule's `@timeout` no longer applies when an app takes the rule over; error and
+  maintenance pages show the request ID under `request_id_header`, not always `X-Request-Id`;
+  `soli-proxy check` files assembly errors under the right file (a route's TLS file was blamed on
+  `.env`); a response with any non-`identity` coding in any `Content-Encoding` field (`identity,
+  gzip`) is no longer compressed again; a backend error page replaced under
+  `intercept_upstream_errors` drops its `ETag`, `Last-Modified`, `Content-Disposition`,
+  `Content-Range` and `Content-Encoding`. The README now says that forward-auth's
+  `X-Forwarded-Uri` is the raw request target, for redirects, not for authorization.
 
 ## [0.35.2](https://github.com/solisoft/soli-proxy/compare/v0.35.1...v0.35.2) (2026-09-27)
 

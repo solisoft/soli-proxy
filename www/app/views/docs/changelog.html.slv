@@ -46,11 +46,94 @@
                     </p>
                 </div>
 
+                <!-- 1.0.0 -->
+                <div class="mb-10 reveal-on-scroll">
+                    <div class="flex items-center gap-3 mb-5 flex-wrap">
+                        <h2 class="text-2xl font-bold text-white font-mono">v1.0.0</h2>
+                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
+                        <span class="text-sm text-gray-500">2026-10-01</span>
+                    </div>
+
+                    <div class="space-y-4">
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-red-500/10 text-red-400 border border-red-500/20">security</span>
+                                <h3 class="text-base font-semibold text-white">A full security audit, fixed</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                bcrypt ran on the request workers, so some forty wrong passwords a second froze every site on the proxy; it now runs on a bounded pool and answers <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">503</code> when that is full. Hash costs are capped at 13, so a tenant can no longer declare a hash that costs days of CPU per attempt. WebSocket upgrades run the route's Lua scripts, rules match a canonical path (<code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">//admin</code> and <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">/%61dmin</code> no longer slip past <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">@auth</code>), and every forwarding header is set by the proxy, never taken from the client.
+                            </p>
+                            <p class="text-gray-400 leading-relaxed mt-3">
+                                In multi-tenant mode a tenant can no longer hang the proxy through its <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">app.infos</code>, choose its ports, reach another tenant's container, or serve its pages on someone else's domain. Every dependency advisory is gone: <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">cargo audit --deny warnings</code> is clean.
+                            </p>
+                        </div>
+
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">performance</span>
+                                <h3 class="text-base font-semibold text-white">Faster on every path</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                App routing reads a published snapshot instead of taking a global lock five times per request, matched routes borrow their rule instead of cloning it, and TLS sessions resume. Against 0.35.2 on the same machine: <em class="text-white not-italic font-medium">+25%</em> requests per second on a static route, <em class="text-white not-italic font-medium">+34%</em> on an app's domain, and ordinary traffic keeps flowing at 87,000 req/s while wrong passwords flood an <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">@auth</code> route, where 0.35.2 managed 30.
+                            </p>
+                        </div>
+
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">feature</span>
+                                <h3 class="text-base font-semibold text-white">Apps survive a proxy restart</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                Stopping, restarting or upgrading the proxy no longer takes every app down. In-flight requests drain for up to <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">shutdown_grace_period</code>, the apps keep running, and the next start adopts each one after checking it is the process it started, launched the same way, on the right port and healthy. <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">soli-proxy check</code> validates the configuration and every site before you restart.
+                            </p>
+                        </div>
+
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">feature</span>
+                                <h3 class="text-base font-semibold text-white">Behind a CDN, and what it sees</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">trusted_proxies</code> (with a Cloudflare preset) and PROXY protocol v1/v2 give the real client to rate limits, logs and allowlists. Every request carries an <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">X-Request-Id</code>, and the access log writes one JSON or combined line per request.
+                            </p>
+                        </div>
+
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">feature</span>
+                                <h3 class="text-base font-semibold text-white">Compression, error pages, maintenance, forward-auth</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                Opt-in gzip, brotli and zstd compression; custom HTML error pages per proxy or per app; maintenance mode from the admin API or a <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">maintenance.flag</code> file. <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">@forward_auth</code> lets one SSO service such as oauth2-proxy or Authelia gate any route or app.
+                            </p>
+                        </div>
+
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">feature</span>
+                                <h3 class="text-base font-semibold text-white">Upstreams</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                A failed attempt is retried on the next target when that is safe, <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">proxy.conf</code> targets get active health checks, and backends can be reached over HTTP/2 and gRPC, with a custom CA, SNI or client certificate, or over a Unix socket. <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">weight:</code>, <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">headers { }</code> and regex captures now do what the docs always said.
+                            </p>
+                        </div>
+
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">upgrading</span>
+                                <h3 class="text-base font-semibold text-white">Before you upgrade</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">proxy.conf</code> is parsed strictly, hashes above cost 13 must be regenerated, the systemd unit runs as a dedicated user with <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">KillMode=process</code>, and the HTTPS listener follows <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">[server] bind</code>. The full list is under <em class="text-white not-italic font-medium">Upgrading from 0.35</em> in <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">CHANGELOG.md</code>.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- 0.34.0 -->
                 <div class="mb-10 reveal-on-scroll">
                     <div class="flex items-center gap-3 mb-5 flex-wrap">
                         <h2 class="text-2xl font-bold text-white font-mono">v0.34.0</h2>
-                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
                         <span class="text-sm text-gray-500">2026-09-15</span>
                     </div>
 
