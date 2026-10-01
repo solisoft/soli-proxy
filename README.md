@@ -144,7 +144,7 @@ requests_per_second = 1000
 burst_size = 2000
 
 [limits]
-max_connections = 10000   # simultaneous client connections; further ones wait to be accepted
+max_connections = 10000   # simultaneous client connections; further ones wait up to 10 s for a slot
 max_request_size = "10MB" # request bodies above this get 413
 keep_alive_timeout = 30   # seconds to receive a request's headers (closes idle keep-alives)
 request_timeout = 60      # seconds for the upstream exchange before a 504 (default 60)
@@ -317,6 +317,11 @@ max_connections = 10000        # whole process
 max_connections_per_ip = 256   # per client address (IPv6: per /64); 0 = off
 keep_alive_timeout = 30        # header read / idle keep-alive (HTTP/1), idle (HTTP/2)
 ```
+
+`max_connections` is one pool for both listeners. A connection takes its slot once accepted;
+when none is free the accept loop waits (up to 10 s, then closes that connection) and stops
+accepting meanwhile, so further connections queue in the kernel's listen backlog. A connection
+over `max_connections_per_ip` is closed at once.
 
 `[rate_limiting]` also keys IPv6 clients by /64: a subscriber can pick a new source
 address inside its /64 for every request, and per-address buckets were no limit at all.

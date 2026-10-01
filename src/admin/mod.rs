@@ -21,7 +21,8 @@ use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-type BoxBody = http_body_util::combinators::BoxBody<Bytes, std::convert::Infallible>;
+use crate::pool::BoxError;
+use crate::server::{empty, full, BoxBody};
 
 pub struct AdminState {
     pub config_manager: Arc<ConfigManager>,
@@ -65,7 +66,7 @@ fn json_response(status: u16, body: serde_json::Value) -> Response<BoxBody> {
     Response::builder()
         .status(status)
         .header("Content-Type", "application/json")
-        .body(http_body_util::Full::new(bytes).boxed())
+        .body(full(bytes))
         .unwrap()
 }
 
@@ -78,10 +79,7 @@ fn created_response(data: serde_json::Value) -> Response<BoxBody> {
 }
 
 fn no_content_response() -> Response<BoxBody> {
-    Response::builder()
-        .status(204)
-        .body(http_body_util::Full::new(Bytes::new()).boxed())
-        .unwrap()
+    Response::builder().status(204).body(empty()).unwrap()
 }
 
 fn error_response(status: u16, message: &str) -> Response<BoxBody> {
@@ -89,7 +87,7 @@ fn error_response(status: u16, message: &str) -> Response<BoxBody> {
 }
 
 fn unauthorized_response(use_basic_auth: bool) -> Response<BoxBody> {
-    let body = http_body_util::Full::new(Bytes::from("Unauthorized")).boxed();
+    let body = full(Bytes::from("Unauthorized"));
     let mut builder = Response::builder()
         .status(401)
         .header("Content-Type", "application/json");
@@ -414,7 +412,7 @@ fn enforce_admin_body_size_limit(
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(0);
     if content_length > max {
-        let body = http_body_util::Full::new(Bytes::from("Payload Too Large")).boxed();
+        let body = full(Bytes::from("Payload Too Large"));
         return Some(
             Response::builder()
                 .status(413)
@@ -436,8 +434,7 @@ async fn handle_admin_request(
     // burn bcrypt rounds by replaying a wrong password under the limit.
     if let (Some(limiter), Some(peer)) = (state.rate_limiter.as_ref(), peer_addr) {
         if limiter.check_key(&peer.ip()).is_err() {
-            let body =
-                http_body_util::Full::new(Bytes::from_static(b"Rate limit exceeded")).boxed();
+            let body = full(Bytes::from_static(b"Rate limit exceeded"));
             return Ok(Response::builder()
                 .status(429)
                 .header("Retry-After", "1")
@@ -510,10 +507,9 @@ async fn handle_admin_request(
             return Ok(unauthorized_response(use_basic_auth));
         }
         AuthOutcome::Throttled => {
-            let body = http_body_util::Full::new(Bytes::from_static(
+            let body = full(Bytes::from_static(
                 b"Too many failed authentication attempts",
-            ))
-            .boxed();
+            ));
             return Ok(Response::builder()
                 .status(429)
                 .header("Retry-After", blocked_for.unwrap_or(1).to_string())
@@ -522,10 +518,9 @@ async fn handle_admin_request(
                 .unwrap());
         }
         AuthOutcome::Busy => {
-            let body = http_body_util::Full::new(Bytes::from_static(
+            let body = full(Bytes::from_static(
                 b"Authentication temporarily unavailable",
-            ))
-            .boxed();
+            ));
             return Ok(Response::builder()
                 .status(503)
                 .header("Retry-After", "1")
@@ -774,7 +769,7 @@ async fn proxy_to_admin_app(
             return Response::builder()
                 .status(413)
                 .header("Content-Type", "text/plain")
-                .body(http_body_util::Full::new(Bytes::from("Payload Too Large")).boxed())
+                .body(full(Bytes::from("Payload Too Large")))
                 .unwrap();
         }
     };
@@ -789,7 +784,7 @@ async fn proxy_to_admin_app(
     match client.request(proxy_req).await {
         Ok(resp) => {
             let (parts, body) = resp.into_parts();
-            let mapped = body.map_err(|_| -> std::convert::Infallible { unreachable!() });
+            let mapped = body.map_err(BoxError::from);
             Response::from_parts(parts, mapped.boxed())
         }
         Err(e) => {
@@ -1060,8 +1055,7 @@ async fn proxy_websocket_to_admin_app(
     if let Some(proto) = resp_protocol {
         resp = resp.header("Sec-WebSocket-Protocol", proto);
     }
-    resp.body(http_body_util::Full::new(Bytes::new()).boxed())
-        .unwrap()
+    resp.body(empty()).unwrap()
 }
 
 const MAX_ADMIN_REQUEST_BODY_SIZE: usize = 1024 * 1024; // 1MB

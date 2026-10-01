@@ -1,5 +1,5 @@
 use super::{
-    created_response, error_response, no_content_response, ok_response, AdminState, BoxBody,
+    created_response, error_response, full, no_content_response, ok_response, AdminState, BoxBody,
 };
 use crate::auth;
 use crate::config::ProxyRule;
@@ -691,7 +691,7 @@ pub fn get_metrics(state: &Arc<AdminState>) -> Response<BoxBody> {
     Response::builder()
         .status(200)
         .header("Content-Type", "text/plain")
-        .body(http_body_util::Full::new(bytes).boxed())
+        .body(full(bytes))
         .unwrap()
 }
 
@@ -982,7 +982,7 @@ pub async fn sse_app_events(state: Arc<AdminState>) -> Response<BoxBody> {
 
     impl Body for MpscBody {
         type Data = bytes::Bytes;
-        type Error = std::convert::Infallible;
+        type Error = crate::pool::BoxError;
 
         fn poll_frame(
             mut self: Pin<&mut Self>,

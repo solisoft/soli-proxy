@@ -8,7 +8,8 @@ use crate::circuit_breaker::SharedCircuitBreaker;
 use crate::config::ConfigManager;
 use crate::metrics::SharedMetrics;
 use crate::pool::{
-    is_body_limit_error, is_client_body_error, proxy_request_body, ConnectionPool, ProxyClient,
+    is_body_limit_error, is_client_body_error, proxy_request_body, BoxError, ConnectionPool,
+    ProxyClient,
 };
 use crate::shutdown::ShutdownCoordinator;
 use anyhow::Result;
@@ -182,7 +183,30 @@ impl ConnLease {
     }
 }
 
-type BoxBody = http_body_util::combinators::BoxBody<Bytes, std::convert::Infallible>;
+/// Response body type for everything the proxy answers.
+///
+/// The error type is a boxed error, not `Infallible`: a proxied body is the
+/// backend's `Incoming`, and a backend can fail mid-body (connection reset,
+/// truncated chunk, h2 `RST_STREAM`). With `Infallible` that error had to be
+/// mapped through `unreachable!()`, which panicked the connection task. Now it
+/// propagates, and hyper aborts the client stream the honest way — a reset
+/// (h2) or a closed connection without the terminating chunk (HTTP/1), so the
+/// client sees a truncated response rather than a complete-looking one.
+pub(crate) type BoxBody = http_body_util::combinators::BoxBody<Bytes, BoxError>;
+
+/// A complete in-memory body.
+pub(crate) fn full(b: impl Into<Bytes>) -> BoxBody {
+    http_body_util::Full::new(b.into())
+        .map_err(|never| match never {})
+        .boxed()
+}
+
+/// An empty body.
+pub(crate) fn empty() -> BoxBody {
+    http_body_util::Empty::<Bytes>::new()
+        .map_err(|never| match never {})
+        .boxed()
+}
 
 /// Body wrapper that adds each streamed data frame's length to a set of
 /// byte counters (global + per-app `bytes_sent`). Counting happens as the
@@ -201,7 +225,7 @@ impl CountingBody {
 
 impl hyper::body::Body for CountingBody {
     type Data = Bytes;
-    type Error = std::convert::Infallible;
+    type Error = BoxError;
 
     fn poll_frame(
         self: std::pin::Pin<&mut Self>,
@@ -381,7 +405,7 @@ impl RewritingBody {
 
 impl hyper::body::Body for RewritingBody {
     type Data = Bytes;
-    type Error = std::convert::Infallible;
+    type Error = BoxError;
 
     fn poll_frame(
         self: std::pin::Pin<&mut Self>,
@@ -581,7 +605,7 @@ impl DecodingRewritingBody {
 
 impl hyper::body::Body for DecodingRewritingBody {
     type Data = Bytes;
-    type Error = std::convert::Infallible;
+    type Error = BoxError;
 
     fn poll_frame(
         self: std::pin::Pin<&mut Self>,
@@ -879,7 +903,7 @@ fn lua_deny_response(status: u16, body: String) -> Response<BoxBody> {
             hyper::StatusCode::INTERNAL_SERVER_ERROR
         }
     };
-    let mut resp = Response::new(http_body_util::Full::new(Bytes::from(body)).boxed());
+    let mut resp = Response::new(full(Bytes::from(body)));
     *resp.status_mut() = status;
     resp
 }
@@ -888,7 +912,7 @@ fn plain_response(status: u16, body: &'static str) -> Response<BoxBody> {
     Response::builder()
         .status(status)
         .header("Content-Type", "text/plain")
-        .body(http_body_util::Full::new(Bytes::from_static(body.as_bytes())).boxed())
+        .body(full(Bytes::from_static(body.as_bytes())))
         .unwrap()
 }
 
@@ -918,7 +942,7 @@ fn reject_malformed_request<B>(req: &Request<B>) -> Option<Response<BoxBody>> {
     let path = req.uri().path();
     if !path.starts_with('/') {
         if req.method() == hyper::Method::OPTIONS && path == "*" {
-            let mut resp = Response::new(http_body_util::Full::new(Bytes::new()).boxed());
+            let mut resp = Response::new(empty());
             resp.headers_mut().insert(
                 hyper::header::ALLOW,
                 HeaderValue::from_static("GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS"),
@@ -997,7 +1021,7 @@ fn verify_basic_auth<'a>(
 
 /// Create 401 Unauthorized response with WWW-Authenticate header
 fn create_auth_required_response() -> Response<BoxBody> {
-    let body = http_body_util::Full::new(Bytes::from("Authentication required")).boxed();
+    let body = full(Bytes::from("Authentication required"));
     Response::builder()
         .status(401)
         .header("WWW-Authenticate", "Basic realm=\"Restricted\"")
@@ -1009,8 +1033,7 @@ fn create_auth_required_response() -> Response<BoxBody> {
 /// busy (a password-guessing flood, most likely). Not 401 — the client did
 /// nothing wrong, and a browser shown 401 would prompt for a password it has.
 fn create_auth_busy_response() -> Response<BoxBody> {
-    let body =
-        http_body_util::Full::new(Bytes::from("Authentication temporarily unavailable")).boxed();
+    let body = full(Bytes::from("Authentication temporarily unavailable"));
     Response::builder()
         .status(503)
         .header("Retry-After", "1")
@@ -1489,12 +1512,30 @@ impl ProxyServer {
     }
 }
 
-/// Build an accepted connection's lease from its `max_connections` permit and
-/// a per-IP slot, or `None` when its address is already at
-/// `max_connections_per_ip` (the caller drops the socket, which also returns
-/// the permit).
-fn lease_for(
-    permit: Option<OwnedSemaphorePermit>,
+/// How long an accepted connection may wait for a `max_connections` slot
+/// before it is closed.
+const CONNECTION_SLOT_WAIT: Duration = Duration::from_secs(10);
+
+/// Admit an accepted connection: a per-IP slot, then a `max_connections`
+/// permit. `None` means the caller drops the socket, which closes it.
+///
+/// The permit is taken *after* `accept`, never before. Each accept loop (one
+/// per core, per listener) used to wait for a permit and only then call
+/// `accept`, so every idle loop sat on a permit it had no connection for: with
+/// `max_connections` below the number of loops — or simply near the limit —
+/// the permits could all be parked in, say, the HTTPS loops while HTTP
+/// connections waited in the backlog for a slot nobody was using.
+///
+/// Now the loop accepts, then waits for a permit *inline*, which keeps the
+/// backpressure the old order gave: while it waits it accepts nothing, the
+/// listen backlog absorbs the overflow, and at most one connection per loop
+/// is held without a slot. The semaphore is FIFO, so slots go to waiting
+/// connections in arrival order whichever listener they came in on. A
+/// connection that cannot get a slot within `CONNECTION_SLOT_WAIT` is closed
+/// rather than kept in limbo. The per-IP cap is checked first: it is cheap,
+/// and a client over it is refused without queueing behind anyone.
+async fn admit(
+    connection_limit: Option<&Arc<Semaphore>>,
     per_ip_limit: Option<&Arc<PerIpLimiter>>,
     peer: SocketAddr,
 ) -> Option<ConnLease> {
@@ -1507,6 +1548,26 @@ fn lease_for(
                     peer.ip()
                 );
                 return None;
+            }
+        },
+        None => None,
+    };
+    let permit = match connection_limit {
+        Some(s) => match s.clone().try_acquire_owned() {
+            Ok(p) => Some(p),
+            Err(tokio::sync::TryAcquireError::Closed) => return None,
+            Err(tokio::sync::TryAcquireError::NoPermits) => {
+                match timeout(CONNECTION_SLOT_WAIT, s.clone().acquire_owned()).await {
+                    Ok(Ok(p)) => Some(p),
+                    _ => {
+                        tracing::warn!(
+                            "closing connection from {}: no max_connections slot within {:?}",
+                            peer.ip(),
+                            CONNECTION_SLOT_WAIT
+                        );
+                        return None;
+                    }
+                }
             }
         },
         None => None,
@@ -1534,58 +1595,47 @@ async fn run_http_server(
     let mut shutdown_rx = shutdown.subscribe();
 
     loop {
-        // Wait for a connection permit before accepting. This applies
-        // backpressure at the OS level (the listen() backlog absorbs the
-        // overflow) instead of draining the accept queue and queuing tasks.
-        let permit: Option<OwnedSemaphorePermit> = match connection_limit.as_ref() {
-            Some(s) => tokio::select! {
-                _ = shutdown_rx.recv() => break,
-                p = s.clone().acquire_owned() => match p {
-                    Ok(p) => Some(p),
-                    Err(_) => break, // semaphore closed
-                },
-            },
-            None => None,
-        };
-
-        tokio::select! {
+        let (stream, peer) = tokio::select! {
             _ = shutdown_rx.recv() => break,
             accept_result = listener.accept() => match accept_result {
-                Ok((stream, peer)) => {
-                    let Some(lease) = lease_for(permit, per_ip_limit.as_ref(), peer) else {
-                        continue; // over the per-IP cap: dropping closes it
-                    };
-                    let _ = stream.set_nodelay(true);
-                    let client = client.clone();
-                    let config = config.clone();
-                    let metrics = metrics.clone();
-                    let cs = challenge_store.clone();
-                    let lua = lua_engine.clone();
-                    let cb = circuit_breaker.clone();
-                    let am = app_manager.clone();
-                    let lb = load_balancer.clone();
-                    let sd = shutdown.clone();
-                    let rl = rate_limiter.clone();
-                    tokio::spawn(async move {
-                        // The lease (permit + per-IP slot) lives in the
-                        // connection's service; a WebSocket tunnel takes its
-                        // own clone, so it outlives this task when needed.
-                        if let Err(e) = handle_http11_connection(
-                            stream, client, config, metrics, cs, lua, cb, am, lb, sd, rl, lease,
-                        )
-                        .await
-                        {
-                            // anyhow error: `{:#}` prints the full chain
-                            tracing::debug!("HTTP/1.1 connection error: {:#}", e);
-                        }
-                    });
-                }
+                Ok(accepted) => accepted,
                 Err(e) => {
                     tracing::error!("HTTP/1.1 accept error: {}", e);
-                    // permit drops here, returning the slot to the pool
+                    continue;
                 }
             },
-        }
+        };
+        let lease = tokio::select! {
+            _ = shutdown_rx.recv() => break,
+            lease = admit(connection_limit.as_ref(), per_ip_limit.as_ref(), peer) => lease,
+        };
+        let Some(lease) = lease else {
+            continue; // refused: dropping the stream closes it
+        };
+        let _ = stream.set_nodelay(true);
+        let client = client.clone();
+        let config = config.clone();
+        let metrics = metrics.clone();
+        let cs = challenge_store.clone();
+        let lua = lua_engine.clone();
+        let cb = circuit_breaker.clone();
+        let am = app_manager.clone();
+        let lb = load_balancer.clone();
+        let sd = shutdown.clone();
+        let rl = rate_limiter.clone();
+        tokio::spawn(async move {
+            // The lease (permit + per-IP slot) lives in the
+            // connection's service; a WebSocket tunnel takes its
+            // own clone, so it outlives this task when needed.
+            if let Err(e) = handle_http11_connection(
+                stream, client, config, metrics, cs, lua, cb, am, lb, sd, rl, lease,
+            )
+            .await
+            {
+                // anyhow error: `{:#}` prints the full chain
+                tracing::debug!("HTTP/1.1 connection error: {:#}", e);
+            }
+        });
     }
 
     Ok(())
@@ -1612,75 +1662,61 @@ async fn run_https_server(
     let mut shutdown_rx = shutdown.subscribe();
 
     loop {
-        // Same permit-then-accept pattern as run_http_server. The permit
-        // covers the TLS handshake too, so a flood of bogus ClientHellos
-        // can't bypass the cap by stalling in handshake.
-        let permit: Option<OwnedSemaphorePermit> = match connection_limit.as_ref() {
-            Some(s) => tokio::select! {
-                _ = shutdown_rx.recv() => break,
-                p = s.clone().acquire_owned() => match p {
-                    Ok(p) => Some(p),
-                    Err(_) => break,
-                },
-            },
-            None => None,
-        };
-
-        tokio::select! {
+        let (stream, peer) = tokio::select! {
             _ = shutdown_rx.recv() => break,
             accept_result = listener.accept() => match accept_result {
-                Ok((stream, peer)) => {
-                    let Some(lease) = lease_for(permit, per_ip_limit.as_ref(), peer) else {
-                        continue; // over the per-IP cap: dropping closes it
-                    };
-                    let _ = stream.set_nodelay(true);
-                    let client = client.clone();
-                    let config = config.clone();
-                    let acceptor = acceptor.clone();
-                    let metrics = metrics.clone();
-                    let cs = challenge_store.clone();
-                    let lua = lua_engine.clone();
-                    let cb = circuit_breaker.clone();
-                    let am = app_manager.clone();
-                    let lb = load_balancer.clone();
-                    let sd = shutdown.clone();
-                    let rl = rate_limiter.clone();
-                    tokio::spawn(async move {
-                        // Held through the handshake; then handed to the
-                        // connection's service (see run_http_server).
-                        const TLS_HANDSHAKE_TIMEOUT: tokio::time::Duration =
-                            tokio::time::Duration::from_secs(10);
-                        match tokio::time::timeout(
-                            TLS_HANDSHAKE_TIMEOUT,
-                            acceptor.accept(stream),
-                        )
-                        .await
-                        {
-                            Ok(Ok(tls_stream)) => {
-                                metrics.inc_tls_connections();
-                                if let Err(e) = handle_https2_connection(
-                                    tls_stream, client, config, metrics, cs, lua, cb, am, lb, sd,
-                                    rl, lease,
-                                )
-                                .await
-                                {
-                                    tracing::debug!("HTTPS/2 connection error: {}", e);
-                                }
-                            }
-                            Ok(Err(e)) => {
-                                tracing::debug!("TLS accept error (client incompatible): {}", e);
-                            }
-                            Err(_) => {
-                                tracing::debug!("TLS handshake timed out after {:?}s", TLS_HANDSHAKE_TIMEOUT);
-                            }
-                        }
-                    });
-                }
+                Ok(accepted) => accepted,
                 Err(e) => {
                     tracing::error!("HTTPS/2 accept error: {}", e);
+                    continue;
                 }
             },
-        }
+        };
+        // The permit covers the TLS handshake too, so a flood of bogus
+        // ClientHellos can't bypass the cap by stalling in handshake.
+        let lease = tokio::select! {
+            _ = shutdown_rx.recv() => break,
+            lease = admit(connection_limit.as_ref(), per_ip_limit.as_ref(), peer) => lease,
+        };
+        let Some(lease) = lease else {
+            continue; // refused: dropping the stream closes it
+        };
+        let _ = stream.set_nodelay(true);
+        let client = client.clone();
+        let config = config.clone();
+        let acceptor = acceptor.clone();
+        let metrics = metrics.clone();
+        let cs = challenge_store.clone();
+        let lua = lua_engine.clone();
+        let cb = circuit_breaker.clone();
+        let am = app_manager.clone();
+        let lb = load_balancer.clone();
+        let sd = shutdown.clone();
+        let rl = rate_limiter.clone();
+        tokio::spawn(async move {
+            // Held through the handshake; then handed to the
+            // connection's service (see run_http_server).
+            const TLS_HANDSHAKE_TIMEOUT: tokio::time::Duration =
+                tokio::time::Duration::from_secs(10);
+            match tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await {
+                Ok(Ok(tls_stream)) => {
+                    metrics.inc_tls_connections();
+                    if let Err(e) = handle_https2_connection(
+                        tls_stream, client, config, metrics, cs, lua, cb, am, lb, sd, rl, lease,
+                    )
+                    .await
+                    {
+                        tracing::debug!("HTTPS/2 connection error: {}", e);
+                    }
+                }
+                Ok(Err(e)) => {
+                    tracing::debug!("TLS accept error (client incompatible): {}", e);
+                }
+                Err(_) => {
+                    tracing::debug!("TLS handshake timed out after {:?}s", TLS_HANDSHAKE_TIMEOUT);
+                }
+            }
+        });
     }
 
     Ok(())
@@ -2254,12 +2290,12 @@ async fn handle_request_inner(
     rate_limiter: Option<Arc<IpRateLimiter>>,
 ) -> Result<Response<BoxBody>, hyper::Error> {
     let start_time = std::time::Instant::now();
-    metrics.inc_in_flight();
+    // Decrements on every way out of this function, WebSocket paths included.
+    let _in_flight = metrics.in_flight_guard();
 
     // Requests with no routable path, CONNECT, duplicate or conflicting Host:
     // refused before anything — ACME, rate limiting, routing — looks at them.
     if let Some(response) = reject_malformed_request(&req) {
-        metrics.dec_in_flight();
         metrics.record_request(0, 0, response.status().as_u16(), start_time.elapsed());
         return Ok(response);
     }
@@ -2268,7 +2304,6 @@ async fn handle_request_inner(
     // ACME challenges originate from Let's Encrypt validators and are
     // intentionally exempt from per-IP rate limits.
     if let Some(response) = handle_acme_challenge(&req, &challenge_store) {
-        metrics.dec_in_flight();
         return Ok(response);
     }
 
@@ -2278,11 +2313,9 @@ async fn handle_request_inner(
     // no observable peer (UNIX socket, error path) skip the check.
     if let (Some(limiter), Some(peer)) = (rate_limiter.as_ref(), peer_addr) {
         if limiter.check_key(&client_key(peer.ip())).is_err() {
-            metrics.dec_in_flight();
             let duration = start_time.elapsed();
             metrics.record_request(0, 0, 429, duration);
-            let body =
-                http_body_util::Full::new(Bytes::from_static(b"Rate limit exceeded")).boxed();
+            let body = full(Bytes::from_static(b"Rate limit exceeded"));
             return Ok(Response::builder()
                 .status(429)
                 .header("Retry-After", "1")
@@ -2303,10 +2336,9 @@ async fn handle_request_inner(
         req.uri().path(),
         config.server.allow_encoded_slash.unwrap_or(false),
     ) {
-        metrics.dec_in_flight();
         let duration = start_time.elapsed();
         metrics.record_request(0, 0, 400, duration);
-        let body = http_body_util::Full::new(Bytes::from("Bad Request")).boxed();
+        let body = full(Bytes::from("Bad Request"));
         return Ok(Response::builder()
             .status(400)
             .header("Content-Type", "text/plain")
@@ -2356,10 +2388,9 @@ async fn handle_request_inner(
                 None => bare.to_string(),
             }
         } else {
-            metrics.dec_in_flight();
             let duration = start_time.elapsed();
             metrics.record_request(0, 0, 400, duration);
-            let body = http_body_util::Full::new(Bytes::from("Bad Request")).boxed();
+            let body = full(Bytes::from("Bad Request"));
             return Ok(Response::builder()
                 .status(400)
                 .header("Content-Type", "text/plain")
@@ -2374,10 +2405,8 @@ async fn handle_request_inner(
             .unwrap_or_default();
         let location = format!("https://{}{}{}", host_for_redirect, path, query);
         let Ok(location) = HeaderValue::from_str(&location) else {
-            metrics.dec_in_flight();
             return Ok(plain_response(400, "Bad Request"));
         };
-        metrics.dec_in_flight();
         // RFC 6797 §7.2: HSTS over plaintext is ignored by browsers, so this
         // header on the 308 is non-load-bearing — the canonical home is the
         // HTTPS path, set by `with_hsts`. Kept here for consistency
@@ -2388,9 +2417,7 @@ async fn handle_request_inner(
         if let Some(v) = hsts_for(&config) {
             builder = builder.header("Strict-Transport-Security", v);
         }
-        return Ok(builder
-            .body(http_body_util::Full::new(Bytes::new()).boxed())
-            .unwrap());
+        return Ok(builder.body(empty()).unwrap());
     }
 
     // Fast-path body size limit: reject when Content-Length already exceeds the
@@ -2404,7 +2431,6 @@ async fn handle_request_inner(
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(0);
         if content_length > max_size {
-            metrics.dec_in_flight();
             let duration = start_time.elapsed();
             metrics.record_request(0, 0, 413, duration);
             return Ok(payload_too_large());
@@ -2418,9 +2444,8 @@ async fn handle_request_inner(
         let is_loopback = peer_addr.map(|a| a.ip().is_loopback()).unwrap_or(false);
         if !is_loopback {
             let duration = start_time.elapsed();
-            metrics.dec_in_flight();
             metrics.record_request(0, 0, 403, duration);
-            let body = http_body_util::Full::new(Bytes::from("Forbidden")).boxed();
+            let body = full(Bytes::from("Forbidden"));
             return Ok(Response::builder()
                 .status(403)
                 .header("Content-Type", "text/plain")
@@ -2428,10 +2453,9 @@ async fn handle_request_inner(
                 .unwrap());
         }
         let duration = start_time.elapsed();
-        metrics.dec_in_flight();
         let metrics_output = metrics.format_metrics();
         metrics.record_request(0, metrics_output.len() as u64, 200, duration);
-        let body = http_body_util::Full::new(Bytes::from(metrics_output)).boxed();
+        let body = full(Bytes::from(metrics_output));
         return Ok(Response::builder()
             .status(200)
             .header("Content-Type", "text/plain")
@@ -2441,9 +2465,8 @@ async fn handle_request_inner(
 
     if is_health_request(&req, &config.health) {
         let duration = start_time.elapsed();
-        metrics.dec_in_flight();
         metrics.record_request(0, 0, 200, duration);
-        let body = http_body_util::Full::new(Bytes::from("OK")).boxed();
+        let body = full(Bytes::from("OK"));
         return Ok(Response::builder()
             .status(200)
             .header("Content-Type", "text/plain")
@@ -2487,7 +2510,6 @@ async fn handle_request_inner(
             let mut lua_req = build_lua_request(&req);
             match engine.call_on_request(&mut lua_req) {
                 RequestHookResult::Deny { status, body } => {
-                    metrics.dec_in_flight();
                     let duration = start_time.elapsed();
                     let len = body.len() as u64;
                     let resp = lua_deny_response(status, body);
@@ -2506,7 +2528,6 @@ async fn handle_request_inner(
         if let Some(matched) = find_matching_rule(&req, &config.rules) {
             if matched.requires_auth(&request_match_path(&req)) {
                 if let Some(denied) = verify_basic_auth(&req, &matched.auth).await {
-                    metrics.dec_in_flight();
                     return Ok(denied);
                 }
             }
@@ -2563,7 +2584,6 @@ async fn handle_request_inner(
     let result = match timeout(timeout_sec, handle_fut).await {
         Ok(res) => res,
         Err(_) => {
-            metrics.dec_in_flight();
             let duration = start_time.elapsed();
             metrics.record_request(0, 0, 504, duration);
             tracing::warn!(
@@ -2574,7 +2594,7 @@ async fn handle_request_inner(
                 elapsed_ms = duration.as_millis() as u64,
                 "regular request timed out; returning 504"
             );
-            let body = http_body_util::Full::new(Bytes::from("Gateway Timeout")).boxed();
+            let body = full(Bytes::from("Gateway Timeout"));
             return Ok(Response::builder()
                 .status(504)
                 .header("Content-Type", "text/plain")
@@ -2583,8 +2603,6 @@ async fn handle_request_inner(
         }
     };
     let duration = start_time.elapsed();
-
-    metrics.dec_in_flight();
 
     match result {
         #[allow(unused_variables)]
@@ -2628,7 +2646,7 @@ async fn handle_request_inner(
             }
 
             let (parts, body) = response.into_parts();
-            let boxed = body.map_err(|_| unreachable!()).boxed();
+            let boxed = body.map_err(BoxError::from).boxed();
             let counted = BodyExt::boxed(CountingBody::new(boxed, counters));
             Ok(Response::from_parts(parts, counted))
         }
@@ -2734,7 +2752,7 @@ fn payload_too_large() -> Response<BoxBody> {
     Response::builder()
         .status(413)
         .header("Content-Type", "text/plain")
-        .body(http_body_util::Full::new(Bytes::from("Payload Too Large")).boxed())
+        .body(full(Bytes::from("Payload Too Large")))
         .unwrap()
 }
 
@@ -2780,7 +2798,7 @@ fn backend_error_response(e: &(dyn std::error::Error + 'static)) -> Response<Box
     }
     Response::builder()
         .status(502)
-        .body(http_body_util::Full::new(Bytes::from("Bad Gateway")).boxed())
+        .body(full(Bytes::from("Bad Gateway")))
         .unwrap()
 }
 
@@ -3024,10 +3042,10 @@ fn apply_response_mods(
             hyper::header::CONTENT_LENGTH,
             HeaderValue::from(new_bytes.len()),
         );
-        return Response::from_parts(parts, http_body_util::Full::new(new_bytes).boxed());
+        return Response::from_parts(parts, full(new_bytes));
     }
 
-    Response::from_parts(parts, body.map_err(|_| unreachable!()).boxed())
+    Response::from_parts(parts, body.map_err(BoxError::from).boxed())
 }
 
 /// True when `path` (the raw, undecoded request path) contains a dot
@@ -3126,7 +3144,7 @@ fn handle_acme_challenge(
 
     if let Ok(store) = challenge_store.read() {
         if let Some(key_auth) = store.get(token) {
-            let body = http_body_util::Full::new(Bytes::from(key_auth.clone())).boxed();
+            let body = full(Bytes::from(key_auth.clone()));
             return Some(
                 Response::builder()
                     .status(200)
@@ -3137,7 +3155,7 @@ fn handle_acme_challenge(
         }
     }
 
-    let body = http_body_util::Full::new(Bytes::from("Challenge not found")).boxed();
+    let body = full(Bytes::from("Challenge not found"));
     Some(Response::builder().status(404).body(body).unwrap())
 }
 
@@ -3187,7 +3205,6 @@ async fn handle_websocket_request(
         Some((mut url, _, _, route_scripts)) => {
             if let Some(engine) = lua_engine.as_ref() {
                 if let Some(resp) = run_route_hooks(engine, &mut req, &route_scripts, &mut url) {
-                    metrics.dec_in_flight();
                     return Ok(resp);
                 }
             }
@@ -3226,13 +3243,12 @@ async fn handle_websocket_request(
                     }
                 } else {
                     metrics.inc_errors();
-                    let body =
-                        http_body_util::Full::new(Bytes::from("Misdirected Request")).boxed();
+                    let body = full(Bytes::from("Misdirected Request"));
                     return Ok(Response::builder().status(421).body(body).unwrap());
                 }
             } else {
                 metrics.inc_errors();
-                let body = http_body_util::Full::new(Bytes::from("Misdirected Request")).boxed();
+                let body = full(Bytes::from("Misdirected Request"));
                 return Ok(Response::builder().status(421).body(body).unwrap());
             }
         }
@@ -3254,7 +3270,7 @@ async fn handle_websocket_request(
         }
         Err(_) => {
             metrics.inc_errors();
-            let body = http_body_util::Full::new(Bytes::from("Bad backend URL")).boxed();
+            let body = full(Bytes::from("Bad backend URL"));
             return Ok(Response::builder().status(502).body(body).unwrap());
         }
     };
@@ -3289,7 +3305,7 @@ async fn handle_websocket_request(
         || contains_crlf(&client_host)
     {
         metrics.inc_errors();
-        let body = http_body_util::Full::new(Bytes::from("Bad Request")).boxed();
+        let body = full(Bytes::from("Bad Request"));
         return Ok(Response::builder().status(400).body(body).unwrap());
     }
 
@@ -3327,7 +3343,7 @@ async fn handle_websocket_request(
         Ok(Err(e)) => {
             tracing::error!("Failed to connect to backend for WebSocket: {}", e);
             metrics.inc_errors();
-            let body = http_body_util::Full::new(Bytes::from("Backend not reachable")).boxed();
+            let body = full(Bytes::from("Backend not reachable"));
             return Ok(Response::builder().status(502).body(body).unwrap());
         }
         Err(_) => {
@@ -3339,7 +3355,7 @@ async fn handle_websocket_request(
                 "websocket backend connect timed out; returning 504"
             );
             metrics.inc_errors();
-            let body = http_body_util::Full::new(Bytes::from("Gateway Timeout")).boxed();
+            let body = full(Bytes::from("Gateway Timeout"));
             return Ok(Response::builder().status(504).body(body).unwrap());
         }
     };
@@ -3355,7 +3371,7 @@ async fn handle_websocket_request(
                     e
                 );
                 metrics.inc_errors();
-                let body = http_body_util::Full::new(Bytes::from("Bad backend URL")).boxed();
+                let body = full(Bytes::from("Bad backend URL"));
                 return Ok(Response::builder().status(502).body(body).unwrap());
             }
         };
@@ -3373,7 +3389,7 @@ async fn handle_websocket_request(
                     e
                 );
                 metrics.inc_errors();
-                let body = http_body_util::Full::new(Bytes::from("Backend not reachable")).boxed();
+                let body = full(Bytes::from("Backend not reachable"));
                 return Ok(Response::builder().status(502).body(body).unwrap());
             }
             Err(_) => {
@@ -3385,7 +3401,7 @@ async fn handle_websocket_request(
                     "websocket backend TLS handshake timed out; returning 504"
                 );
                 metrics.inc_errors();
-                let body = http_body_util::Full::new(Bytes::from("Gateway Timeout")).boxed();
+                let body = full(Bytes::from("Gateway Timeout"));
                 return Ok(Response::builder().status(504).body(body).unwrap());
             }
         }
@@ -3417,7 +3433,7 @@ async fn handle_websocket_request(
         || ws_protocol.as_deref().is_some_and(contains_crlf)
     {
         metrics.inc_errors();
-        let body = http_body_util::Full::new(Bytes::from("Bad Request")).boxed();
+        let body = full(Bytes::from("Bad Request"));
         return Ok(Response::builder().status(400).body(body).unwrap());
     }
 
@@ -3440,9 +3456,7 @@ async fn handle_websocket_request(
     if let Err(e) = backend_write.write_all(handshake.as_bytes()).await {
         tracing::error!("Failed to send WebSocket handshake to backend: {}", e);
         metrics.inc_errors();
-        let body =
-            http_body_util::Full::new(Bytes::from("Failed to initiate WebSocket with backend"))
-                .boxed();
+        let body = full(Bytes::from("Failed to initiate WebSocket with backend"));
         return Ok(Response::builder().status(502).body(body).unwrap());
     }
 
@@ -3460,18 +3474,13 @@ async fn handle_websocket_request(
         Ok(_) => {
             tracing::error!("No response from backend for WebSocket upgrade");
             metrics.inc_errors();
-            let body = http_body_util::Full::new(Bytes::from(
-                "Backend did not respond to WebSocket upgrade",
-            ))
-            .boxed();
+            let body = full(Bytes::from("Backend did not respond to WebSocket upgrade"));
             return Ok(Response::builder().status(502).body(body).unwrap());
         }
         Err(_) => {
             tracing::error!("Backend timed out sending WebSocket upgrade response");
             metrics.inc_errors();
-            let body =
-                http_body_util::Full::new(Bytes::from("Backend timed out on WebSocket upgrade"))
-                    .boxed();
+            let body = full(Bytes::from("Backend timed out on WebSocket upgrade"));
             return Ok(Response::builder().status(504).body(body).unwrap());
         }
     };
@@ -3488,8 +3497,7 @@ async fn handle_websocket_request(
             response_str.lines().next().unwrap_or("")
         );
         metrics.inc_errors();
-        let body =
-            http_body_util::Full::new(Bytes::from("Backend rejected WebSocket upgrade")).boxed();
+        let body = full(Bytes::from("Backend rejected WebSocket upgrade"));
         return Ok(Response::builder().status(502).body(body).unwrap());
     }
 
@@ -3590,8 +3598,6 @@ async fn handle_websocket_request(
         }
     });
 
-    metrics.dec_in_flight();
-
     // Return 101 Switching Protocols to the client
     let mut resp = Response::builder()
         .status(101)
@@ -3601,9 +3607,7 @@ async fn handle_websocket_request(
     if let Some(proto) = resp_protocol {
         resp = resp.header("Sec-WebSocket-Protocol", proto);
     }
-    Ok(resp
-        .body(http_body_util::Full::new(Bytes::new()).boxed())
-        .unwrap())
+    Ok(resp.body(empty()).unwrap())
 }
 
 /// Returns (Response, target_url_for_logging, route_scripts)
@@ -3694,8 +3698,7 @@ async fn handle_regular_request(
                     Some((url, base)) => (url, base),
                     None => {
                         // All targets are circuit-broken
-                        let body =
-                            http_body_util::Full::new(Bytes::from("Service Unavailable")).boxed();
+                        let body = full(Bytes::from("Service Unavailable"));
                         return Ok((
                             Response::builder()
                                 .status(503)
@@ -3726,7 +3729,7 @@ async fn handle_regular_request(
             // Lua overrides were already validated above when they replaced it.
             if !validate_proxy_target_url(&base_url) {
                 tracing::warn!("Refusing to proxy disallowed target URL: {}", target_url);
-                let body = http_body_util::Full::new(Bytes::from("Bad Gateway")).boxed();
+                let body = full(Bytes::from("Bad Gateway"));
                 return Ok((
                     Response::builder().status(502).body(body).unwrap(),
                     target_url,
@@ -3786,7 +3789,7 @@ async fn handle_regular_request(
                         target_url,
                         e
                     );
-                    let body = http_body_util::Full::new(Bytes::from("Bad Gateway")).boxed();
+                    let body = full(Bytes::from("Bad Gateway"));
                     return Ok((
                         Response::builder().status(502).body(body).unwrap(),
                         target_url,
@@ -3896,7 +3899,7 @@ async fn handle_regular_request(
                                         parts
                                             .headers
                                             .insert("location", new_location.parse().unwrap());
-                                        let boxed = body.map_err(|_| unreachable!()).boxed();
+                                        let boxed = body.map_err(BoxError::from).boxed();
                                         return Ok((
                                             Response::from_parts(parts, boxed),
                                             target_url,
@@ -3955,7 +3958,7 @@ async fn handle_regular_request(
                             if !encoding.contains("gzip") && !encoding.contains("deflate") {
                                 let (mut parts, body) = response.into_parts();
                                 parts.headers.remove("content-length");
-                                let inner = body.map_err(|_| unreachable!()).boxed();
+                                let inner = body.map_err(BoxError::from).boxed();
                                 let rewritten = RewritingBody::new(inner, &prefix).boxed();
                                 return Ok((
                                     Response::from_parts(parts, rewritten),
@@ -3971,7 +3974,7 @@ async fn handle_regular_request(
                                 let (mut parts, body) = response.into_parts();
                                 parts.headers.remove("content-encoding");
                                 parts.headers.remove("content-length");
-                                let inner = body.map_err(|_| unreachable!()).boxed();
+                                let inner = body.map_err(BoxError::from).boxed();
                                 let streamed =
                                     DecodingRewritingBody::new_gzip(inner, &prefix).boxed();
                                 return Ok((
@@ -4006,9 +4009,7 @@ async fn handle_regular_request(
                                         e,
                                         target_url
                                     );
-                                        let body =
-                                            http_body_util::Full::new(Bytes::from("Bad Gateway"))
-                                                .boxed();
+                                        let body = full(Bytes::from("Bad Gateway"));
                                         return Ok((
                                             Response::builder().status(502).body(body).unwrap(),
                                             target_url,
@@ -4020,7 +4021,7 @@ async fn handle_regular_request(
                             let Some(raw_bytes) =
                                 inflate_capped(&body_bytes, &encoding, MAX_HTML_REWRITE_SIZE)
                             else {
-                                let body = http_body_util::Full::new(body_bytes).boxed();
+                                let body = full(body_bytes);
                                 return Ok((
                                     Response::from_parts(parts, body),
                                     target_url,
@@ -4045,7 +4046,7 @@ async fn handle_regular_request(
                                     hyper::header::CONTENT_LENGTH,
                                     HeaderValue::from(raw_bytes.len()),
                                 );
-                                let body = http_body_util::Full::new(raw_bytes).boxed();
+                                let body = full(raw_bytes);
                                 return Ok((
                                     Response::from_parts(parts, body),
                                     target_url,
@@ -4063,7 +4064,7 @@ async fn handle_regular_request(
                                 hyper::header::CONTENT_LENGTH,
                                 HeaderValue::from(rewritten_bytes.len()),
                             );
-                            let boxed = http_body_util::Full::new(rewritten_bytes).boxed();
+                            let boxed = full(rewritten_bytes);
                             return Ok((
                                 Response::from_parts(parts, boxed),
                                 target_url,
@@ -4073,7 +4074,7 @@ async fn handle_regular_request(
                     }
 
                     let (parts, body) = response.into_parts();
-                    let boxed = body.map_err(|_| unreachable!()).boxed();
+                    let boxed = body.map_err(BoxError::from).boxed();
                     Ok((
                         Response::from_parts(parts, boxed),
                         target_url,
@@ -4168,8 +4169,7 @@ async fn handle_regular_request(
                                 target_url,
                                 e
                             );
-                            let body =
-                                http_body_util::Full::new(Bytes::from("Bad Gateway")).boxed();
+                            let body = full(Bytes::from("Bad Gateway"));
                             return Ok((
                                 Response::builder().status(502).body(body).unwrap(),
                                 target_url,
@@ -4229,7 +4229,7 @@ async fn handle_regular_request(
                             }
 
                             let (parts, body) = response.into_parts();
-                            let boxed = body.map_err(|_| unreachable!()).boxed();
+                            let boxed = body.map_err(BoxError::from).boxed();
                             return Ok((Response::from_parts(parts, boxed), target_url, vec![]));
                         }
                         Err(e) => {
@@ -4261,7 +4261,7 @@ async fn handle_regular_request(
 
             let _ = lua_engine;
             tracing::warn!("Returning 421 Misdirected Request - no route found for host, app_manager available: {}", app_manager_available);
-            let body = http_body_util::Full::new(Bytes::from("Misdirected Request")).boxed();
+            let body = full(Bytes::from("Misdirected Request"));
             Ok((
                 Response::builder()
                     .status(421)
@@ -4440,13 +4440,13 @@ fn build_redirect_response(target_url: &str) -> Response<BoxBody> {
         Ok(loc) => Response::builder()
             .status(301)
             .header(hyper::header::LOCATION, loc)
-            .body(http_body_util::Full::new(Bytes::from("Moved Permanently")).boxed())
+            .body(full(Bytes::from("Moved Permanently")))
             .unwrap(),
         // A request path with bytes invalid in a header value cannot be
         // reflected into Location; reject rather than emit a broken redirect.
         Err(_) => Response::builder()
             .status(400)
-            .body(http_body_util::Full::new(Bytes::from("Bad Request")).boxed())
+            .body(full(Bytes::from("Bad Request")))
             .unwrap(),
     }
 }
@@ -4742,7 +4742,7 @@ mod tests {
     fn gzip_decode_and_rewrite_streaming() {
         let html = r#"<a href="/x"><img src="/y"><form action="/z"></form>"#;
         let compressed = gzip(html.as_bytes());
-        let inner = http_body_util::Empty::<Bytes>::new().boxed();
+        let inner = empty();
         let mut d = DecodingRewritingBody::new_gzip(inner, "/solidb");
         // Feed the gzip stream in two halves to exercise incremental decode.
         let mid = compressed.len() / 2;
