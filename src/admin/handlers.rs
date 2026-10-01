@@ -37,6 +37,13 @@ pub async fn get_apps(state: &Arc<AdminState>) -> Response<BoxBody> {
         Some(manager) => {
             let mut apps = manager.list_apps().await;
             apps.sort_by(|a, b| a.config.domain.cmp(&b.config.domain));
+            // `maintenance` is the flag file's; a window opened through the
+            // API counts too.
+            let maintenance = state.config_manager.maintenance.snapshot();
+            for app in &mut apps {
+                app.maintenance |=
+                    maintenance.global.is_some() || maintenance.apps.contains_key(&app.config.name);
+            }
             match serde_json::to_value(&apps) {
                 Ok(val) => ok_response(val),
                 Err(e) => error_response(500, &format!("Failed to serialize apps: {}", e)),

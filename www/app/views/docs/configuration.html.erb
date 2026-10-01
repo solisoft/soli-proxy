@@ -845,6 +845,123 @@
                         </div>
                     </div>
 
+                    <!-- [compression] -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-1 flex items-center gap-2">
+                            <span class="text-emerald-400 font-mono text-sm">[compression]</span>
+                        </h3>
+                        <p class="text-gray-400 text-sm mb-3">Compresses backends&rsquo; responses with gzip, brotli or zstd when the client asks for it (<code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Accept-Encoding</code>, q-values honoured, ties broken by <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">algorithms</code> order) and the response is eligible: no <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Content-Encoding</code> already, not 1xx/204/206/304, a <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Content-Type</code> in <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">types</code> other than <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">text/event-stream</code>, at least <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">min_length</code> bytes when its length is known, and no <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Cache-Control: no-transform</code>. Compressed responses lose <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Content-Length</code> and <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Accept-Ranges</code>, strong ETags become weak, and every eligible response carries <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Vary: Accept-Encoding</code>. HEAD requests and WebSockets are never compressed.</p>
+                        <p class="text-gray-400 text-sm mb-3"><strong>Off by default.</strong> Compression costs one to two orders of magnitude more CPU per text byte than passthrough, changes what caches see, and compressing pages that reflect input next to secrets is what BREACH exploits &mdash; it is a decision, not an upgrade side effect. Per route, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@compress:on</code> / <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@compress:off</code> in proxy.conf override <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">enabled</code>; per app, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">compress = false</code> in app.infos opts out. Encoding runs in 64&nbsp;KiB slices per poll and is flushed whenever the backend pauses, so streamed responses stay live. On a path-prefix mount the HTML rewrite happens first.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">config.toml</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tk">[compression]</span>
+<span class="tf">enabled</span> = <span class="tn">true</span>                       <span class="tc"># default false</span>
+<span class="tf">algorithms</span> = [<span class="ts">"br"</span>, <span class="ts">"zstd"</span>, <span class="ts">"gzip"</span>]  <span class="tc"># preference on a tie</span>
+<span class="tf">gzip_level</span> = <span class="tn">5</span>
+<span class="tf">brotli_level</span> = <span class="tn">4</span>
+<span class="tf">zstd_level</span> = <span class="tn">3</span>
+<span class="tf">min_length</span> = <span class="tn">1024</span>
+<span class="tf">types</span> = [<span class="ts">"text/*"</span>, <span class="ts">"application/json"</span>, <span class="ts">"*+json"</span>, <span class="ts">"image/svg+xml"</span>]</code></pre>
+                        </div>
+                        <div class="mt-3 overflow-x-auto">
+                            <table class="w-full text-sm text-left">
+                                <thead><tr class="border-b border-white/10 text-gray-400">
+                                    <th class="py-2 pr-4 font-medium">Key</th>
+                                    <th class="py-2 pr-4 font-medium">Type</th>
+                                    <th class="py-2 pr-4 font-medium">Default</th>
+                                    <th class="py-2 font-medium">Description</th>
+                                </tr></thead>
+                                <tbody class="text-gray-300">
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">enabled</td><td class="py-2 pr-4">bool</td><td class="py-2 pr-4 text-gray-500">false</td><td class="py-2">Compress eligible responses on routes and apps that do not opt out.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">algorithms</td><td class="py-2 pr-4">list</td><td class="py-2 pr-4 text-gray-500">["br", "zstd", "gzip"]</td><td class="py-2">Codings offered, in order of preference when a client accepts several equally.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">gzip_level</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">5</td><td class="py-2">1&ndash;9.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">brotli_level</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">4</td><td class="py-2">0&ndash;11. Levels above ~5 cost several times more CPU for a few percent.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">zstd_level</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">3</td><td class="py-2">1&ndash;19.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">min_length</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">1024</td><td class="py-2">Responses with a smaller Content-Length are sent as they are.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">types</td><td class="py-2 pr-4">list</td><td class="py-2 pr-4 text-gray-500">text, JSON, JS, XML, SVG, wasm, icons, ttf/otf</td><td class="py-2">Media types compressed: exact, <code>type/*</code>, or a suffix such as <code>*+json</code>.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- [error_pages] -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-1 flex items-center gap-2">
+                            <span class="text-emerald-400 font-mono text-sm">[error_pages]</span>
+                        </h3>
+                        <p class="text-gray-400 text-sm mb-3">HTML pages for the errors the proxy itself generates (502, 503, 504, 421, 401, 413, 429&hellip;), served to clients whose <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Accept</code> lists <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">text/html</code>; everyone else keeps the plain text. Files in <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">dir</code>: <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">502.html</code> for one status, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">4xx.html</code> / <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">5xx.html</code> for a class, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">default.html</code>, and <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">maintenance.html</code>. Templates may use <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">{{status}}</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">{{reason}}</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">{{host}}</code> and <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">{{request_id}}</code>, all HTML-escaped. Pages are read at load and on reload, never per request, 64&nbsp;KiB each.</p>
+                        <p class="text-gray-400 text-sm mb-3">A backend&rsquo;s own error page and the body of a Lua <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">deny</code> are never replaced, unless <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">intercept_upstream_errors</code> is on. An app may bring its own pages in <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">&lt;site&gt;/error_pages/</code>, used first for its hosts; in multi-tenant mode neither the directory nor a page may be a symlink.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">config.toml</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tk">[error_pages]</span>
+<span class="tf">dir</span> = <span class="ts">"/etc/soli-proxy/errors"</span>
+<span class="tf">intercept_upstream_errors</span> = <span class="tn">false</span></code></pre>
+                        </div>
+                        <div class="mt-3 overflow-x-auto">
+                            <table class="w-full text-sm text-left">
+                                <thead><tr class="border-b border-white/10 text-gray-400">
+                                    <th class="py-2 pr-4 font-medium">Key</th>
+                                    <th class="py-2 pr-4 font-medium">Type</th>
+                                    <th class="py-2 pr-4 font-medium">Default</th>
+                                    <th class="py-2 font-medium">Description</th>
+                                </tr></thead>
+                                <tbody class="text-gray-300">
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">dir</td><td class="py-2 pr-4">path</td><td class="py-2 pr-4 text-gray-500">unset</td><td class="py-2">Directory holding the pages. A missing directory or a page over 64&nbsp;KiB is a configuration error.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">intercept_upstream_errors</td><td class="py-2 pr-4">bool</td><td class="py-2 pr-4 text-gray-500">false</td><td class="py-2">Also replace 4xx/5xx responses that came from a backend.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- [maintenance] -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-1 flex items-center gap-2">
+                            <span class="text-emerald-400 font-mono text-sm">[maintenance]</span>
+                        </h3>
+                        <p class="text-gray-400 text-sm mb-3">In maintenance, requests get <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">503</code> with <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Retry-After</code> and the <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">maintenance.html</code> page (the app&rsquo;s, then the global one, then a built-in page). Switch it with the admin API &mdash; <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">PUT /api/v1/maintenance</code> for everything, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">PUT /api/v1/apps/{name}/maintenance</code> for one app, body <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">{"enabled": true, "retry_after": 600, "message": "..."}</code>, persisted to <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">run/maintenance.json</code> &mdash; or by creating <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">sites/&lt;domain&gt;/maintenance.flag</code>, which deploy scripts can do without admin credentials.</p>
+                        <p class="text-gray-400 text-sm mb-3">This section only holds policy. Clients in <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">allow_ips</code>, paths in <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">allow_paths</code>, ACME challenges and the proxy&rsquo;s own health and metrics endpoints are served as usual.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">config.toml</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tk">[maintenance]</span>
+<span class="tf">retry_after</span> = <span class="tn">300</span>
+<span class="tf">allow_ips</span> = [<span class="ts">"10.0.0.0/8"</span>, <span class="ts">"203.0.113.7"</span>]
+<span class="tf">allow_paths</span> = [<span class="ts">"/up"</span>, <span class="ts">"/status/*"</span>]</code></pre>
+                        </div>
+                        <div class="mt-3 overflow-x-auto">
+                            <table class="w-full text-sm text-left">
+                                <thead><tr class="border-b border-white/10 text-gray-400">
+                                    <th class="py-2 pr-4 font-medium">Key</th>
+                                    <th class="py-2 pr-4 font-medium">Type</th>
+                                    <th class="py-2 pr-4 font-medium">Default</th>
+                                    <th class="py-2 font-medium">Description</th>
+                                </tr></thead>
+                                <tbody class="text-gray-300">
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">retry_after</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">300</td><td class="py-2">Retry-After when a toggle does not set one (seconds, at most a week).</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">allow_ips</td><td class="py-2 pr-4">list</td><td class="py-2 pr-4 text-gray-500">[]</td><td class="py-2">IPs or CIDRs (v4 or v6) served normally. Judged on the TCP peer address.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">allow_paths</td><td class="py-2 pr-4">list</td><td class="py-2 pr-4 text-gray-500">[]</td><td class="py-2">Exact paths, or prefixes ending in <code>*</code>, served normally. Compared literally: percent-encoded or dot-segment spellings are not let through.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
                     <!-- Full config.toml example -->
                     <div class="ml-11">
                         <h3 class="text-lg font-semibold text-white mb-3">Complete config.toml Example</h3>

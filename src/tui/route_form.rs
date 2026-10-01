@@ -399,6 +399,7 @@ impl RouteForm {
             auth_exempt,
             load_balancing,
             forward_auth: self.forward_auth.clone(),
+            compress: None,
         })
     }
 

@@ -469,6 +469,52 @@
   the PROXY protocol address); clients behind a trusted proxy that does not speak PROXY protocol
   are limited per request by `[rate_limiting]`, not per connection.
 
+**Responses: compression, error pages, maintenance (gap/response)**
+
+### Features
+
+* **Response compression: gzip, brotli and zstd** (`[compression]`, **off by default**). A
+  backend's response is compressed when the client asks (`Accept-Encoding`, q-values honoured, a
+  tie going to `algorithms` order: br, zstd, gzip) and it is eligible: no `Content-Encoding`
+  already, not 1xx/204/206/304, a `Content-Type` in `types` (text, JSON, JS, XML, SVG, wasm,
+  icons, ttf/otf, `*+json`, `*+xml` by default) other than `text/event-stream`, at least
+  `min_length` (1024) bytes when the length is known, no `Cache-Control: no-transform`. It
+  gets `Vary: Accept-Encoding` (so does every eligible response, compressed or not), loses
+  `Content-Length` and `Accept-Ranges`, and a strong `ETag` turns weak. Encoding is streamed:
+  at most 64 KiB of input per poll before yielding, and a flush whenever the backend pauses, so
+  progressive pages and chunked streams stay live. Levels default to gzip 5, brotli 4 (1 MiB
+  window), zstd 3. Per route `@compress:on|off` (round-tripped by the admin API), per app
+  `compress = false` in `app.infos` (`true` opts in, except in multi-tenant mode). A path-prefix
+  mount's HTML rewrite happens first, then compression. Off by default because it costs one to
+  two orders of magnitude more CPU per text byte than passthrough, changes caching headers, and
+  compressing pages that reflect input next to secrets is what BREACH exploits.
+* **Custom error pages** (`[error_pages] dir`). The proxy's own errors (502, 503, 504, 421, 401,
+  413, 429, …) are served as HTML to clients whose `Accept` lists `text/html`: `<status>.html`,
+  then `4xx.html`/`5xx.html`, then `default.html`, with `{{status}}`, `{{reason}}`, `{{host}}`
+  and `{{request_id}}` (HTML-escaped; the response's `X-Request-Id`, else the request's). Status
+  and headers (`Retry-After`, `WWW-Authenticate`) are kept, other clients keep the plain text,
+  and a backend's own error or a Lua `deny` is never replaced (`intercept_upstream_errors =
+  true` extends the pages to backends' errors). Pages are read at load/reload, 64 KiB each. An
+  app may ship `error_pages/` in its site directory, read at discovery (256 KiB in total); in
+  multi-tenant mode it is opened `O_NOFOLLOW` and read through that descriptor, so a tenant
+  cannot have a host file served back as its error page.
+* **Maintenance mode**, global or per app: 503 with `Retry-After` and `maintenance.html` (the
+  app's, the global one, or a built-in page with the toggle's message). Switched through
+  `PUT /api/v1/maintenance` and `PUT /api/v1/apps/{name}/maintenance`
+  (`{"enabled", "retry_after"?, "message"?}`, persisted atomically to `run/maintenance.json` and
+  restored at startup; `GET /api/v1/maintenance` shows the state), or by a
+  `<site>/maintenance.flag` file for deploy scripts without admin credentials, which the sites
+  watcher picks up. `[maintenance]` holds the policy: `retry_after` (300), `allow_ips`
+  (IPs/CIDRs) and `allow_paths`; ACME challenges and the proxy's health and metrics endpoints are
+  always served. `GET /api/v1/apps` reports `"maintenance"` per app.
+
+### Operators
+
+* Nothing changes until a section is configured. A `run/maintenance.json` that does not parse
+  stops the proxy at startup rather than reopening sites closed on purpose; a missing
+  `[error_pages] dir` or an oversized page is a configuration error like any other.
+* New dependencies: `brotli` 8 and `zstd` 0.13 (libzstd, built from source by `zstd-sys`).
+
 ## [0.35.2](https://github.com/solisoft/soli-proxy/compare/v0.35.1...v0.35.2) (2026-09-27)
 
 ### Bug Fixes

@@ -12,6 +12,7 @@ pub mod logging;
 pub mod metrics;
 pub mod pool;
 pub mod proxy_headers;
+pub mod response;
 #[cfg(feature = "scripting")]
 pub mod scripting;
 pub mod server;

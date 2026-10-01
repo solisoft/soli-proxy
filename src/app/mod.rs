@@ -219,6 +219,12 @@ pub struct AppConfig {
     /// jobs, sockets or a warm cache it cannot rebuild in a second.
     #[serde(default)]
     pub idle_timeout: Option<u64>,
+    /// `compress = false` keeps the proxy from compressing this app's
+    /// responses; `true` asks for it even with `[compression] enabled =
+    /// false` (ignored in multi-tenant mode, where it would spend the
+    /// operator's CPU). Unset follows `[compression]`.
+    #[serde(default)]
+    pub compress: Option<bool>,
 }
 
 impl Default for AppConfig {
@@ -241,6 +247,7 @@ impl Default for AppConfig {
             docker_network: None,
             auth: AppAuth::default(),
             idle_timeout: None,
+            compress: None,
         }
     }
 }
@@ -268,7 +275,7 @@ const ENV_SECTIONS: [&str; 2] = ["development", "production"];
 ///
 /// `known_root_keys_match_app_config` fails if a field is added to
 /// `AppConfig` without being listed here.
-const KNOWN_ROOT_KEYS: [&str; 17] = [
+const KNOWN_ROOT_KEYS: [&str; 18] = [
     "name",
     "domain",
     "start_script",
@@ -286,6 +293,7 @@ const KNOWN_ROOT_KEYS: [&str; 17] = [
     "docker_network",
     "auth",
     "idle_timeout",
+    "compress",
 ];
 
 /// Parse an `app.infos`, folding in the overlay for the environment this proxy
@@ -499,6 +507,13 @@ pub struct AppInfo {
     /// suspended. Derived from `AppManager` state on read, never persisted.
     #[serde(default, skip_deserializing)]
     pub quarantined: bool,
+    /// `<site>/maintenance.flag` exists (see `response::maintenance`). The
+    /// admin API's `GET /apps` also reports a window opened through the API.
+    #[serde(default, skip_deserializing)]
+    pub maintenance: bool,
+    /// Pages from `<site>/error_pages/`, read at discovery.
+    #[serde(skip)]
+    pub error_pages: Option<Arc<crate::response::error_pages::ErrorPages>>,
 }
 
 impl AppInfo {
@@ -585,6 +600,11 @@ impl AppInfo {
             validate_health_check_path(health_check)?;
         }
         config.auth.validate()?;
+        if multi_tenant && config.compress == Some(true) {
+            // Opting in spends the operator's CPU, which is the operator's
+            // call (`[compression] enabled`); opting out is the tenant's.
+            config.compress = None;
+        }
 
         if multi_tenant {
             if config.name != app_name {
@@ -666,7 +686,30 @@ impl AppInfo {
             },
             current_slot: "blue".to_string(),
             quarantined: false,
+            // Presence is all that counts; a symlink is not followed.
+            maintenance: std::fs::symlink_metadata(path.join(MAINTENANCE_FLAG)).is_ok(),
+            error_pages: load_site_error_pages(path, folder_name, multi_tenant),
         })
+    }
+}
+
+/// The file whose presence puts an app in maintenance mode.
+pub const MAINTENANCE_FLAG: &str = "maintenance.flag";
+
+/// An app's own error pages, if it has any. A directory that cannot be read
+/// costs the app its pages, not its place in the routing table.
+fn load_site_error_pages(
+    path: &Path,
+    label: &str,
+    multi_tenant: bool,
+) -> Option<Arc<crate::response::error_pages::ErrorPages>> {
+    match crate::response::error_pages::ErrorPages::load_for_site(path, !multi_tenant) {
+        Ok(Some(pages)) if !pages.is_empty() => Some(Arc::new(pages)),
+        Ok(_) => None,
+        Err(e) => {
+            tracing::warn!("{}: error_pages ignored: {:#}", label, e);
+            None
+        }
     }
 }
 
@@ -879,6 +922,12 @@ pub struct AppRoute {
     pub health_check: Option<String>,
     /// The app's `[auth]`, when it has accounts.
     pub auth: Option<Arc<AppAuth>>,
+    /// `compress =` from `app.infos`.
+    pub compress: Option<bool>,
+    /// `<site>/maintenance.flag` exists.
+    pub maintenance: bool,
+    /// The app's `error_pages/`.
+    pub error_pages: Option<Arc<crate::response::error_pages::ErrorPages>>,
     /// The app's idle clock (see `AppManager::touch`), shared by all of its
     /// hosts and across rebuilds: a request records itself with one store.
     activity: Arc<AtomicU64>,
@@ -892,6 +941,8 @@ pub struct AppTarget {
     /// `None` for a cluster-pushed route.
     pub app: Option<Arc<str>>,
     pub auth: Option<Arc<AppAuth>>,
+    /// The app's `compress =`; `None` for a cluster-pushed route.
+    pub compress: Option<bool>,
 }
 
 /// The routing table for every app the proxy manages: host -> entry, plus
@@ -900,6 +951,11 @@ pub struct AppTarget {
 pub struct AppRoutes {
     hosts: HashMap<String, Arc<AppRoute>>,
     ports: HashMap<u16, Arc<str>>,
+    /// Some app has a `maintenance.flag`: the request path looks hosts up
+    /// for maintenance only then.
+    any_maintenance: bool,
+    /// Some app has error pages: only then is a request's host kept for them.
+    any_error_pages: bool,
 }
 
 impl AppRoutes {
@@ -960,6 +1016,9 @@ fn build_routes(
             .auth
             .is_active()
             .then(|| Arc::new(app.config.auth.clone())),
+        compress: app.config.compress,
+        maintenance: app.maintenance,
+        error_pages: app.error_pages.clone(),
         activity: activity.entry(app.config.name.clone()).or_default().clone(),
     };
     let mut routes = AppRoutes::default();
@@ -1021,6 +1080,9 @@ fn build_routes(
             }
         }
     }
+
+    routes.any_maintenance = routes.hosts.values().any(|r| r.maintenance);
+    routes.any_error_pages = routes.hosts.values().any(|r| r.error_pages.is_some());
 
     for app in &ordered {
         let name: Arc<str> = Arc::from(app.config.name.as_str());
@@ -1223,7 +1285,9 @@ fn watch_event_is_relevant(relative: &Path, kind: &notify::EventKind) -> bool {
             kind,
             EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_))
         ),
-        2 => relative.file_name().is_some_and(|name| name == "app.infos"),
+        2 => relative
+            .file_name()
+            .is_some_and(|name| name == "app.infos" || name == MAINTENANCE_FLAG),
         _ => false,
     }
 }
@@ -1294,7 +1358,10 @@ fn affected_app_names(
         // restarted twice for one touch).
         if relative.components().count() == 2 {
             if let Some(filename) = relative.file_name() {
-                if filename == "app.infos" || filename == trigger_file {
+                if filename == "app.infos"
+                    || filename == MAINTENANCE_FLAG
+                    || filename == trigger_file
+                {
                     continue;
                 }
             }
@@ -1531,6 +1598,16 @@ impl AppManager {
         self.routes.load_full()
     }
 
+    /// Whether some app has a `maintenance.flag`. One atomic load.
+    pub fn any_maintenance_flag(&self) -> bool {
+        self.routes.load().any_maintenance
+    }
+
+    /// Whether some app has error pages. One atomic load.
+    pub fn any_error_pages(&self) -> bool {
+        self.routes.load().any_error_pages
+    }
+
     /// Rebuild the routing table from `apps` and publish it.
     ///
     /// Called with the apps lock held, after every change routing depends on
@@ -1713,6 +1790,7 @@ impl AppManager {
                     },
                     app: Some(route.app.clone()),
                     auth: route.auth.clone(),
+                    compress: route.compress,
                 });
             }
         }
@@ -1729,6 +1807,7 @@ impl AppManager {
                 // A pushed target is a raw workload port: nothing in front of
                 // it enforces the app's `[auth]` but this proxy.
                 auth: self.external_routes.auth(host).map(Arc::new),
+                compress: None,
             })
     }
 
@@ -4538,6 +4617,7 @@ typo_here = true
             docker_network: Some("soli-apps".to_string()),
             auth: AppAuth::default(),
             idle_timeout: Some(0),
+            compress: Some(false),
         };
 
         let toml::Value::Table(table) = toml::Value::try_from(config).unwrap() else {
@@ -4747,6 +4827,8 @@ typo_here = true
             green: instance("green", port + 1, None),
             current_slot: "blue".to_string(),
             quarantined: false,
+            maintenance: false,
+            error_pages: None,
         }
     }
 
@@ -5132,6 +5214,72 @@ admin = "$2b$12$adminhashadminhashadminhashadminhashadminhashadminhas"
         AppManager::new(sites.to_str().unwrap(), port_manager, config_manager, false).unwrap()
     }
 
+    /// `maintenance.flag`, `error_pages/` and `compress` reach the routing
+    /// table, and a rediscovery after the flag goes away clears it.
+    #[tokio::test]
+    async fn site_response_settings_reach_the_routing_table() {
+        let temp_dir = TempDir::new().unwrap();
+        let sites = temp_dir.path().join("sites");
+        let site = site_with_app_infos(
+            &sites,
+            "shop.example.com",
+            "name = \"shop.example.com\"\ndomain = \"shop.example.com\"\ncompress = false\n",
+        );
+        std::fs::create_dir(site.join("error_pages")).unwrap();
+        std::fs::write(site.join("error_pages/502.html"), "shop 502").unwrap();
+        std::fs::write(site.join(MAINTENANCE_FLAG), "").unwrap();
+        site_with_app_infos(
+            &sites,
+            "plain.example.com",
+            "name = \"plain.example.com\"\ndomain = \"plain.example.com\"\n",
+        );
+
+        let manager = test_manager(&temp_dir, &sites);
+        manager.discover_apps_readonly().await.unwrap();
+        assert!(manager.any_maintenance_flag());
+        assert!(manager.any_error_pages());
+        let routes = manager.routes();
+        let shop = routes.get("shop.example.com").unwrap();
+        assert!(shop.maintenance);
+        assert_eq!(shop.compress, Some(false));
+        assert_eq!(
+            shop.error_pages.as_ref().unwrap().for_status(502),
+            Some("shop 502")
+        );
+        let plain = routes.get("plain.example.com").unwrap();
+        assert!(!plain.maintenance && plain.error_pages.is_none() && plain.compress.is_none());
+
+        mark_running(&manager, "shop.example.com").await;
+        let resolved = manager
+            .resolve_app_request("shop.example.com", &|_| true)
+            .await
+            .unwrap();
+        assert_eq!(resolved.compress, Some(false));
+
+        std::fs::remove_file(site.join(MAINTENANCE_FLAG)).unwrap();
+        manager.discover_apps_readonly().await.unwrap();
+        assert!(!manager.any_maintenance_flag());
+        assert!(
+            !manager
+                .routes()
+                .get("shop.example.com")
+                .unwrap()
+                .maintenance
+        );
+    }
+
+    /// A tenant may opt its app out of compression, never into it.
+    #[test]
+    fn multi_tenant_compress_opt_in_is_ignored() {
+        let temp_dir = TempDir::new().unwrap();
+        let on = site_with_app_infos(temp_dir.path(), "on.example.com", "compress = true\n");
+        let off = site_with_app_infos(temp_dir.path(), "off.example.com", "compress = false\n");
+        let load = |p: &Path, mt| AppInfo::from_path(p, false, mt).unwrap().config.compress;
+        assert_eq!(load(&on, true), None);
+        assert_eq!(load(&on, false), Some(true));
+        assert_eq!(load(&off, true), Some(false));
+    }
+
     /// Give `name` a live blue slot, as a deploy would.
     async fn mark_running(manager: &AppManager, name: &str) {
         let mut apps = manager.apps.lock().await;
@@ -5362,6 +5510,14 @@ health_check = "/status"
         assert!(!watch_event_is_relevant(
             Path::new("app.example.com/restart.txt"),
             &create
+        ));
+        assert!(watch_event_is_relevant(
+            Path::new("app.example.com/maintenance.flag"),
+            &create
+        ));
+        assert!(watch_event_is_relevant(
+            Path::new("app.example.com/maintenance.flag"),
+            &EventKind::Remove(RemoveKind::Any)
         ));
         assert!(!watch_event_is_relevant(
             Path::new("app.example.com/deep/app.infos"),
