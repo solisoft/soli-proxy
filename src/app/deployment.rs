@@ -564,6 +564,12 @@ fn validate_path_component(name: &str, label: &str) -> Result<()> {
     Ok(())
 }
 
+/// Labels the proxy puts on the containers it starts; see `docker_run_args`.
+const LABEL_APP: &str = "soli-proxy.app";
+const LABEL_CONTAINER: &str = "soli-proxy.container";
+const LABEL_PORT: &str = "soli-proxy.port";
+const LABEL_LAUNCH: &str = "soli-proxy.launch";
+
 /// `<app>-<slot>`, the container name a slot runs under.
 fn container_name(app: &AppInfo, slot: &str) -> String {
     format!("{}-{}", app.config.name, slot)
@@ -684,6 +690,64 @@ struct SpawnRecord {
     port: u16,
     /// `/proc/<pid>/stat` starttime when it was spawned.
     start_time: u64,
+    /// [`launch_fingerprint`] of how it was started: program, arguments,
+    /// working directory, environment and user. A restarted proxy adopts the
+    /// process only while it would still start it exactly this way.
+    #[serde(default)]
+    launch: Option<String>,
+}
+
+/// SHA-256 over the parts of a launch, NUL-separated: two launches with the
+/// same fingerprint run the same command, as the same user, with the same
+/// environment.
+fn launch_fingerprint<S: AsRef<str>>(parts: impl IntoIterator<Item = S>) -> String {
+    use sha2::Digest;
+    let mut hasher = sha2::Sha256::new();
+    for part in parts {
+        hasher.update(part.as_ref().as_bytes());
+        hasher.update([0u8]);
+    }
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect()
+}
+
+/// Whether `pid` is still the process that started at `start_time` (clock
+/// ticks since boot) and has not exited. A zombie has exited: its PID stays
+/// in `/proc` only until its parent — init, for an adopted process — reaps it.
+fn is_alive_as(pid: u32, start_time: u64) -> bool {
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{}/stat", pid)) else {
+        return false;
+    };
+    let Some(rest) = stat.rfind(')').and_then(|at| stat.get(at + 2..)) else {
+        return false;
+    };
+    let fields: Vec<&str> = rest.split_whitespace().collect();
+    fields
+        .first()
+        .is_some_and(|state| *state != "Z" && *state != "X")
+        && fields
+            .get(19)
+            .and_then(|start| start.parse::<u64>().ok())
+            .is_some_and(|start| start == start_time)
+}
+
+/// What a restarted proxy finds running in an app's slot.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SlotOwnership {
+    /// Nothing of ours runs there.
+    Absent,
+    /// A live instance this proxy started, launched exactly as it would be
+    /// started now. `pid` is the process (native) or the container's init.
+    Ours { pid: u32 },
+    /// Ours, but not to be kept — it runs an old launch, on the wrong port,
+    /// or does not serve its port. Stop it before starting afresh.
+    Stale { pid: Option<u32>, reason: String },
+    /// Something runs there that this proxy cannot prove it started. It is
+    /// neither adopted nor touched.
+    Unverifiable(String),
 }
 
 /// The native processes this proxy spawned, keyed by PID — persisted so a
@@ -733,7 +797,7 @@ impl SpawnRegistry {
         registry
     }
 
-    fn record(&self, pid: u32, app: &str, slot: &str, port: u16) {
+    fn record(&self, pid: u32, app: &str, slot: &str, port: u16, launch: String) {
         let Some((start_time, _)) = proc_identity(pid) else {
             // Gone before we could look: nothing left to own.
             return;
@@ -745,9 +809,27 @@ impl SpawnRegistry {
                 slot: slot.to_string(),
                 port,
                 start_time,
+                launch: Some(launch),
             },
         );
         self.persist();
+    }
+
+    /// The live record for an app's slot, if any: `(pid, record)`.
+    fn find(&self, app: &str, slot: &str) -> Option<(u32, SpawnRecord)> {
+        self.records
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(pid, record)| {
+                record.app == app && record.slot == slot && is_alive_as(**pid, record.start_time)
+            })
+            .map(|(pid, record)| (*pid, record.clone()))
+    }
+
+    /// Every recorded PID — for stopping everything this proxy started.
+    fn pids(&self) -> Vec<u32> {
+        self.records.lock().unwrap().keys().copied().collect()
     }
 
     fn forget(&self, pid: u32) {
@@ -872,6 +954,31 @@ fn parse_start_command(script: &str, port: u16, workers: u16) -> Result<(String,
         .collect();
 
     Ok((program, args))
+}
+
+/// A native slot's launch; see `DeploymentManager::native_launch`.
+struct NativeLaunch {
+    program: String,
+    args: Vec<String>,
+    /// The child's whole environment (it starts from an empty one).
+    env: Vec<(String, String)>,
+    user: Option<String>,
+    /// uid and gid to switch to, when a user is configured.
+    ids: Option<(u32, u32)>,
+}
+
+impl NativeLaunch {
+    fn fingerprint(&self, cwd: &Path) -> String {
+        let (uid, gid) = self.ids.unwrap_or((u32::MAX, u32::MAX));
+        let mut parts = vec![
+            self.program.clone(),
+            cwd.display().to_string(),
+            format!("uid={uid} gid={gid}"),
+        ];
+        parts.extend(self.args.iter().cloned());
+        parts.extend(self.env.iter().map(|(k, v)| format!("{k}={v}")));
+        launch_fingerprint(parts)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1089,39 +1196,15 @@ impl DeploymentManager {
             .stop_docker_container(&container_name, app.config.graceful_timeout)
             .await;
 
-        let base_script = if let Some(ref script) = app.config.start_script {
-            script.clone()
-        } else if app.path.join("app").exists() && app.path.join("app/models").exists() {
-            "soli serve .".to_string()
-        } else {
-            anyhow::bail!("No start script configured for {}", app.config.name)
-        };
-
-        let script = if self.dev_mode && base_script.starts_with("soli ") {
-            format!("{} --dev", base_script)
-        } else {
-            base_script.clone()
-        };
+        // Build (and thereby validate) the whole argv — image, options and
+        // network name — before the daemon is touched, so a rejected manifest
+        // cannot leave a network behind.
+        let (docker_args, docker_network) = self.docker_launch(app, slot, port, docker_image)?;
 
         let output_file = PathBuf::from(format!("run/logs/{}/{}.log", app.config.name, slot));
         std::fs::create_dir_all(output_file.parent().unwrap())?;
 
         let output = std::fs::File::create(&output_file)?;
-
-        let docker_network = self.docker_network_for(app);
-
-        // Build (and thereby validate) the whole argv — image, options and
-        // network name — before the daemon is touched, so a rejected manifest
-        // cannot leave a network behind.
-        let docker_args = self.docker_run_args(
-            app,
-            &container_name,
-            &docker_network,
-            port,
-            docker_image,
-            &script,
-            &self.container_env(passthrough_env(DOCKER_PASSTHROUGH_ENV)),
-        )?;
 
         let isolated_for = self.multi_tenant.then_some(app.config.name.as_str());
         ensure_docker_network(&docker_network, isolated_for).await?;
@@ -1171,9 +1254,57 @@ impl DeploymentManager {
             pid
         );
 
-        let app_name = app.config.name.clone();
+        self.watch_container(&app.config.name, slot, container_id, pid);
+        Ok(pid)
+    }
+
+    /// The command a slot runs, `--dev` added for a Soli app in dev mode.
+    fn start_script_for(&self, app: &AppInfo) -> Result<String> {
+        let base_script = if let Some(ref script) = app.config.start_script {
+            script.clone()
+        } else if app.path.join("app").exists() && app.path.join("app/models").exists() {
+            "soli serve .".to_string()
+        } else {
+            anyhow::bail!("No start script configured for {}", app.config.name)
+        };
+        Ok(if self.dev_mode && base_script.starts_with("soli ") {
+            format!("{} --dev", base_script)
+        } else {
+            base_script
+        })
+    }
+
+    /// The `docker run` argv for a slot, and the network it joins. Pure but
+    /// for reading the environment to pass through — so a restarted proxy
+    /// recomputes exactly what it would run, and adopts a container only
+    /// while that has not changed.
+    fn docker_launch(
+        &self,
+        app: &AppInfo,
+        slot: &str,
+        port: u16,
+        docker_image: &str,
+    ) -> Result<(Vec<String>, String)> {
+        let script = self.start_script_for(app)?;
+        let docker_network = self.docker_network_for(app);
+        let args = self.docker_run_args(
+            app,
+            &container_name(app, slot),
+            &docker_network,
+            port,
+            docker_image,
+            &script,
+            &self.container_env(passthrough_env(DOCKER_PASSTHROUGH_ENV)),
+        )?;
+        Ok((args, docker_network))
+    }
+
+    /// Watch a container until it stops, then report the exit like a native
+    /// process's — unless the stop was ours.
+    fn watch_container(&self, app_name: &str, slot: &str, container_id: String, pid: u32) {
+        let app_name = app_name.to_string();
         let slot_name = slot.to_string();
-        let container_id_for_monitoring = container_id.clone();
+        let container_id_for_monitoring = container_id;
         let stopping_pids = self.stopping_pids.clone();
         let exited_pids = self.exited_pids.clone();
         let exit_tx = self.process_exit_tx.clone();
@@ -1229,8 +1360,6 @@ impl DeploymentManager {
                 pid,
             });
         });
-
-        Ok(pid)
     }
 
     /// Build the `docker run` argv. Pure (the environment to forward is
@@ -1307,15 +1436,31 @@ impl DeploymentManager {
         // the image reference (or a start_script token) begins with `-`. This
         // is what keeps a tenant's `docker_image = "--user=0:0"` from being
         // parsed as one more `docker run` flag after the mandatory ones.
-        docker_args.push("--".to_string());
-        docker_args.push(docker_image.to_string());
+        let mut tail = vec!["--".to_string(), docker_image.to_string()];
 
         // Never use a shell for the container command — same argv parsing as
         // the native spawn path, so a compromised start_script cannot inject
         // via `/bin/sh -c`.
         let (program, args) = parse_start_command(script, port, app.config.workers)?;
-        docker_args.push(program);
-        docker_args.extend(args);
+        tail.push(program);
+        tail.extend(args);
+
+        // Ownership labels, last among the flags so an app's own `--label`
+        // cannot override them. A restarted proxy adopts a running container
+        // only when these name this app, this container and this port, and
+        // `launch` — a digest of every other argument — says it would still
+        // start it exactly this way.
+        let launch = launch_fingerprint(docker_args.iter().chain(tail.iter()));
+        for (key, value) in [
+            (LABEL_APP, app.config.name.clone()),
+            (LABEL_CONTAINER, container_name.to_string()),
+            (LABEL_PORT, port.to_string()),
+            (LABEL_LAUNCH, launch),
+        ] {
+            docker_args.push("--label".to_string());
+            docker_args.push(format!("{key}={value}"));
+        }
+        docker_args.extend(tail);
 
         Ok(docker_args)
     }
@@ -1363,6 +1508,55 @@ impl DeploymentManager {
         Ok(())
     }
 
+    /// How a native slot is started: command, environment and user. Shared
+    /// by the spawn and by adoption, which keeps a running process only while
+    /// this has not changed.
+    fn native_launch(&self, app: &AppInfo, port: u16) -> Result<NativeLaunch> {
+        let script = self.start_script_for(app)?;
+        let (program, args) = parse_start_command(&script, port, app.config.workers)?;
+
+        let user = app.config.user.as_ref().or(self.default_user.as_ref());
+        let group = app.config.group.as_ref().or(self.default_group.as_ref());
+
+        // `HOME` must belong to the uid the child runs as, not to the proxy.
+        // The proxy typically runs as root (HOME=/root) and drops privileges
+        // below, so copying its own HOME pointed the app at a directory it
+        // cannot read — breaking every `~`-resolved path soli uses, including
+        // the pinned-interpreter cache.
+        let home = match user {
+            Some(user) => resolve_home(user)?,
+            None => std::env::var("HOME").unwrap_or_default(),
+        };
+
+        let mut env: Vec<(String, String)> = vec![
+            ("PATH".into(), std::env::var("PATH").unwrap_or_default()),
+            ("HOME".into(), home),
+            ("LANG".into(), std::env::var("LANG").unwrap_or_default()),
+            ("TZ".into(), std::env::var("TZ").unwrap_or_default()),
+            ("PORT".into(), port.to_string()),
+            ("WORKERS".into(), app.config.workers.to_string()),
+        ];
+        // A cleared environment is the right default, but a handful of
+        // variables have to survive it or the child cannot do its job:
+        // a shared toolchain cache, an outbound proxy, a custom CA bundle.
+        // Everything else stays cleared.
+        env.extend(passthrough_env(PASSTHROUGH_ENV));
+
+        let ids = match (user, group) {
+            (Some(user), Some(group)) => Some((resolve_user(user)?, resolve_group(group)?)),
+            (Some(user), None) => Some((resolve_user(user)?, resolve_group(user)?)),
+            (None, _) => None,
+        };
+
+        Ok(NativeLaunch {
+            program,
+            args,
+            env,
+            user: user.cloned(),
+            ids,
+        })
+    }
+
     async fn start_native_instance(&self, app: &AppInfo, slot: &str, port: u16) -> Result<u32> {
         if self.check_port_in_use(port).await {
             // Kills only a process group this proxy recorded spawning.
@@ -1384,60 +1578,32 @@ impl DeploymentManager {
             }
         }
 
-        let base_script = if let Some(ref script) = app.config.start_script {
-            script.clone()
-        } else if app.path.join("app").exists() && app.path.join("app/models").exists() {
-            "soli serve .".to_string()
-        } else {
-            anyhow::bail!("No start script configured for {}", app.config.name)
-        };
-
-        let script = if self.dev_mode && base_script.starts_with("soli ") {
-            format!("{} --dev", base_script)
-        } else {
-            base_script.clone()
-        };
+        let launch = self.native_launch(app, port)?;
+        let NativeLaunch {
+            ref program,
+            ref args,
+            ref user,
+            ..
+        } = launch;
 
         let output_file = PathBuf::from(format!("run/logs/{}/{}.log", app.config.name, slot));
         std::fs::create_dir_all(output_file.parent().unwrap())?;
 
         let output = std::fs::File::create(&output_file)?;
 
-        let (program, args) = parse_start_command(&script, port, app.config.workers)?;
-
-        let user = app.config.user.as_ref().or(self.default_user.as_ref());
-        let group = app.config.group.as_ref().or(self.default_group.as_ref());
-
-        // `HOME` must belong to the uid the child runs as, not to the proxy.
-        // The proxy typically runs as root (HOME=/root) and drops privileges
-        // below, so copying its own HOME pointed the app at a directory it
-        // cannot read — breaking every `~`-resolved path soli uses, including
-        // the pinned-interpreter cache.
-        let home = match user {
-            Some(user) => resolve_home(user)?,
-            None => std::env::var("HOME").unwrap_or_default(),
-        };
-
-        let mut cmd = tokio::process::Command::new(&program);
+        // stdout and stderr go straight to the slot's log file, never through
+        // a pipe the proxy holds: an app outlives the proxy that started it
+        // (see `[apps] stop_on_shutdown`), and a write to a pipe whose reader
+        // has exited is a SIGPIPE. stdin is /dev/null for the same reason —
+        // an inherited terminal is gone with the proxy too.
+        let mut cmd = tokio::process::Command::new(program);
         cmd.env_clear()
-            .env("PATH", std::env::var("PATH").unwrap_or_default())
-            .env("HOME", &home)
-            .env("LANG", std::env::var("LANG").unwrap_or_default())
-            .env("TZ", std::env::var("TZ").unwrap_or_default())
-            .env("PORT", port.to_string())
-            .env("WORKERS", app.config.workers.to_string())
-            .args(&args)
+            .envs(launch.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+            .args(args)
             .current_dir(&app.path)
+            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::from(output.try_clone()?))
             .stderr(std::process::Stdio::from(output));
-
-        // A cleared environment is the right default, but a handful of
-        // variables have to survive it or the child cannot do its job:
-        // a shared toolchain cache, an outbound proxy, a custom CA bundle.
-        // Everything else stays cleared.
-        for (key, value) in passthrough_env(PASSTHROUGH_ENV) {
-            cmd.env(key, value);
-        }
 
         #[cfg(unix)]
         let proxy_is_root = unsafe { libc::geteuid() } == 0;
@@ -1451,20 +1617,7 @@ impl DeploymentManager {
             );
         }
 
-        if let (Some(user), Some(group)) = (user, group) {
-            let uid = resolve_user(user)?;
-            let gid = resolve_group(group)?;
-            cmd.uid(uid).gid(gid);
-            tracing::info!(
-                "Running {} as user {} (uid: {}, gid: {})",
-                app.config.name,
-                user,
-                uid,
-                gid
-            );
-        } else if let Some(user) = user {
-            let uid = resolve_user(user)?;
-            let gid = resolve_group(user)?;
+        if let (Some(user), Some((uid, gid))) = (user, launch.ids) {
             cmd.uid(uid).gid(gid);
             tracing::info!(
                 "Running {} as user {} (uid: {}, gid: {})",
@@ -1479,6 +1632,12 @@ impl DeploymentManager {
             Some(user) => format!("as user `{}`", user),
             None => "as the proxy's own user".to_string(),
         };
+        // The child is the leader of its own session and process group, so
+        // neither a terminal's ^C nor a signal to the proxy's group reaches
+        // it; and nothing ties its life to the proxy's — no PR_SET_PDEATHSIG,
+        // no `kill_on_drop`. That is what lets an app survive a proxy restart
+        // (under systemd it also takes `KillMode=process`, see
+        // scripts/soli-proxy.service). Stopping it is always explicit.
         let mut child = unsafe {
             cmd.pre_exec(|| {
                 libc::setsid();
@@ -1513,7 +1672,13 @@ impl DeploymentManager {
         tracing::info!("Full start command: {} {}", program, args.join(" "));
 
         if pid > 0 {
-            self.spawns.record(pid, &app.config.name, slot, port);
+            self.spawns.record(
+                pid,
+                &app.config.name,
+                slot,
+                port,
+                launch.fingerprint(&app.path),
+            );
         }
 
         let app_name = app.config.name.clone();
@@ -1680,6 +1845,235 @@ impl DeploymentManager {
                 slot,
                 pid
             ),
+        }
+    }
+
+    /// Validate how `app` would be started, without starting anything: the
+    /// whole `docker run` argv (image, options, network — the tenant rules in
+    /// multi_tenant mode), or the native command and the user it runs as.
+    /// For `soli-proxy check`.
+    pub(crate) fn check_launch(&self, app: &AppInfo) -> Result<()> {
+        let port = app.blue.port.max(1);
+        if let Some(ref image) = app.config.docker_image {
+            return self.docker_launch(app, "blue", port, image).map(|_| ());
+        }
+        if self.multi_tenant {
+            anyhow::bail!(
+                "no docker_image: [apps] multi_tenant = true forbids the native start path"
+            );
+        }
+        self.native_launch(app, port).map(|_| ())
+    }
+
+    /// What runs in `app`'s `slot`, as far as this proxy can prove it: the
+    /// first step of adopting what a previous proxy left running.
+    ///
+    /// Native: the spawn registry must hold a record for this app and slot
+    /// whose PID is alive with the recorded start time (so not a reused PID),
+    /// on the slot's current port, launched with today's exact command,
+    /// environment and user; and the process listening on that port must be
+    /// that PID or a member of its process group. Container: `<app>-<slot>`
+    /// must be running and carry this proxy's labels for this app, container
+    /// and port, with a launch digest equal to the `docker run` this proxy
+    /// would issue now.
+    ///
+    /// Health is not judged here — that is the caller's next step.
+    pub async fn verify_slot(&self, app: &AppInfo, slot: &str) -> SlotOwnership {
+        let port = if slot == "blue" {
+            app.blue.port
+        } else {
+            app.green.port
+        };
+        if port == 0 {
+            return SlotOwnership::Absent;
+        }
+        if let Some(ref image) = app.config.docker_image {
+            return self.verify_container(app, slot, port, image).await;
+        }
+        if self.multi_tenant {
+            return SlotOwnership::Absent;
+        }
+
+        let Some((pid, record)) = self.spawns.find(&app.config.name, slot) else {
+            return SlotOwnership::Absent;
+        };
+        let stale = |reason: String| SlotOwnership::Stale {
+            pid: Some(pid),
+            reason,
+        };
+        if record.port != port {
+            return stale(format!(
+                "it listens on port {}, the slot now has {}",
+                record.port, port
+            ));
+        }
+        let expected = match self.native_launch(app, port) {
+            Ok(launch) => launch.fingerprint(&app.path),
+            Err(e) => return stale(format!("its launch cannot be recomputed: {:#}", e)),
+        };
+        if record.launch.as_deref() != Some(expected.as_str()) {
+            return stale(
+                "its command, environment or user changed since it was started".to_string(),
+            );
+        }
+        let holder = tokio::task::spawn_blocking(move || super::find_pid_by_port(port))
+            .await
+            .ok()
+            .flatten();
+        match holder {
+            Some(holder) if self.spawns.owned_group(holder) == Some(pid) => {
+                SlotOwnership::Ours { pid }
+            }
+            Some(holder) => stale(format!(
+                "port {} is held by PID {}, which is not part of it",
+                port, holder
+            )),
+            None if !self.check_port_in_use(port).await => {
+                stale(format!("it does not listen on port {}", port))
+            }
+            None => SlotOwnership::Unverifiable(format!(
+                "cannot tell which process listens on port {} (no permission to inspect it?)",
+                port
+            )),
+        }
+    }
+
+    async fn verify_container(
+        &self,
+        app: &AppInfo,
+        slot: &str,
+        port: u16,
+        image: &str,
+    ) -> SlotOwnership {
+        let name = container_name(app, slot);
+        let output = tokio::process::Command::new("docker")
+            .args([
+                "inspect",
+                "--format",
+                "{{json .State}}\n{{json .Config.Labels}}\n{{.Id}}",
+                &name,
+            ])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .await;
+        let output = match output {
+            Ok(output) if output.status.success() => output,
+            // No such container (or no docker): nothing to adopt.
+            _ => return SlotOwnership::Absent,
+        };
+        let text = String::from_utf8_lossy(&output.stdout);
+        let mut lines = text.lines();
+        let state: serde_json::Value = lines
+            .next()
+            .and_then(|l| serde_json::from_str(l).ok())
+            .unwrap_or_default();
+        let labels: HashMap<String, String> = lines
+            .next()
+            .and_then(|l| serde_json::from_str::<Option<HashMap<String, String>>>(l).ok())
+            .flatten()
+            .unwrap_or_default();
+        let id = lines.next().unwrap_or_default().trim().to_string();
+        let pid = state["Pid"]
+            .as_u64()
+            .and_then(|p| u32::try_from(p).ok())
+            .filter(|p| *p > 0);
+        // The name is the proxy's own (`<app>-<slot>`, which `stop` and
+        // `reclaim_port` already rely on), so anything below is a container
+        // this proxy may replace — but adopt only one that proves itself.
+        let stale = |reason: &str| SlotOwnership::Stale {
+            pid,
+            reason: format!("container {}: {}", name, reason),
+        };
+        if state["Running"].as_bool() != Some(true) {
+            return stale("not running");
+        }
+        let label = |key: &str| labels.get(key).map(String::as_str);
+        if label(LABEL_APP) != Some(app.config.name.as_str())
+            || label(LABEL_CONTAINER) != Some(name.as_str())
+        {
+            return stale("not labelled as this app's (started by an older proxy?)");
+        }
+        if label(LABEL_PORT) != Some(port.to_string().as_str()) {
+            return stale("labelled with another port");
+        }
+        let expected = match self.docker_launch(app, slot, port, image) {
+            Ok((args, _)) => args
+                .windows(2)
+                .find(|w| w[0] == "--label" && w[1].starts_with(LABEL_LAUNCH))
+                .and_then(|w| w[1].split_once('=').map(|(_, v)| v.to_string())),
+            Err(_) => None,
+        };
+        if expected.is_none() || label(LABEL_LAUNCH) != expected.as_deref() {
+            return stale("its image, options or environment changed since it was started");
+        }
+        match pid {
+            Some(pid) if !id.is_empty() => SlotOwnership::Ours { pid },
+            _ => stale("docker reports no process for it"),
+        }
+    }
+
+    /// Supervise an instance adopted from a previous proxy as if this one had
+    /// started it: an unexpected exit is reported like any other, so failover
+    /// works the same.
+    ///
+    /// A container is watched by `docker inspect`, as always. A native
+    /// process is not this proxy's child — it was reparented to init when its
+    /// parent exited — so there is no `wait()`; its PID and start time are
+    /// polled instead.
+    pub fn watch_adopted(&self, app: &AppInfo, slot: &str, pid: u32) {
+        if app.config.docker_image.is_some() {
+            self.watch_container(&app.config.name, slot, container_name(app, slot), pid);
+            return;
+        }
+        let Some((start_time, _)) = proc_identity(pid) else {
+            return;
+        };
+        let app_name = app.config.name.clone();
+        let slot_name = slot.to_string();
+        let stopping_pids = self.stopping_pids.clone();
+        let exited_pids = self.exited_pids.clone();
+        let exit_tx = self.process_exit_tx.clone();
+        tokio::spawn(async move {
+            while is_alive_as(pid, start_time) {
+                sleep(Duration::from_secs(2)).await;
+            }
+            tracing::warn!(
+                "Process {} ({} slot {}, adopted) exited",
+                pid,
+                app_name,
+                slot_name
+            );
+            if stopping_pids.lock().unwrap().remove(&pid) {
+                return;
+            }
+            exited_pids
+                .lock()
+                .unwrap()
+                .insert(pid, "exited (adopted process; status unknown)".to_string());
+            let _ = exit_tx.send(ProcessExit {
+                app_name,
+                slot: slot_name,
+                pid,
+            });
+        });
+    }
+
+    /// The live PID this proxy recorded for an app's slot — what `stop` uses
+    /// when the slot was started by a proxy that has since exited.
+    pub fn recorded_pid(&self, app_name: &str, slot: &str) -> Option<u32> {
+        self.spawns.find(app_name, slot).map(|(pid, _)| pid)
+    }
+
+    /// Stop every native process group this proxy (or a predecessor) recorded
+    /// spawning and that is still alive. The last step of stopping
+    /// everything: whatever the apps map no longer knows about.
+    pub async fn stop_all_recorded(&self, grace: Duration) {
+        for pid in self.spawns.pids() {
+            if let Some(group) = self.spawns.owned_group(pid) {
+                self.mark_stopping_if_alive(pid);
+                kill_group(group, grace).await;
+            }
+            self.spawns.forget(pid);
         }
     }
 
@@ -2063,11 +2457,14 @@ mod tests {
         carries_userinfo, filter_tenant_env, network_create_args, parse_start_command,
         proc_identity, resolve_home, tenant_bridge_name, validate_docker_image,
         validate_docker_network, validate_docker_options, validate_path_component,
-        DeploymentManager, SpawnRecord, SpawnRegistry, DOCKER_PASSTHROUGH_ENV, PASSTHROUGH_ENV,
+        DeploymentManager, SlotOwnership, SpawnRecord, SpawnRegistry, DOCKER_PASSTHROUGH_ENV,
+        LABEL_APP, LABEL_CONTAINER, LABEL_LAUNCH, LABEL_PORT, PASSTHROUGH_ENV,
     };
     use crate::app::{AppConfig, AppInfo, AppInstance, InstanceStatus};
     use std::path::Path;
+    use std::time::Duration;
     use tempfile::TempDir;
+    use tokio::time::sleep;
 
     /// Single-tenant validation has no site directory to compare against.
     fn validate_single_tenant(options: &str) -> anyhow::Result<Vec<String>> {
@@ -2743,7 +3140,7 @@ mod tests {
         let path = dir.path().join("spawned.json");
         let registry = SpawnRegistry::load(path.clone());
         assert_eq!(registry.owned_group(pid), None, "not recorded yet");
-        registry.record(pid, "app.example.com", "blue", 20000);
+        registry.record(pid, "app.example.com", "blue", 20000, "launch".into());
         assert_eq!(registry.owned_group(pid), Some(pid));
         assert_eq!(registry.owned_group(std::process::id()), None);
 
@@ -2760,6 +3157,7 @@ mod tests {
                 slot: "blue".to_string(),
                 port: 20000,
                 start_time: start + 1,
+                launch: None,
             },
         );
         assert_eq!(reloaded.owned_group(pid), None);
@@ -2772,5 +3170,163 @@ mod tests {
 
         child.kill().unwrap();
         child.wait().unwrap();
+    }
+
+    /// The labels a restarted proxy adopts a container by: they name the app,
+    /// the container and the port, and the launch digest is stable for the
+    /// same launch and moves with anything that changes it.
+    #[test]
+    fn containers_are_labelled_with_their_launch() {
+        let site = TempDir::new().unwrap();
+        let manager = tenant_manager();
+        let label = |argv: &[String], key: &str| -> Option<String> {
+            argv.windows(2)
+                .find(|w| w[0] == "--label" && w[1].starts_with(&format!("{key}=")))
+                .map(|w| w[1][key.len() + 1..].to_string())
+        };
+        let args = |options: Option<&str>| {
+            let app = tenant_app(site.path(), "nginx:1.27", options);
+            manager
+                .docker_run_args(
+                    &app,
+                    "app.example.com-blue",
+                    "soli-app-app.example.com",
+                    8080,
+                    "nginx:1.27",
+                    "nginx",
+                    &[],
+                )
+                .unwrap()
+        };
+        let first = args(None);
+        assert_eq!(label(&first, LABEL_APP).as_deref(), Some("app.example.com"));
+        assert_eq!(
+            label(&first, LABEL_CONTAINER).as_deref(),
+            Some("app.example.com-blue")
+        );
+        assert_eq!(label(&first, LABEL_PORT).as_deref(), Some("8080"));
+        // Labels are flags: before the `--` that ends them.
+        let dashdash = first.iter().position(|a| a == "--").unwrap();
+        assert!(first.iter().rposition(|a| a == "--label").unwrap() < dashdash);
+
+        let launch = label(&first, LABEL_LAUNCH).unwrap();
+        assert_eq!(label(&args(None), LABEL_LAUNCH).unwrap(), launch);
+        assert_ne!(
+            label(&args(Some("--env FOO=bar")), LABEL_LAUNCH).unwrap(),
+            launch
+        );
+    }
+
+    /// Adoption of a native slot: a process this proxy recorded, alive, on
+    /// the slot's port and launched as it would be now, is `Ours`; the same
+    /// process after the launch changed, or recorded for another port, is
+    /// `Stale`; a slot with no record is `Absent`.
+    #[tokio::test]
+    async fn native_slots_are_adopted_only_when_provably_ours_and_unchanged() {
+        if std::process::Command::new("python3")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("python3 not available; skipping");
+            return;
+        }
+        let port = portpicker::pick_unused_port().expect("a free port");
+        let site = TempDir::new().unwrap();
+        let script = "python3 -m http.server $PORT --bind 127.0.0.1";
+        let mut app = AppInfo {
+            config: AppConfig {
+                name: "native.example.com".to_string(),
+                domain: "native.example.com".to_string(),
+                start_script: Some(script.to_string()),
+                ..AppConfig::default()
+            },
+            path: site.path().to_path_buf(),
+            blue: instance("blue"),
+            green: instance("green"),
+            current_slot: "blue".to_string(),
+            quarantined: false,
+        };
+        app.blue.port = port;
+
+        let registry_dir = TempDir::new().unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let manager = DeploymentManager::new(false, None, None, tx)
+            .with_spawn_registry(registry_dir.path().join("spawned.json"));
+        assert_eq!(
+            manager.verify_slot(&app, "blue").await,
+            SlotOwnership::Absent
+        );
+
+        // Started the way the proxy starts a slot: own session, the launch's
+        // program, arguments and environment.
+        let launch = manager.native_launch(&app, port).unwrap();
+        let mut child = {
+            use std::os::unix::process::CommandExt;
+            let mut cmd = std::process::Command::new(&launch.program);
+            cmd.args(&launch.args)
+                .env_clear()
+                .envs(launch.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+                .current_dir(site.path())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            unsafe {
+                cmd.pre_exec(|| {
+                    libc::setsid();
+                    Ok(())
+                });
+            }
+            cmd.spawn().unwrap()
+        };
+        let pid = child.id();
+        for _ in 0..100 {
+            if manager.check_port_in_use(port).await {
+                break;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+        manager.spawns.record(
+            pid,
+            &app.config.name,
+            "blue",
+            port,
+            launch.fingerprint(&app.path),
+        );
+
+        // A fresh manager, as after a proxy restart: the registry is reloaded.
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let restarted = DeploymentManager::new(false, None, None, tx)
+            .with_spawn_registry(registry_dir.path().join("spawned.json"));
+        assert_eq!(
+            restarted.verify_slot(&app, "blue").await,
+            SlotOwnership::Ours { pid }
+        );
+        assert_eq!(
+            restarted.verify_slot(&app, "green").await,
+            SlotOwnership::Absent
+        );
+
+        // The manifest changed since: not adopted, and marked for a stop.
+        let mut changed = app.clone();
+        changed.config.start_script = Some(format!("{script} --directory ."));
+        assert!(matches!(
+            restarted.verify_slot(&changed, "blue").await,
+            SlotOwnership::Stale { pid: Some(p), .. } if p == pid
+        ));
+        // The slot's port moved (ports.lock reallocated it).
+        let mut moved = app.clone();
+        moved.blue.port = port.wrapping_add(1).max(1024);
+        assert!(matches!(
+            restarted.verify_slot(&moved, "blue").await,
+            SlotOwnership::Stale { .. }
+        ));
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert_eq!(
+            restarted.verify_slot(&app, "blue").await,
+            SlotOwnership::Absent,
+            "a dead process is nobody's"
+        );
     }
 }

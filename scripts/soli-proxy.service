@@ -87,6 +87,35 @@ RestartSec=5
 LimitNOFILE=65536
 
 # ---------------------------------------------------------------------------
+# Restarts without an app outage
+#
+# On SIGTERM the proxy stops accepting, lets in-flight requests finish (up to
+# `[server] shutdown_grace_period`, 10 s by default) and exits WITHOUT
+# stopping its apps; the next proxy adopts every app it can prove it started
+# (see the README, "Restarts and upgrades"). Native apps are children of the
+# proxy, in this unit's cgroup — and systemd's default, KillMode=control-group,
+# SIGTERMs the whole cgroup on stop/restart, which would take every app down
+# with the proxy and defeat all of that. KillMode=process signals only the
+# proxy itself. (Containers are the Docker daemon's children, never this
+# unit's, and survive either way.)
+#
+# The flip side: `systemctl stop soli-proxy` leaves the apps running too (the
+# journal notes "left-over process" on the next start; that is them, and they
+# are adopted). To take everything down:
+#
+#   soli-proxy stop --all --conf /etc/soli-proxy/proxy.conf   # then
+#   systemctl stop soli-proxy
+#
+# or set `[apps] stop_on_shutdown = true` in config.toml, which restores the
+# old behaviour: every stop/restart stops (and cold-starts) every app.
+#
+# systemd's default TimeoutStopSec (90 s) covers the drain; if you raise
+# shutdown_grace_period (or, with stop_on_shutdown, the apps'
+# graceful_timeout) past it, raise TimeoutStopSec too, or the proxy is
+# SIGKILLed mid-drain.
+KillMode=process
+
+# ---------------------------------------------------------------------------
 # Hardening
 #
 # Native apps are children of the proxy and live inside this same sandbox:

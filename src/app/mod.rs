@@ -17,7 +17,7 @@ pub mod port_manager;
 
 use crate::circuit_breaker::SharedCircuitBreaker;
 use crate::metrics::Metrics as AppMetrics;
-pub use deployment::{DeploymentManager, DeploymentStatus, ProcessExit};
+pub use deployment::{DeploymentManager, DeploymentStatus, ProcessExit, SlotOwnership};
 pub use port_manager::{PortAllocator, PortManager};
 
 /// HTTP Basic Auth for an app, from the `[auth]` section of `app.infos`:
@@ -986,7 +986,7 @@ fn loopback_port(target_url: &str) -> Option<u16> {
 /// Synchronous and lock-free on purpose: discovery runs it on the blocking
 /// pool, so a site directory that is slow to read (or built to be) costs a
 /// blocking thread, never an async worker or the apps lock.
-fn scan_sites(
+pub(crate) fn scan_sites(
     sites_dir: &Path,
     dev_mode: bool,
     multi_tenant: bool,
@@ -1022,7 +1022,7 @@ fn scan_sites(
 /// bound yet when discovery first allocates at boot — so the allocator's
 /// bind probe would happily hand the admin port to an app. The size cap keeps
 /// the allocator's linear probe bounded.
-fn port_range_problem(start: u16, end: u16, reserved: &[u16]) -> Option<String> {
+pub(crate) fn port_range_problem(start: u16, end: u16, reserved: &[u16]) -> Option<String> {
     if start < 1024 {
         return Some(format!("starts at {start}, below 1024"));
     }
@@ -1048,7 +1048,7 @@ fn port_range_problem(start: u16, end: u16, reserved: &[u16]) -> Option<String> 
 const MAX_PORT_RANGE_SIZE: u32 = 20_000;
 
 /// The ports the proxy itself listens on, from its configuration.
-fn proxy_listener_ports(cfg: &crate::config::Config) -> Vec<u16> {
+pub(crate) fn proxy_listener_ports(cfg: &crate::config::Config) -> Vec<u16> {
     let port_of = |bind: &str| {
         bind.rsplit_once(':')
             .and_then(|(_, port)| port.parse::<u16>().ok())
@@ -1912,6 +1912,14 @@ impl AppManager {
             self.retire_removed_app(app);
         }
 
+        // Before anything is started: take over what a previous proxy left
+        // running. Done here, ahead of the listeners, so an adopted app is in
+        // the routing table for the very first request after a restart.
+        if auto_start && !apps_to_start.is_empty() {
+            let adopted = self.adopt_running(&apps_to_start).await;
+            apps_to_start.retain(|name| !adopted.contains(name));
+        }
+
         // Auto-start discovered apps in parallel (locks are per-app) and
         // return WITHOUT awaiting the deploy task. The caller (main.rs) then
         // proceeds to bind the HTTP/HTTPS listeners immediately, so a single
@@ -1959,6 +1967,197 @@ impl AppManager {
             });
         }
         Ok(())
+    }
+
+    /// Adopt the instances a previous proxy left running for `names`, and
+    /// return the apps adopted. See [`Self::try_adopt`] for what qualifies.
+    async fn adopt_running(&self, names: &[String]) -> HashSet<String> {
+        use futures::StreamExt;
+
+        // The slot each app was last promoted to. Discovery defaults every
+        // app to blue; this is what says which slot was serving.
+        let persisted = read_app_state_file().unwrap_or_default();
+        let candidates: Vec<(AppInfo, String)> = {
+            let apps = self.apps.lock().await;
+            names
+                .iter()
+                .filter_map(|name| apps.get(name))
+                .map(|app| {
+                    let slot = persisted
+                        .get(&app.config.name)
+                        .and_then(|v| v.as_str())
+                        .filter(|s| matches!(*s, "blue" | "green"))
+                        .unwrap_or(app.current_slot.as_str())
+                        .to_string();
+                    (app.clone(), slot)
+                })
+                .collect()
+        };
+        // Bounded: each check is a `docker inspect` or a port lookup plus a
+        // health probe, and a host can have hundreds of sites.
+        let outcomes: Vec<(AppInfo, Option<(String, u32)>)> =
+            futures::stream::iter(candidates.into_iter().map(|(app, slot)| {
+                let manager = self.clone();
+                async move {
+                    let outcome = manager.try_adopt(&app, &slot).await;
+                    (app, outcome)
+                }
+            }))
+            .buffer_unordered(16)
+            .collect()
+            .await;
+
+        let adopted: Vec<(AppInfo, String, u32)> = outcomes
+            .into_iter()
+            .filter_map(|(app, outcome)| outcome.map(|(slot, pid)| (app, slot, pid)))
+            .collect();
+        if adopted.is_empty() {
+            return HashSet::new();
+        }
+        {
+            let mut apps = self.apps.lock().await;
+            for (app, slot, pid) in &adopted {
+                if let Some(entry) = apps.get_mut(&app.config.name) {
+                    let instance = if slot == "blue" {
+                        &mut entry.blue
+                    } else {
+                        &mut entry.green
+                    };
+                    instance.pid = Some(*pid);
+                    instance.status = InstanceStatus::Running;
+                    entry.current_slot = slot.clone();
+                }
+            }
+            write_app_state_file(&apps);
+            self.publish_routes(&apps);
+        }
+        let mut names = HashSet::new();
+        for (app, slot, pid) in adopted {
+            let name = app.config.name.clone();
+            self.deployment_manager.watch_adopted(&app, &slot, pid);
+            self.touch(&name);
+            self.emit_event(AppEvent::StatusChanged {
+                app_name: name.clone(),
+                slot,
+                status: "running".to_string(),
+            });
+            names.insert(name);
+        }
+        tracing::info!(
+            "Adopted {} app(s) left running by the previous proxy",
+            names.len()
+        );
+        names
+    }
+
+    /// Decide whether `app` can be taken over as it runs, trying the slot it
+    /// was last promoted to (`preferred`) first. Returns the slot and PID
+    /// adopted, after stopping whatever else of ours runs for the app.
+    ///
+    /// An instance is adopted only when [`DeploymentManager::verify_slot`]
+    /// proves it is this proxy's, launched exactly as it would be now, *and*
+    /// it answers its health check (a 2xx, or a 4xx — the app is up and only
+    /// the path is wrong, as the health monitor reads it). Otherwise:
+    ///
+    /// * ours but stale or unhealthy — stopped, and the app starts afresh;
+    /// * ours in the other slot (a deploy interrupted by the restart) —
+    ///   stopped;
+    /// * not provably ours — left alone, not adopted; the fresh start then
+    ///   meets it as it always did (and refuses to kill it).
+    async fn try_adopt(&self, app: &AppInfo, preferred: &str) -> Option<(String, u32)> {
+        let dm = &self.deployment_manager;
+        let name = &app.config.name;
+        let other = if preferred == "blue" { "green" } else { "blue" };
+        let mut adopted: Option<(String, u32)> = None;
+        for slot in [preferred, other] {
+            match dm.verify_slot(app, slot).await {
+                SlotOwnership::Absent => {}
+                SlotOwnership::Ours { pid } if adopted.is_none() => {
+                    match self.probe_adoptable(app, slot).await {
+                        Ok(()) => {
+                            tracing::info!(
+                                "Adopting {} slot {} (PID {}), left running by the previous proxy",
+                                name,
+                                slot,
+                                pid
+                            );
+                            adopted = Some((slot.to_string(), pid));
+                        }
+                        Err(reason) => {
+                            tracing::warn!(
+                                "Not adopting {} slot {} (PID {}): health check {}; stopping it \
+                                 and starting afresh",
+                                name,
+                                slot,
+                                pid,
+                                reason
+                            );
+                            dm.terminate(app, slot, pid).await;
+                        }
+                    }
+                }
+                SlotOwnership::Ours { pid } => {
+                    tracing::info!(
+                        "Stopping {} slot {} (PID {}): a deploy the restart interrupted",
+                        name,
+                        slot,
+                        pid
+                    );
+                    dm.terminate(app, slot, pid).await;
+                }
+                SlotOwnership::Stale { pid, reason } => {
+                    tracing::warn!(
+                        "Not adopting {} slot {}: {}; stopping it",
+                        name,
+                        slot,
+                        reason
+                    );
+                    match pid {
+                        Some(pid) => dm.terminate(app, slot, pid).await,
+                        None => {
+                            let _ = dm.stop_instance(app, slot).await;
+                        }
+                    }
+                }
+                SlotOwnership::Unverifiable(reason) => tracing::warn!(
+                    "Not adopting {} slot {}: {}; leaving it alone",
+                    name,
+                    slot,
+                    reason
+                ),
+            }
+        }
+        adopted
+    }
+
+    /// One health check for adoption: three tries, half a second apart, so a
+    /// GC pause does not cost an app its restart-free takeover.
+    async fn probe_adoptable(&self, app: &AppInfo, slot: &str) -> Result<(), String> {
+        let port = if slot == "blue" {
+            app.blue.port
+        } else {
+            app.green.port
+        };
+        let path = app.config.health_check.as_deref().unwrap_or("/health");
+        let url = format!("http://127.0.0.1:{}{}", port, path);
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .map_err(|e| e.to_string())?;
+        let mut last = String::new();
+        for attempt in 0..3 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            match client.get(&url).send().await {
+                Ok(resp) => match health_verdict(resp.status().as_u16()) {
+                    HealthVerdict::Healthy | HealthVerdict::Misconfigured(_) => return Ok(()),
+                    HealthVerdict::Failed(reason) => last = reason,
+                },
+                Err(e) => last = e.to_string(),
+            }
+        }
+        Err(format!("on {} failed: {}", url, last))
     }
 
     /// Names of the site directories under `sites_dir` — the domains the
@@ -2729,6 +2928,7 @@ impl AppManager {
             let slot = app.current_slot.clone();
             (app, slot)
         };
+        let app = self.with_recorded_pids(app);
 
         self.deployment_manager.stop_instance(&app, &slot).await?;
 
@@ -2759,42 +2959,77 @@ impl AppManager {
         Ok(())
     }
 
+    /// Stop every app this proxy manages, both slots, and then every other
+    /// process it recorded spawning.
+    ///
+    /// No longer what a proxy shutdown does by default (see `[apps]
+    /// stop_on_shutdown`); it is what `soli-proxy stop --all` and `POST
+    /// /api/v1/apps/stop-all` ask for. It works from a fresh process too:
+    /// a slot's PID comes from the spawn registry when this proxy did not
+    /// start it, and a container is stopped by its name. Apps stop in
+    /// parallel, each within its own `graceful_timeout`.
     pub async fn stop_all(&self) {
-        let apps: Vec<String> = {
-            let apps_guard = self.apps.lock().await;
-            apps_guard.keys().cloned().collect()
-        };
+        use futures::StreamExt;
 
-        for app_name in apps {
-            // Stop both blue and green slots
-            let app = {
-                let apps_guard = self.apps.lock().await;
-                apps_guard.get(&app_name).cloned()
-            };
-            if let Some(app) = app {
-                // Stop blue slot
-                if app.blue.status == InstanceStatus::Running && app.blue.pid.is_some() {
-                    if let Err(e) = self.deployment_manager.stop_instance(&app, "blue").await {
-                        tracing::error!("Failed to stop blue slot for {}: {}", app_name, e);
+        let apps: Vec<AppInfo> = {
+            let apps_guard = self.apps.lock().await;
+            apps_guard.values().cloned().collect()
+        };
+        let mut stops = futures::stream::iter(apps.into_iter().map(|app| {
+            let manager = self.clone();
+            async move {
+                let app = manager.with_recorded_pids(app);
+                for (slot, pid) in [("blue", app.blue.pid), ("green", app.green.pid)] {
+                    if app.config.docker_image.is_none() && pid.is_none() {
+                        continue;
+                    }
+                    // An intended stop, not a crash for the container
+                    // monitor to report (a native stop marks itself).
+                    if let (Some(pid), Some(_)) = (pid, &app.config.docker_image) {
+                        manager.deployment_manager.mark_stopping(pid);
+                    }
+                    if let Err(e) = manager.deployment_manager.stop_instance(&app, slot).await {
+                        tracing::error!(
+                            "Failed to stop {} slot for {}: {}",
+                            slot,
+                            app.config.name,
+                            e
+                        );
                     }
                 }
-                // Stop green slot
-                if app.green.status == InstanceStatus::Running && app.green.pid.is_some() {
-                    if let Err(e) = self.deployment_manager.stop_instance(&app, "green").await {
-                        tracing::error!("Failed to stop green slot for {}: {}", app_name, e);
-                    }
-                }
-                // Update status in map
-                let mut apps_guard = self.apps.lock().await;
-                if let Some(app_info) = apps_guard.get_mut(&app_name) {
+                let mut apps_guard = manager.apps.lock().await;
+                if let Some(app_info) = apps_guard.get_mut(&app.config.name) {
                     app_info.blue.status = InstanceStatus::Stopped;
                     app_info.blue.pid = None;
                     app_info.green.status = InstanceStatus::Stopped;
                     app_info.green.pid = None;
                 }
-                self.publish_routes(&apps_guard);
+                manager.publish_routes(&apps_guard);
+            }
+        }))
+        .buffer_unordered(16);
+        while stops.next().await.is_some() {}
+        drop(stops);
+
+        // Whatever is left: processes of apps whose site directory is gone.
+        self.deployment_manager
+            .stop_all_recorded(std::time::Duration::from_secs(5))
+            .await;
+    }
+
+    /// `app` with each slot's PID filled in from the spawn registry where the
+    /// map has none — the case of a slot started by a proxy that has since
+    /// exited, seen from a CLI that is not the daemon.
+    fn with_recorded_pids(&self, mut app: AppInfo) -> AppInfo {
+        if app.config.docker_image.is_none() {
+            let name = app.config.name.clone();
+            for instance in [&mut app.blue, &mut app.green] {
+                if instance.pid.is_none() {
+                    instance.pid = self.deployment_manager.recorded_pid(&name, &instance.slot);
+                }
             }
         }
+        app
     }
 
     /// Poll every running app's health check once; fail an app over after

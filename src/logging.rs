@@ -132,6 +132,20 @@ fn log_filter(level: Option<&str>) -> Result<EnvFilter> {
 /// Keeps the background writer alive; dropping it flushes what is queued.
 static GUARD: Mutex<Option<WorkerGuard>> = Mutex::new(None);
 
+/// Check `[logging]` the way [`init`] reads it, without installing anything
+/// or opening the log file — for `soli-proxy check`.
+pub fn validate(cfg: &LoggingConfig) -> Result<()> {
+    log_filter(cfg.level.as_deref())?;
+    log_format(cfg.format.as_deref())?;
+    LogOutput::resolve(cfg.output.as_deref(), false)?;
+    if let Some(s) = cfg.max_size.as_deref() {
+        if parse_size(s).is_none() {
+            anyhow::bail!("invalid [logging] max_size {:?}", s);
+        }
+    }
+    Ok(())
+}
+
 /// Install the global subscriber described by `cfg`.
 pub fn init(cfg: &LoggingConfig, daemon: bool) -> Result<()> {
     let filter = log_filter(cfg.level.as_deref())?;

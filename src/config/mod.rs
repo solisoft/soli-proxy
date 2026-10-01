@@ -101,6 +101,10 @@ pub struct AppsTomlConfig {
     /// separately allow values carrying `user:password@` (default false).
     pub tenant_proxy_env: Option<bool>,
     pub tenant_proxy_env_credentials: Option<bool>,
+    /// Whether stopping the proxy also stops every app it manages. Default
+    /// `false` (apps keep running and the next proxy adopts them), except in
+    /// `--dev` where it defaults to `true`. Accessor: `stop_on_shutdown`.
+    pub stop_on_shutdown: Option<bool>,
 }
 
 /// Default name of the per-site deploy trigger file.
@@ -123,6 +127,18 @@ impl AppsTomlConfig {
     /// Fleet-wide idle threshold, in seconds. `0` means apps never sleep.
     pub fn idle_timeout(&self) -> u64 {
         self.idle_timeout.unwrap_or(0)
+    }
+
+    /// Whether a proxy that is stopping takes its apps down with it.
+    ///
+    /// Off by default: a proxy restart (an upgrade, a crash, `systemctl
+    /// restart`) used to stop every app and cold-start it again, a fleet-wide
+    /// outage for a change that concerned none of them. Apps now outlive the
+    /// proxy and the next one adopts them. `--dev` keeps the old behaviour
+    /// unless this is set, so Ctrl-C in a terminal still cleans up after
+    /// itself.
+    pub fn stop_on_shutdown(&self, dev_mode: bool) -> bool {
+        self.stop_on_shutdown.unwrap_or(dev_mode)
     }
 
     /// Whether apps are untrusted. Defaults to `false` so existing
@@ -349,9 +365,31 @@ pub struct ServerConfig {
     /// `%2F` (`..%2F`) are still rejected.
     #[serde(default)]
     pub allow_encoded_slash: Option<bool>,
+    /// Seconds a stopping proxy waits for in-flight requests to finish after
+    /// it stops accepting (default 10, at most 3600). See
+    /// [`ServerConfig::shutdown_grace_period`].
+    #[serde(default)]
+    pub shutdown_grace_period: Option<u64>,
 }
 
+/// Default for `[server] shutdown_grace_period`, in seconds.
+pub const DEFAULT_SHUTDOWN_GRACE_SECS: u64 = 10;
+/// Ceiling for `[server] shutdown_grace_period`: past it, a stop that never
+/// finishes is indistinguishable from a hung one.
+pub const MAX_SHUTDOWN_GRACE_SECS: u64 = 3600;
+
 impl ServerConfig {
+    /// How long SIGTERM/SIGINT waits for in-flight requests before the
+    /// process exits: new connections are refused at once, idle ones are
+    /// closed, and requests already running get up to this long to finish.
+    pub fn shutdown_grace_period(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(
+            self.shutdown_grace_period
+                .unwrap_or(DEFAULT_SHUTDOWN_GRACE_SECS)
+                .min(MAX_SHUTDOWN_GRACE_SECS),
+        )
+    }
+
     /// The HTTPS listener: `https_port` on the same address as `bind`.
     ///
     /// It used to be `0.0.0.0:<https_port>` whatever `bind` said, so a proxy
@@ -378,6 +416,7 @@ impl Default for ServerConfig {
             https_port: 443,
             worker_threads: None,
             allow_encoded_slash: None,
+            shutdown_grace_period: None,
         }
     }
 }
@@ -459,6 +498,20 @@ pub fn read_worker_threads(config_path: &str) -> Option<WorkerThreads> {
     let content = std::fs::read_to_string(&toml_path).ok()?;
     let toml_config: TomlConfig = toml::from_str(&content).ok()?;
     toml_config.server.worker_threads
+}
+
+/// Read just `[server] shutdown_grace_period` from the `config.toml` next to
+/// `config_path` — what `soli-proxy -d` waits for when it replaces a running
+/// daemon. The default when the file is missing or does not parse.
+pub fn read_shutdown_grace_period(config_path: &str) -> std::time::Duration {
+    let path = PathBuf::from(config_path);
+    let toml_path = path.parent().unwrap_or(Path::new(".")).join("config.toml");
+    std::fs::read_to_string(&toml_path)
+        .ok()
+        .and_then(|content| toml::from_str::<TomlConfig>(&content).ok())
+        .map(|cfg| cfg.server)
+        .unwrap_or_default()
+        .shutdown_grace_period()
 }
 
 /// Read just `[logging]` from the `config.toml` next to `config_path`, before
@@ -1065,6 +1118,7 @@ impl ConfigManager {
 bind = "0.0.0.0:80"
 https_port = 443
 worker_threads = 1  # dev default; set to "auto" or omit for one worker per CPU (production)
+# shutdown_grace_period = 10  # seconds in-flight requests get on stop/restart
 
 # TLS Configuration
 [tls]
@@ -1134,6 +1188,9 @@ burst_size = 2000
 # tenant_proxy_env_credentials = false
 # Consecutive failed health checks (no answer, or 5xx) before failover.
 # health_failure_threshold = 3
+# Apps keep running when the proxy stops or restarts, and the next proxy
+# adopts them. true = stop them with the proxy (the default under --dev).
+# stop_on_shutdown = false
 
 # Circuit Breaker Configuration
 [circuit_breaker]
@@ -1173,6 +1230,20 @@ hook_timeout_ms = 10
         let toml_config: TomlConfig = toml::from_str(&toml_content).map_err(|e| {
             anyhow::anyhow!("failed to parse {}: {}", config_toml_path.display(), e)
         })?;
+        Self::assemble(toml_config, rules, global_scripts, config_dir)
+    }
+
+    /// Build the effective [`Config`] from an already parsed `config.toml` and
+    /// `proxy.conf`, folding in the admin credentials from the environment and
+    /// `<config_dir>/.env`. Touches no file but `.env`, which is what lets
+    /// `soli-proxy check` and `POST /api/v1/config/validate` run the very code
+    /// a start would.
+    pub(crate) fn assemble(
+        toml_config: TomlConfig,
+        rules: Vec<ProxyRule>,
+        global_scripts: Vec<String>,
+        config_dir: &Path,
+    ) -> Result<Config> {
         let dotenv = read_dotenv_credentials(config_dir)?;
         // The process environment wins over the `.env` file.
         let env = |key: &str| std::env::var(key).ok().or_else(|| dotenv.get(key).cloned());
