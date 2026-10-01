@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## [1.0.1](https://github.com/solisoft/soli-proxy/compare/v1.0.0...v1.0.1) (2026-10-01)
+
+Two fixes to 1.0.0, the first of them for anyone upgrading from 0.35.
 
 ### Bug Fixes
 

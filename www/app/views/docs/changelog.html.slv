@@ -46,11 +46,41 @@
                     </p>
                 </div>
 
+                <!-- 1.0.1 -->
+                <div class="mb-10 reveal-on-scroll">
+                    <div class="flex items-center gap-3 mb-5 flex-wrap">
+                        <h2 class="text-2xl font-bold text-white font-mono">v1.0.1</h2>
+                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
+                        <span class="text-sm text-gray-500">2026-10-01</span>
+                    </div>
+
+                    <div class="space-y-4">
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">fix</span>
+                                <h3 class="text-base font-semibold text-white">Upgrading from 0.35 no longer quarantines its apps</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                0.35 kept no record of the apps it started, and left them running when it stopped. 1.0.0 could not prove they were its own, refused to touch them and quarantined every app whose port they held. A leftover is now recognised by what it is &mdash; the leader of its own session, running as the app&rsquo;s user, from the app&rsquo;s site directory, with the app&rsquo;s start program &mdash; stopped, and the app starts afresh. Already hit it? Restart the proxy with 1.0.1, or stop the leftover <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">soli serve</code> processes and <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">touch &lt;site&gt;/restart.txt</code>.
+                            </p>
+                        </div>
+
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">fix</span>
+                                <h3 class="text-base font-semibold text-white">A burst of logins is no longer turned away on a small machine</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                1.0.0 answered <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">503</code> to a Basic-auth check that waited more than a second for a bcrypt slot, which a few simultaneous logins on a two-core box could hit. A check now waits up to 10&nbsp;s, and a flood is bounded by the length of the queue instead: 16 waiting checks per slot, then <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">503</code> at once.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- 1.0.0 -->
                 <div class="mb-10 reveal-on-scroll">
                     <div class="flex items-center gap-3 mb-5 flex-wrap">
                         <h2 class="text-2xl font-bold text-white font-mono">v1.0.0</h2>
-                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
                         <span class="text-sm text-gray-500">2026-10-01</span>
                     </div>
 
