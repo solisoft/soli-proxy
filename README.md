@@ -77,6 +77,16 @@ soli-proxy tui [-c <conf>] [--sites-dir <DIR>] [--dev]   # Interactive terminal 
 soli-proxy update [--reinstall]                          # Self-update from GitHub releases
 ```
 
+Password hashes for `@auth`, `[auth.users]` and `ADMIN_PASSWORD_HASH` come from the separate
+`hash-password` binary built and shipped next to `soli-proxy` (it is not a subcommand):
+
+```
+hash-password                 # prompts without echo, bcrypt cost 12
+hash-password --cost 10       # cost 4..=13; the proxy refuses hashes outside that range
+```
+
+The admin API offers the same as `POST /api/v1/hash-password` (`{"password": "..."}`).
+
 ## Configuration
 
 ### Main Config (config.toml)
@@ -175,7 +185,7 @@ headers {
     X-Forwarded-Proto: $scheme
 }
 
-# HTTP Basic Auth on a route (hash from: soli-proxy hash-password)
+# HTTP Basic Auth on a route (hash from the `hash-password` binary; bcrypt cost 4..=13)
 secure.example.com -> http://localhost:9000 @auth:admin:$2b$12$...
 
 # ...with carve-outs for callers that cannot send credentials.
@@ -183,6 +193,24 @@ secure.example.com -> http://localhost:9000 @auth:admin:$2b$12$...
 app.example.com -> http://localhost:8080 @auth:admin:$2b$12$... \
                    @noauth:/webhooks/stripe,/hooks/*
 ```
+
+#### How Basic Auth is checked
+
+- **bcrypt never runs on the request workers.** Each check goes to a blocking pool bounded to
+  half the cores (at least two), so a flood of wrong passwords costs at most that share of the
+  CPU and every other site keeps answering. When no slot frees up within a second the request
+  gets **`503` with `Retry-After: 1`** rather than queueing without bound (not 401: the client
+  did nothing wrong, and a browser would prompt for a password it already has).
+- **Successes are remembered for five minutes, failures never.** A page and its sub-resources
+  pay bcrypt once; a wrong password pays it every time. The cache key covers the configured
+  hashes, so rotating a password takes effect immediately, and a remembered credential gets in
+  even while the pool is saturated.
+- **Only bcrypt hashes at cost 4 to 13 are accepted** (`$2a$`/`$2b$`/`$2x$`/`$2y$`, 60
+  characters). The cost is a work factor whoever writes the hash chooses for *your* CPU — each
+  step doubles it, and `$2b$31$` is days per request — so anything else is refused where it enters:
+  an app with such a hash in `[auth.users]` fails to load, the admin API and a cluster push answer
+  400, and a `@auth` entry in `proxy.conf` is kept but logged and never matches (the route stays
+  closed rather than opening up). Hashes above cost 13 made before this rule must be regenerated.
 
 ## Architecture
 
@@ -325,7 +353,7 @@ port_range_end = 30000
 noauth = ["/webhooks/stripe", "/hooks/*"]
 
 [auth.users]
-admin = "$2b$12$..."   # generate with: soli-proxy hash-password
+admin = "$2b$12$..."   # generate with: hash-password (cost 4..=13)
 ```
 
 ### Fields
@@ -348,15 +376,16 @@ admin = "$2b$12$..."   # generate with: soli-proxy hash-password
 | `docker_options` | string | _none_ | Extra flags appended to `docker run`. Whitespace-split, no shell. Single-tenant: a denylist rejects `--privileged`, `--cap-add`, `--device`, `--security-opt`, `--userns`, `--volumes-from`, `--env-file`, `--group-add`, joining the `host` or another container's namespaces, and docker-socket / root mounts in every spelling (`-v/:/x`, `--mount type=bind,source=/`, `/./`, `/etc/..`). Multi-tenant: only the allowlist below is accepted. |
 | `docker_network` | string | `"soli-apps"` | Docker network the container joins (created automatically if missing). A plain network name only: `host` and `container:<id>` are refused in every mode, since the value goes straight to `--network`. |
 | `idle_timeout` | int (seconds) | `[apps].idle_timeout` from `config.toml`, itself `0` | Scale to zero: after this many seconds without a request the proxy stops the app and starts it again on the next one, holding that request until the app is healthy. `0` means the app never sleeps. See [Scale to zero](#scale-to-zero). |
-| `[auth.users]` | table | _empty_ | `username = "bcrypt hash"` entries. When non-empty, every request to this app's domains must present matching HTTP Basic Auth credentials. Generate a hash with `soli-proxy hash-password`. |
+| `[auth.users]` | table | _empty_ | `username = "bcrypt hash"` entries. When non-empty, every request to this app's domains must present matching HTTP Basic Auth credentials. Generate a hash with `hash-password`; only bcrypt hashes at cost 4 to 13 are accepted. |
 | `[auth] noauth` | list of strings | _empty_ | Paths served without credentials, for callers that cannot send a password (a payment webhook, a health probe). Exact path, or a prefix ending in `*` — the same syntax as the `@noauth:` route directive, and the same fail-closed rule: a path carrying percent-encoding or a `..` segment is never exempt. |
 
 Apps are routed by the app manager rather than by `proxy.conf` rules — `sync_routes` prunes
 static rules for app-managed domains — so a route's `@auth` cannot protect an app. `[auth]` is
 the equivalent for apps, and it covers the app's derived domains (`www.`-stripped, `.test` in
 dev) and any admin-managed alias pointing at it. A `[auth]` section the proxy cannot enforce as
-written (an empty hash, a `noauth` pattern that does not compare literally) makes the app fail
-to load and be skipped, rather than come up unprotected.
+written (an empty or malformed hash, a bcrypt cost outside 4–13, a `noauth` pattern that does
+not compare literally) makes the app fail to load and be skipped, rather than come up
+unprotected.
 
 ### Per-environment settings
 
@@ -621,6 +650,20 @@ auth — an `X-Requested-With` header of any value. That is the CSRF guard: an H
 set either header, so a page the operator happens to visit cannot drive the admin API with
 the browser's cached credentials or the open loopback default.
 
+Two more guards on the admin listener:
+
+- **The open (credential-less) admin API answers only requests addressed to localhost** —
+  a `Host` of `localhost`, a loopback IP such as `127.0.0.1` or `[::1]`, or the bound address,
+  with any port — and `403` otherwise. That defeats DNS rebinding, where a page on a hostname
+  that re-resolves to `127.0.0.1` would otherwise reach the API as a same-origin request. With
+  a credential configured any `Host` is accepted, since such a page has none to send.
+- **Ten failed authentications per client IP per minute**, then `429` with `Retry-After` until
+  the minute is up — answered before bcrypt runs. Only requests that carried a credential count,
+  and a correct one never does, so the TUI and CLI can poll freely; a Basic credential that
+  already succeeded in the last five minutes is still let through while its IP is blocked. This
+  is always on, independent of `[rate_limiting]`. Behind a local route every client shares the
+  proxy's loopback address, and so this budget.
+
 Rollback is the same POST with a different app: send `{"domain":"www.example.com"}` to the
 previous deployment and traffic moves back, with both processes left running.
 
@@ -636,6 +679,29 @@ Notes:
 - Traffic arriving on an alias is attributed to its app, so per-app metrics and request-triggered
   failover behave the same as on the site domain.
 - `_admin` cannot be aliased: it does no auth of its own and is only safe behind the admin listener.
+
+## Cluster Routing Table
+
+`soli-oned` pushes the domains it runs on other nodes with `PUT /api/v1/routing-table`; the
+proxy routes them without supervising them.
+
+```json
+{ "index": 42,
+  "routes": { "x.soli.app": [ { "url": "http://10.0.0.12:20001", "weight": 100 } ] },
+  "auth":   { "x.soli.app": { "users": { "admin": "$2b$12$..." }, "noauth": ["/hooks/*"] } } }
+```
+
+- The table replaces the previous one. `index` must be strictly greater than the one in place
+  (any index for the first push after a start, 0 included); a stale or replayed push answers
+  `409`.
+- A target must be an `http://` or `https://` URL with a host, and `weight` an integer 0–255
+  (default 100); anything else answers `400`.
+- **`auth` is enforced by this proxy, or not at all.** A pushed target is the workload's raw port
+  on another node, with nothing in front of it there, so an app's `[auth]` has to travel with its
+  route. It takes the `app.infos` shape and validation (bcrypt cost 4–13, literal `noauth`
+  paths), may only name domains present in `routes`, and is replaced along with them. A pushed
+  domain without `auth` is served unprotected. `GET /api/v1/routing-table` returns usernames and
+  `noauth`, never hashes.
 
 ## Deploy Trigger File (`restart.txt`)
 
