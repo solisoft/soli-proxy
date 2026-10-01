@@ -551,3 +551,181 @@ async fn the_access_log_has_one_line_per_request() {
     }
     assert!(found, "no access-log line for the upgrade");
 }
+
+/// `$client_ip` in a `headers { }` block is the client a trusted proxy names,
+/// not the proxy: it was read after the request's extensions were cleared,
+/// so it always fell back to the TCP peer.
+#[tokio::test]
+async fn headers_block_client_ip_is_the_forwarded_client() {
+    let (backend, mut seen) = spawn_backend().await;
+    let proxy = start_proxy(
+        &format!(
+            "default -> http://127.0.0.1:{}\nheaders {{\n    X-Client: $client_ip\n}}\n",
+            backend
+        ),
+        "trusted_proxies = [\"127.0.0.1\"]",
+        &[],
+    )
+    .await;
+    let resp = raw(
+        proxy.port,
+        "GET / HTTP/1.1\r\nHost: h\r\nX-Forwarded-For: 203.0.113.9\r\n\r\n",
+    )
+    .await;
+    assert_eq!(status(&resp), 200, "{resp}");
+    let head = next_head(&mut seen).await;
+    assert_eq!(header(&head, "x-client"), Some("203.0.113.9"), "{head}");
+}
+
+/// `/metrics` is for this host only, judged on the connection — never on a
+/// forwarded claim. A tenant container on a trusted Docker range (here the
+/// PROXY header's source, 172.18.0.5) saying `X-Forwarded-For: 127.0.0.1`
+/// used to read it; a request relayed for a remote client by a front proxy
+/// on this host is not local either.
+#[tokio::test]
+async fn metrics_are_not_opened_by_a_forwarded_loopback_claim() {
+    let (backend, _seen) = spawn_backend().await;
+    let proxy = start_proxy(
+        &format!("default -> http://127.0.0.1:{}\n", backend),
+        "trusted_proxies = [\"127.0.0.1\", \"172.16.0.0/12\"]\nproxy_protocol = \"any\"",
+        &[],
+    )
+    .await;
+    let get = |pp: &str, xff: &str| {
+        format!(
+            "PROXY TCP4 {pp} 127.0.0.1 40000 80\r\nGET /metrics HTTP/1.1\r\nHost: h\r\n\
+             {xff}Connection: close\r\n\r\n"
+        )
+    };
+    // From a tenant's range, forging this host.
+    let resp = raw(
+        proxy.port,
+        &get("172.18.0.5", "X-Forwarded-For: 127.0.0.1\r\n"),
+    )
+    .await;
+    assert_eq!(status(&resp), 403, "{resp}");
+    // From this host, relaying a remote client.
+    let resp = raw(
+        proxy.port,
+        &get("127.0.0.1", "X-Forwarded-For: 203.0.113.9\r\n"),
+    )
+    .await;
+    assert_eq!(status(&resp), 403, "{resp}");
+    // From this host, for itself.
+    let resp = raw(proxy.port, &get("127.0.0.1", "")).await;
+    assert_eq!(status(&resp), 200, "{resp}");
+}
+
+/// A PROXY header that names no client (v1 `UNKNOWN`, v2 `LOCAL`) is served —
+/// the balancer's health check — but what the connection says about its
+/// client is not believed: the balancer did not write it.
+#[tokio::test]
+async fn an_addressless_proxy_header_does_not_vouch_for_forwarding_headers() {
+    let (backend, mut seen) = spawn_backend().await;
+    let proxy = start_proxy(
+        &format!("default -> http://127.0.0.1:{}\n", backend),
+        "trusted_proxies = [\"127.0.0.1\"]\nproxy_protocol = \"any\"",
+        &[],
+    )
+    .await;
+    let forged = "GET / HTTP/1.1\r\nHost: h\r\nX-Forwarded-For: 6.6.6.6\r\n\
+                  X-Forwarded-Proto: https\r\nX-Request-Id: forged\r\n\r\n";
+    // v2 LOCAL: signature, version 2 / command LOCAL, AF_UNSPEC, no address.
+    let mut local = vec![
+        0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54, 0x0A, 0x20, 0x00, 0x00,
+        0x00,
+    ];
+    local.extend_from_slice(forged.as_bytes());
+    let mut unknown = b"PROXY UNKNOWN\r\n".to_vec();
+    unknown.extend_from_slice(forged.as_bytes());
+    for req in [unknown, local] {
+        let resp = raw_bytes(proxy.port, &req).await;
+        assert_eq!(status(&resp), 200, "{resp}");
+        let head = next_head(&mut seen).await;
+        assert_eq!(
+            header(&head, "x-forwarded-for"),
+            Some("127.0.0.1"),
+            "{head}"
+        );
+        assert_eq!(header(&head, "x-forwarded-proto"), Some("http"), "{head}");
+        assert_ne!(header(&head, "x-request-id"), Some("forged"), "{head}");
+    }
+}
+
+/// Send a WebSocket upgrade with `extra` header lines; the response head.
+async fn upgrade(port: u16, extra: &str) -> String {
+    let mut sock = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    sock.write_all(
+        format!(
+            "GET /ws HTTP/1.1\r\nHost: h\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
+             Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\
+             {extra}\r\n"
+        )
+        .as_bytes(),
+    )
+    .await
+    .unwrap();
+    let mut buf = Vec::new();
+    let mut tmp = [0u8; 1024];
+    let _ = tokio::time::timeout(Duration::from_secs(5), async {
+        while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+            match sock.read(&mut tmp).await {
+                Ok(0) | Err(_) => return,
+                Ok(n) => buf.extend_from_slice(&tmp[..n]),
+            }
+        }
+    })
+    .await;
+    String::from_utf8_lossy(&buf).to_string()
+}
+
+/// A WebSocket upgrade picks its target like a request does: past a target
+/// whose breaker is open. It used to go to the rule's first target always.
+#[tokio::test]
+async fn websocket_upgrades_skip_a_broken_target() {
+    let (backend, _seen) = spawn_backend().await;
+    let closed = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let proxy = start_proxy(
+        &format!(
+            "default -> http://127.0.0.1:{closed}, http://127.0.0.1:{backend} @lb:round-robin\n"
+        ),
+        "\n[circuit_breaker]\nfailure_threshold = 1\nrecovery_timeout_secs = 300",
+        &[],
+    )
+    .await;
+    // The first two upgrades meet both targets; the dead one's breaker opens.
+    for _ in 0..2 {
+        upgrade(proxy.port, "").await;
+    }
+    for _ in 0..3 {
+        let resp = upgrade(proxy.port, "").await;
+        assert_eq!(status(&resp), 101, "{resp}");
+    }
+}
+
+/// A rule's `headers { }` block applies to its WebSocket upgrades too.
+#[tokio::test]
+async fn headers_block_applies_to_websocket_upgrades() {
+    let (backend, mut seen) = spawn_backend().await;
+    let proxy = start_proxy(
+        &format!(
+            "default -> http://127.0.0.1:{backend}\nheaders {{\n    X-Ws-Client: $client_ip\n    \
+             X-Forwarded-Proto: https\n    -X-Drop\n}}\n"
+        ),
+        "",
+        &[],
+    )
+    .await;
+    let resp = upgrade(proxy.port, "X-Drop: secret\r\nX-Keep: yes\r\n").await;
+    assert_eq!(status(&resp), 101, "{resp}");
+    let head = next_head(&mut seen).await;
+    assert_eq!(header(&head, "x-ws-client"), Some("127.0.0.1"), "{head}");
+    assert_eq!(header(&head, "x-forwarded-proto"), Some("https"), "{head}");
+    assert_eq!(header_count(&head, "x-forwarded-proto"), 1, "{head}");
+    assert!(header(&head, "x-drop").is_none(), "{head}");
+    assert_eq!(header(&head, "x-keep"), Some("yes"), "{head}");
+    assert_eq!(header_count(&head, "host"), 1, "{head}");
+}

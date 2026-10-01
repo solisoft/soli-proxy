@@ -13,6 +13,74 @@
 * **The health monitor falls back to `/health`**, like the deploy gate and adoption; it fell back
   to `/`, so an app could be alive for one and dead for the other.
 * **An `accept()` that fails for lack of descriptors backs off 100 ms** instead of spinning a core.
+* **Multi-tenant: a tenant's derived apex no longer lends its error pages or maintenance flag to
+  the operator's site.** A tenant's `www.victim.com/` derives a claim on `victim.com`; routing
+  let it yield to the operator's `proxy.conf` rule or a cluster push for that apex, but custom
+  error pages and `maintenance.flag` looked the host up by name — so the tenant's `error_pages/`
+  (its HTML and scripts, on the victim's origin) answered the apex's errors, and its flag closed
+  the apex. Both now ask `AppManager::serving_route`, which applies routing's own precedence, and
+  routing uses it too. A yielding app is also no longer woken or counted active by those requests.
+
+* **`$client_ip` in a `headers { }` block is the forwarded client again.** It was read after the
+  request's extensions were cleared, so behind a trusted proxy it was always the proxy.
+* **Custom error pages no longer replace a forward-auth denial.** The auth service's 401/403 (its
+  login form, its JSON) was taken for one of the proxy's own errors, and its body swapped for the
+  proxy's page under the service's headers; it is now relayed like a backend's answer, replaced
+  only under `intercept_upstream_errors`.
+* **A forwarded client can no longer be this host.** A trusted peer's `X-Forwarded-For` (or
+  `real_ip_header`) naming a loopback, unspecified, link-local, multicast or broadcast address is
+  a forgery: the peer is the client instead. `/metrics` is judged on the connection itself — the
+  TCP peer (or PROXY source) and the client must both be loopback — so a tenant container on a
+  trusted Docker range sending `X-Forwarded-For: 127.0.0.1` no longer reads it, and neither does
+  a remote client relayed by a front proxy on this host. **`soli-proxy check` warns** when
+  `multi_tenant` is on and `trusted_proxies` covers loopback or Docker's `172.16.0.0/12` /
+  `192.168.0.0/16` pools (the `"private"` and `"loopback"` presets do): tenants would be trusted
+  proxies.
+* **The admin API writes a route only once it loads.** `proxy.conf` was written (and marked as the
+  proxy's own write) before the route's `@tls_ca` / `@tls_client_cert` files were read, so a route
+  answered 500 yet sat on disk and failed the next reload. And every string the serializer writes
+  verbatim — TLS and health paths, `@tls_sni`, matchers, `@auth` users, `@noauth` paths, script
+  names, global scripts — is refused (400) when it holds whitespace, a control character, `->`
+  or a trailing backslash: a `\n` in a route's JSON injected a `proxy.conf` line of the caller's
+  choosing. The `.conf` parser refuses the same values.
+* **TLS files are read safely, and fail quietly.** Only a regular file of at most 1 MiB is read,
+  opened non-blocking (a FIFO used to hang the load — and the admin request behind it), off the
+  async workers, outside the client registry's lock, and once: the trust store is built from the
+  bytes the client's key was hashed from. A file that cannot be used — missing, unreadable, not a
+  certificate — is reported as `cannot load TLS file <path>` by the admin API and
+  `POST /api/v1/config/validate`; the reason goes to the log. The distinct errors (and a PEM
+  parser quoting the line it choked on) made the API a probe of the proxy's filesystem.
+
+* **A PROXY header that names no client no longer vouches for the connection.** On v1 `UNKNOWN`,
+  v2 `LOCAL` or an address-less v2 header the balancer stayed a trusted peer, so the client's own
+  `X-Forwarded-For`, `real_ip_header`, request ID and `X-Forwarded-Proto` were believed and the
+  per-IP cap skipped. Such a connection is still served (health checks) but trusted for nothing,
+  and counted per IP against the balancer's address.
+* **`X-Forwarded-Proto` is read one way.** `force_https` took the first value while the forwarding
+  headers dropped a multi-valued header; both now take the last value — the nearest proxy's.
+* **The admin listener strips an untrusted client's `real_ip_header`** (`CF-Connecting-IP`…)
+  before the `_admin` passthrough, like the proxy's listeners do.
+* **Userinfo in a request's host is a 400**, in the HTTP/2 `:authority` and in `Host` alike;
+  maintenance used to judge `x@site.example` raw while routing used `site.example`. A malformed
+  request is no longer looked at by maintenance at all.
+* **A Lua `on_route` override keeps the rule's upstream client only for the rule's own origins.**
+  Sent anywhere else, it used to take the rule's mTLS certificate, `@tls_insecure` and
+  `@tls_sni` along (HTTP and WebSocket alike); it now gets the shared pool's defaults.
+* **WebSocket upgrades are routed like requests.** When an app takes a whole-domain rule over,
+  only the app's gates apply (the rule's ran too, so forward-auth was asked twice); the target is
+  chosen by the rule's balancing past open breakers and down targets, with the rule's
+  `@connect_timeout` (it was always the first target, 5 s), and the tunnel's connect/handshake
+  outcome feeds the breaker; the rule's `headers { }` block applies to the upgrade.
+* **A pushed domain's retry is no longer dropped by a half-open breaker:** the next instance was
+  checked twice, and the second check refused what the first had just let through as the probe.
+* Smaller seams: a rule's `@timeout` no longer applies when an app takes the rule over; error and
+  maintenance pages show the request ID under `request_id_header`, not always `X-Request-Id`;
+  `soli-proxy check` files assembly errors under the right file (a route's TLS file was blamed on
+  `.env`); a response with any non-`identity` coding in any `Content-Encoding` field (`identity,
+  gzip`) is no longer compressed again; a backend error page replaced under
+  `intercept_upstream_errors` drops its `ETag`, `Last-Modified`, `Content-Disposition`,
+  `Content-Range` and `Content-Encoding`. The README now says that forward-auth's
+  `X-Forwarded-Uri` is the raw request target, for redirects, not for authorization.
 
 **Forward auth (gap/auth)**
 

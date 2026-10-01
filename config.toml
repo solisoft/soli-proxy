@@ -13,6 +13,9 @@ worker_threads = "auto"
 # X-Real-IP, $client_ip and Lua's req.client_ip, and the chain is appended to.
 # CIDRs, addresses, or the presets "cloudflare" (compiled-in published ranges),
 # "private" (RFC 1918 + fc00::/7) and "loopback". Empty = trust nobody.
+# A forwarded loopback/link-local/unspecified address is never believed (the
+# peer is taken instead). With [apps] multi_tenant, never trust loopback or the
+# Docker ranges (172.16.0.0/12, 192.168.0.0/16): tenants connect from there.
 # trusted_proxies = ["cloudflare"]
 # Where a trusted peer names the client: "X-Forwarded-For" (default), or a
 # single-address header such as "CF-Connecting-IP", "X-Real-IP", "True-Client-IP"

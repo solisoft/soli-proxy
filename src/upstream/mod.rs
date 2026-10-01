@@ -236,14 +236,24 @@ impl std::fmt::Debug for Runtime {
 /// The dedicated clients of one rule.
 struct RuleClients {
     /// One entry per target, in rule order: the target's URL as configured
-    /// (what the circuit breaker is keyed by) and the client that reaches it,
-    /// `None` for the shared pool.
-    targets: Vec<(String, Option<Arc<UpstreamClient>>)>,
-    /// For an `http(s)://` URL a Lua `on_route` hook substituted: this rule's
-    /// TCP options. `None` for the shared pool.
-    tcp: Option<Arc<UpstreamClient>>,
-    /// For an `h2c://` URL a hook substituted.
-    h2c: Option<Arc<UpstreamClient>>,
+    /// (what the circuit breaker is keyed by), the client that reaches it
+    /// (`None` for the shared pool), and its origin, for a Lua `on_route`
+    /// override (see [`UpstreamOptions::client_for`]).
+    targets: Vec<(String, Option<Arc<UpstreamClient>>, Option<Origin>)>,
+}
+
+/// Scheme, host and port: what decides whether a URL a hook substituted is
+/// one of the rule's own upstreams. (`url::Origin` would not do: `h2c://` is
+/// not a special scheme, so its origin is opaque and equal to nothing.)
+type Origin = (String, String, Option<u16>);
+
+fn origin_of(url: &str) -> Option<Origin> {
+    let url = Url::parse(url).ok()?;
+    Some((
+        url.scheme().to_string(),
+        url.host_str()?.to_ascii_lowercase(),
+        url.port_or_known_default(),
+    ))
 }
 
 impl UpstreamOptions {
@@ -377,25 +387,32 @@ impl UpstreamOptions {
         if self.tls_insecure && self.tls_ca.is_some() {
             bail!("@tls_insecure and @tls_ca contradict each other: pick one");
         }
-        for (what, path) in [
-            ("@tls_ca", &self.tls_ca),
-            ("@tls_client_cert", &self.tls_client_cert),
-            ("@tls_client_cert key", &self.tls_client_key),
+        // Paths are written back to proxy.conf verbatim, as one token (the
+        // certificate and key as `cert,key`): no whitespace, no control
+        // character — a `\n` arriving through the admin API's JSON would
+        // inject a proxy.conf line — and no comma in the pair.
+        for (what, path, also) in [
+            ("@tls_ca", &self.tls_ca, &[][..]),
+            ("@tls_client_cert", &self.tls_client_cert, &[','][..]),
+            ("@tls_client_cert key", &self.tls_client_key, &[','][..]),
         ] {
             if let Some(path) = path {
-                if !path.starts_with('/') || path.contains('\0') {
+                if !path.starts_with('/') {
                     bail!("{} path {:?} must be absolute", what, path);
                 }
+                crate::config::check_conf_token(what, path, also)?;
             }
         }
         if self.tls_client_cert.is_some() != self.tls_client_key.is_some() {
             bail!("a client certificate needs both its certificate and its key");
         }
         if let Some(name) = &self.tls_sni {
+            crate::config::check_conf_token("@tls_sni", name, &[])?;
             rustls_pki_types::ServerName::try_from(name.as_str())
                 .map_err(|_| anyhow::anyhow!("@tls_sni:{} is not a DNS name or IP", name))?;
         }
         if let Some(path) = &self.health {
+            crate::config::check_conf_token("@health", path, &[])?;
             if path != "off" {
                 validate_health_path(path)?;
             }
@@ -423,7 +440,7 @@ impl UpstreamOptions {
         let needs_tcp = !base.is_shared_default();
         let tcp = needs_tcp.then(|| client::get_or_build(&base)).transpose()?;
         let any_h2c = targets.iter().any(|t| t.url.scheme() == "h2c");
-        let h2c = if any_h2c || needs_tcp {
+        let h2c = if any_h2c {
             Some(client::get_or_build(&base.with_h2())?)
         } else {
             None
@@ -439,34 +456,46 @@ impl UpstreamOptions {
                 _ => tcp.clone(),
             };
             any |= client.is_some();
-            built.push((target.url.as_str().to_string(), client));
+            built.push((
+                target.url.as_str().to_string(),
+                client,
+                origin_of(target.url.as_str()),
+            ));
         }
-        self.runtime = Runtime(any.then(|| {
-            Arc::new(RuleClients {
-                targets: built,
-                tcp,
-                h2c: if needs_tcp { h2c } else { None },
-            })
-        }));
+        self.runtime = Runtime(any.then(|| Arc::new(RuleClients { targets: built })));
         Ok(())
     }
 
     /// The client for one attempt: `base_url` is the configured target it
     /// came from (`None` after a Lua `on_route` override, when `target_url`
     /// alone decides), `None` meaning the shared pool.
+    ///
+    /// ⚠️ An override keeps the rule's client — its `@tls_ca`, client
+    /// certificate, `@tls_sni`, `@tls_insecure`, `@h2`, connect timeout — only
+    /// when it goes to one of the rule's own origins. Anywhere else it gets the
+    /// shared pool (or the default h2c client): a script that sends a request
+    /// to another host must not present the rule's mTLS certificate there, nor
+    /// skip verification because the rule's own backend needed it.
     pub fn client_for(&self, base_url: Option<&str>, target_url: &str) -> Option<&UpstreamClient> {
         let h2c = target_url.starts_with("h2c://");
         let Some(rt) = &self.runtime.0 else {
             return h2c.then(client::default_h2c);
         };
-        match base_url {
-            Some(base) => rt
-                .targets
-                .iter()
-                .find(|(url, _)| url == base)
-                .and_then(|(_, c)| c.as_deref()),
-            None if h2c => Some(rt.h2c.as_deref().unwrap_or_else(|| client::default_h2c())),
-            None => rt.tcp.as_deref(),
+        let own = match base_url {
+            Some(base) => rt.targets.iter().find(|(url, _, _)| url == base),
+            None => {
+                let origin = origin_of(target_url);
+                rt.targets
+                    .iter()
+                    .find(|(_, _, o)| o.is_some() && *o == origin)
+            }
+        };
+        match own {
+            Some((_, client, _)) => client
+                .as_deref()
+                .or_else(|| (base_url.is_none() && h2c).then(client::default_h2c)),
+            None if base_url.is_none() && h2c => Some(client::default_h2c()),
+            None => None,
         }
     }
 
@@ -478,8 +507,8 @@ impl UpstreamOptions {
             .as_ref()?
             .targets
             .iter()
-            .find(|(url, _)| url == base_url)
-            .and_then(|(_, c)| c.clone())
+            .find(|(url, _, _)| url == base_url)
+            .and_then(|(_, c, _)| c.clone())
     }
 
     /// `@timeout`, if set.
@@ -762,6 +791,27 @@ mod tests {
             .is_err());
     }
 
+    /// Paths are written back verbatim: a control character or a trailing
+    /// backslash (a line continuation) is refused by the parser too, and a
+    /// comma in the certificate pair.
+    #[test]
+    fn directive_paths_must_survive_a_rewrite() {
+        let https = [target("https://a.example")];
+        for (kind, value) in [
+            ("tls_ca", "/etc/ca\u{1}.pem"),
+            ("tls_ca", "/etc/ca.pem\\"),
+            ("tls_ca", "/etc/ca\u{7f}.pem"),
+            ("tls_client_cert", "/c.pem,/k,2.pem"),
+            ("health", "/up\u{1}"),
+        ] {
+            let mut o = UpstreamOptions::default();
+            o.apply_directive(kind, value).unwrap();
+            assert!(o.validate(&https).is_err(), "{kind}:{value:?}");
+        }
+        let line = "/x/* -> https://a.example @tls_ca:/etc/ca\u{1}.pem";
+        assert!(crate::config::parse_proxy_config(line).is_err());
+    }
+
     #[test]
     fn validation_ties_options_to_targets() {
         let https = [target("https://a.example")];
@@ -927,6 +977,37 @@ mod tests {
             .client_for(Some("unix:/run/a.sock"), "http://unix.invalid/")
             .unwrap();
         assert!(std::ptr::eq(unix, again));
+    }
+
+    /// A Lua `on_route` override to another origin does not take the rule's
+    /// TLS client along (its client certificate, its `@tls_insecure`): only an
+    /// override to one of the rule's own origins does.
+    #[test]
+    fn an_override_elsewhere_gets_the_default_client() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let mut o = UpstreamOptions {
+            tls_insecure: true,
+            tls_sni: Some("internal.example".into()),
+            ..Default::default()
+        };
+        o.resolve(&[target("https://backend.internal:8443")])
+            .unwrap();
+        let rule_client = o
+            .client_for(
+                Some("https://backend.internal:8443/"),
+                "https://backend.internal:8443/x",
+            )
+            .unwrap();
+        // The rule's own origin, rewritten by a hook: its client.
+        let own = o
+            .client_for(None, "https://BACKEND.internal:8443/other")
+            .unwrap();
+        assert!(std::ptr::eq(rule_client, own));
+        // Elsewhere: the shared pool, or the default h2c client.
+        assert!(o.client_for(None, "https://evil.example/").is_none());
+        assert!(o.client_for(None, "https://backend.internal/").is_none());
+        let h2c = o.client_for(None, "h2c://grpc:50051/x").unwrap();
+        assert!(std::ptr::eq(h2c, client::default_h2c()));
     }
 
     #[test]

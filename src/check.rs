@@ -302,6 +302,20 @@ fn check_config(
         }
     }
 
+    if cfg.apps.multi_tenant() {
+        let reachable = cfg.server.edge.trusted_proxies.tenant_reachable();
+        if !reachable.is_empty() {
+            report.warn(
+                file,
+                None,
+                format!(
+                    "[server] trusted_proxies {} cover(s) addresses tenants connect from in                      multi_tenant mode (loopback for a native app, Docker's 172.16.0.0/12 and                      192.168.0.0/16 pools for a container): a tenant could send forwarding                      headers the proxy believes and pose as any client — to rate limits,                      [maintenance] allow_ips and backends. List the balancer's own addresses                      instead",
+                    reachable.join(", ")
+                ),
+            );
+        }
+    }
+
     let (start, end) = cfg.apps.app_port_range();
     let reserved = crate::app::proxy_listener_ports(cfg);
     if let Some(problem) = crate::app::port_range_problem(start, end, &reserved) {
@@ -375,11 +389,19 @@ pub fn check_sources(
             Some(cfg)
         }
         Err(e) => {
-            report.error(
-                &config_dir.join(".env").display().to_string(),
-                None,
-                format!("{:#}", e),
-            );
+            // Assembly reads three sources; name the one at fault. Every
+            // error used to be filed under `.env` — a route's unreadable
+            // `@tls_ca` included.
+            let dotenv = config_dir.join(".env").display().to_string();
+            let message = format!("{:#}", e);
+            let file = if message.starts_with("route #") {
+                conf_file.to_string()
+            } else if message.contains(&dotenv) {
+                dotenv
+            } else {
+                toml_file.to_string()
+            };
+            report.error(&file, None, message);
             None
         }
     }
@@ -647,6 +669,73 @@ mod tests {
         assert!(has("admin API refuses to start"), "{text:#?}");
         assert!(has("[apps] port range unusable"), "{text:#?}");
         assert!(has("[logging] level"), "{text:#?}");
+    }
+
+    /// In multi_tenant mode a `trusted_proxies` entry covering loopback or
+    /// Docker's pools trusts the tenants' own forwarding headers: a warning
+    /// naming it. A single-tenant install, or a balancer's own range, is fine.
+    #[test]
+    fn multi_tenant_trust_of_tenant_networks_is_a_warning() {
+        let warned = |toml: &str| {
+            let dir = TempDir::new().unwrap();
+            let mut report = Report::default();
+            check_sources(
+                ("proxy.conf", ""),
+                ("config.toml", toml),
+                dir.path(),
+                &mut report,
+            )
+            .unwrap();
+            report
+                .problems
+                .iter()
+                .find(|p| p.message.contains("trusted_proxies"))
+                .map(|p| (p.severity, p.message.clone()))
+        };
+        let (severity, message) = warned(
+            "[server]\nbind = \"127.0.0.1:80\"\nhttps_port = 443\ntrusted_proxies = [\"private\", \"10.0.0.0/8\"]\n\
+             [apps]\nmulti_tenant = true\n",
+        )
+        .expect("warned");
+        assert_eq!(severity, Severity::Warning);
+        assert!(
+            message.contains("private") && !message.contains("10.0.0.0/8"),
+            "{message}"
+        );
+        assert!(warned(
+            "[server]\nbind = \"127.0.0.1:80\"\nhttps_port = 443\ntrusted_proxies = [\"loopback\"]\n[apps]\nmulti_tenant = true\n"
+        )
+        .is_some());
+        assert!(warned("[server]\nbind = \"127.0.0.1:80\"\nhttps_port = 443\ntrusted_proxies = [\"private\"]\n").is_none());
+        assert!(warned(
+            "[server]\nbind = \"127.0.0.1:80\"\nhttps_port = 443\ntrusted_proxies = [\"cloudflare\", \"10.0.0.0/8\"]\n\
+             [apps]\nmulti_tenant = true\n"
+        )
+        .is_none());
+    }
+
+    /// A route's TLS file that cannot be loaded is a `proxy.conf` problem,
+    /// not a `.env` one.
+    #[test]
+    fn assembly_errors_name_the_file_at_fault() {
+        let dir = TempDir::new().unwrap();
+        let mut report = Report::default();
+        let cfg = check_sources(
+            (
+                "proxy.conf",
+                "/a/* -> https://127.0.0.1:1/ @tls_ca:/nonexistent/soli-proxy-check-ca.pem\n",
+            ),
+            ("config.toml", ""),
+            dir.path(),
+            &mut report,
+        );
+        assert!(cfg.is_none());
+        let problem = report
+            .problems
+            .iter()
+            .find(|p| p.message.contains("soli-proxy-check-ca.pem"))
+            .expect("reported");
+        assert_eq!(problem.file, "proxy.conf", "{problem}");
     }
 
     fn site(sites: &Path, name: &str, manifest: &str) {

@@ -951,6 +951,21 @@ pub struct AppTarget {
     pub compress: Option<bool>,
 }
 
+/// What the operator's static `proxy.conf` rules make of a request — the
+/// half of the routing decision [`AppManager::serving_route`] cannot see.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StaticRoute {
+    /// No rule matches: the request goes to the apps, then to cluster pushes.
+    None,
+    /// A whole-domain rule for the host (`example.com -> …`): the one kind of
+    /// rule an app can take over (blue/green deploys of a domain the operator
+    /// also wrote a rule for).
+    WholeDomain,
+    /// Any other rule — a `host/path` carve-out, a path, regex or default
+    /// rule. It is served as written; no app is involved.
+    Other,
+}
+
 /// The routing table for every app the proxy manages: host -> entry, plus
 /// slot port -> app for attributing a proxied request to its app.
 #[derive(Debug, Default)]
@@ -1783,25 +1798,23 @@ impl AppManager {
         host: &str,
         is_available: &(dyn Fn(&str) -> bool + Sync),
     ) -> Option<AppTarget> {
-        let mut route = self.routes().get(host).cloned();
+        // A derived claim is the weakest there is; in multi_tenant mode it is
+        // tenant input and yields to a route the cluster pushed — and an app
+        // that yields is neither counted as active nor woken for the request.
+        let mut route = self.serving_route(host, StaticRoute::None);
         if let Some(ref r) = route {
             r.activity.store(self.now_ms(), Ordering::Relaxed);
             if r.target.is_none() && self.is_asleep(&r.app) {
                 match self.wake(&r.app).await {
                     // Woken and healthy: this request is the one that woke
                     // it, and it should be served, not told 421.
-                    Ok(()) => route = self.routes().get(host).cloned(),
+                    Ok(()) => route = self.serving_route(host, StaticRoute::None),
                     Err(e) => tracing::warn!("Could not wake {} for {}: {}", r.app, host, e),
                 }
             }
         }
         if let Some(route) = route {
-            // A derived claim is the weakest there is; in multi_tenant mode it
-            // is tenant input and yields to a route the cluster pushed.
-            let yields = self.multi_tenant
-                && route.claim == Claim::Derived
-                && self.external_routes.serves(host);
-            if let (Some(url), false) = (&route.target, yields) {
+            if let Some(url) = &route.target {
                 return Some(AppTarget {
                     target: super::config::Target {
                         url: url.clone(),
@@ -1845,9 +1858,42 @@ impl AppManager {
     /// not: `www.example.com/` deriving `example.com` would otherwise take
     /// the operator's own rule for the apex — and whatever `@auth` it had.
     pub async fn overrides_domain_rule(&self, host: &str) -> bool {
+        self.serving_route(host, StaticRoute::WholeDomain).is_some()
+    }
+
+    /// The app entry that actually serves `host`, given what the static rules
+    /// make of the request — the same precedence routing applies, for
+    /// everything that must follow the request rather than the hostname: an
+    /// app's error pages, its `maintenance.flag`.
+    ///
+    /// ⚠️ `routes().get(host)` alone answers "which app *claims* this host",
+    /// which is not the same question. In multi_tenant mode a tenant's
+    /// `www.victim.com/` site derives a claim on `victim.com`; routing lets
+    /// that claim yield to the operator's rule or a cluster push for the apex,
+    /// but a lookup by hostname still found the tenant's app — and served its
+    /// error pages (tenant HTML, scripts included, on the victim's origin) and
+    /// its maintenance flag on traffic the tenant does not serve.
+    pub fn serving_route(&self, host: &str, rule: StaticRoute) -> Option<Arc<AppRoute>> {
         self.routes()
             .get(host)
-            .is_some_and(|route| !(self.multi_tenant && route.claim == Claim::Derived))
+            .filter(|route| self.app_serves(route, host, rule))
+            .cloned()
+    }
+
+    /// Whether `route`, the app entry for `host`, serves a request the static
+    /// rules see as `rule`. The one place the precedence is written down:
+    /// a non-domain rule always wins; a whole-domain rule steps aside for any
+    /// claim in single-tenant mode (the operator wrote both) but not for a
+    /// derived one in multi_tenant mode, where it is tenant input; with no
+    /// rule, a derived claim in multi_tenant mode still yields to a pushed
+    /// route.
+    fn app_serves(&self, route: &AppRoute, host: &str, rule: StaticRoute) -> bool {
+        let tenant_derived = self.multi_tenant && route.claim == Claim::Derived;
+        match rule {
+            StaticRoute::Other => false,
+            StaticRoute::WholeDomain => !tenant_derived,
+            StaticRoute::None => !(tenant_derived && self.external_routes.serves(host)),
+        }
     }
 
     /// The app a proxied request went to, from its target URL's port: how a
@@ -1902,8 +1948,7 @@ impl AppManager {
     /// A pushed domain without one is served open. A local app wins over a
     /// pushed route for the same host, as it does for routing.
     pub async fn auth_for_host(&self, host: &str) -> Option<Arc<AppAuth>> {
-        let routes = self.routes();
-        if let Some(route) = routes.get(host) {
+        if let Some(route) = self.serving_route(host, StaticRoute::None) {
             if route.target.is_some() {
                 return route.auth.clone();
             }
@@ -4999,6 +5044,91 @@ typo_here = true
                 manager.app_name_for_host("example.com").await.as_deref(),
                 Some("www.example.com")
             );
+        }
+    }
+
+    /// Multi-tenant: a tenant's `www.victim.com/` derives a claim on
+    /// `victim.com`, which the operator's rule (or a cluster push) serves.
+    /// Routing already lets the claim yield; the tenant's error pages and its
+    /// `maintenance.flag` must not apply to that apex either — they used to,
+    /// by a plain hostname lookup (tenant HTML on the victim's origin).
+    #[tokio::test]
+    async fn multi_tenant_derived_claim_does_not_lend_its_pages_or_flag() {
+        use crate::response::maintenance::{check, Maintenance};
+        for multi_tenant in [true, false] {
+            let temp_dir = TempDir::new().unwrap();
+            let sites = temp_dir.path().join("sites");
+            let site = site_with_app_infos(
+                &sites,
+                "www.victim.com",
+                "name = \"www.victim.com\"\ndomain = \"www.victim.com\"\n",
+            );
+            std::fs::create_dir(site.join("error_pages")).unwrap();
+            std::fs::write(site.join("error_pages/404.html"), "<script>x()</script>").unwrap();
+            std::fs::write(site.join(MAINTENANCE_FLAG), "").unwrap();
+            std::fs::write(
+                temp_dir.path().join("config.toml"),
+                format!("[apps]\nmulti_tenant = {multi_tenant}\n"),
+            )
+            .unwrap();
+            std::fs::write(
+                temp_dir.path().join("proxy.conf"),
+                "victim.com -> http://127.0.0.1:9000\n",
+            )
+            .unwrap();
+            let manager = test_manager(&temp_dir, &sites);
+            manager.discover_apps_readonly().await.unwrap();
+            let config = crate::config::ConfigManager::new(
+                temp_dir.path().join("proxy.conf").to_str().unwrap(),
+            )
+            .unwrap()
+            .get_config();
+            let req = |host: &str| {
+                http::Request::builder()
+                    .uri("/missing")
+                    .header("host", host)
+                    .header("accept", "text/html")
+                    .body(())
+                    .unwrap()
+            };
+
+            // The precedence routing applies, in one place.
+            let rule = crate::server::static_route(&req("victim.com"), &config.rules);
+            assert_eq!(rule, StaticRoute::WholeDomain);
+            assert_eq!(
+                manager.serving_route("victim.com", rule).is_some(),
+                !multi_tenant,
+                "multi_tenant = {multi_tenant}"
+            );
+            assert!(manager
+                .serving_route("victim.com", StaticRoute::Other)
+                .is_none());
+            assert!(manager
+                .serving_route("www.victim.com", StaticRoute::None)
+                .is_some());
+
+            // Error pages: the tenant's 404 only where the tenant serves.
+            let pages = |host: &str| {
+                let rule = crate::server::static_route(&req(host), &config.rules);
+                crate::response::error_pages::app_pages(&manager, host, rule)
+            };
+            assert_eq!(pages("victim.com").is_some(), !multi_tenant);
+            assert!(pages("www.victim.com").is_some());
+
+            // maintenance.flag: same.
+            let peer: std::net::SocketAddr = "198.51.100.1:5000".parse().unwrap();
+            let closed = |host: &str| {
+                check(
+                    &req(host),
+                    &config,
+                    &Maintenance::default(),
+                    Some(&manager),
+                    Some(peer),
+                )
+                .is_some()
+            };
+            assert_eq!(closed("victim.com"), !multi_tenant);
+            assert!(closed("www.victim.com"));
         }
     }
 

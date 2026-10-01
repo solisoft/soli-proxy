@@ -166,11 +166,18 @@ fn build_per_ip_limiter(config: &ConfigManager) -> Option<Arc<PerIpLimiter>> {
 /// uncounted connection. The service inserts a clone into each request's
 /// extensions; the tunnel task takes one from there.
 #[derive(Clone)]
-struct ConnLease(#[allow(dead_code)] Arc<ConnGuard>);
+struct ConnLease(Arc<ConnGuard>);
 
 struct ConnGuard {
     _permit: Option<OwnedSemaphorePermit>,
     _per_ip: Option<PerIpGuard>,
+    /// A PROXY header that names no client (v1 `UNKNOWN`, v2 `LOCAL`, an
+    /// unspecified or Unix address): the trusted balancer speaking for
+    /// itself, or for someone it would not name. The connection is served
+    /// — the balancer's health checks arrive this way — but the forwarding
+    /// headers, request ID and `X-Forwarded-Proto` on it are not believed:
+    /// whoever is on the other end wrote them.
+    headers_untrusted: bool,
 }
 
 impl ConnLease {
@@ -178,7 +185,21 @@ impl ConnLease {
         Self(Arc::new(ConnGuard {
             _permit: permit,
             _per_ip: per_ip,
+            headers_untrusted: false,
         }))
+    }
+
+    /// See [`ConnGuard::headers_untrusted`]. Called before the lease is
+    /// shared; were it somehow shared already, the connection is refused
+    /// (`None`) rather than left trusted.
+    fn untrusted_headers(self) -> Option<Self> {
+        let mut guard = Arc::try_unwrap(self.0).ok()?;
+        guard.headers_untrusted = true;
+        Some(Self(Arc::new(guard)))
+    }
+
+    fn headers_untrusted(&self) -> bool {
+        self.0.headers_untrusted
     }
 
     /// Add the per-IP slot to a lease taken without one: on a PROXY-protocol
@@ -190,7 +211,10 @@ impl ConnLease {
             return self;
         };
         match Arc::try_unwrap(self.0) {
-            Ok(guard) => ConnLease::new(guard._permit, Some(per_ip)),
+            Ok(guard) => Self(Arc::new(ConnGuard {
+                _per_ip: Some(per_ip),
+                ..guard
+            })),
             Err(shared) => Self(shared),
         }
     }
@@ -990,6 +1014,18 @@ fn reject_malformed_request<B>(req: &Request<B>) -> Option<Response<BoxBody>> {
     if hosts.next().is_some() {
         return Some(plain_response(400, "Bad Request"));
     }
+    // Userinfo has no place in a request's host (RFC 9110 §4.2.4, §7.2):
+    // `:authority: x@site.example` with no Host was looked up raw by
+    // maintenance and as `site.example` by routing — two answers to "which
+    // site is this". Refused, from the authority and from `Host` alike.
+    if req
+        .uri()
+        .authority()
+        .is_some_and(|a| a.as_str().contains('@'))
+        || first_host.is_some_and(|h| h.as_bytes().contains(&b'@'))
+    {
+        return Some(plain_response(400, "Bad Request"));
+    }
     if req.version() == http::Version::HTTP_2 {
         if let (Some(host), Some(authority)) = (first_host, req.uri().authority()) {
             let same = host
@@ -1359,13 +1395,8 @@ fn build_ws_extra_headers(
                     _ => {}
                 }
             }
-            match headers
-                .get("x-forwarded-proto")
-                .and_then(|v| v.to_str().ok())
-            {
-                Some("https") => proto = "https",
-                Some("http") => proto = "http",
-                _ => {}
+            if let Some(p) = crate::edge::forwarded_proto(headers) {
+                proto = p;
             }
         }
         if chain.is_empty() {
@@ -1379,6 +1410,50 @@ fn build_ws_extra_headers(
         out.push_str(&format!("X-Forwarded-Host: {}\r\n", host_header));
     }
     out
+}
+
+/// Apply a rule's `headers { }` block to a WebSocket upgrade: `extra` is the
+/// header lines [`build_ws_extra_headers`] produced, `host` the `Host` the
+/// handshake will carry. Returns both, edited — a block may set `Host` like
+/// on the HTTP path. The handshake's own lines (`Upgrade`, `Connection`,
+/// `Sec-WebSocket-*`) are written by the caller and cannot be set here; every
+/// value went through `HeaderValue`, so none can carry a line break.
+fn apply_ws_header_rules(
+    extra: &str,
+    host: &str,
+    rules: &[crate::config::HeaderRule],
+    vars: &crate::config::HeaderVars<'_>,
+) -> (String, String) {
+    let mut map = hyper::HeaderMap::new();
+    if let Ok(v) = HeaderValue::from_str(host) {
+        map.insert(hyper::header::HOST, v);
+    }
+    for line in extra.split("\r\n") {
+        if let Some((name, value)) = line.split_once(':') {
+            if let (Ok(name), Ok(value)) = (
+                hyper::header::HeaderName::from_bytes(name.trim().as_bytes()),
+                HeaderValue::from_str(value.trim()),
+            ) {
+                map.append(name, value);
+            }
+        }
+    }
+    crate::config::apply_header_rules(&mut map, rules, vars);
+    let host = map
+        .remove(hyper::header::HOST)
+        .and_then(|v| v.to_str().ok().map(str::to_string))
+        .unwrap_or_else(|| host.to_string());
+    let mut out = String::new();
+    for (name, value) in &map {
+        let name = name.as_str();
+        if name.starts_with("sec-websocket-") || matches!(name, "upgrade" | "connection") {
+            continue;
+        }
+        if let Ok(v) = value.to_str() {
+            out.push_str(&format!("{}: {}\r\n", name, v));
+        }
+    }
+    (out, host)
 }
 
 impl ProxyServer {
@@ -1722,8 +1797,18 @@ async fn read_proxy_protocol(
     };
     let source = match crate::edge::read_proxy_header(&mut stream, mode).await {
         Ok(Some(source)) => source,
-        // LOCAL / UNKNOWN: the balancer speaking for itself (a health check).
-        Ok(None) => return Some((stream, peer, lease)),
+        // LOCAL / UNKNOWN / no address: the balancer speaking for itself (a
+        // health check). Served, as the balancer — capped per IP like a
+        // client, and with its forwarding headers ignored: on such a
+        // connection they are whatever the other end wrote, and believing
+        // them let a client pick its own address, request ID and scheme.
+        Ok(None) => {
+            let per_ip = match per_ip_limit {
+                Some(limiter) => Some(limiter.try_acquire(peer.ip())?),
+                None => None,
+            };
+            return Some((stream, peer, lease.with_per_ip(per_ip).untrusted_headers()?));
+        }
         Err(e) => {
             tracing::debug!("closing connection from {}: {}", peer.ip(), e);
             return None;
@@ -2384,7 +2469,17 @@ async fn handle_request(
     let edge = &config.server.edge;
     let mut trusted_peer = false;
     if let Some(peer) = peer_addr {
-        let who = crate::edge::ClientInfo::resolve(peer.ip(), req.headers(), edge);
+        // A PROXY header that named no client: the peer is the balancer, but
+        // what it relays is not its word (see `ConnGuard::headers_untrusted`).
+        let who = if req
+            .extensions()
+            .get::<ConnLease>()
+            .is_some_and(ConnLease::headers_untrusted)
+        {
+            crate::edge::ClientInfo::direct(peer.ip())
+        } else {
+            crate::edge::ClientInfo::resolve(peer.ip(), req.headers(), edge)
+        };
         crate::edge::strip_untrusted_real_ip(req.headers_mut(), &who, edge);
         trusted_peer = who.trusted_peer;
         req.extensions_mut().insert(who);
@@ -2401,13 +2496,19 @@ async fn handle_request(
     // but after the door, so its allowlist sees the real client and its 503
     // carries the request ID and reaches the access log. It lets ACME
     // challenges, the health endpoints and allowlisted traffic through.
-    let maintenance = crate::response::maintenance::check(
-        &req,
-        &config,
-        &config_manager.maintenance,
-        app_manager.as_deref(),
-        peer_addr,
-    );
+    // A malformed request (userinfo in its authority, two Hosts…) is not
+    // looked at here: `handle_request_inner` refuses it with a 400 first
+    // thing, and its host is not one maintenance should judge.
+    let maintenance = match reject_malformed_request(&req) {
+        Some(_) => None,
+        None => crate::response::maintenance::check(
+            &req,
+            &config,
+            &config_manager.maintenance,
+            app_manager.as_deref(),
+            peer_addr,
+        ),
+    };
     let mut result = if let Some(resp) = maintenance {
         metrics.record_request(0, 0, 503, Duration::ZERO);
         with_hsts(Ok(resp), is_tls, &config)
@@ -2746,7 +2847,13 @@ async fn handle_request_inner(
         &req,
         config.metrics.endpoint.as_deref().unwrap_or("/metrics"),
     ) {
-        let is_loopback = client_info.is_some_and(|who| who.ip.is_loopback());
+        // Local means the connection itself comes from this host: the TCP
+        // peer (or the PROXY header's source), never a forwarded claim — a
+        // trusted range that covers a tenant's container would otherwise let
+        // it say `X-Forwarded-For: 127.0.0.1`. And the client too, so a
+        // front proxy on this host relaying a remote client is not local.
+        let is_loopback =
+            client_info.is_some_and(|who| who.peer.is_loopback() && who.ip.is_loopback());
         if !is_loopback {
             let duration = start_time.elapsed();
             metrics.record_request(0, 0, 403, duration);
@@ -2841,13 +2948,8 @@ async fn handle_request_inner(
     }
 
     if is_websocket {
-        // Same gates as the HTTP path, `@auth` then `@forward_auth`, before
-        // anything is tunnelled.
-        if let Some(matched) = find_matching_rule(&req, &config.rules) {
-            if let Some(denied) = matched.authorize(&mut req, &client, &config).await {
-                return Ok(denied);
-            }
-        }
+        // The gates — the rule's `@auth` then `@forward_auth`, or the app's
+        // — run inside, once it is known which of the two serves.
         return handle_websocket_request(
             req,
             client,
@@ -2858,6 +2960,8 @@ async fn handle_request_inner(
             is_tls,
             peer_addr,
             &lua_engine,
+            &circuit_breaker,
+            &load_balancer,
         )
         .await;
     }
@@ -2872,7 +2976,26 @@ async fn handle_request_inner(
     let timeout_sec = crate::upstream::request_timeout(
         &config,
         if config.upstream.route_timeouts {
-            find_matching_rule(&req, &config.rules).map(|m| m.rule_idx)
+            // Not the rule's when an app takes its whole-domain rule over
+            // (`override_with_app` in handle_regular_request): the rule does
+            // not serve the request, so neither does its `@timeout`.
+            find_matching_rule(&req, &config.rules)
+                .filter(|m| {
+                    let whole_domain =
+                        m.from_domain_rule && matches!(m.resolution, UrlResolution::AppendPath);
+                    let host = req
+                        .headers()
+                        .get("host")
+                        .and_then(|h| h.to_str().ok())
+                        .map(|h| h.split(':').next().unwrap_or(h))
+                        .or_else(|| req.uri().host());
+                    !(whole_domain
+                        && app_manager.as_ref().zip(host).is_some_and(|(am, h)| {
+                            am.serving_route(h, crate::app::StaticRoute::WholeDomain)
+                                .is_some()
+                        }))
+                })
+                .map(|m| m.rule_idx)
         } else {
             None
         },
@@ -3546,6 +3669,8 @@ async fn handle_websocket_request(
     is_tls: bool,
     peer_addr: Option<SocketAddr>,
     lua_engine: &OptionalLuaEngine,
+    circuit_breaker: &SharedCircuitBreaker,
+    load_balancer: &LoadBalancerState,
 ) -> Result<Response<BoxBody>, hyper::Error> {
     let host = req
         .headers()
@@ -3567,32 +3692,61 @@ async fn handle_websocket_request(
         }
         _ => false,
     };
-    let target_result = if override_with_app {
-        None
-    } else {
-        find_target(&req, &config.rules)
-    };
+    // As on the HTTP path: when the app takes the request over, the rule is
+    // out of it — its gates included (they used to run as well, so both
+    // auths applied and forward-auth was asked twice).
+    let route = if override_with_app { None } else { route };
 
-    let target_url = match target_result {
-        // A matched route runs the same Lua hooks as a plain request —
-        // route on_request (deny / header rewrite), global and route
-        // on_route (deny / target override) — before anything is tunnelled.
-        #[cfg(feature = "scripting")]
-        Some((mut url, _, _, route_scripts)) => {
+    // For a rule: the configured target the tunnel goes to (the circuit
+    // breaker's key) and whether a Lua hook replaced the URL.
+    let mut ws_target: Option<(String, bool)> = None;
+    let target_url = match &route {
+        Some(matched) => {
+            // Same gates as the HTTP path, `@auth` then `@forward_auth`,
+            // before anything is tunnelled.
+            if let Some(denied) = matched.authorize(&mut req, &client, config).await {
+                return Ok(denied);
+            }
+            // The same target choice as HTTP: the rule's balancing, past
+            // targets whose breaker is open or that health checks marked
+            // down. It used to be the first target, whatever its state.
+            let match_path = request_match_path(&req);
+            let path = match matched.resolution {
+                UrlResolution::StripPrefix(_) => &*match_path,
+                _ => req.uri().path(),
+            };
+            let Some((mut url, base)) = select_target(
+                matched,
+                path,
+                req.uri().query(),
+                circuit_breaker,
+                load_balancer,
+            ) else {
+                metrics.inc_errors();
+                let body = full(Bytes::from("Service Unavailable"));
+                return Ok(Response::builder().status(503).body(body).unwrap());
+            };
+            // A matched route runs the same Lua hooks as a plain request —
+            // route on_request (deny / header rewrite), global and route
+            // on_route (deny / target override) — before anything is
+            // tunnelled.
+            #[allow(unused_mut)]
+            let mut overridden = false;
+            #[cfg(feature = "scripting")]
             if let Some(engine) = lua_engine.as_ref() {
-                // The tunnel goes where the URL says; no retry to keep apart.
-                let mut overridden = false;
-                if let Some(resp) =
-                    run_route_hooks(engine, &mut req, &route_scripts, &mut url, &mut overridden)
-                {
+                if let Some(resp) = run_route_hooks(
+                    engine,
+                    &mut req,
+                    matched.route_scripts,
+                    &mut url,
+                    &mut overridden,
+                ) {
                     return Ok(resp);
                 }
             }
-            url
-        }
-        #[cfg(not(feature = "scripting"))]
-        Some((url, _, _, _)) => {
+            #[cfg(not(feature = "scripting"))]
             let _ = lua_engine;
+            ws_target = Some((base, overridden));
             url
         }
         None => {
@@ -3708,6 +3862,50 @@ async fn handle_websocket_request(
         .or_else(|| peer_addr.map(|a| crate::edge::ClientInfo::direct(a.ip())));
     let extra_headers =
         build_ws_extra_headers(req.headers(), client_info.as_ref(), is_tls, &client_host);
+    // The rule's `headers { }` block applies to the upgrade request too — it
+    // is an ordinary HTTP request until the 101 — and last, as on the HTTP
+    // path, so it can override the forwarding headers.
+    let mut host_header = host_header;
+    let extra_headers = match route.as_ref().map(|m| (m, &config.rules[m.rule_idx])) {
+        Some((matched, rule)) if !rule.headers.is_empty() => {
+            let vars = crate::config::HeaderVars {
+                client_ip: client_info.map(|c| c.ip),
+                scheme: if is_tls { "https" } else { "http" },
+                host: &matched.host,
+            };
+            let (extra, host) =
+                apply_ws_header_rules(&extra_headers, &host_header, &rule.headers, &vars);
+            host_header = host;
+            extra
+        }
+        _ => extra_headers,
+    };
+    // The rule's client for this tunnel: its TLS settings and connect
+    // timeout — the configured target's, or, after a Lua override, only if
+    // the new URL is one of the rule's own origins (see
+    // `UpstreamOptions::client_for`).
+    let rule_client = route
+        .as_ref()
+        .zip(ws_target.as_ref())
+        .and_then(|(m, (base, overridden))| {
+            config.rules[m.rule_idx]
+                .upstream
+                .client_for((!overridden).then_some(base.as_str()), &target_url)
+        });
+    let connect_timeout = rule_client
+        .map(|c| c.connect_timeout())
+        .unwrap_or(crate::pool::DEFAULT_CONNECT_TIMEOUT);
+    // A failed connect or handshake counts against the target's breaker, a
+    // 101 for it: `select_target` may have handed out a half-open probe.
+    let breaker_key = ws_target
+        .as_ref()
+        .filter(|(_, overridden)| !overridden)
+        .map(|(base, _)| base.clone());
+    let record_failure = || {
+        if let Some(key) = &breaker_key {
+            circuit_breaker.record_failure(key);
+        }
+    };
 
     // debug-level: per-message upgrade chatter floods info logs (see
     // `[logging].log_endpoints` for per-request access logging instead)
@@ -3722,27 +3920,24 @@ async fn handle_websocket_request(
     // addressed to a placeholder host (`crate::upstream::routing_url`), so
     // the socket is taken from the rule — the first target, as above — unless
     // a script sent the upgrade elsewhere.
-    let unix_socket = route
+    let unix_socket = ws_target
         .as_ref()
-        .filter(|_| backend_host == crate::upstream::UNIX_AUTHORITY)
-        .and_then(|m| m.targets.first())
-        .filter(|t| t.url.scheme() == "unix")
-        .map(|t| t.url.path().to_string());
+        .filter(|(_, overridden)| !overridden && backend_host == crate::upstream::UNIX_AUTHORITY)
+        .and_then(|(base, _)| url::Url::parse(base).ok())
+        .filter(|u| u.scheme() == "unix")
+        .map(|u| u.path().to_string());
     let backend: Box<dyn AsyncStream> = if let Some(socket) = unix_socket {
-        match timeout(
-            Duration::from_secs(5),
-            tokio::net::UnixStream::connect(&socket),
-        )
-        .await
-        {
+        match timeout(connect_timeout, tokio::net::UnixStream::connect(&socket)).await {
             Ok(Ok(s)) => Box::new(s),
             Ok(Err(e)) => {
                 tracing::error!("Failed to connect to {} for WebSocket: {}", socket, e);
+                record_failure();
                 metrics.inc_errors();
                 let body = full(Bytes::from("Backend not reachable"));
                 return Ok(Response::builder().status(502).body(body).unwrap());
             }
             Err(_) => {
+                record_failure();
                 metrics.inc_errors();
                 let body = full(Bytes::from("Gateway Timeout"));
                 return Ok(Response::builder().status(504).body(body).unwrap());
@@ -3753,7 +3948,7 @@ async fn handle_websocket_request(
         // HTTP pool's connect_timeout): the WS upgrade path runs before the
         // request-timeout wrapper, so an unbounded connect to a black-holed
         // backend would otherwise hang the upgrade indefinitely.
-        let tcp = match timeout(Duration::from_secs(5), TcpStream::connect(&backend_addr)).await {
+        let tcp = match timeout(connect_timeout, TcpStream::connect(&backend_addr)).await {
             Ok(Ok(s)) => {
                 // Frames are small and latency-bound; without TCP_NODELAY Nagle
                 // holds each one back waiting for the previous one's ACK. The
@@ -3763,6 +3958,7 @@ async fn handle_websocket_request(
             }
             Ok(Err(e)) => {
                 tracing::error!("Failed to connect to backend for WebSocket: {}", e);
+                record_failure();
                 metrics.inc_errors();
                 let body = full(Bytes::from("Backend not reachable"));
                 return Ok(Response::builder().status(502).body(body).unwrap());
@@ -3772,9 +3968,10 @@ async fn handle_websocket_request(
                     layer = "proxy_ws",
                     backend = %backend_addr,
                     path = %path,
-                    timeout_secs = 5,
+                    timeout_ms = connect_timeout.as_millis() as u64,
                     "websocket backend connect timed out; returning 504"
                 );
+                record_failure();
                 metrics.inc_errors();
                 let body = full(Bytes::from("Gateway Timeout"));
                 return Ok(Response::builder().status(504).body(body).unwrap());
@@ -3785,13 +3982,7 @@ async fn handle_websocket_request(
         if backend_tls {
             // The rule's `@tls_ca` / `@tls_sni` / `@tls_client_cert` /
             // `@tls_insecure` apply to its WebSockets as to its requests.
-            let rule_tls = route.as_ref().and_then(|m| {
-                let base = m.targets.first()?.url.as_str();
-                config.rules[m.rule_idx]
-                    .upstream
-                    .client_for(Some(base), base)?
-                    .websocket_tls()
-            });
+            let rule_tls = rule_client.and_then(|c| c.websocket_tls());
             let (connector, sni) = match rule_tls {
                 Some((connector, sni)) => (connector, sni.cloned()),
                 None => (ws_backend_tls_connector(), None),
@@ -3820,6 +4011,7 @@ async fn handle_websocket_request(
                         backend_addr,
                         e
                     );
+                    record_failure();
                     metrics.inc_errors();
                     let body = full(Bytes::from("Backend not reachable"));
                     return Ok(Response::builder().status(502).body(body).unwrap());
@@ -3832,6 +4024,7 @@ async fn handle_websocket_request(
                         timeout_secs = 5,
                         "websocket backend TLS handshake timed out; returning 504"
                     );
+                    record_failure();
                     metrics.inc_errors();
                     let body = full(Bytes::from("Gateway Timeout"));
                     return Ok(Response::builder().status(504).body(body).unwrap());
@@ -3906,12 +4099,14 @@ async fn handle_websocket_request(
         Ok(Ok(n)) if n > 0 => n,
         Ok(_) => {
             tracing::error!("No response from backend for WebSocket upgrade");
+            record_failure();
             metrics.inc_errors();
             let body = full(Bytes::from("Backend did not respond to WebSocket upgrade"));
             return Ok(Response::builder().status(502).body(body).unwrap());
         }
         Err(_) => {
             tracing::error!("Backend timed out sending WebSocket upgrade response");
+            record_failure();
             metrics.inc_errors();
             let body = full(Bytes::from("Backend timed out on WebSocket upgrade"));
             return Ok(Response::builder().status(504).body(body).unwrap());
@@ -3924,6 +4119,19 @@ async fn handle_websocket_request(
         .next()
         .map(|l| l.starts_with("HTTP/1.1 101") || l.starts_with("HTTP/1.0 101"))
         .unwrap_or(false);
+    if let Some(key) = &breaker_key {
+        // The backend answered: alive, unless its answer is a failure status.
+        let status = response_str
+            .split_whitespace()
+            .nth(1)
+            .and_then(|c| c.parse::<u16>().ok());
+        match status {
+            Some(code) if !status_ok && circuit_breaker.is_failure_status(code) => {
+                circuit_breaker.record_failure(key)
+            }
+            _ => circuit_breaker.record_success(key),
+        }
+    }
     if !status_ok {
         tracing::error!(
             "Backend rejected WebSocket upgrade: {}",
@@ -4226,6 +4434,11 @@ async fn handle_regular_request(
                 _ => None,
             };
 
+            // `$client_ip` for a `headers { }` block: the client the door
+            // resolved (behind a trusted proxy, the address it forwarded) —
+            // read before the extensions that carry it are dropped below, or
+            // it was always the TCP peer.
+            let client_ip = crate::edge::client_ip(req.extensions()).or(peer_addr.map(|a| a.ip()));
             let (mut parts, body) = req.into_parts();
             parts.extensions = http::Extensions::new();
             // The client's hop-by-hop headers went at the door (see
@@ -4240,7 +4453,7 @@ async fn handle_regular_request(
             // with the client's original Host — before the https rewrite below.
 
             let header_vars = crate::config::HeaderVars {
-                client_ip: crate::edge::client_ip(&parts.extensions).or(peer_addr.map(|a| a.ip())),
+                client_ip,
                 scheme: if is_tls { "https" } else { "http" },
                 host: &matched_route.host,
             };
@@ -4702,17 +4915,33 @@ async fn handle_regular_request(
                         }
                         let uri = retry_uri.as_ref()?;
                         let untried = |url: &str| !tried.iter().any(|t| t == url);
+                        // `is_available` is asked once per candidate: on a
+                        // half-open breaker the first call takes the probe
+                        // permit and a second says no — the pushed instance
+                        // `pick` had just cleared was then dropped.
                         let next = match standby.take() {
-                            Some(t) => Some(t),
-                            None if served_app.is_none() => manager
-                                .external_routes
-                                .pick(h, &|url| untried(url) && circuit_breaker.is_available(url)),
+                            Some(t) => Some(t).filter(|t| {
+                                untried(t.url.as_str())
+                                    && circuit_breaker.is_available(t.url.as_str())
+                            }),
+                            None if served_app.is_none() => {
+                                // `pick` falls back to an instance nobody
+                                // cleared; only the one the predicate passed
+                                // will do.
+                                let cleared = parking_lot::Mutex::new(None::<String>);
+                                manager
+                                    .external_routes
+                                    .pick(h, &|url| {
+                                        let ok = untried(url) && circuit_breaker.is_available(url);
+                                        if ok {
+                                            *cleared.lock() = Some(url.to_string());
+                                        }
+                                        ok
+                                    })
+                                    .filter(|t| cleared.lock().as_deref() == Some(t.url.as_str()))
+                            }
                             None => None,
-                        }
-                        .filter(|t| untried(t.url.as_str()))?;
-                        if !circuit_breaker.is_available(next.url.as_str()) {
-                            return None;
-                        }
+                        }?;
                         Some(crate::upstream::Attempt {
                             target_url: app_target_url(&next.url, uri),
                             base_url: next.url.to_string(),
@@ -5058,6 +5287,23 @@ fn build_redirect_response(target_url: &str) -> Response<BoxBody> {
     }
 }
 
+/// What the static rules make of `req`, for
+/// [`AppManager::serving_route`](crate::app::AppManager::serving_route): the
+/// same match routing does, so that what follows the serving app (its error
+/// pages, its maintenance flag) follows the same precedence.
+pub(crate) fn static_route<B>(
+    req: &Request<B>,
+    rules: &[crate::config::ProxyRule],
+) -> crate::app::StaticRoute {
+    match find_matching_rule(req, rules) {
+        None => crate::app::StaticRoute::None,
+        Some(m) if m.from_domain_rule && matches!(m.resolution, UrlResolution::AppendPath) => {
+            crate::app::StaticRoute::WholeDomain
+        }
+        Some(_) => crate::app::StaticRoute::Other,
+    }
+}
+
 /// Pure routing: find which rule matches the request.
 /// Host matching is case-insensitive; the first matching rule wins.
 fn find_matching_rule<'a, B>(
@@ -5348,6 +5594,7 @@ fn next_target<'a>(
     })
 }
 
+#[cfg(test)]
 /// Backward-compatible wrapper: returns (target_url, from_domain_rule, matched_prefix, route_scripts)
 fn find_target<B>(
     req: &Request<B>,
@@ -6284,6 +6531,20 @@ mod tests {
             .unwrap();
         assert!(reject_malformed_request(&h2_match).is_none());
         assert!(reject_malformed_request(&get("/x", "a.example")).is_none());
+
+        // Userinfo in the authority (HTTP/2, no Host) or in Host: 400.
+        let userinfo = Request::builder()
+            .version(http::Version::HTTP_2)
+            .uri("https://x@a.example/x")
+            .body(())
+            .unwrap();
+        assert_eq!(reject_malformed_request(&userinfo).unwrap().status(), 400);
+        assert_eq!(
+            reject_malformed_request(&get("/x", "a.example:@evil.example"))
+                .unwrap()
+                .status(),
+            400
+        );
     }
 
     #[test]

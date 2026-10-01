@@ -86,6 +86,15 @@ const PRIVATE_RANGES: &[&str] = &["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16
 /// The `"loopback"` preset: a tunnel daemon (cloudflared, …) on this host.
 const LOOPBACK_RANGES: &[&str] = &["127.0.0.0/8", "::1/128"];
 
+/// Where a tenant's own workload connects from, in multi_tenant mode: the
+/// host's loopback (a native app runs on this host) and Docker's default
+/// address pools (`172.17.0.0/16`–`172.31.0.0/16` and `192.168.0.0/16` in
+/// /20s — a container reaches a published port from its bridge). A
+/// `trusted_proxies` entry covering any of them lets a tenant send forwarding
+/// headers the proxy believes. See [`TrustedProxies::tenant_reachable`].
+const TENANT_SOURCE_RANGES: &[&str] =
+    &["127.0.0.0/8", "::1/128", "172.16.0.0/12", "192.168.0.0/16"];
+
 /// The address as the rest of the proxy compares it: an IPv4-mapped IPv6
 /// address (what a dual-stack `[::]` listener reports for an IPv4 peer) is
 /// its IPv4 address, or `10.0.0.0/8` would never match it.
@@ -148,6 +157,15 @@ impl Cidr {
             },
         })
     }
+
+    /// Whether the two ranges share an address: equal under the shorter mask.
+    fn overlaps(self, other: Cidr) -> bool {
+        match (self, other) {
+            (Cidr::V4(a, m), Cidr::V4(b, n)) => a & (m & n) == b & (m & n),
+            (Cidr::V6(a, m), Cidr::V6(b, n)) => a & (m & n) == b & (m & n),
+            _ => false,
+        }
+    }
 }
 
 /// `[server] trusted_proxies`: the peers whose forwarding headers, request ID
@@ -168,18 +186,8 @@ impl TrustedProxies {
         let mut out = TrustedProxies::default();
         for entry in entries {
             let entry = entry.as_ref().trim();
-            let preset: Option<&[&[&str]]> = match entry.to_ascii_lowercase().as_str() {
-                "cloudflare" => Some(&[CLOUDFLARE_IPV4, CLOUDFLARE_IPV6]),
-                "private" => Some(&[PRIVATE_RANGES]),
-                "loopback" => Some(&[LOOPBACK_RANGES]),
-                _ => None,
-            };
-            let ranges: Vec<&str> = match preset {
-                Some(lists) => lists.iter().flat_map(|l| l.iter().copied()).collect(),
-                None => vec![entry],
-            };
-            for range in ranges {
-                match Cidr::parse(range).map_err(|e| format!("trusted_proxies: {}", e))? {
+            for range in Self::expand(entry)? {
+                match range {
                     Cidr::V4(n, m) => out.v4.push((n, m)),
                     Cidr::V6(n, m) => out.v6.push((n, m)),
                 }
@@ -187,6 +195,47 @@ impl TrustedProxies {
             out.entries.push(entry.to_string());
         }
         Ok(out)
+    }
+
+    /// One entry's ranges: a preset's list, or the entry itself.
+    fn expand(entry: &str) -> Result<Vec<Cidr>, String> {
+        let preset: Option<&[&[&str]]> = match entry.to_ascii_lowercase().as_str() {
+            "cloudflare" => Some(&[CLOUDFLARE_IPV4, CLOUDFLARE_IPV6]),
+            "private" => Some(&[PRIVATE_RANGES]),
+            "loopback" => Some(&[LOOPBACK_RANGES]),
+            _ => None,
+        };
+        let ranges: Vec<&str> = match preset {
+            Some(lists) => lists.iter().flat_map(|l| l.iter().copied()).collect(),
+            None => vec![entry],
+        };
+        ranges
+            .into_iter()
+            .map(|r| Cidr::parse(r).map_err(|e| format!("trusted_proxies: {}", e)))
+            .collect()
+    }
+
+    /// The entries, as written, that cover an address a tenant's workload can
+    /// connect from ([`TENANT_SOURCE_RANGES`]: loopback, Docker's default
+    /// pools). In multi_tenant mode each is a hole: a tenant's container or
+    /// native process is then a "trusted proxy" whose `X-Forwarded-For`,
+    /// request ID and `X-Forwarded-Proto` are believed — it can pose as any
+    /// client to the rate limiter, `[maintenance] allow_ips` and the backends.
+    /// For `soli-proxy check`.
+    pub fn tenant_reachable(&self) -> Vec<&str> {
+        let tenant: Vec<Cidr> = TENANT_SOURCE_RANGES
+            .iter()
+            .filter_map(|r| Cidr::parse(r).ok())
+            .collect();
+        self.entries
+            .iter()
+            .filter(|entry| {
+                Self::expand(entry).is_ok_and(|ranges| {
+                    ranges.iter().any(|r| tenant.iter().any(|t| r.overlaps(*t)))
+                })
+            })
+            .map(String::as_str)
+            .collect()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -510,9 +559,36 @@ impl ClientInfo {
                 .and_then(parse_forwarded_ip),
         };
         ClientInfo {
-            ip: ip.map(canonical_ip).unwrap_or(peer),
+            ip: ip
+                .map(canonical_ip)
+                .filter(|ip| plausible_forwarded_client(*ip))
+                .unwrap_or(peer),
             peer,
             trusted_peer: true,
+        }
+    }
+}
+
+/// Whether a header-derived address can be a remote client. Loopback,
+/// unspecified, link-local, multicast and broadcast addresses never reach the
+/// proxy from the network through a forwarder; a chain naming one is a forgery
+/// — `X-Forwarded-For: 127.0.0.1` from a trusted range is how a tenant on a
+/// trusted Docker network would have passed for this host — and the peer is
+/// taken as the client instead.
+fn plausible_forwarded_client(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(a) => {
+            !(a.is_loopback()
+                || a.is_unspecified()
+                || a.is_link_local()
+                || a.is_multicast()
+                || a.is_broadcast())
+        }
+        IpAddr::V6(a) => {
+            !(a.is_loopback()
+                || a.is_unspecified()
+                || a.is_unicast_link_local()
+                || a.is_multicast())
         }
     }
 }
@@ -589,8 +665,34 @@ pub fn client_info(ext: &http::Extensions) -> Option<&ClientInfo> {
     ext.get::<ClientInfo>()
 }
 
+/// The scheme `X-Forwarded-Proto` names, read the one way everything in the
+/// proxy reads it: the **last** value, across every field — the one the
+/// nearest proxy appended, the one a trusted proxy vouches for (what is left
+/// of it came from further away: the client, or proxies nobody listed).
+/// `http` or `https`, any case; `None` for anything else or no header.
+///
+/// `force_https` used to read the first value and the forwarding headers
+/// dropped a multi-valued header, so `https, http` was HTTPS for the
+/// redirect and plain HTTP for the backend.
+pub fn forwarded_proto(headers: &http::HeaderMap) -> Option<&'static str> {
+    let last = headers
+        .get_all("x-forwarded-proto")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .map(str::trim)
+        .rfind(|v| !v.is_empty())?;
+    if last.eq_ignore_ascii_case("https") {
+        Some("https")
+    } else if last.eq_ignore_ascii_case("http") {
+        Some("http")
+    } else {
+        None
+    }
+}
+
 /// Whether a trusted proxy in front says the client connected over HTTPS
-/// (`X-Forwarded-Proto: https`, first value).
+/// (`X-Forwarded-Proto: https`, see [`forwarded_proto`]).
 ///
 /// What `force_https` must ask on a plain-HTTP connection: a CDN that
 /// terminates TLS and talks plain HTTP to the proxy (Cloudflare "Flexible")
@@ -602,11 +704,7 @@ pub fn forwarded_https(headers: &http::HeaderMap, ext: &http::Extensions) -> boo
     if !client_info(ext).is_some_and(|c| c.trusted_peer) {
         return false;
     }
-    headers
-        .get("x-forwarded-proto")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(',').next())
-        .is_some_and(|p| p.trim().eq_ignore_ascii_case("https"))
+    forwarded_proto(headers) == Some("https")
 }
 
 /// For a peer that is not trusted, remove the header `real_ip_header` names
@@ -922,8 +1020,17 @@ mod tests {
         assert!(forwarded_https(&headers, &ext));
         headers.insert("x-forwarded-proto", "http".parse().unwrap());
         assert!(!forwarded_https(&headers, &ext));
-        headers.insert("x-forwarded-proto", "HTTPS, http".parse().unwrap());
+        // The last value is the nearest proxy's: one parser for the redirect
+        // and the forwarding headers.
+        headers.insert("x-forwarded-proto", "http, HTTPS".parse().unwrap());
         assert!(forwarded_https(&headers, &ext));
+        headers.insert("x-forwarded-proto", "HTTPS, http".parse().unwrap());
+        assert!(!forwarded_https(&headers, &ext));
+        headers.append("x-forwarded-proto", "https".parse().unwrap());
+        assert!(forwarded_https(&headers, &ext));
+        assert_eq!(forwarded_proto(&headers), Some("https"));
+        headers.insert("x-forwarded-proto", "gopher".parse().unwrap());
+        assert_eq!(forwarded_proto(&headers), None);
     }
 
     use super::*;
@@ -1026,6 +1133,80 @@ mod tests {
         let c = ClientInfo::resolve(ip("::ffff:10.0.0.1"), &xff(&["::ffff:1.2.3.4"]), &cfg);
         assert_eq!(c.ip, ip("1.2.3.4"));
         assert_eq!(c.peer, ip("10.0.0.1"));
+    }
+
+    /// A forwarded "client" that cannot have come from the network — this
+    /// host, an unspecified or link-local address — is a forgery: the peer
+    /// is the client. `X-Forwarded-For: 127.0.0.1` from a trusted Docker
+    /// range used to pass a tenant off as this host (`/metrics`, allowlists).
+    #[test]
+    fn a_forwarded_loopback_or_link_local_client_is_not_believed() {
+        let cfg = trusted(&["private", "loopback"]);
+        for forged in [
+            "127.0.0.1",
+            "127.8.9.1",
+            "::1",
+            "0.0.0.0",
+            "::",
+            "169.254.169.254",
+            "fe80::1",
+            "::ffff:127.0.0.1",
+            "224.0.0.1",
+            "255.255.255.255",
+        ] {
+            let c = ClientInfo::resolve(ip("172.18.0.5"), &xff(&[forged]), &cfg);
+            assert_eq!(c.ip, ip("172.18.0.5"), "{forged}");
+            assert!(c.trusted_peer);
+        }
+        // A trusted chain that ends (leftmost) on loopback: the peer too.
+        let c = ClientInfo::resolve(ip("10.0.0.1"), &xff(&["127.0.0.1, 10.0.0.2"]), &cfg);
+        assert_eq!(c.ip, ip("10.0.0.1"));
+        // The single-address header is held to the same rule.
+        let mut cfg = trusted(&["10.0.0.0/8"]);
+        cfg.real_ip_header = RealIpHeader::Single(HeaderName::from_static("x-real-ip"));
+        let mut h = HeaderMap::new();
+        h.insert("x-real-ip", "127.0.0.1".parse().unwrap());
+        assert_eq!(
+            ClientInfo::resolve(ip("10.0.0.1"), &h, &cfg).ip,
+            ip("10.0.0.1")
+        );
+        // A real remote client still comes through.
+        h.insert("x-real-ip", "198.51.100.7".parse().unwrap());
+        assert_eq!(
+            ClientInfo::resolve(ip("10.0.0.1"), &h, &cfg).ip,
+            ip("198.51.100.7")
+        );
+    }
+
+    /// `soli-proxy check` names the entries a tenant's workload can connect
+    /// from in multi_tenant mode.
+    #[test]
+    fn tenant_reachable_entries_are_named() {
+        let t = TrustedProxies::parse(&[
+            "cloudflare",
+            "private",
+            "loopback",
+            "10.0.0.0/8",
+            "172.20.0.0/16",
+            "192.168.1.7",
+            "0.0.0.0/0",
+            "2001:db8::/32",
+        ])
+        .unwrap();
+        assert_eq!(
+            t.tenant_reachable(),
+            vec![
+                "private",
+                "loopback",
+                "172.20.0.0/16",
+                "192.168.1.7",
+                "0.0.0.0/0"
+            ]
+        );
+        assert!(TrustedProxies::parse(&["cloudflare", "10.0.0.0/8"])
+            .unwrap()
+            .tenant_reachable()
+            .is_empty());
     }
 
     #[test]

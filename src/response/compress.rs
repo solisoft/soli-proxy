@@ -364,6 +364,25 @@ fn header_has_token(headers: &HeaderMap, name: header::HeaderName, token: &str) 
     })
 }
 
+/// Whether the body already carries a content coding: any coding other than
+/// `identity`, in any `Content-Encoding` field, in any position. Only the
+/// first field's whole value used to be compared, so `identity, gzip` (or a
+/// second field) was taken for identity and gzipped again — a body the
+/// client then decoded once and got garbage.
+fn already_encoded(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(header::CONTENT_ENCODING)
+        .iter()
+        .any(|field| match field.to_str() {
+            Ok(v) => v
+                .split(',')
+                .map(str::trim)
+                .any(|c| !c.is_empty() && !c.eq_ignore_ascii_case("identity")),
+            // Not even text: certainly not something to encode over.
+            Err(_) => true,
+        })
+}
+
 /// Whether `resp` is a candidate for compression at all — independently of
 /// what this client accepts, so that `Vary` is set on every response another
 /// client could get compressed.
@@ -375,10 +394,8 @@ fn eligible(resp: &Response<BoxBody>, config: &CompressionConfig) -> bool {
         return false;
     }
     let headers = resp.headers();
-    if let Some(ce) = headers.get(header::CONTENT_ENCODING) {
-        if !ce.as_bytes().eq_ignore_ascii_case(b"identity") && !ce.is_empty() {
-            return false;
-        }
+    if already_encoded(headers) {
+        return false;
     }
     if headers.contains_key(header::CONTENT_RANGE) {
         return false;
@@ -686,6 +703,23 @@ mod tests {
 
     fn pick(accept: &[&str]) -> Option<&'static str> {
         negotiate(&headers(accept), &CompressionConfig::default()).map(Coding::token)
+    }
+
+    #[test]
+    fn any_non_identity_coding_counts_as_encoded() {
+        let h = |values: &[&str]| {
+            let mut h = http::HeaderMap::new();
+            for v in values {
+                h.append(header::CONTENT_ENCODING, v.parse().unwrap());
+            }
+            h
+        };
+        assert!(!already_encoded(&h(&[])));
+        assert!(!already_encoded(&h(&["identity"])));
+        assert!(!already_encoded(&h(&["Identity", ""])));
+        assert!(already_encoded(&h(&["gzip"])));
+        assert!(already_encoded(&h(&["identity, gzip"])));
+        assert!(already_encoded(&h(&["identity", "br"])));
     }
 
     #[test]

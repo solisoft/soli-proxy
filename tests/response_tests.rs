@@ -596,3 +596,102 @@ async fn per_app_pages_and_maintenance() {
         .collect();
     assert_eq!(in_maintenance, vec!["other.test", "shop.test"]);
 }
+
+/// Multi-tenant: a tenant's `www.victim.com/` derives a claim on the apex,
+/// which the operator's rule serves. The tenant's `error_pages/` (its HTML,
+/// scripts included) and its `maintenance.flag` must not apply there — they
+/// did, by hostname, while routing correctly served the operator's rule.
+#[tokio::test]
+async fn a_tenants_derived_apex_lends_no_pages_or_flag_to_the_operators_rule() {
+    let sites = tempfile::tempdir().unwrap();
+    let site = sites.path().join("www.victim.test");
+    std::fs::create_dir_all(site.join("error_pages")).unwrap();
+    std::fs::write(
+        site.join("app.infos"),
+        "name = \"www.victim.test\"\ndomain = \"www.victim.test\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        site.join("error_pages/5xx.html"),
+        "<script>steal()</script>",
+    )
+    .unwrap();
+    std::fs::write(site.join("maintenance.flag"), "").unwrap();
+    // Nothing listens there: the operator's rule answers a proxy 502.
+    let dead = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let proxy = start_proxy(
+        &format!("victim.test -> http://127.0.0.1:{dead}/\n"),
+        "[apps]\nmulti_tenant = true\n",
+        Some(sites.path()),
+    )
+    .await;
+    let browser = [("Accept", "text/html")];
+
+    let resp = get(&proxy, "victim.test", "/", &browser).await;
+    assert_eq!(resp.status(), 502, "not closed by the tenant's flag");
+    assert!(!resp.text().await.unwrap().contains("steal"));
+
+    // The tenant's own host keeps both.
+    let resp = get(&proxy, "www.victim.test", "/", &browser).await;
+    assert_eq!(resp.status(), 503);
+}
+
+/// When an app takes a whole-domain rule over, a WebSocket upgrade is gated
+/// by the app alone, as a request is: the rule's `@forward_auth` used to be
+/// asked first as well.
+#[tokio::test]
+async fn an_app_taking_over_a_rule_drops_its_gates_for_websockets_too() {
+    let sites = tempfile::tempdir().unwrap();
+    let site = sites.path().join("app.test");
+    std::fs::create_dir_all(&site).unwrap();
+    std::fs::write(
+        site.join("app.infos"),
+        "name = \"app.test\"\ndomain = \"app.test\"\n",
+    )
+    .unwrap();
+    // An auth service that counts the requests it is asked, and says no.
+    let auth = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let auth_port = auth.local_addr().unwrap().port();
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = asked.clone();
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = auth.accept().await {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut tmp = [0u8; 4096];
+            let _ = sock.read(&mut tmp).await;
+            let _ = sock
+                .write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n")
+                .await;
+        }
+    });
+    let backend = spawn_backend().await;
+    let proxy = start_proxy(
+        &format!(
+            "app.test -> http://127.0.0.1:{backend}/ \
+             @forward_auth:http://127.0.0.1:{auth_port}/verify\n"
+        ),
+        "",
+        Some(sites.path()),
+    )
+    .await;
+    let mut sock = TcpStream::connect(("127.0.0.1", proxy.port)).await.unwrap();
+    sock.write_all(
+        b"GET /ws HTTP/1.1\r\nHost: app.test\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
+          Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+    )
+    .await
+    .unwrap();
+    let mut buf = vec![0u8; 4096];
+    let n = tokio::time::timeout(Duration::from_secs(5), sock.read(&mut buf))
+        .await
+        .unwrap()
+        .unwrap();
+    let resp = String::from_utf8_lossy(&buf[..n]).to_string();
+    // The app is not running: 421 — and the rule's auth service was never
+    // asked, nor its backend reached.
+    assert!(resp.starts_with("HTTP/1.1 421"), "{resp}");
+    assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 0);
+}

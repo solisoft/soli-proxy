@@ -835,6 +835,9 @@ pub fn put_config(state: &Arc<AdminState>, body: &str) -> Response<BoxBody> {
     // used to sit there (or reject a legitimate deletion). The same-index
     // rule is preferred when its matcher matches, so duplicate matchers
     // still pair up one-to-one.
+    if let Err(e) = crate::config::validate_global_scripts(&update.global_scripts) {
+        return error_response(400, &e.to_string());
+    }
     let cfg = state.config_manager.get_config();
     for (index, rule) in update.rules.iter_mut().enumerate() {
         let existing = cfg
@@ -1212,6 +1215,127 @@ mod routing_table_tests {
             .await
             .expect("a pushed domain resolves");
         assert!(open.auth.is_none(), "a domain pushed without auth is open");
+    }
+
+    /// Every string the serializer writes verbatim is refused when it could
+    /// not come back as the same token: a `\n` in a JSON field used to land
+    /// in proxy.conf as a line of its own — a whole route, injected.
+    #[test]
+    fn admin_route_json_cannot_inject_proxy_conf_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(&dir);
+        let conf = dir.path().join("proxy.conf");
+        let before = std::fs::read_to_string(&conf).unwrap();
+        let injected = "\nevil.example.com -> http://10.0.0.66/";
+        let rule = |matcher: serde_json::Value, extra: serde_json::Value| {
+            let mut rule = serde_json::json!({
+                "matcher": matcher,
+                "targets": [{ "url": "https://localhost:9999/", "weight": 100 }],
+                "headers": [],
+                "scripts": []
+            });
+            for (k, v) in extra.as_object().unwrap() {
+                rule[k] = v.clone();
+            }
+            rule
+        };
+        let prefix = serde_json::json!({ "type": "prefix", "value": "/a/" });
+        let bad = [
+            rule(
+                prefix.clone(),
+                serde_json::json!({ "upstream": { "tls_ca": format!("/etc/ca.pem{injected}") } }),
+            ),
+            rule(
+                prefix.clone(),
+                serde_json::json!({ "upstream": { "tls_ca": "/etc/my ca.pem" } }),
+            ),
+            rule(
+                prefix.clone(),
+                serde_json::json!({ "upstream": { "tls_ca": "/etc/ca.pem\\" } }),
+            ),
+            rule(
+                prefix.clone(),
+                serde_json::json!({ "upstream": { "tls_client_cert": "/c.pem", "tls_client_key": "/k,x.pem" } }),
+            ),
+            rule(
+                prefix.clone(),
+                serde_json::json!({ "upstream": { "tls_sni": format!("a.example{injected}") } }),
+            ),
+            rule(
+                prefix.clone(),
+                serde_json::json!({ "upstream": { "health": format!("/up{injected}") } }),
+            ),
+            rule(
+                serde_json::json!({ "type": "prefix", "value": format!("/b/{injected}") }),
+                serde_json::json!({}),
+            ),
+            rule(
+                serde_json::json!({ "type": "exact", "value": "/c->http://10.0.0.66/" }),
+                serde_json::json!({}),
+            ),
+            rule(
+                serde_json::json!({ "type": "regex", "value": format!("^/d{injected}") }),
+                serde_json::json!({}),
+            ),
+            rule(
+                serde_json::json!({ "type": "domain", "value": "#x.example" }),
+                serde_json::json!({}),
+            ),
+            rule(
+                prefix.clone(),
+                serde_json::json!({
+                    "auth": [{ "username": "a", "hash": hash() }],
+                    "auth_exempt": [format!("/hook{injected}")]
+                }),
+            ),
+            rule(
+                prefix.clone(),
+                serde_json::json!({ "auth": [{ "username": format!("a{injected}"), "hash": hash() }] }),
+            ),
+            rule(
+                prefix.clone(),
+                serde_json::json!({ "scripts": [format!("a.lua{injected} ok.lua")] }),
+            ),
+        ];
+        for rule in &bad {
+            assert_eq!(
+                post_route(&state, &rule.to_string()).status(),
+                400,
+                "accepted {rule}"
+            );
+            let table = serde_json::json!({ "rules": [rule] });
+            assert_eq!(
+                put_config(&state, &table.to_string()).status(),
+                400,
+                "accepted {rule}"
+            );
+        }
+        let scripts =
+            serde_json::json!({ "rules": [], "global_scripts": [format!("g.lua{injected}")] });
+        assert_eq!(put_config(&state, &scripts.to_string()).status(), 400);
+        assert_eq!(std::fs::read_to_string(&conf).unwrap(), before);
+    }
+
+    /// A route whose TLS file cannot be loaded is refused *before* proxy.conf
+    /// is written: it used to be on disk already when the 500 came back, and
+    /// the next reload failed on it.
+    #[test]
+    fn a_route_whose_tls_file_fails_is_not_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(&dir);
+        let conf = dir.path().join("proxy.conf");
+        let before = std::fs::read_to_string(&conf).unwrap();
+        let rule = serde_json::json!({
+            "matcher": { "type": "prefix", "value": "/a/" },
+            "targets": [{ "url": "https://localhost:9999/", "weight": 100 }],
+            "headers": [],
+            "scripts": [],
+            "upstream": { "tls_ca": "/nonexistent/soli-proxy-test-ca.pem" }
+        });
+        let resp = post_route(&state, &rule.to_string());
+        assert!(resp.status().is_client_error() || resp.status().is_server_error());
+        assert_eq!(std::fs::read_to_string(&conf).unwrap(), before);
+        assert_eq!(state.config_manager.get_config().rules.len(), 1);
     }
 
     /// A route arriving as JSON is checked like a `proxy.conf` line before it
