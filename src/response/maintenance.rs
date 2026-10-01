@@ -357,7 +357,11 @@ pub fn check<B>(
         .or_else(|| req.uri().authority().map(|a| a.as_str()))
         .unwrap_or("");
     let host = host_value.split(':').next().unwrap_or(host_value);
-    let route = apps.and_then(|m| m.routes().get(host).cloned());
+    // The app that serves this request, not merely one claiming the host: a
+    // tenant's derived claim on an apex the operator's rule (or a cluster
+    // push) serves must not put that apex into maintenance with its flag.
+    let route =
+        apps.and_then(|m| m.serving_route(host, crate::server::static_route(req, &config.rules)));
 
     let flag_window = Window::default();
     let window = match (&state.global, &route) {

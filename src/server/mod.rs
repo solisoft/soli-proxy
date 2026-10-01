@@ -5058,6 +5058,23 @@ fn build_redirect_response(target_url: &str) -> Response<BoxBody> {
     }
 }
 
+/// What the static rules make of `req`, for
+/// [`AppManager::serving_route`](crate::app::AppManager::serving_route): the
+/// same match routing does, so that what follows the serving app (its error
+/// pages, its maintenance flag) follows the same precedence.
+pub(crate) fn static_route<B>(
+    req: &Request<B>,
+    rules: &[crate::config::ProxyRule],
+) -> crate::app::StaticRoute {
+    match find_matching_rule(req, rules) {
+        None => crate::app::StaticRoute::None,
+        Some(m) if m.from_domain_rule && matches!(m.resolution, UrlResolution::AppendPath) => {
+            crate::app::StaticRoute::WholeDomain
+        }
+        Some(_) => crate::app::StaticRoute::Other,
+    }
+}
+
 /// Pure routing: find which rule matches the request.
 /// Host matching is case-insensitive; the first matching rule wins.
 fn find_matching_rule<'a, B>(

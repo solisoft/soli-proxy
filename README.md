@@ -1389,7 +1389,9 @@ With it on:
   this mode it does not displace an operator's static `proxy.conf` rule or a cluster-pushed
   route either. An app owns its domains whether or not it is running, so stopping a site no
   longer hands its apex to someone else's `www.` directory, and Basic Auth is always taken from
-  the app that is actually served.
+  the app that is actually served. The same goes for the app's `error_pages/` and its
+  `maintenance.flag`: they apply to the requests the app serves, never to an apex its claim
+  yielded to the operator's rule or a pushed route.
 - Slot ports come from the platform range (`[apps] port_range_start`/`port_range_end`); an
   app's own `port_range_*` is ignored. In every mode a range is refused if it reaches below
   1024 or covers one of the proxy's listeners.

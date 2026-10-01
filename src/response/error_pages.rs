@@ -328,6 +328,9 @@ pub struct ErrorCtx {
     request_id: Option<HeaderValue>,
     /// Set when some app has pages: looked up by host, on the error path only.
     apps: Option<Arc<crate::app::AppManager>>,
+    /// What the static rules made of the request, so the app whose pages are
+    /// used is the app that served it (see `AppManager::serving_route`).
+    rule: crate::app::StaticRoute,
 }
 
 /// Capture what a page will need, if a page could be served at all.
@@ -346,20 +349,29 @@ pub fn capture<B>(
             .authority()
             .and_then(|a| HeaderValue::from_str(a.as_str()).ok())
     });
+    // Only worth a routing match when an app could have pages for the host.
+    let rule = match apps {
+        Some(_) => crate::server::static_route(req, &config.rules),
+        None => crate::app::StaticRoute::None,
+    };
     Some(ErrorCtx {
         host,
         request_id: req.headers().get("x-request-id").cloned(),
         apps,
+        rule,
     })
 }
 
-/// The pages of the app serving `host`, if it has any.
+/// The pages of the app serving `host`, if it has any — the app that serves
+/// the request, not merely one that claims the hostname: a tenant's derived
+/// claim on an apex the operator's rule serves gets no say in its errors.
 pub(crate) fn app_pages(
     apps: &crate::app::AppManager,
     host_header: &str,
+    rule: crate::app::StaticRoute,
 ) -> Option<Arc<ErrorPages>> {
     let host = host_header.split(':').next().unwrap_or(host_header);
-    apps.routes().get(host)?.error_pages.clone()
+    apps.serving_route(host, rule)?.error_pages.clone()
 }
 
 /// Replace a proxy-generated error's body with its page, when there is one.
@@ -385,7 +397,10 @@ pub fn apply(
         return Ok(resp);
     }
     let host = header_str(ctx.host.as_ref());
-    let app_pages = ctx.apps.as_deref().and_then(|m| app_pages(m, host));
+    let app_pages = ctx
+        .apps
+        .as_deref()
+        .and_then(|m| app_pages(m, host, ctx.rule));
     let template = app_pages
         .as_deref()
         .and_then(|p| p.for_status(status.as_u16()))

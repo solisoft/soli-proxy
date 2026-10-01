@@ -13,6 +13,13 @@
 * **The health monitor falls back to `/health`**, like the deploy gate and adoption; it fell back
   to `/`, so an app could be alive for one and dead for the other.
 * **An `accept()` that fails for lack of descriptors backs off 100 ms** instead of spinning a core.
+* **Multi-tenant: a tenant's derived apex no longer lends its error pages or maintenance flag to
+  the operator's site.** A tenant's `www.victim.com/` derives a claim on `victim.com`; routing
+  let it yield to the operator's `proxy.conf` rule or a cluster push for that apex, but custom
+  error pages and `maintenance.flag` looked the host up by name — so the tenant's `error_pages/`
+  (its HTML and scripts, on the victim's origin) answered the apex's errors, and its flag closed
+  the apex. Both now ask `AppManager::serving_route`, which applies routing's own precedence, and
+  routing uses it too. A yielding app is also no longer woken or counted active by those requests.
 
 **Forward auth (gap/auth)**
 
