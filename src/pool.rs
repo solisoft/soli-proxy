@@ -140,8 +140,11 @@ impl ConnectionPool {
             // default), lower this below it or raise the backend's.
             .pool_idle_timeout(Duration::from_secs(15))
             // Cap idle sockets per backend host so a multi-tenant deploy with
-            // many origins cannot grow unbounded keep-alive pools.
-            .pool_max_idle_per_host(64)
+            // many origins cannot grow unbounded keep-alive pools. 256 rather
+            // than 64: under a burst one busy backend easily has more than 64
+            // requests in flight, and every one beyond the cap had its socket
+            // closed on completion and paid a fresh connect on the next request.
+            .pool_max_idle_per_host(256)
             .build(https);
 
         Self { client }
