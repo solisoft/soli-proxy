@@ -2,7 +2,7 @@
 //! (`src/server/mod.rs`) and the admin app passthrough (`src/admin/mod.rs`).
 
 use hyper::header::{
-    HeaderName, HeaderValue, CONNECTION, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION, TE, TRAILER,
+    HeaderName, HeaderValue, CONNECTION, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION, TE,
     TRANSFER_ENCODING, UPGRADE,
 };
 use std::net::IpAddr;
@@ -13,18 +13,40 @@ use std::net::IpAddr;
 /// `proxy-connection` is not in the RFC but is the pre-standard spelling some
 /// clients still send, and no backend has a use for it.
 ///
+/// Not here: `TE`, handled apart (`TE: trailers` is kept, see
+/// `strip_hop_by_hop`), and `Trailer`, which is an end-to-end field (RFC 9110
+/// §6.6.2 — RFC 2616's list said "Trailers", meaning the TE token). It
+/// announces the trailer fields that follow a body, and an HTTP/1.1 server —
+/// hyper's included — only sends the trailers it names, so stripping it threw
+/// away a gRPC-over-HTTP/1.1 response's `grpc-status`.
+///
 /// Static `HeaderName`s rather than `&str`: `HeaderMap::remove(&str)` parses
-/// and validates the name on every call, eight times per request.
-static HOP_BY_HOP: [HeaderName; 8] = [
+/// and validates the name on every call, six times per request.
+static HOP_BY_HOP: [HeaderName; 6] = [
     HeaderName::from_static("keep-alive"),
     PROXY_AUTHENTICATE,
     PROXY_AUTHORIZATION,
-    TE,
-    TRAILER,
     TRANSFER_ENCODING,
     UPGRADE,
     HeaderName::from_static("proxy-connection"),
 ];
+
+static TRAILERS: HeaderValue = HeaderValue::from_static("trailers");
+
+/// Whether a `TE` header accepts trailers (`TE: trailers`, or `trailers`
+/// among other codings).
+fn te_accepts_trailers(headers: &hyper::HeaderMap) -> bool {
+    headers
+        .get_all(TE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .any(|t| {
+            t.split(';')
+                .next()
+                .is_some_and(|c| c.trim().eq_ignore_ascii_case("trailers"))
+        })
+}
 
 /// Strip RFC 7230 §6.1 hop-by-hop headers and any header whose name appears in
 /// the request's `Connection:` header(s) before forwarding upstream.
@@ -38,7 +60,15 @@ static HOP_BY_HOP: [HeaderName; 8] = [
 /// The proxy runs this on the inbound request *before* any Lua hook sees it,
 /// so a client's `Connection: x-user` cannot delete a header a script set —
 /// it would otherwise be applied after the script, to the script's output.
+///
+/// `TE` is the exception: `TE: trailers` survives (as exactly that, whatever
+/// else the client listed), even when `Connection` nominates `TE` as HTTP/1.1
+/// requires. RFC 9110 §10.1.4 lets an intermediary forward it, and gRPC
+/// needs it to reach an HTTP/2 upstream (`crate::upstream` drops it again for
+/// an HTTP/1.1 one). Every other transfer coding the client accepts is about
+/// its own connection and goes.
 pub fn strip_hop_by_hop(headers: &mut hyper::HeaderMap) {
+    let trailers = te_accepts_trailers(headers);
     let listed: Vec<HeaderName> = headers
         .get_all(CONNECTION)
         .iter()
@@ -51,9 +81,13 @@ pub fn strip_hop_by_hop(headers: &mut hyper::HeaderMap) {
     for h in &HOP_BY_HOP {
         headers.remove(h);
     }
+    headers.remove(TE);
     headers.remove(CONNECTION);
     for name in listed {
         headers.remove(name);
+    }
+    if trailers {
+        headers.insert(TE, TRAILERS.clone());
     }
 }
 
@@ -222,6 +256,29 @@ mod tests {
         assert!(h.get("upgrade").is_none());
         assert!(h.get("transfer-encoding").is_none());
         assert_eq!(h.get("x-keep").unwrap(), "yes");
+    }
+
+    #[test]
+    fn te_keeps_only_trailers() {
+        let mut h = HeaderMap::new();
+        h.insert("te", "gzip, trailers;q=1".parse().unwrap());
+        h.insert("connection", "TE".parse().unwrap());
+        strip_hop_by_hop(&mut h);
+        assert_eq!(h.get("te").unwrap(), "trailers");
+        assert!(h.get("connection").is_none());
+
+        let mut h = HeaderMap::new();
+        h.insert("te", "gzip, deflate".parse().unwrap());
+        strip_hop_by_hop(&mut h);
+        assert!(h.get("te").is_none());
+    }
+
+    #[test]
+    fn trailer_announcements_are_end_to_end() {
+        let mut h = HeaderMap::new();
+        h.insert("trailer", "grpc-status, grpc-message".parse().unwrap());
+        strip_hop_by_hop(&mut h);
+        assert_eq!(h.get("trailer").unwrap(), "grpc-status, grpc-message");
     }
 
     #[test]
