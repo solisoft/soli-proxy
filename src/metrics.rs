@@ -189,6 +189,9 @@ impl Metrics {
     /// entry if needed). Used by the streaming response-body counter, which
     /// outlives the request handler.
     pub fn app_bytes_sent_counter(&self, app_name: &str) -> Arc<AtomicU64> {
+        if let Some(m) = self.app_metrics.read().get(app_name) {
+            return m.bytes_sent.clone();
+        }
         let mut apps = self.app_metrics.write();
         apps.entry(app_name.to_string())
             .or_default()
@@ -382,18 +385,7 @@ impl Metrics {
         duration: std::time::Duration,
         success: bool,
     ) {
-        let app_name = app_name.to_string();
-        {
-            let mut apps = self.app_metrics.write();
-            apps.entry(app_name.clone()).or_default();
-        }
-
-        let app_metrics = {
-            let apps = self.app_metrics.read();
-            apps.get(&app_name).cloned()
-        };
-
-        if let Some(metrics) = app_metrics {
+        let record = |metrics: &AppMetrics| {
             metrics.requests_total.fetch_add(1, Ordering::Relaxed);
             // Stored, not maxed: the clock can step backwards over NTP, and a
             // monotone-only field would then freeze an app's last-request time at
@@ -412,7 +404,18 @@ impl Metrics {
             if !success {
                 metrics.errors_total.fetch_add(1, Ordering::Relaxed);
             }
+        };
+
+        // Every proxied app request lands here. The counters are atomics, so
+        // a shared read lock is all an app already seen needs; the write lock
+        // (which every other request would queue behind) is taken once per
+        // app, the first time. This used to take it on every request.
+        if let Some(metrics) = self.app_metrics.read().get(app_name) {
+            record(metrics);
+            return;
         }
+        let mut apps = self.app_metrics.write();
+        record(apps.entry(app_name.to_string()).or_default());
     }
 
     pub fn inc_in_flight(&self) {

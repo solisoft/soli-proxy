@@ -1,7 +1,9 @@
+use arc_swap::ArcSwap;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::broadcast;
@@ -634,10 +636,13 @@ pub struct AppManager {
     /// `[apps] idle_timeout` from `config.toml`: the sleep threshold for apps
     /// whose `app.infos` does not set one. `0` (the default) disables it.
     default_idle_timeout: u64,
-    /// When each app last received a request, keyed by app name. An app absent
-    /// from the map has not been observed yet; the reaper starts its clock on
-    /// first sight rather than sleeping it on the spot.
-    last_activity: Arc<parking_lot::Mutex<HashMap<String, std::time::Instant>>>,
+    /// When each app last received a request, keyed by app name: milliseconds
+    /// since `epoch`, plus one, so that 0 means "not observed yet" — the
+    /// reaper starts its clock on first sight rather than sleeping the app
+    /// on the spot. Atomics, so the request path records itself with a
+    /// store; the routing table holds the same cells.
+    activity: Arc<parking_lot::Mutex<HashMap<String, Arc<AtomicU64>>>>,
+    epoch: std::time::Instant,
     /// Apps the reaper stopped for inactivity. A request for one of these is
     /// held while the app is started again, instead of answering 421.
     asleep: Arc<parking_lot::Mutex<HashSet<String>>>,
@@ -648,7 +653,11 @@ pub struct AppManager {
     /// domains can point at one running app, and repointing an alias is an
     /// atomic map swap with no restart — the primitive behind production
     /// aliases, per-branch URLs and instant rollback.
-    aliases: Arc<Mutex<HashMap<String, String>>>,
+    aliases: Arc<parking_lot::Mutex<HashMap<String, String>>>,
+    /// The routing table, rebuilt and swapped whenever something it depends
+    /// on changes (apps, slots, processes, aliases) and read lock-free by
+    /// every request: one load and one hash lookup.
+    routes: Arc<ArcSwap<AppRoutes>>,
     /// Serialises discoveries: see `discover_apps_inner`.
     discover_lock: Arc<Mutex<()>>,
     /// `[apps] port_range_*`, validated at construction.
@@ -794,6 +803,9 @@ pub struct AppRoute {
     pub health_check: Option<String>,
     /// The app's `[auth]`, when it has accounts.
     pub auth: Option<Arc<AppAuth>>,
+    /// The app's idle clock (see `AppManager::touch`), shared by all of its
+    /// hosts and across rebuilds: a request records itself with one store.
+    activity: Arc<AtomicU64>,
 }
 
 /// A resolved request: where to send it, and — for the proxy's own apps —
@@ -854,12 +866,13 @@ fn build_routes(
     apps: &HashMap<String, AppInfo>,
     aliases: &HashMap<String, String>,
     dev_mode: bool,
+    activity: &mut HashMap<String, Arc<AtomicU64>>,
 ) -> AppRoutes {
     let mut ordered: Vec<&AppInfo> = apps.values().collect();
     ordered.sort_by(|a, b| a.config.name.cmp(&b.config.name));
 
-    // One entry per app, shared by all of its hosts.
-    let entry = |app: &AppInfo, claim: Claim| AppRoute {
+    // An entry per claimed host; an app's entries share its idle clock.
+    let mut entry = |app: &AppInfo, claim: Claim| AppRoute {
         app: Arc::from(app.config.name.as_str()),
         claim,
         target: live_port(app)
@@ -867,6 +880,7 @@ fn build_routes(
         port: live_port(app).unwrap_or(0),
         health_check: app.config.health_check.clone(),
         auth: (!app.config.auth.users.is_empty()).then(|| Arc::new(app.config.auth.clone())),
+        activity: activity.entry(app.config.name.clone()).or_default().clone(),
     };
     let mut routes = AppRoutes::default();
     let mut claim = |host: String, app: &AppInfo, kind: Claim| {
@@ -1273,9 +1287,11 @@ impl AppManager {
             restart_trigger_file: cfg.apps.restart_trigger_file(),
             restart_trigger_poll_secs: cfg.apps.restart_trigger_poll_secs(),
             default_idle_timeout: cfg.apps.idle_timeout(),
-            last_activity: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            activity: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            epoch: std::time::Instant::now(),
             asleep: Arc::new(parking_lot::Mutex::new(HashSet::new())),
-            aliases: Arc::new(Mutex::new(read_aliases_file())),
+            aliases: Arc::new(parking_lot::Mutex::new(read_aliases_file())),
+            routes: Arc::new(ArcSwap::from_pointee(AppRoutes::default())),
             external_routes: Arc::new(external::ExternalRouteTable::default()),
             discover_lock: Arc::new(Mutex::new(())),
             port_range,
@@ -1361,17 +1377,45 @@ impl AppManager {
     }
 
     /// The routing table: one entry per host, see [`AppRoute`].
-    pub async fn routes(&self) -> Arc<AppRoutes> {
-        let apps = self.apps.lock().await;
-        let aliases = self.aliases.lock().await;
-        Arc::new(build_routes(&apps, &aliases, self.dev_mode))
+    pub fn routes(&self) -> Arc<AppRoutes> {
+        self.routes.load_full()
+    }
+
+    /// Rebuild the routing table from `apps` and publish it.
+    ///
+    /// Called with the apps lock held, after every change routing depends on
+    /// — discovery, a slot's process starting or going away, a traffic
+    /// switch, an alias — so tables are published in lock order and no
+    /// reader is handed an older table after a newer one. The request path
+    /// never builds anything: it used to lock the apps map up to five times
+    /// per request and rebuild a domain table on each, under the one mutex
+    /// every deploy and health check also takes.
+    fn publish_routes(&self, apps: &HashMap<String, AppInfo>) {
+        let aliases = self.aliases.lock();
+        let mut activity = self.activity.lock();
+        activity.retain(|name, _| apps.contains_key(name));
+        let routes = build_routes(apps, &aliases, self.dev_mode, &mut activity);
+        self.routes.store(Arc::new(routes));
+    }
+
+    /// Milliseconds since `epoch`, plus one (0 is "never").
+    fn now_ms(&self) -> u64 {
+        self.epoch.elapsed().as_millis() as u64 + 1
+    }
+
+    /// `app_name`'s idle clock.
+    fn activity_cell(&self, app_name: &str) -> Arc<AtomicU64> {
+        self.activity
+            .lock()
+            .entry(app_name.to_string())
+            .or_default()
+            .clone()
     }
 
     /// Domain -> (port, health_check) for every host currently served by a
     /// running app.
     pub async fn get_running_app_domains(&self) -> HashMap<String, (u16, Option<String>)> {
         self.routes()
-            .await
             .hosts
             .iter()
             .filter(|(_, route)| route.target.is_some())
@@ -1381,7 +1425,7 @@ impl AppManager {
 
     /// Current alias table (domain -> app name).
     pub async fn get_aliases(&self) -> HashMap<String, String> {
-        self.aliases.lock().await.clone()
+        self.aliases.lock().clone()
     }
 
     /// Point `domain` at `app`, replacing any existing alias for that domain.
@@ -1410,12 +1454,10 @@ impl AppManager {
                     owner.config.name
                 );
             }
+            self.aliases.lock().insert(domain.clone(), app.to_string());
+            self.publish_routes(&apps);
         }
 
-        self.aliases
-            .lock()
-            .await
-            .insert(domain.clone(), app.to_string());
         self.persist_aliases().await;
         tracing::info!("Alias {} -> {}", domain, app);
 
@@ -1428,7 +1470,14 @@ impl AppManager {
     /// Remove an alias. Returns whether it existed.
     pub async fn remove_alias(&self, domain: &str) -> bool {
         let domain = domain.trim().to_lowercase();
-        let removed = self.aliases.lock().await.remove(&domain).is_some();
+        let removed = {
+            let apps = self.apps.lock().await;
+            let removed = self.aliases.lock().remove(&domain).is_some();
+            if removed {
+                self.publish_routes(&apps);
+            }
+            removed
+        };
         if removed {
             self.persist_aliases().await;
             tracing::info!("Removed alias {}", domain);
@@ -1438,7 +1487,7 @@ impl AppManager {
 
     async fn persist_aliases(&self) {
         let state = {
-            let aliases = self.aliases.lock().await;
+            let aliases = self.aliases.lock();
             serde_json::Value::Object(
                 aliases
                     .iter()
@@ -1489,14 +1538,14 @@ impl AppManager {
         host: &str,
         is_available: &(dyn Fn(&str) -> bool + Sync),
     ) -> Option<AppTarget> {
-        let mut route = self.routes().await.get(host).cloned();
+        let mut route = self.routes().get(host).cloned();
         if let Some(ref r) = route {
-            self.touch(&r.app);
+            r.activity.store(self.now_ms(), Ordering::Relaxed);
             if r.target.is_none() && self.is_asleep(&r.app) {
                 match self.wake(&r.app).await {
                     // Woken and healthy: this request is the one that woke
                     // it, and it should be served, not told 421.
-                    Ok(()) => route = self.routes().await.get(host).cloned(),
+                    Ok(()) => route = self.routes().get(host).cloned(),
                     Err(e) => tracing::warn!("Could not wake {} for {}: {}", r.app, host, e),
                 }
             }
@@ -1541,7 +1590,6 @@ impl AppManager {
     /// the operator's own rule for the apex — and whatever `@auth` it had.
     pub async fn overrides_domain_rule(&self, host: &str) -> bool {
         self.routes()
-            .await
             .get(host)
             .is_some_and(|route| !(self.multi_tenant && route.claim == Claim::Derived))
     }
@@ -1551,7 +1599,7 @@ impl AppManager {
     /// that reached an app's port through a static rule.
     pub async fn app_for_target_url(&self, target_url: &str) -> Option<Arc<str>> {
         let port = loopback_port(target_url)?;
-        self.routes().await.ports.get(&port).cloned()
+        self.routes().ports.get(&port).cloned()
     }
 
     /// Every domain this proxy will answer for — its own apps plus pushed ones.
@@ -1588,7 +1636,7 @@ impl AppManager {
     /// owns the host but is not running has no request to protect, and a
     /// cluster-pushed route is enforced by the node that runs it.
     pub async fn auth_for_host(&self, host: &str) -> Option<Arc<AppAuth>> {
-        let routes = self.routes().await;
+        let routes = self.routes();
         let route = routes.get(host)?;
         route.target.as_ref()?;
         route.auth.clone()
@@ -1599,10 +1647,7 @@ impl AppManager {
     /// [`build_routes`] settles them, so this is always the app that would
     /// serve the host.
     pub async fn app_name_for_host(&self, host: &str) -> Option<String> {
-        self.routes()
-            .await
-            .get(host)
-            .map(|route| route.app.to_string())
+        self.routes().get(host).map(|route| route.app.to_string())
     }
 
     /// Trigger a failover for the given app in a background task.
@@ -1758,7 +1803,9 @@ impl AppManager {
                 .filter(|name| !seen_names.contains(*name))
                 .cloned()
                 .collect();
-            gone.iter().filter_map(|name| apps.remove(name)).collect()
+            let removed = gone.iter().filter_map(|name| apps.remove(name)).collect();
+            self.publish_routes(&apps);
+            removed
         };
         for app in removed {
             tracing::info!("App {} no longer exists on disk", app.config.name);
@@ -1850,7 +1897,7 @@ impl AppManager {
         let prunable: HashSet<String> = self
             .site_directory_names()
             .into_iter()
-            .chain(self.aliases.lock().await.keys().cloned())
+            .chain(self.aliases.lock().keys().cloned())
             .chain(self.external_routes.domains())
             .collect();
 
@@ -2055,6 +2102,7 @@ impl AppManager {
                 }
             }
         }
+        self.publish_routes(&apps);
     }
 
     /// Lightweight refresh: validate existing PIDs, re-detect missing ones.
@@ -2092,13 +2140,16 @@ impl AppManager {
                 }
             }
         }
+        self.publish_routes(&apps);
     }
 
     /// Load app state (current_slot) from disk so TUI can see deploys that happened
     /// while TUI was not running.
     pub fn load_app_state(&self) {
         if let Some(state) = read_app_state_file() {
-            apply_app_state(&mut self.apps.blocking_lock(), &state);
+            let mut apps = self.apps.blocking_lock();
+            apply_app_state(&mut apps, &state);
+            self.publish_routes(&apps);
         }
     }
 
@@ -2106,7 +2157,9 @@ impl AppManager {
     /// runtime, where `blocking_lock()` would panic.
     pub async fn load_app_state_async(&self) {
         if let Some(state) = read_app_state_file() {
-            apply_app_state(&mut *self.apps.lock().await, &state);
+            let mut apps = self.apps.lock().await;
+            apply_app_state(&mut apps, &state);
+            self.publish_routes(&apps);
         }
     }
 
@@ -2215,9 +2268,7 @@ impl AppManager {
         // it — a held request or an operator — it is awake from here on, and
         // its idle clock restarts so the reaper does not stop it again at once.
         self.asleep.lock().remove(app_name);
-        self.last_activity
-            .lock()
-            .insert(app_name.to_string(), std::time::Instant::now());
+        self.touch(app_name);
 
         let app = self
             .apps
@@ -2262,6 +2313,7 @@ impl AppManager {
                         instance.pid = None;
                         instance.status = InstanceStatus::Failed;
                     }
+                    self.publish_routes(&apps);
                 }
                 self.emit_event(AppEvent::StatusChanged {
                     app_name: app_name.to_string(),
@@ -2295,6 +2347,7 @@ impl AppManager {
             instance.pid = Some(pid);
             instance.status = InstanceStatus::Running;
             instance.last_started = Some(chrono::Utc::now().to_rfc3339());
+            self.publish_routes(&apps);
         }
 
         // Wait for health check. wait_for_health returns a descriptive error
@@ -2318,6 +2371,7 @@ impl AppManager {
                     instance.pid = None;
                     instance.status = InstanceStatus::Failed;
                 }
+                self.publish_routes(&apps);
             }
             self.emit_event(AppEvent::StatusChanged {
                 app_name: app_name.to_string(),
@@ -2347,6 +2401,7 @@ impl AppManager {
             // Persist while still holding the lock to prevent load_app_state()
             // from reverting the switch with stale disk data
             write_app_state_file(&apps);
+            self.publish_routes(&apps);
         }
         // Verify the routing state after switch
         {
@@ -2406,6 +2461,7 @@ impl AppManager {
                         instance.pid = None;
                         instance.status = InstanceStatus::Stopped;
                     }
+                    self.publish_routes(&apps);
                 }
                 tracing::info!("Stopped old slot {}", old_slot);
             }
@@ -2522,6 +2578,7 @@ impl AppManager {
                 instance.status = InstanceStatus::Stopped;
                 instance.pid = None;
             }
+            self.publish_routes(&apps);
         }
 
         self.emit_event(AppEvent::Stopped {
@@ -2570,6 +2627,7 @@ impl AppManager {
                     app_info.green.status = InstanceStatus::Stopped;
                     app_info.green.pid = None;
                 }
+                self.publish_routes(&apps_guard);
             }
         }
     }
@@ -2815,16 +2873,15 @@ impl AppManager {
 
     /// Record that a request just arrived for `host`.
     pub async fn note_activity(&self, host: &str) {
-        if let Some(route) = self.routes().await.get(host) {
-            self.touch(&route.app);
+        if let Some(route) = self.routes().get(host) {
+            route.activity.store(self.now_ms(), Ordering::Relaxed);
         }
     }
 
     /// Restart `app_name`'s idle clock.
     fn touch(&self, app_name: &str) {
-        self.last_activity
-            .lock()
-            .insert(app_name.to_string(), std::time::Instant::now());
+        self.activity_cell(app_name)
+            .store(self.now_ms(), Ordering::Relaxed);
     }
 
     /// Whether the reaper has stopped `app_name` for inactivity.
@@ -2874,9 +2931,7 @@ impl AppManager {
             };
             if running {
                 self.asleep.lock().remove(app_name);
-                self.last_activity
-                    .lock()
-                    .insert(app_name.to_string(), std::time::Instant::now());
+                self.touch(app_name);
                 return Ok(());
             }
             match self.deploy(app_name, &slot).await {
@@ -2898,7 +2953,7 @@ impl AppManager {
     /// Stop every app that has been idle past its threshold. Run by
     /// [`spawn_idle_reaper`](Self::spawn_idle_reaper).
     pub async fn reap_idle(&self) {
-        let now = std::time::Instant::now();
+        let now = self.now_ms();
         let candidates: Vec<(String, u64)> = {
             let apps = self.apps.lock().await;
             apps.values()
@@ -2914,18 +2969,15 @@ impl AppManager {
                 .collect()
         };
         for (name, timeout) in candidates {
-            let idle_for = {
-                let mut seen = self.last_activity.lock();
-                match seen.get(&name) {
-                    Some(last) => now.duration_since(*last),
-                    None => {
-                        // First sight: start the clock now. An app that came
-                        // up before the reaper did is not idle by definition.
-                        seen.insert(name.clone(), now);
-                        continue;
-                    }
-                }
-            };
+            let cell = self.activity_cell(&name);
+            let last = cell.load(Ordering::Relaxed);
+            if last == 0 {
+                // First sight: start the clock now. An app that came up
+                // before the reaper did is not idle by definition.
+                cell.store(now, Ordering::Relaxed);
+                continue;
+            }
+            let idle_for = std::time::Duration::from_millis(now.saturating_sub(last));
             if idle_for.as_secs() < timeout {
                 continue;
             }
@@ -3084,6 +3136,7 @@ impl AppManager {
                             instance.pid = None;
                             instance.status = InstanceStatus::Failed;
                         }
+                        manager.publish_routes(&apps);
                     }
 
                     // Record failover time for cooldown
@@ -4171,7 +4224,7 @@ typo_here = true
 
         let port_of = |routes: &AppRoutes, host: &str| routes.get(host).map(|r| r.port);
         for _ in 0..8 {
-            let routes = build_routes(&apps, &HashMap::new(), false);
+            let routes = build_routes(&apps, &HashMap::new(), false, &mut HashMap::new());
             assert_eq!(port_of(&routes, "victim.example.com"), Some(20000));
         }
 
@@ -4180,7 +4233,7 @@ typo_here = true
             "www.victim.example.com".to_string(),
             running_app("www.victim.example.com", "www.victim.example.com", 22000),
         );
-        let routes = build_routes(&apps, &HashMap::new(), false);
+        let routes = build_routes(&apps, &HashMap::new(), false, &mut HashMap::new());
         assert_eq!(port_of(&routes, "victim.example.com"), Some(20000));
         assert_eq!(port_of(&routes, "www.victim.example.com"), Some(22000));
     }
@@ -4206,7 +4259,7 @@ typo_here = true
             running_app("www.victim.example.com", "www.victim.example.com", 22000),
         );
 
-        let routes = build_routes(&apps, &HashMap::new(), false);
+        let routes = build_routes(&apps, &HashMap::new(), false, &mut HashMap::new());
         let apex = routes.get("victim.example.com").unwrap();
         assert_eq!(&*apex.app, "victim.example.com");
         assert_eq!(apex.claim, Claim::Declared);
@@ -4239,7 +4292,7 @@ typo_here = true
         .into_iter()
         .collect();
 
-        let routes = build_routes(&apps, &aliases, false);
+        let routes = build_routes(&apps, &aliases, false, &mut HashMap::new());
         // The alias outranks aaa's derived apex...
         let shop = routes.get("shop.example.com").unwrap();
         assert_eq!((&*shop.app, shop.claim), ("zzz.example.com", Claim::Alias));
@@ -4361,6 +4414,59 @@ admin = "$2b$12$adminhash"
         assert!(manager.auth_for_host("nobody.example.com").await.is_none());
     }
 
+    /// The published table follows the app's state: a slot coming up gives
+    /// its hosts a target, stopping it takes the target away (the app keeps
+    /// the host), and a routed request restarts the idle clock with a store.
+    #[tokio::test]
+    async fn the_routing_table_follows_app_state() {
+        let temp_dir = TempDir::new().unwrap();
+        let sites = temp_dir.path().join("sites");
+        site_with_app_infos(
+            &sites,
+            "live.example.com",
+            "name = \"live.example.com\"\ndomain = \"live.example.com\"\n",
+        );
+        let manager = test_manager(&temp_dir, &sites);
+        manager.discover_apps_readonly().await.unwrap();
+
+        let route = manager.routes().get("live.example.com").cloned().unwrap();
+        assert!(route.target.is_none());
+        assert!(manager
+            .resolve_app_request("live.example.com", &|_| true)
+            .await
+            .is_none());
+
+        mark_running(&manager, "live.example.com").await;
+        let resolved = manager
+            .resolve_app_request("live.example.com", &|_| true)
+            .await
+            .unwrap();
+        assert_eq!(resolved.app.as_deref(), Some("live.example.com"));
+        assert_eq!(resolved.target.url.host_str(), Some("127.0.0.1"));
+        let port = resolved.target.url.port().unwrap();
+        assert_eq!(
+            manager
+                .app_for_target_url(&format!("http://127.0.0.1:{port}/x"))
+                .await
+                .as_deref(),
+            Some("live.example.com")
+        );
+        assert_ne!(
+            manager
+                .activity_cell("live.example.com")
+                .load(Ordering::Relaxed),
+            0,
+            "a routed request is recorded for scale to zero"
+        );
+
+        // PID 4242 was never spawned by this proxy, so stopping the slot
+        // signals nothing — but the slot is gone from routing.
+        manager.stop("live.example.com").await.unwrap();
+        let route = manager.routes().get("live.example.com").cloned().unwrap();
+        assert!(route.target.is_none());
+        assert_eq!(&*route.app, "live.example.com");
+    }
+
     /// An AppManager over `sites`, with its proxy.conf, config.toml and run
     /// directory inside `temp_dir`.
     fn test_manager(temp_dir: &TempDir, sites: &Path) -> AppManager {
@@ -4380,6 +4486,7 @@ admin = "$2b$12$adminhash"
         app.blue.pid = Some(4242);
         app.blue.status = InstanceStatus::Running;
         app.current_slot = "blue".to_string();
+        manager.publish_routes(&apps);
     }
 
     /// its own path and start command instead of inheriting the second's.

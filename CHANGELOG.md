@@ -40,6 +40,19 @@
   `HTTP(S)_PROXY`/`NO_PROXY` reach containers only with `[apps] tenant_proxy_env = true`, and a
   value carrying `user:password@` only with `tenant_proxy_env_credentials = true` too.
 
+### Performance
+
+* **An app request no longer takes the global apps lock.** Each one locked the apps map up to
+  five times — and rebuilt a table of every app's domains, formatted and parsed a URL, and
+  sorted every app by name — before reaching the backend, under the same mutex deploys,
+  discovery and health checks hold. The routing table is now built when something it depends
+  on changes (discovery, a slot starting or stopping, a traffic switch, an alias) and published
+  through an `ArcSwap`; a request does one load and one hash lookup, gets its target, app and
+  auth from the same entry, and records itself for scale to zero with an atomic store.
+  Attributing a response to its app no longer locks the port allocator either.
+* **Per-app metrics take a read lock**, not the write lock every proxied request used to queue
+  behind; the write lock is taken once per app, the first time it is seen.
+
 ## [0.35.2](https://github.com/solisoft/soli-proxy/compare/v0.35.1...v0.35.2) (2026-09-27)
 
 ### Bug Fixes
