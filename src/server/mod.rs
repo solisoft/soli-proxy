@@ -3502,22 +3502,11 @@ async fn handle_websocket_request(
     }
 
     // Extract headers from backend 101 response
-    let mut accept_key = String::new();
-    let mut resp_protocol = None;
-    for line in response_str.lines().skip(1) {
-        if line.trim().is_empty() {
-            break;
-        }
-        if let Some((name, value)) = line.split_once(':') {
-            let name_lower = name.trim().to_lowercase();
-            let value = value.trim().to_string();
-            if name_lower == "sec-websocket-accept" {
-                accept_key = value;
-            } else if name_lower == "sec-websocket-protocol" {
-                resp_protocol = Some(value);
-            }
-        }
-    }
+    let Some((accept_key, resp_protocol)) = ws_upgrade_response_headers(&response_str) else {
+        tracing::error!("Backend sent WebSocket upgrade headers that are not valid header values");
+        metrics.inc_errors();
+        return Ok(plain_response(502, "Backend rejected WebSocket upgrade"));
+    };
 
     // Check for trailing data after the HTTP response headers.
     // The backend may send WebSocket frames immediately after the 101
@@ -3608,6 +3597,33 @@ async fn handle_websocket_request(
         resp = resp.header("Sec-WebSocket-Protocol", proto);
     }
     Ok(resp.body(empty()).unwrap())
+}
+
+/// The `Sec-WebSocket-Accept` and `Sec-WebSocket-Protocol` values of a
+/// backend's raw 101 response, as header values for the client's 101 — or
+/// `None` when either carries bytes a header value cannot hold (the response
+/// is decoded lossily, so any non-ASCII byte arrives as U+FFFD). They used to
+/// go into `Response::builder()` as strings, and a backend's bad byte
+/// panicked the connection on the final `.unwrap()`.
+pub(crate) fn ws_upgrade_response_headers(
+    response_str: &str,
+) -> Option<(HeaderValue, Option<HeaderValue>)> {
+    let mut accept_key = HeaderValue::from_static("");
+    let mut resp_protocol = None;
+    for line in response_str.lines().skip(1) {
+        if line.trim().is_empty() {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            let name = name.trim();
+            if name.eq_ignore_ascii_case("sec-websocket-accept") {
+                accept_key = HeaderValue::from_str(value.trim()).ok()?;
+            } else if name.eq_ignore_ascii_case("sec-websocket-protocol") {
+                resp_protocol = Some(HeaderValue::from_str(value.trim()).ok()?);
+            }
+        }
+    }
+    Some((accept_key, resp_protocol))
 }
 
 /// Returns (Response, target_url_for_logging, route_scripts)
@@ -3895,16 +3911,18 @@ async fn handle_regular_request(
                                 if let Ok(location_str) = location.to_str() {
                                     if location_str.starts_with('/') {
                                         let new_location = format!("{}{}", prefix, location_str);
-                                        let (mut parts, body) = response.into_parts();
-                                        parts
-                                            .headers
-                                            .insert("location", new_location.parse().unwrap());
-                                        let boxed = body.map_err(BoxError::from).boxed();
-                                        return Ok((
-                                            Response::from_parts(parts, boxed),
-                                            target_url,
-                                            route_scripts,
-                                        ));
+                                        // Fallible: a value that cannot be a
+                                        // header leaves Location as it was.
+                                        if let Ok(v) = HeaderValue::from_str(&new_location) {
+                                            let (mut parts, body) = response.into_parts();
+                                            parts.headers.insert(hyper::header::LOCATION, v);
+                                            let boxed = body.map_err(BoxError::from).boxed();
+                                            return Ok((
+                                                Response::from_parts(parts, boxed),
+                                                target_url,
+                                                route_scripts,
+                                            ));
+                                        }
                                     }
                                 }
                             }
@@ -4736,6 +4754,27 @@ mod tests {
         let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         e.write_all(data).unwrap();
         e.finish().unwrap()
+    }
+
+    #[test]
+    fn ws_upgrade_headers_with_bad_bytes_are_refused_not_panicked_on() {
+        let ok = "HTTP/1.1 101 Switching Protocols\r\nSec-WebSocket-Accept: abc=\r\n\
+                  sec-websocket-protocol: chat\r\n\r\n";
+        let (accept, proto) = ws_upgrade_response_headers(ok).unwrap();
+        assert_eq!(accept, "abc=");
+        assert_eq!(proto.unwrap(), "chat");
+        // A backend byte that is not valid in a header (lossy-decoded to
+        // U+FFFD, or DEL) makes the upgrade fail cleanly.
+        let bad =
+            String::from_utf8_lossy(b"HTTP/1.1 101 x\r\nSec-WebSocket-Accept: a\xffb\r\n\r\n")
+                .to_string();
+        assert!(ws_upgrade_response_headers(&bad).is_none());
+        let del = "HTTP/1.1 101 x\r\nSec-WebSocket-Protocol: a\x7fb\r\n\r\n";
+        assert!(ws_upgrade_response_headers(del).is_none());
+        // No accept header: an empty value, as before.
+        let (accept, proto) = ws_upgrade_response_headers("HTTP/1.1 101 x\r\n\r\n").unwrap();
+        assert_eq!(accept, "");
+        assert!(proto.is_none());
     }
 
     #[test]

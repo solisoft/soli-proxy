@@ -982,22 +982,12 @@ async fn proxy_websocket_to_admin_app(
     }
 
     // Extract headers from backend 101 response to forward to client
-    let mut accept_key = String::new();
-    let mut resp_protocol = None;
-    for line in response_str.lines().skip(1) {
-        if line.trim().is_empty() {
-            break;
-        }
-        if let Some((name, value)) = line.split_once(':') {
-            let name_lower = name.trim().to_lowercase();
-            let value = value.trim().to_string();
-            if name_lower == "sec-websocket-accept" {
-                accept_key = value;
-            } else if name_lower == "sec-websocket-protocol" {
-                resp_protocol = Some(value);
-            }
-        }
-    }
+    let Some((accept_key, resp_protocol)) =
+        crate::server::ws_upgrade_response_headers(&response_str)
+    else {
+        tracing::error!("_admin sent WebSocket upgrade headers that are not valid header values");
+        return error_response(502, "Backend rejected WebSocket upgrade");
+    };
 
     // Check for trailing WebSocket data after the HTTP response headers
     let trailing_data = response_buf[..n]

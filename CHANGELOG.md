@@ -313,6 +313,11 @@
   `X-Forwarded-*` verbatim (on WebSockets too); it now goes through the same
   `set_forwarding_headers` as every proxied request. The admin API's rate limiter and its
   failed-login budget key IPv6 clients by /64, like the proxy's.
+* **Two more backend-controlled panics are gone.** A backend's WebSocket 101 whose
+  `Sec-WebSocket-Accept`/`-Protocol` held a byte invalid in a header panicked on building the
+  client's 101 (proxy and `_admin` passthrough alike); it is now a 502. A prefix-mounted
+  redirect whose rewritten `Location` could not be a header value panicked; the `Location` is
+  now left as the backend sent it.
 
 ## [0.35.2](https://github.com/solisoft/soli-proxy/compare/v0.35.1...v0.35.2) (2026-09-27)
 
