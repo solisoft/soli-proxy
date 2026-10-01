@@ -55,6 +55,10 @@ pub struct TomlConfig {
     pub error_pages: Option<crate::response::error_pages::ErrorPagesConfig>,
     #[serde(default)]
     pub maintenance: Option<crate::response::maintenance::MaintenanceConfig>,
+    #[serde(default)]
+    pub upstream: Option<crate::upstream::UpstreamTomlConfig>,
+    #[serde(default)]
+    pub health_checks: Option<crate::upstream::HealthChecksTomlConfig>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -624,6 +628,10 @@ pub struct Config {
     /// `[maintenance]`: allowlists and defaults. The on/off state is not
     /// configuration; it lives in `ConfigManager::maintenance`.
     pub maintenance: crate::response::maintenance::MaintenanceConfig,
+    /// `[upstream]`: retries.
+    pub upstream: crate::upstream::UpstreamConfig,
+    /// `[health_checks]`: active checks of static targets.
+    pub health_checks: crate::upstream::HealthChecksConfig,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
@@ -737,6 +745,13 @@ pub struct ProxyRule {
     /// never, whatever `[compression] enabled` says. `None` follows it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compress: Option<bool>,
+    /// `@retries`, `@timeout`, `@h2`, `@tls_*`, `@health`, ... (see
+    /// `crate::upstream`).
+    #[serde(
+        default,
+        skip_serializing_if = "crate::upstream::UpstreamOptions::is_default"
+    )]
+    pub upstream: crate::upstream::UpstreamOptions,
 }
 
 impl ProxyRule {
@@ -786,6 +801,7 @@ impl ProxyRule {
                 check_capture_refs(&target.url, &rm.regex)?;
             }
         }
+        self.upstream.validate(&self.targets)?;
         Ok(())
     }
 
@@ -1249,6 +1265,21 @@ recovery_timeout_secs = 30
 success_threshold = 2
 failure_status_codes = [502, 503, 504]
 
+# Upstream retries: a failed attempt goes to the rule's next target when that
+# is safe (a connect failure; otherwise idempotent requests without a body).
+# [upstream]
+# retries = 1
+# retry_on = ["connect", "error"]   # may add "502", "503", "504", "500"
+# try_duration = "5s"
+
+# Active health checks of proxy.conf targets (@health:/path per route).
+# [health_checks]
+# default_path = "/healthz"
+# interval = "10s"
+# timeout = "2s"
+# unhealthy_threshold = 3
+# healthy_threshold = 2
+
 # Admin REST API Configuration
 # Default binds to loopback only. Exposing on a non-loopback address
 # requires api_key or username+password_hash — the proxy refuses to
@@ -1320,7 +1351,7 @@ hook_timeout_ms = 10
         // The process environment wins over the `.env` file.
         let env = |key: &str| std::env::var(key).ok().or_else(|| dotenv.get(key).cloned());
 
-        Ok(Config {
+        let mut config = Config {
             server: toml_config.server,
             tls: toml_config.tls,
             letsencrypt: toml_config.letsencrypt,
@@ -1389,7 +1420,15 @@ hook_timeout_ms = 10
             compression: toml_config.compression.unwrap_or_default().validated()?,
             error_pages: toml_config.error_pages.unwrap_or_default().loaded()?,
             maintenance: toml_config.maintenance.unwrap_or_default().validated()?,
-        })
+            upstream: crate::upstream::UpstreamConfig::from_toml(toml_config.upstream.as_ref())?,
+            health_checks: crate::upstream::HealthChecksConfig::from_toml(
+                toml_config.health_checks.as_ref(),
+            )?,
+        };
+        // Per-rule upstream clients (`@h2`, `@tls_*`, unix sockets, ...):
+        // built here, once, so a request only reads the one it needs.
+        crate::upstream::prepare(&mut config)?;
+        Ok(config)
     }
 
     pub fn get_config(&self) -> Arc<Config> {
@@ -1538,6 +1577,7 @@ hook_timeout_ms = 10
         let mut config = (*self.config.load().as_ref()).clone();
         config.rules = rules;
         config.global_scripts = global_scripts;
+        crate::upstream::prepare(&mut config)?;
         self.config.store(Arc::new(config));
         tracing::info!("Configuration persisted to {}", self.config_path.display());
         Ok(())
@@ -1666,6 +1706,7 @@ struct RuleTail {
     weighted: bool,
     forward_auth: Option<crate::forward_auth::ForwardAuth>,
     compress: Option<bool>,
+    upstream: crate::upstream::UpstreamOptions,
 }
 
 /// Parse the right-hand side of a rule.
@@ -1690,9 +1731,12 @@ fn parse_rule_tail(tail: &str) -> Result<RuleTail> {
             target_text.push_str(token);
             continue;
         };
-        let (kind, value) = directive.split_once(':').ok_or_else(|| {
-            anyhow::anyhow!("malformed directive {:?} (expected @name:value)", token)
-        })?;
+        let (kind, value) = match directive.split_once(':') {
+            Some(kv) => kv,
+            // `@h2`, `@tls_insecure`: flags, written without a value.
+            None if crate::upstream::is_flag(directive) => (directive, ""),
+            None => anyhow::bail!("malformed directive {:?} (expected @name:value)", token),
+        };
         match kind {
             "script" => out.scripts.extend(parse_script_list(value)?),
             "auth" => match value.split_once(':') {
@@ -1749,9 +1793,12 @@ fn parse_rule_tail(tail: &str) -> Result<RuleTail> {
                     anyhow::bail!("@compress: given more than once");
                 }
             }
+            k if crate::upstream::is_directive(k) => out.upstream.apply_directive(k, value)?,
             other => anyhow::bail!(
                 "unknown directive @{}: (expected @script:, @auth:, @noauth:, @lb:, \
-                 @forward_auth:, @forward_auth_headers: or @compress:)",
+                 @forward_auth:, @forward_auth_headers:, @compress:, @retries:, @timeout:, \
+                 @connect_timeout:, @h2, @tls_ca:, @tls_insecure, @tls_sni:, @tls_client_cert:, \
+                 @health: or @health_interval:)",
                 other
             ),
         }
@@ -1787,6 +1834,7 @@ fn parse_rule_tail(tail: &str) -> Result<RuleTail> {
         }
         let url =
             Url::parse(url).map_err(|e| anyhow::anyhow!("invalid target {:?}: {}", url, e))?;
+        crate::upstream::validate_target(&url)?;
         out.targets.push(Target { url, weight });
     }
     Ok(out)
@@ -2194,6 +2242,7 @@ fn parse_rule(source: &str, target_str: &str) -> Result<ProxyRule> {
             check_capture_refs(&target.url, &rm.regex)?;
         }
     }
+    tail.upstream.validate(&tail.targets)?;
     // `weight:N` on a target means weighted balancing unless the rule says
     // otherwise — that is how the README has always written it.
     let load_balancing = tail.load_balancing.unwrap_or(if tail.weighted {
@@ -2211,6 +2260,7 @@ fn parse_rule(source: &str, target_str: &str) -> Result<ProxyRule> {
         load_balancing,
         forward_auth: tail.forward_auth,
         compress: tail.compress,
+        upstream: tail.upstream,
     })
 }
 
@@ -2868,6 +2918,7 @@ api_key = "secret123"
             load_balancing: LoadBalancingStrategy::default(),
             forward_auth: None,
             compress: None,
+            upstream: Default::default(),
         }
     }
 

@@ -8,8 +8,7 @@ use crate::circuit_breaker::SharedCircuitBreaker;
 use crate::config::ConfigManager;
 use crate::metrics::SharedMetrics;
 use crate::pool::{
-    is_body_limit_error, is_client_body_error, proxy_request_body, BoxError, ConnectionPool,
-    ProxyClient,
+    is_body_limit_error, is_client_body_error, BoxError, ConnectionPool, ProxyClient,
 };
 use crate::shutdown::ShutdownCoordinator;
 use anyhow::Result;
@@ -1478,6 +1477,14 @@ impl ProxyServer {
         // One shared connection pool for every accept loop (HTTP + HTTPS).
         // Clones are cheap and share idle keep-alive sockets across listeners.
         let shared_client = ConnectionPool::new().client();
+        // Active health checks of static targets (`@health`,
+        // `[health_checks]`), kept in step with every reload.
+        crate::upstream::health::spawn(
+            self.config.clone(),
+            self.circuit_breaker.clone(),
+            shared_client.clone(),
+            self.shutdown.clone(),
+        );
         let app_manager = self.app_manager.clone();
         for i in 0..num_listeners {
             let config_clone = self.config.clone();
@@ -2860,7 +2867,16 @@ async fn handle_request_inner(
     // the field, or the .conf route format which can't express it. Without a
     // default, a stuck backend hangs the client indefinitely ("pending" in the
     // browser) instead of returning a bounded 504.
-    let timeout_sec = Duration::from_secs(config.limits.request_timeout.unwrap_or(60));
+    // A rule's `@timeout` overrides it; the rule is only looked up when some
+    // rule has one.
+    let timeout_sec = crate::upstream::request_timeout(
+        &config,
+        if config.upstream.route_timeouts {
+            find_matching_rule(&req, &config.rules).map(|m| m.rule_idx)
+        } else {
+            None
+        },
+    );
 
     // Capture before `req` is moved into the handler, for the timeout log
     // and byte accounting. A `Method`/`Uri` clone is a refcount bump, not a
@@ -3012,6 +3028,26 @@ fn strip_leading_slash(path: &str) -> &str {
     path.strip_prefix('/').unwrap_or(path)
 }
 
+/// The URL an app-managed request goes to: the slot's (or pushed instance's)
+/// base URL, then the request's path and query.
+fn app_target_url(base: &url::Url, uri: &hyper::Uri) -> String {
+    let path = uri.path();
+    let query = uri.query();
+    let mut out =
+        String::with_capacity(base.as_str().len() + path.len() + query.map_or(0, |q| q.len() + 1));
+    out.push_str(base.as_str());
+    if base.as_str().ends_with('/') {
+        out.push_str(strip_leading_slash(path));
+    } else {
+        out.push_str(path);
+    }
+    if let Some(q) = query {
+        out.push('?');
+        out.push_str(q);
+    }
+    out
+}
+
 /// True if `s` contains CR or LF (unsafe in raw HTTP request lines/headers).
 fn contains_crlf(s: &str) -> bool {
     s.bytes().any(|b| b == b'\r' || b == b'\n')
@@ -3023,8 +3059,14 @@ fn host_eq(a: &str, b: &str) -> bool {
 }
 
 /// Validate a proxy target URL after config resolution or Lua `on_route` override.
-/// Only `http://`, `https://`, and `redirect://` with a non-empty host are allowed.
+/// Only `http://`, `https://`, `h2c://` and `redirect://` with a non-empty
+/// host are allowed, and `unix:/absolute/path.sock` (which
+/// `apply_route_hook_result` refuses from a script).
 fn validate_proxy_target_url(url: &str) -> bool {
+    if url.starts_with("unix:") {
+        return !contains_crlf(url)
+            && url::Url::parse(url).is_ok_and(|u| crate::upstream::validate_target(&u).is_ok());
+    }
     if url.starts_with("redirect://") {
         let rest = url.strip_prefix("redirect://").unwrap_or("");
         if rest.is_empty() || contains_crlf(rest) {
@@ -3040,7 +3082,9 @@ fn validate_proxy_target_url(url: &str) -> bool {
     }
     match url::Url::parse(url) {
         Ok(u) => {
-            matches!(u.scheme(), "http" | "https") && u.host().is_some() && !contains_crlf(url)
+            matches!(u.scheme(), "http" | "https" | "h2c")
+                && u.host().is_some()
+                && !contains_crlf(url)
         }
         Err(_) => false,
     }
@@ -3192,6 +3236,7 @@ fn run_route_hooks(
     req: &mut Request<Incoming>,
     route_scripts: &[String],
     target_url: &mut String,
+    overridden: &mut bool,
 ) -> Option<Response<BoxBody>> {
     let mut view: Option<LuaRequest> = None;
     for script_name in route_scripts {
@@ -3225,7 +3270,7 @@ fn run_route_hooks(
     let lua_req = view.unwrap_or_else(|| build_lua_request(req));
     if global {
         let result = engine.call_on_route(&lua_req, target_url.as_str());
-        if let Some(resp) = apply_route_hook_result(result, target_url, "on_route") {
+        if let Some(resp) = apply_route_hook_result(result, target_url, overridden, "on_route") {
             return Some(resp);
         }
     }
@@ -3234,7 +3279,7 @@ fn run_route_hooks(
             continue;
         }
         let result = engine.call_route_on_route(script_name, &lua_req, target_url.as_str());
-        if let Some(resp) = apply_route_hook_result(result, target_url, script_name) {
+        if let Some(resp) = apply_route_hook_result(result, target_url, overridden, script_name) {
             return Some(resp);
         }
     }
@@ -3248,12 +3293,17 @@ fn run_route_hooks(
 fn apply_route_hook_result(
     result: RouteHookResult,
     target_url: &mut String,
+    overridden: &mut bool,
     hook: &str,
 ) -> Option<Response<BoxBody>> {
     match result {
         RouteHookResult::Override(new_url) => {
-            if validate_proxy_target_url(&new_url) {
+            // A Unix socket is reachable only as a configured target: a
+            // script assembling a URL from request data must not be able to
+            // point the proxy at /var/run/docker.sock.
+            if validate_proxy_target_url(&new_url) && !new_url.starts_with("unix:") {
                 *target_url = new_url;
+                *overridden = true;
             } else {
                 tracing::warn!(
                     "Lua {} returned disallowed target URL, ignoring: {}",
@@ -3530,7 +3580,11 @@ async fn handle_websocket_request(
         #[cfg(feature = "scripting")]
         Some((mut url, _, _, route_scripts)) => {
             if let Some(engine) = lua_engine.as_ref() {
-                if let Some(resp) = run_route_hooks(engine, &mut req, &route_scripts, &mut url) {
+                // The tunnel goes where the URL says; no retry to keep apart.
+                let mut overridden = false;
+                if let Some(resp) =
+                    run_route_hooks(engine, &mut req, &route_scripts, &mut url, &mut overridden)
+                {
                     return Ok(resp);
                 }
             }
@@ -3664,66 +3718,51 @@ async fn handle_websocket_request(
         query
     );
 
-    // Connect to the backend. Bounded by a 5s connect timeout (matching the
-    // HTTP pool's connect_timeout): the WS upgrade path runs before the
-    // request-timeout wrapper, so an unbounded connect to a black-holed
-    // backend would otherwise hang the upgrade indefinitely.
-    let tcp = match timeout(Duration::from_secs(5), TcpStream::connect(&backend_addr)).await {
-        Ok(Ok(s)) => {
-            // Frames are small and latency-bound; without TCP_NODELAY Nagle
-            // holds each one back waiting for the previous one's ACK. The
-            // client side and the HTTP pool already set it.
-            let _ = s.set_nodelay(true);
-            s
-        }
-        Ok(Err(e)) => {
-            tracing::error!("Failed to connect to backend for WebSocket: {}", e);
-            metrics.inc_errors();
-            let body = full(Bytes::from("Backend not reachable"));
-            return Ok(Response::builder().status(502).body(body).unwrap());
-        }
-        Err(_) => {
-            tracing::warn!(
-                layer = "proxy_ws",
-                backend = %backend_addr,
-                path = %path,
-                timeout_secs = 5,
-                "websocket backend connect timed out; returning 504"
-            );
-            metrics.inc_errors();
-            let body = full(Bytes::from("Gateway Timeout"));
-            return Ok(Response::builder().status(504).body(body).unwrap());
-        }
-    };
-
-    // Wrap the stream in TLS when the backend target is https/wss.
-    let backend: Box<dyn AsyncStream> = if backend_tls {
-        let server_name = match rustls_pki_types::ServerName::try_from(backend_host.clone()) {
-            Ok(n) => n,
-            Err(e) => {
-                tracing::error!(
-                    "Invalid TLS server name for WebSocket backend {}: {}",
-                    backend_host,
-                    e
-                );
-                metrics.inc_errors();
-                let body = full(Bytes::from("Bad backend URL"));
-                return Ok(Response::builder().status(502).body(body).unwrap());
-            }
-        };
+    // A `unix:` target: the tunnel goes to its socket. Its requests are
+    // addressed to a placeholder host (`crate::upstream::routing_url`), so
+    // the socket is taken from the rule — the first target, as above — unless
+    // a script sent the upgrade elsewhere.
+    let unix_socket = route
+        .as_ref()
+        .filter(|_| backend_host == crate::upstream::UNIX_AUTHORITY)
+        .and_then(|m| m.targets.first())
+        .filter(|t| t.url.scheme() == "unix")
+        .map(|t| t.url.path().to_string());
+    let backend: Box<dyn AsyncStream> = if let Some(socket) = unix_socket {
         match timeout(
             Duration::from_secs(5),
-            ws_backend_tls_connector().connect(server_name, tcp),
+            tokio::net::UnixStream::connect(&socket),
         )
         .await
         {
             Ok(Ok(s)) => Box::new(s),
             Ok(Err(e)) => {
-                tracing::error!(
-                    "TLS handshake with WebSocket backend {} failed: {}",
-                    backend_addr,
-                    e
-                );
+                tracing::error!("Failed to connect to {} for WebSocket: {}", socket, e);
+                metrics.inc_errors();
+                let body = full(Bytes::from("Backend not reachable"));
+                return Ok(Response::builder().status(502).body(body).unwrap());
+            }
+            Err(_) => {
+                metrics.inc_errors();
+                let body = full(Bytes::from("Gateway Timeout"));
+                return Ok(Response::builder().status(504).body(body).unwrap());
+            }
+        }
+    } else {
+        // Connect to the backend. Bounded by a 5s connect timeout (matching the
+        // HTTP pool's connect_timeout): the WS upgrade path runs before the
+        // request-timeout wrapper, so an unbounded connect to a black-holed
+        // backend would otherwise hang the upgrade indefinitely.
+        let tcp = match timeout(Duration::from_secs(5), TcpStream::connect(&backend_addr)).await {
+            Ok(Ok(s)) => {
+                // Frames are small and latency-bound; without TCP_NODELAY Nagle
+                // holds each one back waiting for the previous one's ACK. The
+                // client side and the HTTP pool already set it.
+                let _ = s.set_nodelay(true);
+                s
+            }
+            Ok(Err(e)) => {
+                tracing::error!("Failed to connect to backend for WebSocket: {}", e);
                 metrics.inc_errors();
                 let body = full(Bytes::from("Backend not reachable"));
                 return Ok(Response::builder().status(502).body(body).unwrap());
@@ -3734,15 +3773,73 @@ async fn handle_websocket_request(
                     backend = %backend_addr,
                     path = %path,
                     timeout_secs = 5,
-                    "websocket backend TLS handshake timed out; returning 504"
+                    "websocket backend connect timed out; returning 504"
                 );
                 metrics.inc_errors();
                 let body = full(Bytes::from("Gateway Timeout"));
                 return Ok(Response::builder().status(504).body(body).unwrap());
             }
+        };
+
+        // Wrap the stream in TLS when the backend target is https/wss.
+        if backend_tls {
+            // The rule's `@tls_ca` / `@tls_sni` / `@tls_client_cert` /
+            // `@tls_insecure` apply to its WebSockets as to its requests.
+            let rule_tls = route.as_ref().and_then(|m| {
+                let base = m.targets.first()?.url.as_str();
+                config.rules[m.rule_idx]
+                    .upstream
+                    .client_for(Some(base), base)?
+                    .websocket_tls()
+            });
+            let (connector, sni) = match rule_tls {
+                Some((connector, sni)) => (connector, sni.cloned()),
+                None => (ws_backend_tls_connector(), None),
+            };
+            let server_name = match sni.map_or_else(
+                || rustls_pki_types::ServerName::try_from(backend_host.clone()),
+                Ok,
+            ) {
+                Ok(n) => n,
+                Err(e) => {
+                    tracing::error!(
+                        "Invalid TLS server name for WebSocket backend {}: {}",
+                        backend_host,
+                        e
+                    );
+                    metrics.inc_errors();
+                    let body = full(Bytes::from("Bad backend URL"));
+                    return Ok(Response::builder().status(502).body(body).unwrap());
+                }
+            };
+            match timeout(Duration::from_secs(5), connector.connect(server_name, tcp)).await {
+                Ok(Ok(s)) => Box::new(s),
+                Ok(Err(e)) => {
+                    tracing::error!(
+                        "TLS handshake with WebSocket backend {} failed: {}",
+                        backend_addr,
+                        e
+                    );
+                    metrics.inc_errors();
+                    let body = full(Bytes::from("Backend not reachable"));
+                    return Ok(Response::builder().status(502).body(body).unwrap());
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        layer = "proxy_ws",
+                        backend = %backend_addr,
+                        path = %path,
+                        timeout_secs = 5,
+                        "websocket backend TLS handshake timed out; returning 504"
+                    );
+                    metrics.inc_errors();
+                    let body = full(Bytes::from("Gateway Timeout"));
+                    return Ok(Response::builder().status(504).body(body).unwrap());
+                }
+            }
+        } else {
+            Box::new(tcp)
         }
-    } else {
-        Box::new(tcp)
     };
 
     // Build the upgrade request forwarding all relevant headers
@@ -4062,16 +4159,35 @@ async fn handle_regular_request(
                 }
             };
 
+            // A failed attempt may be retried on the rule's next target
+            // (`crate::upstream::retry`); the URI is kept to resolve it.
+            let rule = &config.rules[matched_route.rule_idx];
+            let mut retries = match matched_route.targets.len() {
+                0 | 1 => 0,
+                _ => rule.upstream.retries.unwrap_or(config.upstream.retries),
+            };
+            let retry_uri = (retries > 0).then(|| req.uri().clone());
+
             // --- Lua route hooks: route on_request, global + route on_route ---
             #[cfg(feature = "scripting")]
             let mut req = req;
+            // Set when a hook chose the target: it is then the only one.
+            #[allow(unused_mut)]
+            let mut overridden = false;
             #[cfg(feature = "scripting")]
             if let Some(ref engine) = lua_engine {
-                if let Some(resp) =
-                    run_route_hooks(engine, &mut req, &route_scripts, &mut target_url)
-                {
+                if let Some(resp) = run_route_hooks(
+                    engine,
+                    &mut req,
+                    &route_scripts,
+                    &mut target_url,
+                    &mut overridden,
+                ) {
                     return Ok((resp, target_url, route_scripts));
                 }
+            }
+            if overridden {
+                retries = 0;
             }
 
             // Reject non-http(s)/redirect targets (config misparse). Validate the
@@ -4100,25 +4216,6 @@ async fn handle_regular_request(
                 ));
             }
 
-            // An https target is an external origin whose vhost/CDN expects
-            // its own name as Host (matching the TLS SNI) — forwarding the
-            // client's Host there gets rejected (e.g. Cloudflare 403). The
-            // original host is still passed via X-Forwarded-Host.
-            let https_target = target_url.starts_with("https://");
-
-            // Only extract host_header when needed (https targets, for the
-            // Origin alignment below). Prefer the Host header over URI
-            // authority, as everywhere else.
-            let host_header = if https_target {
-                req.headers()
-                    .get("host")
-                    .and_then(|h| h.to_str().ok())
-                    .map(|h| h.to_string())
-                    .or_else(|| req.uri().host().map(|h| h.to_string()))
-            } else {
-                None
-            };
-
             // What on_response will be shown, captured before the request is
             // consumed — only when some on_response hook will run.
             #[cfg(feature = "scripting")]
@@ -4130,50 +4227,7 @@ async fn handle_regular_request(
             };
 
             let (mut parts, body) = req.into_parts();
-
-            // Move headers directly instead of cloning one by one
-            let uri = match target_url.parse::<hyper::Uri>() {
-                Ok(uri) => uri,
-                Err(e) => {
-                    tracing::warn!(
-                        "Invalid URI from Lua hook or target URL: {}: {}",
-                        target_url,
-                        e
-                    );
-                    let body = full(Bytes::from("Bad Gateway"));
-                    return Ok((
-                        Response::builder().status(502).body(body).unwrap(),
-                        target_url,
-                        route_scripts,
-                    ));
-                }
-            };
-            parts.uri = uri;
-            parts.version = http::Version::HTTP_11;
             parts.extensions = http::Extensions::new();
-
-            // Rewrite Host to the https origin's own authority (see
-            // https_target above); the client's host goes to X-Forwarded-Host.
-            if https_target {
-                if let Some(authority) = parts.uri.authority() {
-                    if let Ok(v) = HeaderValue::from_str(authority.as_str()) {
-                        parts.headers.insert(hyper::header::HOST, v);
-                    }
-                    // With Host rewritten, a same-origin `Origin: https://<client
-                    // host>` no longer matches the request authority and trips
-                    // CSRF origin checks (Phoenix/Bonfire). Align it; cross-site
-                    // Origins pass through untouched.
-                    if let Some(client_host) = &host_header {
-                        let backend_origin = format!("https://{}", authority);
-                        crate::proxy_headers::rewrite_same_origin(
-                            &mut parts.headers,
-                            client_host,
-                            &backend_origin,
-                        );
-                    }
-                }
-            }
-
             // The client's hop-by-hop headers went at the door (see
             // handle_request_inner); this pass only catches any a script added.
             crate::proxy_headers::strip_hop_by_hop(&mut parts.headers);
@@ -4181,31 +4235,106 @@ async fn handle_regular_request(
             // join them before forwarding to the HTTP/1.1 upstream so servers
             // that read only the first Cookie header (redbean) see them all.
             crate::proxy_headers::coalesce_cookies(&mut parts.headers);
-
             // X-Forwarded-For/-Proto/-Host and X-Real-IP were set from the
             // proxy's own view when the request came in (handle_request_inner),
-            // with the client's original Host — before the https rewrite above.
-            let outbound_body = proxy_request_body(body, config.limits.max_request_size);
-            let mut request = Request::from_parts(parts, outbound_body);
+            // with the client's original Host — before the https rewrite below.
 
-            // The rule's `headers { }` block, applied last so it can override
-            // the forwarding headers normalised above.
-            let header_rules = &config.rules[matched_route.rule_idx].headers;
-            if !header_rules.is_empty() {
-                let client_ip =
-                    crate::edge::client_ip(request.extensions()).or(peer_addr.map(|a| a.ip()));
-                crate::config::apply_header_rules(
-                    request.headers_mut(),
-                    header_rules,
-                    &crate::config::HeaderVars {
-                        client_ip,
-                        scheme: if is_tls { "https" } else { "http" },
-                        host: &matched_route.host,
-                    },
-                );
-            }
+            let header_vars = crate::config::HeaderVars {
+                client_ip: crate::edge::client_ip(&parts.extensions).or(peer_addr.map(|a| a.ip())),
+                scheme: if is_tls { "https" } else { "http" },
+                host: &matched_route.host,
+            };
+            // What depends on the target, redone for every attempt: `parts`
+            // still carries the client's URI and headers, `uri` is where this
+            // attempt goes.
+            let prepare = |parts: &mut http::request::Parts, uri: hyper::Uri| {
+                // An https target is an external origin whose vhost/CDN
+                // expects its own name as Host (matching the TLS SNI) —
+                // forwarding the client's Host there gets rejected (e.g.
+                // Cloudflare 403). The original host is still passed via
+                // X-Forwarded-Host.
+                if uri.scheme() == Some(&http::uri::Scheme::HTTPS) {
+                    if let Some(authority) = uri.authority() {
+                        let client_host = parts
+                            .headers
+                            .get(hyper::header::HOST)
+                            .and_then(|h| h.to_str().ok())
+                            .map(|h| h.to_string())
+                            .or_else(|| parts.uri.host().map(|h| h.to_string()));
+                        if let Ok(v) = HeaderValue::from_str(authority.as_str()) {
+                            parts.headers.insert(hyper::header::HOST, v);
+                        }
+                        // With Host rewritten, a same-origin `Origin: https://<client
+                        // host>` no longer matches the request authority and trips
+                        // CSRF origin checks (Phoenix/Bonfire). Align it; cross-site
+                        // Origins pass through untouched.
+                        if let Some(client_host) = &client_host {
+                            let backend_origin = format!("https://{}", authority);
+                            crate::proxy_headers::rewrite_same_origin(
+                                &mut parts.headers,
+                                client_host,
+                                &backend_origin,
+                            );
+                        }
+                    }
+                }
+                parts.uri = uri;
+                // The rule's `headers { }` block, applied last so it can
+                // override the forwarding headers normalised above.
+                if !rule.headers.is_empty() {
+                    crate::config::apply_header_rules(
+                        &mut parts.headers,
+                        &rule.headers,
+                        &header_vars,
+                    );
+                }
+            };
+            let next = |tried: &[String], _: crate::upstream::retry::Failure| {
+                let uri = retry_uri.as_ref()?;
+                let match_path = canonical_match_path(uri.path());
+                let path = match matched_route.resolution {
+                    UrlResolution::StripPrefix(_) => &*match_path,
+                    _ => uri.path(),
+                };
+                next_target(
+                    &matched_route,
+                    rule,
+                    path,
+                    uri.query(),
+                    circuit_breaker,
+                    tried,
+                )
+            };
+            let mut attempt = crate::upstream::Attempt {
+                client: rule
+                    .upstream
+                    .client_for((!overridden).then_some(base_url.as_str()), &target_url),
+                target_url,
+                base_url,
+            };
+            let sent = crate::upstream::retry::send(
+                crate::upstream::retry::Exchange {
+                    shared: &client,
+                    breaker: circuit_breaker,
+                    retries,
+                    retry_on: &config.upstream.retry_on,
+                    try_duration: config.upstream.try_duration,
+                    max_body: config.limits.max_request_size,
+                },
+                parts,
+                body,
+                &mut attempt,
+                prepare,
+                next,
+            )
+            .await;
+            let crate::upstream::Attempt {
+                target_url,
+                base_url,
+                ..
+            } = attempt;
 
-            match client.request(request).await {
+            match sent {
                 Ok(mut response) => {
                     // Hop-by-hop headers are per-connection and must not be
                     // relayed (RFC 7230 §6.1). In particular a chunked
@@ -4440,7 +4569,20 @@ async fn handle_regular_request(
                         route_scripts,
                     ))
                 }
-                Err(e) => {
+                Err(crate::upstream::SendError::BadUri(e)) => {
+                    tracing::warn!(
+                        "Invalid URI from Lua hook or target URL: {}: {}",
+                        target_url,
+                        e
+                    );
+                    let body = full(Bytes::from("Bad Gateway"));
+                    Ok((
+                        Response::builder().status(502).body(body).unwrap(),
+                        target_url,
+                        route_scripts,
+                    ))
+                }
+                Err(crate::upstream::SendError::Upstream(e)) => {
                     // A failure caused by the inbound body — over the size
                     // limit, or the client aborting / resetting its upload —
                     // is the client's fault, not the backend's: the backend
@@ -4476,6 +4618,7 @@ async fn handle_regular_request(
                 // it also wakes an app asleep, holding this request.
                 if let Some(crate::app::AppTarget {
                     target,
+                    standby,
                     app: served_app,
                     auth,
                     compress,
@@ -4503,17 +4646,7 @@ async fn handle_regular_request(
                         }
                     }
                     let base_url = target.url.to_string();
-                    let path = req.uri().path();
-                    let query = req
-                        .uri()
-                        .query()
-                        .map(|q| format!("?{}", q))
-                        .unwrap_or_default();
-                    let target_url = if target.url.as_str().ends_with('/') {
-                        format!("{}{}{}", target.url, strip_leading_slash(path), query)
-                    } else {
-                        format!("{}{}{}", target.url, path, query)
-                    };
+                    let target_url = app_target_url(&target.url, req.uri());
 
                     // Global on_response runs for apps too (they have no
                     // route scripts); its Lua view is kept only if it will.
@@ -4525,25 +4658,21 @@ async fn handle_regular_request(
                         _ => None,
                     };
 
-                    let (mut parts, body) = req.into_parts();
-                    let uri = match target_url.parse::<hyper::Uri>() {
-                        Ok(uri) => uri,
-                        Err(e) => {
-                            tracing::warn!(
-                                "Invalid URI in app-managed path: {}: {}",
-                                target_url,
-                                e
-                            );
-                            let body = full(Bytes::from("Bad Gateway"));
-                            return Ok((
-                                Response::builder().status(502).body(body).unwrap(),
-                                target_url,
-                                vec![],
-                            ));
-                        }
+                    // A retry goes to the app's other running slot (a
+                    // blue/green deploy in progress, or draining), or for a
+                    // cluster-pushed domain to another of its instances.
+                    let elsewhere = match served_app {
+                        Some(_) => standby.is_some(),
+                        None => manager.external_routes.instances(h) > 1,
                     };
-                    parts.uri = uri;
-                    parts.version = http::Version::HTTP_11;
+                    let retries = if elsewhere {
+                        config.upstream.retries
+                    } else {
+                        0
+                    };
+                    let retry_uri = (retries > 0).then(|| req.uri().clone());
+
+                    let (mut parts, body) = req.into_parts();
                     parts.extensions = http::Extensions::new();
 
                     // Same hygiene as the route path: hop-by-hop headers never
@@ -4559,10 +4688,65 @@ async fn handle_regular_request(
 
                     // X-Forwarded-* / X-Real-IP: set at the door from the
                     // proxy's own view (handle_request_inner).
-                    let outbound_body = proxy_request_body(body, config.limits.max_request_size);
-                    let request = Request::from_parts(parts, outbound_body);
+                    let mut standby = standby;
+                    let mut failed_over = false;
+                    let next = |tried: &[String], failure: crate::upstream::retry::Failure| {
+                        use crate::upstream::retry::Failure;
+                        // The live slot failed outright: fail the app over now
+                        // rather than after the next request fails too.
+                        if !failed_over && matches!(failure, Failure::Connect | Failure::Error) {
+                            if let Some(app) = &served_app {
+                                failed_over = true;
+                                manager.trigger_async_failover(app.to_string());
+                            }
+                        }
+                        let uri = retry_uri.as_ref()?;
+                        let untried = |url: &str| !tried.iter().any(|t| t == url);
+                        let next = match standby.take() {
+                            Some(t) => Some(t),
+                            None if served_app.is_none() => manager
+                                .external_routes
+                                .pick(h, &|url| untried(url) && circuit_breaker.is_available(url)),
+                            None => None,
+                        }
+                        .filter(|t| untried(t.url.as_str()))?;
+                        if !circuit_breaker.is_available(next.url.as_str()) {
+                            return None;
+                        }
+                        Some(crate::upstream::Attempt {
+                            target_url: app_target_url(&next.url, uri),
+                            base_url: next.url.to_string(),
+                            client: None,
+                        })
+                    };
+                    let mut attempt = crate::upstream::Attempt {
+                        target_url,
+                        base_url,
+                        client: None,
+                    };
+                    let sent = crate::upstream::retry::send(
+                        crate::upstream::retry::Exchange {
+                            shared: &client,
+                            breaker: circuit_breaker,
+                            retries,
+                            retry_on: &config.upstream.retry_on,
+                            try_duration: config.upstream.try_duration,
+                            max_body: config.limits.max_request_size,
+                        },
+                        parts,
+                        body,
+                        &mut attempt,
+                        |parts, uri| parts.uri = uri,
+                        next,
+                    )
+                    .await;
+                    let crate::upstream::Attempt {
+                        target_url,
+                        base_url,
+                        ..
+                    } = attempt;
 
-                    match client.request(request).await {
+                    match sent {
                         Ok(mut response) => {
                             // Hop-by-hop headers must not be relayed (see the
                             // route path above).
@@ -4598,7 +4782,20 @@ async fn handle_regular_request(
                             let boxed = body.map_err(BoxError::from).boxed();
                             return Ok((Response::from_parts(parts, boxed), target_url, vec![]));
                         }
-                        Err(e) => {
+                        Err(crate::upstream::SendError::BadUri(e)) => {
+                            tracing::warn!(
+                                "Invalid URI in app-managed path: {}: {}",
+                                target_url,
+                                e
+                            );
+                            let body = full(Bytes::from("Bad Gateway"));
+                            return Ok((
+                                Response::builder().status(502).body(body).unwrap(),
+                                target_url,
+                                vec![],
+                            ));
+                        }
+                        Err(crate::upstream::SendError::Upstream(e)) => {
                             // A body-limit rejection or an aborted upload is
                             // client-caused; the backend never saw a failed
                             // request, so skip both the failure count and the
@@ -4616,7 +4813,9 @@ async fn handle_regular_request(
                             // Trigger immediate async failover so the next
                             // request hits a healthy backend (skip on body-limit
                             // 413 — the backend never saw a failed request).
-                            if let (false, Some(app_name)) = (body_limit, served_app) {
+                            if let (false, false, Some(app_name)) =
+                                (body_limit, failed_over, served_app)
+                            {
                                 manager.trigger_async_failover(app_name.to_string());
                             }
                             return Ok((backend_error_response(&e), target_url, vec![]));
@@ -4777,7 +4976,10 @@ fn resolve_target_url(
     query: Option<&str>,
     resolution: &UrlResolution,
 ) -> String {
-    let base = target.url.as_str();
+    // A `unix:` target's path names its socket: requests to it are built on
+    // a placeholder origin (see `crate::upstream::routing_url`).
+    let routing = crate::upstream::routing_url(&target.url);
+    let base = routing.as_str();
     let query = query.filter(|q| !q.is_empty());
     let mut out = String::with_capacity(base.len() + path.len() + query.map_or(0, |q| q.len() + 1));
     match resolution {
@@ -4793,7 +4995,7 @@ fn resolve_target_url(
             // Captures go into the path and query only: the scheme and
             // authority are copied verbatim, so a capture can never change
             // which host the request is sent to.
-            let head = &target.url[..url::Position::BeforePath];
+            let head = &routing[..url::Position::BeforePath];
             let tail = &base[head.len()..];
             out.push_str(head);
             match tail
@@ -4816,7 +5018,7 @@ fn resolve_target_url(
     // Defence in depth for the join above: whatever was appended must not
     // have changed the target's authority. The scheme://host:port prefix is
     // still there by construction; the byte after it must end the authority.
-    let authority = &target.url[..url::Position::AfterPort];
+    let authority = &routing[..url::Position::AfterPort];
     if !matches!(
         out.as_bytes().get(authority.len()),
         None | Some(b'/' | b'?')
@@ -5097,6 +5299,51 @@ fn select_target(
             targets.iter().find(|t| available(t)).map(pick)
         }
     }
+}
+
+/// Where a failed attempt on `route` is retried: the next target after the
+/// last one that failed, in rule order (round-robin and failover alike walk
+/// that order), that has not been tried yet, is available (circuit breaker,
+/// health checks) and can be proxied to. A drained `weight:0` target only
+/// when no other is left.
+fn next_target<'a>(
+    route: &MatchedRoute<'_>,
+    rule: &'a crate::config::ProxyRule,
+    path: &str,
+    query: Option<&str>,
+    circuit_breaker: &crate::circuit_breaker::CircuitBreaker,
+    tried: &[String],
+) -> Option<crate::upstream::Attempt<'a>> {
+    let targets = route.targets;
+    let n = targets.len();
+    let start = tried
+        .last()
+        .and_then(|last| targets.iter().position(|t| t.url.as_str() == last))
+        .map_or(0, |i| i + 1);
+    let candidates = (0..n).map(|k| &targets[(start + k) % n]).filter(|t| {
+        let url = t.url.as_str();
+        !tried.iter().any(|u| u == url)
+            && !url.starts_with("redirect://")
+            && validate_proxy_target_url(url)
+    });
+    // Two disjoint passes, so no target's half-open probe permit is claimed
+    // by a check whose answer is then ignored.
+    let chosen = candidates
+        .clone()
+        .filter(|t| t.weight > 0)
+        .find(|t| circuit_breaker.is_available(t.url.as_str()))
+        .or_else(|| {
+            candidates
+                .filter(|t| t.weight == 0)
+                .find(|t| circuit_breaker.is_available(t.url.as_str()))
+        })?;
+    let target_url = resolve_target_url(chosen, path, query, &route.resolution);
+    let base_url = chosen.url.as_str();
+    Some(crate::upstream::Attempt {
+        client: rule.upstream.client_for(Some(base_url), &target_url),
+        target_url,
+        base_url: base_url.to_string(),
+    })
 }
 
 /// Backward-compatible wrapper: returns (target_url, from_domain_rule, matched_prefix, route_scripts)
@@ -5862,6 +6109,7 @@ mod tests {
             load_balancing: Default::default(),
             forward_auth: None,
             compress: None,
+            upstream: Default::default(),
         }
     }
 

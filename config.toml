@@ -86,7 +86,7 @@ max_connections = 10000      # concurrent client connections; extra ones wait up
 # max_connections_per_ip = 256
 max_request_size = "10MB"    # request bodies above this get 413
 keep_alive_timeout = 30      # HTTP/1 header read (bounds idle keep-alives); HTTP/2 idle timeout
-request_timeout = 60         # seconds for the upstream exchange before a 504
+request_timeout = 60         # seconds for the upstream exchange before a 504 (@timeout:120s per route)
 # Forwarded WebSockets:
 # websocket_idle_timeout_secs = 300            # close if both directions are silent this long
 # websocket_max_lifetime_secs = 3600           # absolute cap per connection
@@ -124,6 +124,32 @@ failure_threshold = 5               # consecutive failures before opening breake
 recovery_timeout_secs = 30          # seconds before probing an open backend
 success_threshold = 2               # successful probes to close breaker
 failure_status_codes = [502, 503, 504]  # HTTP codes that count as failures
+
+# Upstream retries
+# A request whose attempt fails before any response byte is retried on the
+# rule's next available target (for an app: its other slot, while a
+# blue/green deploy has one running). A connect failure is always safe to
+# retry, body and all — nothing reached the backend. Anything else is retried
+# only for idempotent methods (GET HEAD OPTIONS PUT DELETE TRACE) without a
+# body. Every failed attempt still counts in the circuit breaker.
+# Per route: @retries:N in proxy.conf.
+[upstream]
+retries = 1                         # extra attempts, each on another target; 0 = off
+retry_on = ["connect", "error"]     # add "502", "503", "504" or "500" to retry those statuses
+# try_duration = "5s"               # stop retrying this long after the first attempt
+
+# Active health checks for proxy.conf targets (managed apps have their own).
+# A rule opts in with @health:/path (and @health_interval:10s); default_path
+# checks every rule except those saying @health:off. A target failing
+# unhealthy_threshold probes in a row is skipped (like an open circuit
+# breaker) until it passes healthy_threshold in a row. Any answer below 500
+# counts as up. State: GET /api/v1/circuit-breaker ("health": "up"/"down").
+# [health_checks]
+# default_path = "/healthz"
+# interval = "10s"
+# timeout = "2s"
+# unhealthy_threshold = 3
+# healthy_threshold = 2
 
 # Admin REST API Configuration
 # Default binds to loopback only. Exposing on a non-loopback address

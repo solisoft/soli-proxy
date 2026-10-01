@@ -265,6 +265,56 @@
                         </div>
                     </div>
 
+                    <!-- Upstream options -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-3">Upstream Protocols, TLS and Timeouts</h3>
+                        <p class="text-gray-400 text-sm mb-3">Besides <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">http://</code> and <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">https://</code>, a target may be <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">h2c://host:port</code> (HTTP/2 with prior knowledge, for gRPC) or <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">unix:/absolute/path.sock</code> (a Unix socket; requests keep the client's <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Host</code> and are sent with the path the rule resolves, WebSocket upgrades included). <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@h2</code> makes a whole rule speak HTTP/2: ALPN <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">h2</code> to <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">https://</code> targets, prior knowledge to cleartext and socket ones. gRPC works end to end: <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">TE: trailers</code> reaches the upstream (every other <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">TE</code> value is dropped, and HTTP/1.1 upstreams get none) and response trailers reach the client &mdash; over HTTP/2, or over HTTP/1.1 when the upstream announces them in <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Trailer</code>. On an HTTP/2 upstream the client's <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Host</code> travels as <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">X-Forwarded-Host</code>, since <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Host</code> may not contradict <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">:authority</code>.</p>
+                        <p class="text-gray-400 text-sm mb-3"><code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@tls_ca:/path/ca.pem</code> trusts that CA bundle <em>instead of</em> the public roots, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@tls_sni:name</code> sends that name as SNI and verifies the certificate against it (for targets addressed by IP), and <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@tls_client_cert:/cert.pem,/key.pem</code> presents a client certificate (mTLS). <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@tls_insecure</code> skips certificate verification entirely &mdash; anyone on the network path can then read and alter the traffic; the proxy logs a warning each time it loads such a rule. Files are read when the configuration loads: a missing or invalid one is a load error. Rules with the same options share one client and its connection pool, and WebSocket upgrades to the rule's <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">https://</code> target use the same TLS settings (over HTTP/1.1, whatever <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@h2</code> says).</p>
+                        <p class="text-gray-400 text-sm mb-3"><code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@timeout:120s</code> replaces <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">[limits] request_timeout</code> (time to the response headers) for the rule; <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@connect_timeout:2s</code> replaces the 5&nbsp;s connect timeout. Durations take a unit: <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">500ms</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">2s</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">5m</code>.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">proxy.conf</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tc"># gRPC over cleartext HTTP/2, two instances, probed every 5 s</span>
+<span class="tf">grpc.example.com</span> <span class="tk">-></span> <span class="ts">h2c://10.0.0.7:50051</span>, <span class="ts">h2c://10.0.0.8:50051</span> <span class="tt">@health:/healthz</span> <span class="tt">@health_interval:5s</span>
+
+<span class="tc"># Internal PKI, addressed by IP, with a client certificate</span>
+<span class="tf">billing.example.com</span> <span class="tk">-></span> <span class="ts">https://10.0.0.9:8443</span> <span class="tt">@tls_ca:/etc/soli-proxy/internal-ca.pem</span> \
+                      <span class="tt">@tls_sni:billing.internal</span> <span class="tt">@tls_client_cert:/etc/soli-proxy/proxy.pem,/etc/soli-proxy/proxy.key</span>
+
+<span class="tc"># An app listening on a Unix socket; slow reports get two minutes</span>
+<span class="tf">app.example.com</span> <span class="tk">-></span> <span class="ts">unix:/run/app/puma.sock</span>
+<span class="tf">app.example.com/reports/*</span> <span class="tk">-></span> <span class="ts">unix:/run/app/puma.sock</span> <span class="tt">@timeout:2m</span></code></pre>
+                        </div>
+                        <div class="mt-3 overflow-x-auto">
+                            <table class="w-full text-sm text-left">
+                                <thead><tr class="border-b border-white/10 text-gray-400">
+                                    <th class="py-2 pr-4 font-medium">Directive</th>
+                                    <th class="py-2 pr-4 font-medium">Value</th>
+                                    <th class="py-2 pr-4 font-medium">Default</th>
+                                    <th class="py-2 font-medium">Description</th>
+                                </tr></thead>
+                                <tbody class="text-gray-300">
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">@retries:N</td><td class="py-2 pr-4">0&ndash;10</td><td class="py-2 pr-4 text-gray-500">[upstream] retries</td><td class="py-2">Extra attempts on another target after a failure that is safe to replay.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">@timeout:D</td><td class="py-2 pr-4">duration</td><td class="py-2 pr-4 text-gray-500">request_timeout</td><td class="py-2">Time to the response headers.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">@connect_timeout:D</td><td class="py-2 pr-4">duration</td><td class="py-2 pr-4 text-gray-500">5s</td><td class="py-2">Time to establish the connection (TCP, or the socket).</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">@h2</td><td class="py-2 pr-4">flag</td><td class="py-2 pr-4 text-gray-500">off</td><td class="py-2">Speak HTTP/2 to every target of the rule.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">@tls_ca:/path</td><td class="py-2 pr-4">file</td><td class="py-2 pr-4 text-gray-500">public roots</td><td class="py-2">CA bundle (PEM) that replaces the public roots.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">@tls_sni:name</td><td class="py-2 pr-4">DNS name or IP</td><td class="py-2 pr-4 text-gray-500">target host</td><td class="py-2">SNI sent and name verified.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">@tls_client_cert:/c,/k</td><td class="py-2 pr-4">two files</td><td class="py-2 pr-4 text-gray-500">none</td><td class="py-2">Client certificate and key (PEM) for mTLS.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">@tls_insecure</td><td class="py-2 pr-4">flag</td><td class="py-2 pr-4 text-gray-500">off</td><td class="py-2">No certificate verification. Avoid.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">@health:/path</td><td class="py-2 pr-4">path or off</td><td class="py-2 pr-4 text-gray-500">[health_checks] default_path</td><td class="py-2">Probe each target at this path; <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">off</code> opts out of the default.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">@health_interval:D</td><td class="py-2 pr-4">duration</td><td class="py-2 pr-4 text-gray-500">[health_checks] interval</td><td class="py-2">Time between probes.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <p class="text-gray-400 text-sm mt-3">Every directive is written back as-is when the admin API rewrites <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">proxy.conf</code>. A Lua <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">on_route</code> override may send a request to an <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">h2c://</code> URL, never to a <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">unix:</code> socket: a socket is only reachable as a configured target.</p>
+                    </div>
+
                     <!-- Per-route Lua scripts -->
                     <div class="mb-8 ml-11">
                         <h3 class="text-lg font-semibold text-white mb-3">Per-Route Lua Scripts</h3>
@@ -677,6 +727,82 @@
                         </div>
                     </div>
 
+                    <!-- [upstream] -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-1 flex items-center gap-2">
+                            <span class="text-emerald-400 font-mono text-sm">[upstream]</span>
+                        </h3>
+                        <p class="text-gray-400 text-sm mb-3">Retrying a request on another target when an attempt fails before any response byte. A <strong>connect failure</strong> (refused, unreachable, connect timeout, TLS handshake) is always safe &mdash; nothing reached the backend &mdash; so any request is retried, its body included. <strong>Any other failure</strong> (a reset, a connection closed mid-request), or a status listed in <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">retry_on</code>, is retried only for idempotent methods (<code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">GET HEAD OPTIONS PUT DELETE TRACE</code>) without a body. The retry goes to the rule's next available target in rule order; for a managed app, to its other slot while a blue/green deploy has one running (and the failed slot is failed over at once); for a cluster-pushed domain, to another instance. A request a Lua hook routed is never retried elsewhere. Every failed attempt still counts in the circuit breaker. A rule with several targets keeps a copy of the request head for a possible retry; <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">retries = 0</code> (or <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@retries:0</code>) avoids that cost.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">config.toml</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tk">[upstream]</span>
+<span class="tf">retries</span> = <span class="tn">1</span>                       <span class="tc"># 0 = off; @retries:N per route</span>
+<span class="tf">retry_on</span> = [<span class="ts">"connect"</span>, <span class="ts">"error"</span>]   <span class="tc"># may add "500", "502", "503", "504"</span>
+<span class="tf">try_duration</span> = <span class="ts">"5s"</span>              <span class="tc"># no new attempt after this long</span></code></pre>
+                        </div>
+                        <div class="mt-3 overflow-x-auto">
+                            <table class="w-full text-sm text-left">
+                                <thead><tr class="border-b border-white/10 text-gray-400">
+                                    <th class="py-2 pr-4 font-medium">Key</th>
+                                    <th class="py-2 pr-4 font-medium">Type</th>
+                                    <th class="py-2 pr-4 font-medium">Default</th>
+                                    <th class="py-2 font-medium">Description</th>
+                                </tr></thead>
+                                <tbody class="text-gray-300">
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">retries</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">1</td><td class="py-2">Further attempts, each on a different target (at most 10).</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">retry_on</td><td class="py-2 pr-4">array</td><td class="py-2 pr-4 text-gray-500">["connect", "error"]</td><td class="py-2">Failures that are retried: <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">connect</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">error</code> (alias <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">reset</code>), and statuses <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">500</code>/<code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">502</code>/<code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">503</code>/<code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">504</code>.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">try_duration</td><td class="py-2 pr-4">duration</td><td class="py-2 pr-4 text-gray-500">none</td><td class="py-2">Stop retrying this long after the first attempt; the request timeout bounds it anyway.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- [health_checks] -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-1 flex items-center gap-2">
+                            <span class="text-emerald-400 font-mono text-sm">[health_checks]</span>
+                        </h3>
+                        <p class="text-gray-400 text-sm mb-3">Active checks for <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">proxy.conf</code> targets (managed apps have their own monitor). A rule opts in with <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@health:/path</code>; <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">default_path</code> checks every rule except those saying <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@health:off</code>. A background task probes each distinct target (<code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">GET</code> with <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">User-Agent: soli-proxy-health-check</code>, through the rule's own TLS/HTTP/2/socket settings); any answer below 500 counts as up. A target that fails <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">unhealthy_threshold</code> probes in a row is skipped by every strategy, like an open circuit breaker, until it passes <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">healthy_threshold</code> in a row. The probes follow every reload: removed checks stop, and their targets' verdicts are forgotten. <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">GET /api/v1/circuit-breaker</code> reports <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">"health": "up"</code> or <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">"down"</code> for checked targets.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">config.toml</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tk">[health_checks]</span>
+<span class="tf">default_path</span> = <span class="ts">"/healthz"</span>    <span class="tc"># omit: only rules with @health: are checked</span>
+<span class="tf">interval</span> = <span class="ts">"10s"</span>
+<span class="tf">timeout</span> = <span class="ts">"2s"</span>
+<span class="tf">unhealthy_threshold</span> = <span class="tn">3</span>
+<span class="tf">healthy_threshold</span> = <span class="tn">2</span></code></pre>
+                        </div>
+                        <div class="mt-3 overflow-x-auto">
+                            <table class="w-full text-sm text-left">
+                                <thead><tr class="border-b border-white/10 text-gray-400">
+                                    <th class="py-2 pr-4 font-medium">Key</th>
+                                    <th class="py-2 pr-4 font-medium">Type</th>
+                                    <th class="py-2 pr-4 font-medium">Default</th>
+                                    <th class="py-2 font-medium">Description</th>
+                                </tr></thead>
+                                <tbody class="text-gray-300">
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">default_path</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">none</td><td class="py-2">Health path probed on every rule's targets.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">interval</td><td class="py-2 pr-4">duration</td><td class="py-2 pr-4 text-gray-500">10s</td><td class="py-2">Time between probes (<code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@health_interval</code> per rule).</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">timeout</td><td class="py-2 pr-4">duration</td><td class="py-2 pr-4 text-gray-500">2s</td><td class="py-2">A probe without an answer by then failed.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">unhealthy_threshold</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">3</td><td class="py-2">Consecutive failed probes before a target is taken out.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">healthy_threshold</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">2</td><td class="py-2">Consecutive good probes before it is put back.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
                     <!-- [scripting] -->
                     <div class="mb-8 ml-11">
                         <h3 class="text-lg font-semibold text-white mb-1 flex items-center gap-2">
@@ -780,7 +906,7 @@
 <span class="tf">max_connections_per_ip</span> = <span class="tn">256</span> <span class="tc"># Per client address (IPv6: per /64); 0 = off</span>
 <span class="tf">max_request_size</span> = <span class="ts">"10MB"</span>    <span class="tc"># Maximum request body size</span>
 <span class="tf">keep_alive_timeout</span> = <span class="tn">30</span>     <span class="tc"># Header read / idle connection timeout (seconds)</span>
-<span class="tf">request_timeout</span> = <span class="tn">60</span>        <span class="tc"># Total request timeout in seconds</span>
+<span class="tf">request_timeout</span> = <span class="tn">60</span>        <span class="tc"># Seconds to the response headers (@timeout per route)</span>
 <span class="tf">websocket_idle_timeout_secs</span> = <span class="tn">300</span>
 <span class="tf">websocket_max_lifetime_secs</span> = <span class="tn">3600</span>
 <span class="tf">websocket_max_bytes_per_direction</span> = <span class="tn">1073741824</span></code></pre>
@@ -798,7 +924,7 @@
                                     <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">max_connections_per_ip</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">256</td><td class="py-2">Max simultaneous connections from one client address, across HTTP and HTTPS. IPv6 clients count per /64. A connection over the cap is closed on accept. Keyed on the TCP peer (or the PROXY protocol address); a <code class="text-cyan-300 text-xs">trusted_proxies</code> peer is exempt. <code class="text-cyan-300 text-xs">0</code> disables the cap. Read at startup.</td></tr>
                                     <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">max_request_size</td><td class="py-2 pr-4">string</td><td class="py-2 pr-4 text-gray-500">none</td><td class="py-2">Request bodies above this are refused with 413 (<code class="text-cyan-300 text-xs">KB</code>/<code class="text-cyan-300 text-xs">MB</code>/<code class="text-cyan-300 text-xs">GB</code> suffixes).</td></tr>
                                     <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">keep_alive_timeout</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">none</td><td class="py-2">Seconds allowed to receive a request's headers; also closes idle keep-alive connections.</td></tr>
-                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">request_timeout</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">60</td><td class="py-2">Seconds for the upstream exchange before the client gets 504.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">request_timeout</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">60</td><td class="py-2">Seconds for the upstream exchange before the client gets 504. A rule's <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">@timeout</code> replaces it.</td></tr>
 <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">websocket_idle_timeout_secs</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">300</td><td class="py-2">Close a forwarded WebSocket when both directions have been silent this long.</td></tr>
 <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">websocket_max_lifetime_secs</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">3600</td><td class="py-2">Absolute lifetime of a forwarded WebSocket.</td></tr>
 <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">websocket_max_bytes_per_direction</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">1073741824</td><td class="py-2">Close a forwarded WebSocket once either direction has carried this many bytes.</td></tr>

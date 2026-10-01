@@ -434,6 +434,7 @@ impl RouteForm {
                 load_balancing: LoadBalancingStrategy::default(),
                 forward_auth: None,
                 compress: None,
+                upstream: Default::default(),
             }),
         })
     }

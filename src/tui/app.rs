@@ -216,6 +216,9 @@ async fn poll_daemon(
         state: String,
         consecutive_failures: u32,
         consecutive_successes: u32,
+        /// Absent from daemons without active health checks.
+        #[serde(default)]
+        health: Option<String>,
     }
 
     let unauthorized = std::sync::atomic::AtomicBool::new(false);
@@ -261,6 +264,7 @@ async fn poll_daemon(
                             state: c.state,
                             consecutive_failures: c.consecutive_failures,
                             consecutive_successes: c.consecutive_successes,
+                            health: c.health,
                         },
                     )
                 })

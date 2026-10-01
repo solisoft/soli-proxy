@@ -93,7 +93,7 @@ pub fn serialize_proxy_conf(rules: &[ProxyRule], global_scripts: &[String]) -> S
         };
 
         output.push_str(&format!(
-            "{} -> {}{}{}{}{}{}{}\n",
+            "{} -> {}{}{}{}{}{}{}{}\n",
             matcher_str,
             targets_joined,
             scripts_suffix,
@@ -101,7 +101,8 @@ pub fn serialize_proxy_conf(rules: &[ProxyRule], global_scripts: &[String]) -> S
             noauth_suffix,
             forward_auth_suffix,
             lb_suffix,
-            compress_suffix
+            compress_suffix,
+            rule.upstream.directives()
         ));
 
         if !rule.headers.is_empty() {
@@ -146,6 +147,7 @@ mod tests {
                 load_balancing: LoadBalancingStrategy::default(),
                 forward_auth: None,
                 compress: None,
+                upstream: Default::default(),
             },
             ProxyRule {
                 matcher: RuleMatcher::Prefix("/api/".to_string()),
@@ -157,6 +159,7 @@ mod tests {
                 load_balancing: LoadBalancingStrategy::default(),
                 forward_auth: None,
                 compress: None,
+                upstream: Default::default(),
             },
         ];
 
@@ -177,6 +180,7 @@ mod tests {
             load_balancing: LoadBalancingStrategy::default(),
             forward_auth: None,
             compress: None,
+            upstream: Default::default(),
         }];
 
         let output =
@@ -197,6 +201,7 @@ mod tests {
                 load_balancing: LoadBalancingStrategy::default(),
                 forward_auth: None,
                 compress: None,
+                upstream: Default::default(),
             },
             ProxyRule {
                 matcher: RuleMatcher::DomainPath("api.example.com".to_string(), "/v1/".to_string()),
@@ -208,6 +213,7 @@ mod tests {
                 load_balancing: LoadBalancingStrategy::default(),
                 forward_auth: None,
                 compress: None,
+                upstream: Default::default(),
             },
         ];
 
@@ -231,6 +237,7 @@ mod tests {
             load_balancing: LoadBalancingStrategy::default(),
             forward_auth: None,
             compress: None,
+            upstream: Default::default(),
         }];
 
         let output = serialize_proxy_conf(&rules, &[]);
@@ -263,6 +270,7 @@ mod tests {
             load_balancing: LoadBalancingStrategy::default(),
             forward_auth: None,
             compress: None,
+            upstream: Default::default(),
         }];
 
         let output = serialize_proxy_conf(&rules, &[]);
@@ -375,6 +383,36 @@ c.example -> http://c:8080
         }
     }
 
+    /// Every upstream directive survives the trip to disk and back, so an
+    /// admin-API edit of an unrelated rule cannot strip a route's `@tls_ca`
+    /// (which would fail it closed) or its `@h2` (which would break gRPC).
+    #[test]
+    fn test_upstream_directives_roundtrip() {
+        let conf = "\
+grpc.example.com -> h2c://grpc-a:50051, h2c://grpc-b:50051 @retries:2 @timeout:5m @health:/healthz @health_interval:3s
+internal.example.com -> https://10.0.0.5:8443 @h2 @tls_ca:/etc/pki/internal-ca.pem @tls_sni:svc.internal @tls_client_cert:/etc/pki/c.pem,/etc/pki/k.pem @connect_timeout:1500ms
+legacy.example.com -> https://10.0.0.6 @tls_insecure @health:off
+sock.example.com -> unix:/run/app.sock
+";
+        let (rules, scripts) = crate::config::parse_proxy_config(conf).unwrap();
+        assert_eq!(rules[0].upstream.retries, Some(2));
+        assert!(rules[1].upstream.h2 && rules[2].upstream.tls_insecure);
+        let output = serialize_proxy_conf(&rules, &scripts);
+        assert!(output.contains("unix:/run/app.sock\n"), "{output}");
+        assert!(
+            output.contains("h2c://grpc-a:50051, h2c://grpc-b:50051"),
+            "{output}"
+        );
+        let (reparsed, _) = crate::config::parse_proxy_config(&output).unwrap();
+        for (a, b) in rules.iter().zip(&reparsed) {
+            assert_eq!(a.upstream, b.upstream, "{output}");
+            assert_eq!(a.targets.len(), b.targets.len());
+            for (x, y) in a.targets.iter().zip(&b.targets) {
+                assert_eq!(x.url, y.url);
+            }
+        }
+    }
+
     #[test]
     fn test_serialize_regex_rule() {
         let rules = vec![ProxyRule {
@@ -387,6 +425,7 @@ c.example -> http://c:8080
             load_balancing: LoadBalancingStrategy::default(),
             forward_auth: None,
             compress: None,
+            upstream: Default::default(),
         }];
 
         let output = serialize_proxy_conf(&rules, &[]);

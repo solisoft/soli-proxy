@@ -54,6 +54,7 @@ fn parse_proxy_config(content: &str) -> Vec<ProxyRule> {
                 load_balancing: LoadBalancingStrategy::default(),
                 forward_auth: None,
                 compress: None,
+                upstream: Default::default(),
             });
         }
     }

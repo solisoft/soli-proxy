@@ -172,6 +172,12 @@ impl ExternalRouteTable {
         self.inner.read().pick(host, turn, is_available)
     }
 
+    /// How many instances the cluster pushed for this host — whether a
+    /// failed request has anywhere else to go.
+    pub fn instances(&self, host: &str) -> usize {
+        self.inner.read().table.get(host).map_or(0, Vec::len)
+    }
+
     /// Whether the cluster routes this host.
     pub fn serves(&self, host: &str) -> bool {
         self.inner.read().table.contains_key(host)
