@@ -55,10 +55,13 @@ pub struct RouteForm {
     pub auth_new_password: String,
     pub auth_selected: usize,
 
-    /// The rule's `@forward_auth`, carried through an edit untouched: the
-    /// form has no field for it, and rebuilding the rule without it would
-    /// silently take a route out from behind its SSO.
-    pub forward_auth: Option<crate::forward_auth::ForwardAuth>,
+    /// The rule being edited, if any. The form only has widgets for some of
+    /// a rule's settings; everything else — `headers { }`, `@forward_auth`,
+    /// `@compress`, and whatever a later directive adds — is carried over
+    /// from here untouched. Rebuilding the rule from the widgets alone used to
+    /// drop them on save: a header block vanished, a route came out from
+    /// behind its SSO.
+    pub original: Option<ProxyRule>,
 }
 
 impl RouteForm {
@@ -79,7 +82,7 @@ impl RouteForm {
             auth_new_username: String::new(),
             auth_new_password: String::new(),
             auth_selected: 0,
-            forward_auth: None,
+            original: None,
         }
     }
 
@@ -93,10 +96,18 @@ impl RouteForm {
             RuleMatcher::Regex(rm) => (5, rm.pattern.clone()),
         };
 
+        // `weight:N url`, as proxy.conf writes it, whenever a weight is not
+        // the default — so editing a weighted route keeps its weights.
         let targets = rule
             .targets
             .iter()
-            .map(|t| t.url.to_string())
+            .map(|t| {
+                if t.weight == crate::config::DEFAULT_TARGET_WEIGHT {
+                    t.url.to_string()
+                } else {
+                    format!("weight:{} {}", t.weight, t.url)
+                }
+            })
             .collect::<Vec<_>>()
             .join(", ");
 
@@ -135,7 +146,7 @@ impl RouteForm {
             auth_new_username: String::new(),
             auth_new_password: String::new(),
             auth_selected: 0,
-            forward_auth: rule.forward_auth.clone(),
+            original: Some(rule.clone()),
         }
     }
 
@@ -351,9 +362,21 @@ impl RouteForm {
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
             .map(|s| {
+                let (weight, url) = match s.strip_prefix("weight:") {
+                    Some(rest) => {
+                        let (n, url) = rest.split_once(char::is_whitespace).ok_or_else(|| {
+                            anyhow::anyhow!("'{}': expected weight:N followed by a URL", s)
+                        })?;
+                        let weight = n.parse::<u8>().map_err(|_| {
+                            anyhow::anyhow!("Invalid weight '{}' (expected 0 to 255)", n)
+                        })?;
+                        (weight, url.trim())
+                    }
+                    None => (crate::config::DEFAULT_TARGET_WEIGHT, s),
+                };
                 let url =
-                    Url::parse(s).map_err(|e| anyhow::anyhow!("Invalid URL '{}': {}", s, e))?;
-                Ok(Target { url, weight: 100 })
+                    Url::parse(url).map_err(|e| anyhow::anyhow!("Invalid URL '{}': {}", url, e))?;
+                Ok(Target { url, weight })
             })
             .collect::<Result<Vec<_>>>()?;
 
@@ -390,16 +413,28 @@ impl RouteForm {
             _ => LoadBalancingStrategy::RoundRobin,
         };
 
-        Ok(ProxyRule {
+        let edited = |base: ProxyRule| ProxyRule {
             matcher,
             targets,
-            headers: Vec::new(),
             scripts,
             auth,
             auth_exempt,
             load_balancing,
-            forward_auth: self.forward_auth.clone(),
-            compress: None,
+            ..base
+        };
+        Ok(match &self.original {
+            Some(original) => edited(original.clone()),
+            None => edited(ProxyRule {
+                matcher: RuleMatcher::Default,
+                targets: Vec::new(),
+                headers: Vec::new(),
+                scripts: Vec::new(),
+                auth: Vec::new(),
+                auth_exempt: Vec::new(),
+                load_balancing: LoadBalancingStrategy::default(),
+                forward_auth: None,
+                compress: None,
+            }),
         })
     }
 
@@ -452,7 +487,7 @@ impl RouteForm {
                 "regex" => "e.g. ^/admin/.*$",
                 _ => "",
             },
-            2 => "comma-separated URLs",
+            2 => "comma-separated URLs, each optionally weight:N URL",
             3 => match self.auth_mode {
                 AuthMode::List => "a:add  d:remove  j/k:select",
                 AuthMode::AddUsername => "type username, then Tab",
@@ -478,5 +513,46 @@ impl RouteForm {
             AuthMode::AddPassword => 2,
         };
         list_lines + add_lines
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Opening a route in the editor and saving it unchanged must give back
+    /// the same rule — including what the form has no widget for.
+    #[test]
+    fn an_unchanged_edit_keeps_every_setting() {
+        let conf = "\
+app.example.com -> weight:70 http://a:8080, weight:30 http://b:8080 @compress:off \
+@forward_auth:http://auth.internal/verify
+headers {
+  X-Env: prod
+  -X-Debug
+}
+";
+        let (rules, _) = crate::config::parse_proxy_config(conf).unwrap();
+        let rebuilt = RouteForm::from_rule(&rules[0], 0).build_rule().unwrap();
+
+        let weights: Vec<u8> = rebuilt.targets.iter().map(|t| t.weight).collect();
+        assert_eq!(weights, vec![70, 30]);
+        assert_eq!(rebuilt.load_balancing, LoadBalancingStrategy::Weighted);
+        assert_eq!(rebuilt.headers.len(), 2);
+        assert_eq!(rebuilt.compress, Some(false));
+        assert_eq!(rebuilt.forward_auth, rules[0].forward_auth);
+        let a = crate::config::serializer::serialize_proxy_conf(&rules, &[]);
+        let b = crate::config::serializer::serialize_proxy_conf(&[rebuilt], &[]);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn a_bad_weight_is_an_error() {
+        let mut form = RouteForm::new_empty();
+        form.matcher_type = 0;
+        form.targets = "weight:300 http://a:8080".to_string();
+        assert!(form.build_rule().is_err());
+        form.targets = "weight:5".to_string();
+        assert!(form.build_rule().is_err());
     }
 }
