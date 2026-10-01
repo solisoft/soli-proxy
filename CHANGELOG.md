@@ -318,6 +318,11 @@
   client's 101 (proxy and `_admin` passthrough alike); it is now a 502. A prefix-mounted
   redirect whose rewritten `Location` could not be a header value panicked; the `Location` is
   now left as the backend sent it.
+* **Routes created through the admin API are validated in full.** `POST`/`PUT /api/v1/routes`
+  and `PUT /api/v1/config` only checked `auth_exempt` paths (and auth hashes); a bad `headers`
+  entry (a hop-by-hop name, an unknown `$variable`, an invalid value) or a regex target naming a
+  capture the pattern lacks was written to `proxy.conf`, which the next load then refused. They
+  now get the same checks as a `proxy.conf` line, and a 400 up front.
 
 ## [0.35.2](https://github.com/solisoft/soli-proxy/compare/v0.35.1...v0.35.2) (2026-09-27)
 
