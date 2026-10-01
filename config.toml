@@ -4,6 +4,9 @@
 bind = "0.0.0.0:80"   # HTTP listener; "[::]:80" listens on IPv6 and IPv4 (dual-stack)
 https_port = 443      # HTTPS listener, on the same address as `bind`
 worker_threads = "auto"
+# On SIGTERM/SIGINT: stop accepting, then give in-flight requests up to this
+# many seconds to finish (the wait ends with the last one). Default 10.
+# shutdown_grace_period = 10
 
 # TLS Configuration
 [tls]
@@ -82,6 +85,11 @@ burst_size = 2000
 # multi_tenant = true            # untrusted apps; see the README's Multi-Tenant section
 # tenant_proxy_env = false       # forward HTTP(S)_PROXY into tenant containers
 # tenant_proxy_env_credentials = false  # ...even when it carries user:password@
+# Apps keep running when the proxy stops or restarts, and the next proxy adopts
+# them (README: "Restarts and upgrades"). true = stop them with the proxy, as
+# earlier versions did; it is the default under --dev. `soli-proxy stop --all`
+# stops them on demand.
+# stop_on_shutdown = false
 
 # Circuit Breaker Configuration
 # Tracks backend health and stops sending traffic to failing backends.

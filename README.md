@@ -73,6 +73,7 @@ run while the proxy is running (they read shared state from `./run`):
 soli-proxy deploy  [-c <conf>] <app_name>   # Blue-green deploy: build & switch to the other slot
 soli-proxy restart [-c <conf>] <app_name>   # Restart the currently active slot
 soli-proxy stop    [-c <conf>] <app_name>   # Stop the app
+soli-proxy stop    [-c <conf>] --all        # Stop every app (the proxy keeps running)
 soli-proxy logs    [-c <conf>] <app_name>   # Print deployment logs for both slots
 ```
 
@@ -81,8 +82,25 @@ Other subcommands:
 ```
 soli-proxy tui [-c <conf>] [--sites-dir <DIR>] [--dev]   # Interactive terminal UI
 soli-proxy update [--reinstall] [--allow-unverified]     # Self-update from GitHub releases
+soli-proxy check [-c <conf>] [--sites-dir <DIR>] [--dev] # Validate config.toml, proxy.conf, every app.infos
 soli-proxy hash-password [--cost N]                      # bcrypt hash for @auth / [auth.users] / ADMIN_PASSWORD_HASH
 ```
+
+`check` loads everything a start would — `config.toml` (and `.env`), `proxy.conf` with the
+strict parser, every site's `app.infos` with the discovery rules (multi-tenant ones included) —
+and then makes the checks a start makes later or only logs: listener and admin addresses, the
+admin API's refusal to run on a public address without a credential, bcrypt hashes and their
+cost, port ranges, Lua script files, whether each app can be launched (`docker run` options,
+users). It starts nothing, binds no port and writes no file. Each problem is printed as
+`file:line: error|warning: message`; every bad `proxy.conf` line is reported, not just the
+first. Exit status 1 on any error, so it fits a deploy script or CI:
+`soli-proxy check -c /etc/soli-proxy/proxy.conf --sites-dir /srv/sites && systemctl restart soli-proxy`.
+The admin API has the same check for a proposed file: `POST /api/v1/config/validate`.
+
+`stop --all` asks the running daemon to stop every app (`POST /api/v1/apps/stop-all`); with no
+daemon running it stops them itself — containers by name, native processes only if
+`run/spawned.json` proves the proxy started them. See [Restarts and upgrades](#restarts-and-upgrades)
+for why apps outlive the proxy.
 
 `hash-password` prompts twice without echo (or reads the first line of stdin when it is not a
 terminal — `echo "$PW" | soli-proxy hash-password`), prints only the hash on stdout, and never
@@ -111,6 +129,7 @@ worker_threads = "auto"
 # any rule matches. So is an encoded slash (`%2F`) anywhere, unless the backend needs them as
 # data (GitLab's `group%2Fproject`, S3-style keys); `..%2F` stays rejected either way.
 allow_encoded_slash = false
+shutdown_grace_period = 10  # seconds in-flight requests get on stop/restart (max 3600)
 
 [tls]
 mode = "auto"  # "auto" for dev, "letsencrypt" for production
@@ -435,7 +454,7 @@ soli-proxy/
 ├── config.toml               # Main configuration (example)
 ├── proxy.conf.sample         # Routing rules (example)
 ├── src/
-│   ├── main.rs               # CLI, startup, signals, self-update, hash-password
+│   ├── main.rs               # CLI, startup, signals and drain, self-update, hash-password
 │   ├── lib.rs                # Library root
 │   ├── bin/
 │   │   ├── httptest.rs       # End-to-end proxy throughput test
@@ -447,6 +466,7 @@ soli-proxy/
 │   ├── auth/                 # bcrypt hashing and Basic-auth verification cache
 │   ├── scripting/            # Lua engine and hooks (feature "scripting")
 │   ├── tui/                  # `soli-proxy tui` terminal UI
+│   ├── check.rs              # `soli-proxy check` / POST /api/v1/config/validate
 │   ├── acme.rs               # ACME / Let's Encrypt, certificate resolver, rustls config
 │   ├── tls.rs                # Certificate loading and the TLS server config
 │   ├── logging.rs            # [logging]: subscriber, non-blocking writer, rotation
@@ -454,7 +474,7 @@ soli-proxy/
 │   ├── metrics.rs            # Prometheus-format metrics
 │   ├── pool.rs               # Upstream connection pool
 │   ├── proxy_headers.rs      # Hop-by-hop stripping, cookie coalescing, Origin rewrite
-│   └── shutdown.rs           # Graceful shutdown
+│   └── shutdown.rs           # Shutdown signal, connection tracking, drain
 ├── tests/                    # Integration tests (admin auth, routing, Lua scripts)
 ├── benches/
 │   ├── routing.rs            # Rule matching & scaling benchmarks
@@ -524,6 +544,73 @@ listener addresses (`[server] bind`, `https_port`, `worker_threads`), the admin 
 `[tls] min_version`, the Lua engine and its scripts, the rate limiter, `max_connections`, and
 `[logging]` `level`/`format`/`output`. Per-request settings — routes, `force_https`, HSTS,
 timeouts, body-size limit, `log_endpoints`, admin credentials — take effect on the next request.
+
+## Restarts and upgrades
+
+A proxy restart — an upgrade, `systemctl restart`, `soli-proxy -d` replacing a daemon, a crash
+and `Restart=always` — no longer takes the apps down. Earlier versions stopped every managed app
+on SIGTERM, so each restart was a fleet-wide outage followed by a cold start of every app.
+
+**On SIGTERM or SIGINT** the proxy stops accepting connections, closes idle keep-alive
+connections, ends in-flight HTTP/1 responses with `Connection: close` and sends HTTP/2 `GOAWAY`,
+then waits for the requests still running to finish — at most `[server] shutdown_grace_period`
+(default 10 s); the wait ends as soon as the last one does, so a restart under normal traffic
+takes a fraction of a second. Then it exits, **leaving every app running**. (A WebSocket is not
+waited for: it is closed with the process. A second signal exits at once.)
+
+**At startup the proxy adopts what is still running** instead of restarting it. For each app,
+starting with the slot `run/app_state.json` says was serving, an instance is adopted only when
+all of this holds:
+
+| | Native process | Container |
+|---|---|---|
+| It is ours | `run/spawned.json` records the PID for this app and slot, and the PID is alive with the **recorded start time** (a PID alone is reused) | `<app>-<slot>` is running and carries the proxy's labels for this app, this container name and this port |
+| It runs today's launch | a digest of program, arguments, working directory, environment and uid/gid matches the one recorded | the `soli-proxy.launch` label — a digest of the whole `docker run` argv — matches what the proxy would run now |
+| It is on the slot's port | the recorded port is the slot's port (`run/ports.lock`), and the process listening on it is that PID or a member of its process group | the `soli-proxy.port` label is the slot's port |
+| It is healthy | its `health_check` answers 2xx (or 4xx: the app is up, the path is wrong) within three tries | same |
+
+An adopted instance goes straight into the routing table, before the listeners open, and is
+supervised as if this proxy had started it (an unexpected exit triggers failover as usual). What
+fails a check is handled as follows:
+
+- **ours, but changed, on the wrong port, not listening or unhealthy** — stopped, and the app
+  starts afresh as it always did. So a restart still applies a changed start command,
+  `workers`, image, `docker_options`, user or environment (routing settings such as `domain`
+  or `[auth]` never needed a restart);
+- **ours, in the other slot** — a deploy the restart interrupted: stopped;
+- **not provably ours** (a PID with no record or another start time, a process the proxy cannot
+  inspect) — neither adopted nor signalled. The fresh start then meets it as before: a port
+  held by a stranger is logged and the slot fails rather than kill it;
+- **a container without the labels** (started by an older version) — replaced, as a fresh start
+  always replaced `<app>-<slot>`.
+
+Apps survive because nothing ties them to the proxy: native apps run in their own session
+(`setsid`), with no parent-death signal, stdin on `/dev/null` and stdout/stderr written straight
+to `run/logs/<app>/<slot>.log` — never to a pipe the proxy holds, so they cannot die of SIGPIPE
+when it exits. Containers belong to the Docker daemon. Under systemd the unit needs
+`KillMode=process`, which `scripts/soli-proxy.service` sets: the default kills the whole cgroup,
+apps included.
+
+**To stop the apps too:** `soli-proxy stop --all` (or `POST /api/v1/apps/stop-all`) stops every
+app and leaves the proxy running; run it before `systemctl stop soli-proxy` on a host being
+retired. `[apps] stop_on_shutdown = true` restores the old behaviour — every stop and restart
+stops every app. It defaults to `true` under `--dev`, so ^C in a terminal still cleans up.
+
+**Upgrading:**
+
+```bash
+soli-proxy update                                   # installs the new binary, restarts nothing
+soli-proxy check -c /etc/soli-proxy/proxy.conf --sites-dir /srv/sites   # with the new binary
+sudo systemctl restart soli-proxy                   # drains, exits, the new one adopts the apps
+```
+
+With `-d` instead of systemd, run `soli-proxy -d` with the same flags again: it signals the
+running daemon, waits for its drain (`shutdown_grace_period` plus 5 s) and takes over the apps.
+Between the old process closing its listeners and the new one opening them, new connections
+are refused: for as long as the slowest in-flight request takes to finish (bounded by the grace
+period), plus the new process's startup — typically well under a second. A hand-over of the listening sockets, which would close
+that gap, is not implemented: two proxies cannot run side by side (the admin port is not shared,
+and both would supervise the same apps).
 
 ## App Configuration (`app.infos`)
 
@@ -892,6 +979,8 @@ Served on `[admin] bind` (loopback `127.0.0.1:9090` by default); see
 | GET | `/api/v1/events/apps` | Server-Sent Events: app deploys, status changes, quarantine |
 | GET | `/api/v1/apps`, `/api/v1/apps/{name}`, `/api/v1/apps/by-domain` | Managed apps |
 | POST | `/api/v1/apps/{name}/deploy` \| `restart` \| `rollback` \| `stop` | App lifecycle |
+| POST | `/api/v1/apps/stop-all` | Stop every app, both slots (the proxy keeps running) |
+| POST | `/api/v1/config/validate` | Check a proposed `{"proxy_conf": "...", "config_toml": "..."}` without applying it |
 | GET | `/api/v1/apps/{name}/logs` | Deployment logs |
 | GET / POST / DELETE | `/api/v1/aliases`, `/api/v1/apps/{name}/aliases[/{domain}]` | Domain aliases |
 | GET / POST | `/api/v1/circuit-breaker`, `/api/v1/circuit-breaker/reset` | Circuit-breaker state / reset |
@@ -899,6 +988,12 @@ Served on `[admin] bind` (loopback `127.0.0.1:9090` by default); see
 | GET / PUT | `/api/v1/acme-challenges` | HTTP-01 tokens pushed by an external ACME orderer |
 | POST | `/api/v1/hash-password` | `{"password": ...}` → bcrypt hash |
 | GET / PUT | `/api/v1/settings` | Admin UI settings (`{"theme": ...}`) |
+
+`POST /api/v1/config/validate` runs `soli-proxy check`'s checks (sites aside) on the text it is
+given; a part left out is read from the running proxy's files, so a proposed `proxy.conf` is
+checked against the live `config.toml` and vice versa. It answers 200 with `valid`, `errors`,
+`warnings` and `problems` — each with `file`, `line` (when known), `severity` and `message` — and
+changes nothing; apply with `PUT /api/v1/config` or by writing the file.
 
 Any other path is proxied to the bundled `_admin` UI app, when one is installed.
 
@@ -1101,6 +1196,10 @@ journalctl -u soli-proxy -f
 ```
 
 `systemctl reload soli-proxy` re-reads `proxy.conf` and `config.toml` (it sends `SIGUSR1`).
+`systemctl restart soli-proxy` drains in-flight requests and leaves the apps running for the new
+process to adopt — the unit sets `KillMode=process` for that; see
+[Restarts and upgrades](#restarts-and-upgrades). `systemctl stop` leaves them running too: run
+`soli-proxy stop --all` first to stop them.
 
 ### Privileges
 
@@ -1159,17 +1258,19 @@ by flag or environment variable. With the unit above they resolve to:
 | `/var/lib/soli-proxy/run/ports.lock` | blue/green port assignments |
 | `/var/lib/soli-proxy/run/spawned.json` | the native processes the proxy started, with their start times |
 | `/var/lib/soli-proxy/run/aliases.json` | admin-managed domain aliases |
+| `/var/lib/soli-proxy/certs/` | TLS cache, when `[tls].cache_dir` is `./certs` |
 
 These files, and `proxy.conf` when the proxy rewrites it, are written atomically (temporary
 file, `fsync`, rename), so a crash or a full disk leaves the previous version rather than a
 truncated one.
 
-`spawned.json` is what lets a restarted proxy clean up after itself without collateral damage.
-At startup, a slot's port that is still held is reclaimed only if the process holding it — or
-the process group it belongs to — is one the proxy recorded spawning, *with the same start
-time* (a PID alone is reused). Anything else on the port is logged and left alone, and the
-slot fails to start rather than kill a stranger.
-| `/var/lib/soli-proxy/certs/` | TLS cache, when `[tls].cache_dir` is `./certs` |
+`spawned.json` is what lets a restarted proxy take its apps back, and clean up after itself
+without collateral damage. Each record holds the PID, its start time, the app, slot and port,
+and a digest of the launch. At startup a recorded process that still matches is adopted (see
+[Restarts and upgrades](#restarts-and-upgrades)); a slot's port that is still held is otherwise
+reclaimed only if the process holding it — or the process group it belongs to — is one the
+proxy recorded spawning, *with the same start time* (a PID alone is reused). Anything else on
+the port is logged and left alone, and the slot fails to start rather than kill a stranger.
 
 Without `WorkingDirectory`, systemd starts the process in `/` and the proxy tries to write
 `/run` and `/certs`.

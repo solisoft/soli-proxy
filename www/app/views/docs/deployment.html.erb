@@ -128,17 +128,22 @@
 <span class="tc"># The daemon writes its PID and log files to</span>
 <span class="tc"># configurable directories via environment variables:</span>
 
-<span class="tc"># PID file location (default: /var/run)</span>
+<span class="tc"># PID file location: $SOLI_PID_DIR/proxy.pid (default: the working directory)</span>
 <span class="tk">export</span> <span class="tf">SOLI_PID_DIR</span>=<span class="ts">"/var/run/soli-proxy"</span>
 
-<span class="tc"># Log file location (default: /var/log)</span>
+<span class="tc"># Log file location: $SOLI_LOG_DIR/proxy.log (default: the working directory)</span>
 <span class="tk">export</span> <span class="tf">SOLI_LOG_DIR</span>=<span class="ts">"/var/log/soli-proxy"</span>
 
 <span class="tc"># Start as daemon with custom directories</span>
 <span class="tf">SOLI_PID_DIR</span>=<span class="ts">/opt/soli/run</span> <span class="tf">SOLI_LOG_DIR</span>=<span class="ts">/opt/soli/logs</span> ./soli-proxy -d
 
-<span class="tc"># Stop the daemon (reads PID from SOLI_PID_DIR)</span>
-<span class="tk">kill</span> $(<span class="tf">cat</span> /var/run/soli-proxy/soli-proxy.pid)</code></pre>
+<span class="tc"># Restart / upgrade: run it again with the same flags. It signals the</span>
+<span class="tc"># running daemon, waits for its drain, and adopts the apps it left running.</span>
+./soli-proxy -d
+
+<span class="tc"># Stop the daemon (reads PID from SOLI_PID_DIR). Apps keep running;</span>
+<span class="tc"># `soli-proxy stop --all` first if they should stop too.</span>
+<span class="tk">kill</span> $(<span class="tf">cat</span> /var/run/soli-proxy/proxy.pid)</code></pre>
                         </div>
 
                         <!-- systemd Tab -->
@@ -168,6 +173,10 @@
 <span class="tf">Restart</span>=always
 <span class="tf">RestartSec</span>=<span class="tn">5</span>
 <span class="tf">LimitNOFILE</span>=<span class="tn">65536</span>
+<span class="tc"># Signal only the proxy on stop/restart: apps keep running and the new</span>
+<span class="tc"># proxy adopts them. The default (control-group) kills every native app.</span>
+<span class="tc"># `soli-proxy stop --all` stops them all when that is what you want.</span>
+<span class="tf">KillMode</span>=process
 
 <span class="tc"># Hardening (apps are children of the proxy and share the sandbox)</span>
 <span class="tf">NoNewPrivileges</span>=yes
