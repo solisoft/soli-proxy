@@ -2318,14 +2318,15 @@ impl DeploymentManager {
                     last_err = Some(format!("HTTP {}", status));
                 }
                 Err(e) => {
+                    let reason = crate::upstream::retry::error_chain(&e);
                     tracing::debug!(
                         "Health check failed for {} slot {}: {} (attempt {})",
                         app.config.name,
                         slot,
-                        e,
+                        reason,
                         i + 1
                     );
-                    last_err = Some(e.to_string());
+                    last_err = Some(reason);
                 }
             }
         }

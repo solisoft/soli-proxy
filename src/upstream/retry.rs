@@ -527,4 +527,36 @@ mod tests {
         drop(second);
         assert!(!source.can_replay(), "a body that was read is gone");
     }
+
+    /// A health check's `error sending request for url (…)` reads the same
+    /// for an app that hangs and an app that is gone; the chain tells them
+    /// apart.
+    #[tokio::test]
+    async fn error_chain_tells_a_timeout_from_a_refused_connection() {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(200))
+            .build()
+            .unwrap();
+
+        // Accepts the connection, never answers: a wedged app.
+        let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let silent_url = format!("http://{}/up", silent.local_addr().unwrap());
+        let held = tokio::spawn(async move {
+            let (_socket, _) = silent.accept().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        });
+        let err = client.get(&silent_url).send().await.unwrap_err();
+        let chain = error_chain(&err);
+        assert!(chain.contains("timed out"), "{chain}");
+        held.abort();
+
+        // Nothing listening: an app that exited.
+        let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let closed_url = format!("http://{}/up", closed.local_addr().unwrap());
+        drop(closed);
+        let err = client.get(&closed_url).send().await.unwrap_err();
+        let chain = error_chain(&err);
+        assert!(!chain.contains("timed out"), "{chain}");
+        assert!(chain.len() > err.to_string().len(), "{chain}");
+    }
 }

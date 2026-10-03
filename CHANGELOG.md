@@ -12,6 +12,19 @@
   has not restarted on) shows its version as `2.14.0!` in yellow, and "old binary: restart" in
   the detail panel. Linux only, like the CPU and memory columns.
 
+### Bug Fixes
+
+* **apps: a failed health check says why.** The warning read `error sending request for url
+  (http://127.0.0.1:<port>/up)` whether the app timed out, refused the connection or reset it —
+  reqwest's top-level message, with the cause left in its source chain. The periodic check (`… (n/3
+  before failover)`) and the deploy check (`did not become healthy … (last error: …)`) now log
+  the whole chain, so a wedged app (`operation timed out`) reads differently from one that exited
+  (`Connection refused`).
+* **The sites watcher works with a relative `--sites-dir`.** notify reports absolute paths, and
+  the prefixes stripped from them were the paths as given: with the default `./sites`, no event
+  ever matched, so a site added, removed or renamed was not picked up until a restart, with
+  nothing logged. The roots are made absolute first.
+
 ## [1.0.2](https://github.com/solisoft/soli-proxy/compare/v1.0.0...v1.0.2) (2026-10-01)
 
 Two fixes to 1.0.0, the first of them for anyone upgrading from 0.35. (1.0.1 was tagged but never

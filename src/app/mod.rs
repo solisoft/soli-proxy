@@ -1311,6 +1311,14 @@ fn trigger_decision(
 /// is renamed — not when its metadata changes, which a tenant can do at will.
 /// Depth 2 matters only for `app.infos` itself. (The restart trigger file is
 /// polled, not watched; see `check_restart_triggers`.)
+/// The prefixes stripped from watcher event paths. notify reports absolute
+/// paths, so a relative `--sites-dir` (the default `./sites`) must be made
+/// absolute too, or no event ever matches and the watcher goes silently deaf.
+fn watch_roots(sites_dir: &Path, watch_path: &Path) -> [PathBuf; 2] {
+    let absolute = |p: &Path| std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
+    [absolute(sites_dir), absolute(watch_path)]
+}
+
 fn watch_event_is_relevant(relative: &Path, kind: &notify::EventKind) -> bool {
     use notify::event::ModifyKind;
     use notify::EventKind;
@@ -2522,7 +2530,7 @@ impl AppManager {
             sites_dir.clone()
         };
 
-        let roots = [sites_dir.clone(), watch_path.clone()];
+        let roots = watch_roots(&sites_dir, &watch_path);
         let callback_sites_dir = sites_dir.clone();
         let mut watcher = RecommendedWatcher::new(
             move |res: notify::Result<notify::Event>| {
@@ -3318,7 +3326,10 @@ impl AppManager {
             let url = format!("http://127.0.0.1:{}{}", port, health_path);
             let verdict = match http_client.get(&url).send().await {
                 Ok(resp) => health_verdict(resp.status().as_u16()),
-                Err(e) => HealthVerdict::Failed(e.to_string()),
+                // The whole chain: reqwest's own message is `error sending
+                // request for url (…)` whether the app timed out, refused the
+                // connection or reset it, and those point at different causes.
+                Err(e) => HealthVerdict::Failed(crate::upstream::retry::error_chain(&e)),
             };
             match verdict {
                 HealthVerdict::Healthy => {
@@ -5690,6 +5701,19 @@ health_check = "/status"
             Path::new("app.example.com/deep/app.infos"),
             &create
         ));
+    }
+
+    #[test]
+    fn test_watch_roots_match_absolute_event_paths_for_a_relative_sites_dir() {
+        let relative = PathBuf::from("./sites");
+        let roots = watch_roots(&relative, &relative);
+        let event_path = std::env::current_dir()
+            .unwrap()
+            .join("sites/new.example.test");
+        let stripped = roots
+            .iter()
+            .find_map(|root| event_path.strip_prefix(root).ok());
+        assert_eq!(stripped, Some(Path::new("new.example.test")));
     }
 
     #[test]
