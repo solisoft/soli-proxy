@@ -1,6 +1,10 @@
 # Changelog
 
-## [1.0.3](https://github.com/solisoft/soli-proxy/compare/v1.0.2...v1.0.3) (2026-10-03)
+## [1.0.4](https://github.com/solisoft/soli-proxy/compare/v1.0.2...v1.0.4) (2026-10-03)
+
+1.0.3 was tagged but never released: its CI failed on a race in a new test (the test probed the
+child process before it had started the program it was spawned with). 1.0.4 is the same code with
+the test fixed.
 
 ### Features
 

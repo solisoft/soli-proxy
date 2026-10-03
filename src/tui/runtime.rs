@@ -242,6 +242,18 @@ mod tests {
         let copy = dir.path().join("soli");
         std::fs::copy("/bin/sleep", &copy).unwrap();
         let mut child = std::process::Command::new(&copy).arg("30").spawn().unwrap();
+        // `spawn` returns once the child is forked, not once it has exec'd:
+        // until then /proc/<pid>/exe is still this test binary. Wait for the
+        // copy to be what runs before deleting it.
+        let exe = format!("/proc/{}/exe", child.id());
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::fs::read_link(&exe).ok().as_deref() != Some(copy.as_path()) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the child never exec'd"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
         std::fs::remove_file(&copy).unwrap();
 
         let runtime = RuntimeProbe::default().probe(child.id());
