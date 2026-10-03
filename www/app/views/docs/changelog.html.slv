@@ -46,11 +46,51 @@
                     </p>
                 </div>
 
+                <!-- 1.0.3 -->
+                <div class="mb-10 reveal-on-scroll">
+                    <div class="flex items-center gap-3 mb-5 flex-wrap">
+                        <h2 class="text-2xl font-bold text-white font-mono">v1.0.3</h2>
+                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
+                        <span class="text-sm text-gray-500">2026-10-03</span>
+                    </div>
+
+                    <div class="space-y-4">
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">feat</span>
+                                <h3 class="text-base font-semibold text-white">The TUI shows which Soli each app runs, and since when</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                The apps screen has two new columns, <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">Soli</code> and <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">Up</code>, and the detail panel gives the start date. The version is the one of the binary the process actually runs. After <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">soli</code> is upgraded in place, an app that has not restarted still runs the old binary: its version shows as <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">2.14.0!</code> in yellow until a restart picks up the new one.
+                            </p>
+                        </div>
+
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">fix</span>
+                                <h3 class="text-base font-semibold text-white">A failed health check says why</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                The warning read <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">error sending request for url (…/up)</code> whatever happened. It now carries the cause, so a wedged app (<code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">operation timed out</code>) reads differently from one that exited (<code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">Connection refused</code>).
+                            </p>
+                        </div>
+
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">fix</span>
+                                <h3 class="text-base font-semibold text-white">The sites watcher works with a relative sites directory</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                With the default <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">./sites</code>, a site added, removed or renamed went unnoticed until the proxy restarted, with nothing logged. It is picked up again.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- 1.0.2 -->
                 <div class="mb-10 reveal-on-scroll">
                     <div class="flex items-center gap-3 mb-5 flex-wrap">
                         <h2 class="text-2xl font-bold text-white font-mono">v1.0.2</h2>
-                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
                         <span class="text-sm text-gray-500">2026-10-01</span>
                     </div>
 
