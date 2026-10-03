@@ -55,6 +55,7 @@ FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
     "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
     "/Library/Fonts/DejaVuSansMono.ttf",
+    "/usr/share/fonts/liberation/LiberationMono-Regular.ttf",
 ]
 
 
@@ -87,7 +88,12 @@ def put(img, x, y, text, fg=FG, bg=None):
     px, py = x * CW, y * CH
     if bg:
         draw.rectangle([px, py, px + len(text) * CW - 1, py + CH - 1], fill=bg)
-    draw.text((px, py + 1), text, font=FONT, fill=fg)
+    # One character per cell, as a terminal draws: a font whose advance is
+    # not exactly CW would otherwise drift a long line off the grid, and a
+    # header would no longer sit above its column.
+    for i, ch in enumerate(text):
+        if ch != " ":
+            draw.text((px + i * CW, py + 1), ch, font=FONT, fill=fg)
 
 
 def fill(img, x, y, w, h, color):
@@ -314,21 +320,30 @@ def routes():
 
 def apps():
     img = chrome(2, f"{NAV_KEYS}  j/k  Enter action  /  r  ?  q")
-    rows = [
-        [(0, "api", FG), (12, "api.example.com", MUTED), (34, "Running", SUCCESS),
-         (45, "2.4%", FG), (53, "128.4 MB", FG), (65, "8.2K", FG), (73, "4", DANGER), (81, "12.1ms", FG)],
-        [(0, "web", FG), (12, "www.example.com", MUTED), (34, "Running", SUCCESS),
-         (45, "1.1%", FG), (53, "96.0 MB", FG), (65, "3.4K", FG), (73, "0", FG), (81, "8.4ms", FG)],
-        [(0, "docs", FG), (12, "docs.example.com", MUTED), (34, "Running", SUCCESS),
-         (45, "0.3%", FG), (53, "42.1 MB", FG), (65, "612", FG), (73, "0", FG), (81, "6.0ms", FG)],
-        [(0, "legacy", FG), (12, "old.example.com", MUTED), (34, "Stopped", MUTED),
-         (45, "-", MUTED), (53, "-", MUTED), (65, "0", FG), (73, "0", FG), (81, "-", MUTED)],
-    ]
-    _table(
-        img, BODY_X, 0, BODY_W, BODY_H, "apps",
-        "Name        Domain                Status     CPU     Memory      Reqs    Errors  Avg RT",
-        rows, selected=0,
+    # Column starts; the header is built from the same offsets.
+    cols = [0, 9, 28, 37, 46, 53, 59, 69, 75, 82]
+    labels = ["Name", "Domain", "Status", "Soli", "Up", "CPU", "Memory", "Reqs", "Errors", "Avg RT"]
+    header = "".join(
+        label.ljust(cols[i + 1] - cols[i]) if i + 1 < len(cols) else label
+        for i, label in enumerate(labels)
     )
+
+    def row(values, colors):
+        return [(cols[i], v, c) for i, (v, c) in enumerate(zip(values, colors))]
+
+    running = [FG, MUTED, SUCCESS, FG, FG, FG, FG, FG, FG, FG]
+    rows = [
+        row(["api", "api.example.com", "Running", "2.15.0", "4d02h", "2.4%", "128.4 MB",
+             "8.2K", "4", "12.1ms"], running[:8] + [DANGER, FG]),
+        row(["web", "www.example.com", "Running", "2.15.0", "4d02h", "1.1%", "96.0 MB",
+             "3.4K", "0", "8.4ms"], running),
+        # Started before `soli` was upgraded: it still runs the old binary.
+        row(["docs", "docs.example.com", "Running", "2.14.0!", "6d11h", "0.3%", "42.1 MB",
+             "612", "0", "6.0ms"], running[:3] + [WARN] + running[4:]),
+        row(["legacy", "old.example.com", "Stopped", "-", "-", "-", "-", "0", "0", "-"],
+            [FG, MUTED, MUTED, MUTED, MUTED, MUTED, MUTED, FG, FG, MUTED]),
+    ]
+    _table(img, BODY_X, 0, BODY_W, BODY_H, "apps", header, rows, selected=0)
     return img
 
 

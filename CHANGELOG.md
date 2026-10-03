@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+* **tui: the apps screen shows each app's Soli version and uptime.** Two columns, `Soli` and
+  `Up`, and two lines in the detail panel (`Soli`, `Since` with the start date). Both come from
+  the app's process: the version from the binary it runs (`<exe> --version`, once per binary
+  file, only for a `soli*` executable), the start time from `/proc/<pid>/stat`. An app still
+  running a binary that was deleted or replaced since it started (an in-place `soli` upgrade it
+  has not restarted on) shows its version as `2.14.0!` in yellow, and "old binary: restart" in
+  the detail panel. Linux only, like the CPU and memory columns.
+
 ## [1.0.2](https://github.com/solisoft/soli-proxy/compare/v1.0.0...v1.0.2) (2026-10-01)
 
 Two fixes to 1.0.0, the first of them for anyone upgrading from 0.35. (1.0.1 was tagged but never

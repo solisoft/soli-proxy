@@ -112,7 +112,7 @@ fn render_app_table(
     let inner = crate::tui::theme::body(area);
 
     let header = Row::new(vec![
-        "Name", "Domain", "Status", "CPU", "Memory", "Reqs", "Errors", "Avg RT",
+        "Name", "Domain", "Status", "Soli", "Up", "CPU", "Memory", "Reqs", "Errors", "Avg RT",
     ])
     .style(Style::default().fg(crate::tui::theme::ACCENT).bold());
 
@@ -170,6 +170,29 @@ fn render_app_table(
                 }
             });
 
+            // The version, flagged when the binary was replaced or deleted
+            // after the process started: it still runs the old one.
+            let runtime = s.map(|s| &s.runtime);
+            let soli = runtime
+                .and_then(|r| r.version.as_deref())
+                .map(|v| {
+                    if runtime.is_some_and(|r| r.replaced) {
+                        format!("{v}!")
+                    } else {
+                        v.to_string()
+                    }
+                })
+                .unwrap_or_else(|| "-".to_string());
+            let soli_style = if !is_selected && runtime.is_some_and(|r| r.replaced) {
+                Style::default().fg(Color::Yellow)
+            } else {
+                style
+            };
+            let up = runtime
+                .and_then(|r| r.started_at)
+                .map(|t| crate::tui::runtime::fmt_uptime(t, std::time::SystemTime::now()))
+                .unwrap_or_else(|| "-".to_string());
+
             let err_style = if is_selected {
                 style
             } else if s.is_some_and(|s| s.errors > 0) {
@@ -182,6 +205,8 @@ fn render_app_table(
                 Cell::from(app.config.name.clone()).style(style),
                 Cell::from(app.config.domain.clone()).style(style),
                 Cell::from(inst.status.to_string()).style(style.fg(status_color)),
+                Cell::from(soli).style(soli_style),
+                Cell::from(up).style(style),
                 Cell::from(cpu).style(style),
                 Cell::from(mem).style(style),
                 Cell::from(reqs).style(style),
@@ -197,6 +222,8 @@ fn render_app_table(
             Constraint::Percentage(15),
             Constraint::Percentage(18),
             Constraint::Length(10),
+            Constraint::Length(8),
+            Constraint::Length(6),
             Constraint::Length(8),
             Constraint::Length(10),
             Constraint::Length(8),
@@ -229,7 +256,7 @@ fn render_app_detail(
     // Split: info (left) | charts (right)
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(38), Constraint::Min(20)])
+        .constraints([Constraint::Length(42), Constraint::Min(20)])
         .split(inner);
 
     render_detail_info(f, cols[0], app, stats);
@@ -305,7 +332,53 @@ fn render_detail_info(
             Cell::from(bytes_out).style(Style::default().fg(Color::Cyan)),
         ]),
     ];
+    let runtime = stats.map(|s| &s.runtime);
+    let replaced = runtime.is_some_and(|r| r.replaced);
+    let soli = match runtime.and_then(|r| r.version.as_deref()) {
+        Some(v) if replaced => format!("{v} (old binary: restart)"),
+        Some(v) => v.to_string(),
+        None => "-".to_string(),
+    };
+    let since = runtime
+        .and_then(|r| r.started_at)
+        .map(|t| {
+            format!(
+                "{} ({})",
+                crate::tui::runtime::fmt_started(t),
+                crate::tui::runtime::fmt_uptime(t, std::time::SystemTime::now())
+            )
+        })
+        .unwrap_or_else(|| "-".to_string());
+    // The runtime lines span the panel: a date or a warning is wider than a
+    // cell of the table above.
+    let label = |text: &'static str| {
+        ratatui::text::Span::styled(format!("{text:<10}"), Style::default().fg(Color::DarkGray))
+    };
+    let runtime_lines = vec![
+        ratatui::text::Line::from(vec![
+            label("Soli"),
+            ratatui::text::Span::styled(
+                soli,
+                Style::default().fg(if replaced {
+                    Color::Yellow
+                } else {
+                    Color::White
+                }),
+            ),
+        ]),
+        ratatui::text::Line::from(vec![
+            label("Since"),
+            ratatui::text::Span::styled(since, Style::default().fg(Color::White)),
+        ]),
+    ];
 
+    let parts = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(info_rows.len() as u16),
+            Constraint::Min(0),
+        ])
+        .split(area);
     let table = Table::new(
         info_rows,
         [
@@ -315,7 +388,8 @@ fn render_detail_info(
             Constraint::Min(6),
         ],
     );
-    f.render_widget(table, area);
+    f.render_widget(table, parts[0]);
+    f.render_widget(Paragraph::new(runtime_lines), parts[1]);
 }
 
 fn render_detail_charts(

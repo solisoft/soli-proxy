@@ -594,7 +594,7 @@ pub fn new_metrics() -> SharedMetrics {
 ///
 /// 100 on mainstream x86 Linux, and not guaranteed to be: it is a kernel build
 /// option. Read once, because the value cannot change under a running kernel.
-fn clock_ticks_per_second() -> f64 {
+pub(crate) fn clock_ticks_per_second() -> f64 {
     use std::sync::OnceLock;
     static TICKS: OnceLock<f64> = OnceLock::new();
     *TICKS.get_or_init(|| {

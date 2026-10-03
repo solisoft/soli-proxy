@@ -121,6 +121,14 @@ show as unavailable — never as an empty list — when it cannot be reached. It
 password typed at its login prompt is reused as the Basic credential, and it polls every 5 s
 instead of every second because each request costs the daemon a bcrypt check.
 
+The apps screen also reads each app's process in `/proc`, so it shows what only the machine
+knows: CPU, memory, the **Soli version** the process runs (`Soli`) and **how long it has been
+running** (`Up`; the detail panel gives the start time). The version comes from the binary the
+process actually runs, asked once per binary file (`<exe> --version`, only for an executable named
+`soli*`). A process keeps the binary it started with: after `soli` is upgraded in place, an app
+that has not restarted still runs the old version, shown as `2.14.0!` in yellow ("old binary:
+restart" in the detail panel) until a restart picks up the new one.
+
 ## Configuration
 
 ### Main Config (config.toml)

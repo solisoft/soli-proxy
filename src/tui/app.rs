@@ -31,6 +31,8 @@ pub struct AppStats {
     pub errors: u64,
     pub cpu_percent: Option<f64>,
     pub memory_bytes: Option<u64>,
+    /// The Soli version the process runs, and since when (from /proc).
+    pub runtime: crate::tui::runtime::AppRuntime,
 }
 
 /// Rolling history for sparkline charts.
@@ -341,6 +343,8 @@ pub struct TuiApp {
     route_form: Option<RouteForm>,
     pub app_stats: HashMap<String, AppStats>,
     pub app_history: HashMap<String, AppHistory>,
+    /// Reads each app process's Soli version and start time.
+    runtime_probe: crate::tui::runtime::RuntimeProbe,
     /// Global traffic snapshot fetched from the daemon's admin API.
     /// The TUI runs in its own process, so the local metrics registry is empty.
     remote_snapshot: Option<MetricsSnapshot>,
@@ -396,6 +400,7 @@ impl TuiApp {
             route_form: None,
             app_stats: HashMap::new(),
             app_history: HashMap::new(),
+            runtime_probe: crate::tui::runtime::RuntimeProbe::default(),
             remote_snapshot: None,
             circuits: None,
             ticks: 0,
@@ -496,6 +501,7 @@ impl TuiApp {
                     errors: m.errors,
                     cpu_percent: None,
                     memory_bytes: None,
+                    runtime: Default::default(),
                 })
                 .unwrap_or_default();
 
@@ -505,6 +511,7 @@ impl TuiApp {
                     stats.cpu_percent = proc_stats.cpu_percent;
                     stats.memory_bytes = proc_stats.memory_rss_bytes;
                 }
+                stats.runtime = self.runtime_probe.probe(pid);
             }
 
             // Update history
