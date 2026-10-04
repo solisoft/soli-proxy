@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.0.5](https://github.com/solisoft/soli-proxy/compare/v1.0.4...v1.0.5) (2026-10-04)
+
+### Features
+
+* **tui: an app put to sleep by scale to zero shows as Sleeping.** It read as Stopped, like an
+  app that stays down until someone acts, when the next request brings it back. The admin API
+  reports `"asleep": true` for it in `/api/v1/app-metrics` and `/api/v1/apps/{name}/metrics`
+  (sleeping apps are listed even without traffic), and the TUI shows **Sleeping** in purple on
+  the apps screen and `◐ sleep` on the dashboard. The field defaults to `false`, so a newer TUI
+  still reads an older daemon.
+
+### Bug Fixes
+
+* **apps: no false health-check failure after an app goes to sleep.** The periodic health check
+  could probe an app while the idle reaper was stopping it, and logged `Health check failed …
+  Connection refused (1/3 before failover)` after every sleep. A failed probe no longer counts
+  when a stop is under way, the app is asleep, or its live slot no longer runs the probed
+  process; the same race on a manual `soli-proxy stop` is covered. A process that exits because
+  it was asked to (deploy switch, sleep, stop) is logged at info; only an exit nobody asked for
+  warns.
+
 ## [1.0.4](https://github.com/solisoft/soli-proxy/compare/v1.0.2...v1.0.4) (2026-10-03)
 
 1.0.3 was tagged but never released: its CI failed on a race in a new test (the test probed the

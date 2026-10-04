@@ -46,11 +46,41 @@
                     </p>
                 </div>
 
+                <!-- 1.0.5 -->
+                <div class="mb-10 reveal-on-scroll">
+                    <div class="flex items-center gap-3 mb-5 flex-wrap">
+                        <h2 class="text-2xl font-bold text-white font-mono">v1.0.5</h2>
+                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
+                        <span class="text-sm text-gray-500">2026-10-04</span>
+                    </div>
+
+                    <div class="space-y-4">
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">feat</span>
+                                <h3 class="text-base font-semibold text-white">The TUI tells a sleeping app from a stopped one</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                An app put to sleep by scale to zero (<code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">idle_timeout</code>) read as Stopped, like one that stays down until someone acts. It now shows as <strong>Sleeping</strong>, in purple (<code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">◐ sleep</code> on the dashboard): it comes back on the next request. The admin API reports it as <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">"asleep": true</code> in <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">/api/v1/app-metrics</code>.
+                            </p>
+                        </div>
+
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">fix</span>
+                                <h3 class="text-base font-semibold text-white">No more false health-check failures after an app goes to sleep</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                The health check could probe an app the idle reaper was stopping, and logged <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">Health check failed … (1/3 before failover)</code> after every sleep. A probe that raced an intentional stop is now ignored, and a process that exits because it was asked to is logged at info rather than as a warning.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- 1.0.4 -->
                 <div class="mb-10 reveal-on-scroll">
                     <div class="flex items-center gap-3 mb-5 flex-wrap">
                         <h2 class="text-2xl font-bold text-white font-mono">v1.0.4</h2>
-                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
                         <span class="text-sm text-gray-500">2026-10-03</span>
                     </div>
                     <p class="text-gray-400 leading-relaxed mb-4">1.0.3 was tagged but never released: its CI failed on a race in a new test. 1.0.4 is the same code with the test fixed.</p>
