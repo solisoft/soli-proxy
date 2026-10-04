@@ -33,6 +33,10 @@ pub struct AppStats {
     pub memory_bytes: Option<u64>,
     /// The Soli version the process runs, and since when (from /proc).
     pub runtime: crate::tui::runtime::AppRuntime,
+    /// Put to sleep by the daemon's idle reaper: stopped, and started again
+    /// by the next request. Only the daemon knows; this process sees a
+    /// stopped app either way.
+    pub asleep: bool,
 }
 
 /// Rolling history for sparkline charts.
@@ -502,6 +506,7 @@ impl TuiApp {
                     cpu_percent: None,
                     memory_bytes: None,
                     runtime: Default::default(),
+                    asleep: m.asleep,
                 })
                 .unwrap_or_default();
 
@@ -1480,10 +1485,13 @@ impl TuiApp {
                 f,
                 area,
                 &self.ctx,
-                self.remote_snapshot.as_ref(),
-                self.circuits.as_deref(),
-                self.daemon_status,
-                &self.rps_history,
+                &screens::dashboard::DashboardView {
+                    remote_snap: self.remote_snapshot.as_ref(),
+                    circuits: self.circuits.as_deref(),
+                    status: self.daemon_status,
+                    rps_history: &self.rps_history,
+                    app_stats: &self.app_stats,
+                },
             ),
             Screen::Routes => screens::routes::render(
                 f,

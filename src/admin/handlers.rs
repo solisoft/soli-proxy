@@ -557,8 +557,10 @@ pub async fn get_app_metrics(state: &Arc<AdminState>, name: &str) -> Response<Bo
                             errors: 0,
                             memory_rss_bytes: None,
                             cpu_percent: None,
+                            asleep: false,
                         },
                     );
+                    metrics.asleep = manager.is_asleep(name);
 
                     let slots: Vec<_> = [&app.blue, &app.green]
                         .iter()
@@ -614,6 +616,7 @@ pub async fn get_all_app_metrics(state: &Arc<AdminState>) -> Response<BoxBody> {
                     errors: 0,
                     memory_rss_bytes: None,
                     cpu_percent: None,
+                    asleep: false,
                 });
 
             let slots: Vec<_> = pids
@@ -623,6 +626,10 @@ pub async fn get_all_app_metrics(state: &Arc<AdminState>) -> Response<BoxBody> {
             let totals = crate::metrics::sum_slot_metrics(&slots);
             entry.memory_rss_bytes = totals.memory_rss_bytes;
             entry.cpu_percent = totals.cpu_percent;
+        }
+        // A sleeping app has no process, so the loop above never sees it.
+        for name in manager.asleep_apps() {
+            metrics.entry(name).or_default().asleep = true;
         }
     }
 

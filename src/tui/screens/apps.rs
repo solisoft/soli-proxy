@@ -132,17 +132,27 @@ fn render_app_table(
                 &app.green
             };
 
+            let s = app_stats.get(&app.config.name);
+
+            // Asleep is a stopped app the next request starts again: worth
+            // telling apart from one that stays down until someone acts.
+            let asleep =
+                inst.status == crate::app::InstanceStatus::Stopped && s.is_some_and(|s| s.asleep);
             let status_color = match inst.status {
+                _ if asleep => crate::tui::theme::MAGENTA,
                 crate::app::InstanceStatus::Running => Color::Green,
                 crate::app::InstanceStatus::Starting => Color::Yellow,
                 crate::app::InstanceStatus::Stopped => Color::DarkGray,
                 crate::app::InstanceStatus::Unhealthy => Color::Red,
                 crate::app::InstanceStatus::Failed => Color::Red,
             };
+            let status_label = if asleep {
+                "Sleeping".to_string()
+            } else {
+                inst.status.to_string()
+            };
 
             let style = crate::tui::theme::row_style(is_selected);
-
-            let s = app_stats.get(&app.config.name);
 
             let cpu = s
                 .and_then(|s| s.cpu_percent)
@@ -204,7 +214,7 @@ fn render_app_table(
             Row::new(vec![
                 Cell::from(app.config.name.clone()).style(style),
                 Cell::from(app.config.domain.clone()).style(style),
-                Cell::from(inst.status.to_string()).style(style.fg(status_color)),
+                Cell::from(status_label).style(style.fg(status_color)),
                 Cell::from(soli).style(soli_style),
                 Cell::from(up).style(style),
                 Cell::from(cpu).style(style),

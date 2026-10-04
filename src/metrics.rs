@@ -24,7 +24,7 @@ pub struct MetricsSnapshot {
     pub status_5xx: u64,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct AppMetricsJson {
     pub requests: u64,
     /// Unix milliseconds of this app's most recent request, or `None` if it has
@@ -47,6 +47,12 @@ pub struct AppMetricsJson {
     pub errors: u64,
     pub memory_rss_bytes: Option<u64>,
     pub cpu_percent: Option<f64>,
+    /// Stopped by the idle reaper (`idle_timeout`): the next request starts it
+    /// again. Filled in by the admin API, which knows the app manager; an app
+    /// stopped any other way reads `false`. Defaulted so a client can read
+    /// a daemon that predates the field.
+    #[serde(default)]
+    pub asleep: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -228,6 +234,7 @@ impl Metrics {
             errors: m.errors_total.load(Ordering::Relaxed),
             memory_rss_bytes: None,
             cpu_percent: None,
+            asleep: false,
         })
     }
 
@@ -254,6 +261,7 @@ impl Metrics {
                         errors: m.errors_total.load(Ordering::Relaxed),
                         memory_rss_bytes: None,
                         cpu_percent: None,
+                        asleep: false,
                     },
                 )
             })
@@ -739,6 +747,18 @@ mod idle_signal_tests {
 
     fn ms_now() -> u64 {
         unix_millis()
+    }
+
+    /// A TUI newer than its daemon still reads the daemon's answer: a missing
+    /// `asleep` is `false`, not a parse failure that blanks every app's stats.
+    #[test]
+    fn asleep_defaults_to_false_for_an_older_daemon() {
+        let old = r#"{"requests":3,"last_request_ms":null,"bytes_received":0,
+            "bytes_sent":0,"avg_response_time_ms":0.0,"errors":0,
+            "memory_rss_bytes":null,"cpu_percent":null}"#;
+        let parsed: AppMetricsJson = serde_json::from_str(old).unwrap();
+        assert_eq!(parsed.requests, 3);
+        assert!(!parsed.asleep);
     }
 
     #[test]

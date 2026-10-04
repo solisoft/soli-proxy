@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -9,22 +9,29 @@ use ratatui::{
 
 use crate::circuit_breaker::CircuitBreakerInfo;
 use crate::metrics::MetricsSnapshot;
-use crate::tui::app::DaemonStatus;
+use crate::tui::app::{AppStats, DaemonStatus};
 use crate::tui::theme;
 use crate::tui::TuiContext;
 
 /// `remote_snap` carries traffic counters fetched from the daemon's admin API.
 /// The TUI runs in its own process, so its local metrics registry is always
 /// empty — `status` is what decides whether the numbers mean anything.
-pub fn render(
-    f: &mut Frame,
-    area: Rect,
-    ctx: &TuiContext,
-    remote_snap: Option<&MetricsSnapshot>,
-    circuits: Option<&[(String, CircuitBreakerInfo)]>,
-    status: DaemonStatus,
-    rps_history: &VecDeque<u64>,
-) {
+pub struct DashboardView<'a> {
+    pub remote_snap: Option<&'a MetricsSnapshot>,
+    pub circuits: Option<&'a [(String, CircuitBreakerInfo)]>,
+    pub status: DaemonStatus,
+    pub rps_history: &'a VecDeque<u64>,
+    pub app_stats: &'a HashMap<String, AppStats>,
+}
+
+pub fn render(f: &mut Frame, area: Rect, ctx: &TuiContext, view: &DashboardView) {
+    let DashboardView {
+        remote_snap,
+        circuits,
+        status,
+        rps_history,
+        app_stats,
+    } = *view;
     let local_snap = ctx.metrics.snapshot();
     let snap = remote_snap.unwrap_or(&local_snap);
     let have_metrics = remote_snap.is_some();
@@ -47,7 +54,7 @@ pub fn render(
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
         .split(rows[3]);
-    render_apps_overview(f, bottom[0], ctx);
+    render_apps_overview(f, bottom[0], ctx, app_stats);
     render_server(f, bottom[1], ctx, snap, have_metrics);
 }
 
@@ -346,7 +353,12 @@ fn kv(label: &str, value: String, color: Color) -> Row<'static> {
     ])
 }
 
-fn render_apps_overview(f: &mut Frame, area: Rect, ctx: &TuiContext) {
+fn render_apps_overview(
+    f: &mut Frame,
+    area: Rect,
+    ctx: &TuiContext,
+    app_stats: &HashMap<String, AppStats>,
+) {
     let apps = ctx
         .app_manager
         .as_ref()
@@ -385,7 +397,10 @@ fn render_apps_overview(f: &mut Frame, area: Rect, ctx: &TuiContext) {
             } else {
                 &app.green
             };
+            let asleep = inst.status == crate::app::InstanceStatus::Stopped
+                && app_stats.get(&app.config.name).is_some_and(|s| s.asleep);
             let (status_str, status_color) = match inst.status {
+                _ if asleep => ("◐ sleep", theme::MAGENTA),
                 crate::app::InstanceStatus::Running => ("● run", theme::SUCCESS),
                 crate::app::InstanceStatus::Starting => ("● start", theme::WARN),
                 crate::app::InstanceStatus::Stopped => ("○ stop", theme::MUTED),

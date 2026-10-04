@@ -123,7 +123,9 @@ instead of every second because each request costs the daemon a bcrypt check.
 
 The apps screen also reads each app's process in `/proc`, so it shows what only the machine
 knows: CPU, memory, the **Soli version** the process runs (`Soli`) and **how long it has been
-running** (`Up`; the detail panel gives the start time). The version comes from the binary the
+running** (`Up`; the detail panel gives the start time). An app the daemon put to sleep for
+inactivity (see [Scale to zero](#scale-to-zero)) reads **Sleeping**, in purple, rather than
+Stopped. The version comes from the binary the
 process actually runs, asked once per binary file (`<exe> --version`, only for an executable named
 `soli*`). A process keeps the binary it started with: after `soli` is upgraded in place, an app
 that has not restarted still runs the old version, shown as `2.14.0!` in yellow ("old binary:
@@ -1272,7 +1274,8 @@ What happens:
 - Every request the proxy routes to an app resets that app's idle clock.
 - A reaper runs every 30 s. An app past its threshold is stopped the same way
   `soli-proxy stop` stops it, so the exit is not mistaken for a crash — no
-  failover, no quarantine.
+  failover, no quarantine, and no health-check failure for the process going
+  away. The journal says `<app> put to sleep after <n>s without a request`.
 - The next request for one of its domains is **held** while the app is started
   on its current slot and polled for health, then forwarded as usual. A Soli app
   boots in a few hundred milliseconds, so the first visitor waits about a
@@ -1281,6 +1284,13 @@ What happens:
 - A sleeping app keeps its certificate registered and keeps winning over
   static `proxy.conf` rules for its domains, exactly as a running one does.
 - `soli-proxy restart <app>` or a deploy wakes it too, and resets the clock.
+- `/api/v1/app-metrics` and `/api/v1/apps/{name}/metrics` report it with
+  `"asleep": true`, and the TUI shows it as **Sleeping** (`◐ sleep` on the
+  dashboard) rather than Stopped: an app that comes back on the next request,
+  not one that stays down until someone acts.
+- Any request resets the clock, crawlers included. A public site that bots
+  fetch more often than its threshold never sleeps; its `requests` and
+  `last_request_ms` in `/api/v1/app-metrics` show who keeps it up.
 
 The default is `0` — never sleep — and that is the right value for anything
 that does work without being asked: cron jobs, background workers, WebSocket
@@ -1505,7 +1515,7 @@ Served on `[admin] bind` (loopback `127.0.0.1:9090` by default); see
 | POST | `/api/v1/reload` | Re-read `proxy.conf` and `config.toml` |
 | POST | `/api/v1/certs/reload` | Rescan `certs/` |
 | GET | `/api/v1/metrics` | Prometheus metrics |
-| GET | `/api/v1/app-metrics`, `/api/v1/app-metrics/system`, `/api/v1/apps/{name}/metrics` | Per-app traffic, memory and CPU |
+| GET | `/api/v1/app-metrics`, `/api/v1/app-metrics/system`, `/api/v1/apps/{name}/metrics` | Per-app traffic, memory and CPU; `asleep` marks an app stopped by scale to zero |
 | GET | `/api/v1/events/apps` | Server-Sent Events: app deploys, status changes, quarantine |
 | GET | `/api/v1/apps`, `/api/v1/apps/{name}`, `/api/v1/apps/by-domain` | Managed apps |
 | POST | `/api/v1/apps/{name}/deploy` \| `restart` \| `rollback` \| `stop` | App lifecycle |
