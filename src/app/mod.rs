@@ -765,6 +765,10 @@ pub struct AppManager {
     /// Apps the reaper stopped for inactivity. A request for one of these is
     /// held while the app is started again, instead of answering 421.
     asleep: Arc<parking_lot::Mutex<HashSet<String>>>,
+    /// Apps an intentional [`stop`](Self::stop) is taking down right now.
+    /// The health check runs concurrently and would otherwise count the
+    /// refused connection of a process that is exiting on purpose.
+    stopping: Arc<parking_lot::Mutex<HashSet<String>>>,
     /// Extra domain -> app name mappings, managed through the admin API.
     ///
     /// A site directory gives an app exactly one domain, which ties "the URL"
@@ -1549,6 +1553,7 @@ impl AppManager {
             activity: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             epoch: std::time::Instant::now(),
             asleep: Arc::new(parking_lot::Mutex::new(HashSet::new())),
+            stopping: Arc::new(parking_lot::Mutex::new(HashSet::new())),
             aliases: Arc::new(parking_lot::Mutex::new(read_aliases_file())),
             routes: Arc::new(ArcSwap::from_pointee(AppRoutes::default())),
             external_routes: Arc::new(external::ExternalRouteTable::default()),
@@ -3175,6 +3180,13 @@ impl AppManager {
         };
         let app = self.with_recorded_pids(app);
 
+        self.stopping.lock().insert(app_name.to_string());
+        let stopping = self.stopping.clone();
+        let stopping_name = app_name.to_string();
+        let _stopping = scopeguard::guard((), move |_| {
+            stopping.lock().remove(&stopping_name);
+        });
+
         self.deployment_manager.stop_instance(&app, &slot).await?;
 
         {
@@ -3293,7 +3305,7 @@ impl AppManager {
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
 
-        let apps: Vec<(String, u16, String)> = {
+        let apps: Vec<(String, u16, String, Option<u32>)> = {
             let apps_guard = self.apps.lock().await;
             apps_guard
                 .iter()
@@ -3305,7 +3317,7 @@ impl AppManager {
                     };
                     let health_path = app.config.health_check.as_deref().unwrap_or("/health");
                     if port > 0 && pid.is_some() {
-                        Some((name.clone(), port, health_path.to_string()))
+                        Some((name.clone(), port, health_path.to_string(), pid))
                     } else {
                         None
                     }
@@ -3313,7 +3325,7 @@ impl AppManager {
                 .collect()
         };
 
-        for (app_name, port, health_path) in apps {
+        for (app_name, port, health_path, pid) in apps {
             if self.deployment_manager.is_deploying(&app_name) {
                 continue;
             }
@@ -3347,6 +3359,14 @@ impl AppManager {
                     self.health_failures.lock().remove(&app_name);
                 }
                 HealthVerdict::Failed(reason) => {
+                    if self.stopped_since(&app_name, pid).await {
+                        tracing::debug!(
+                            "Health check for {} on port {} raced an intentional stop: ignored",
+                            app_name,
+                            port
+                        );
+                        continue;
+                    }
                     let failures = {
                         let mut counts = self.health_failures.lock();
                         let count = counts.entry(app_name.clone()).or_insert(0);
@@ -3379,6 +3399,25 @@ impl AppManager {
                 }
             }
         }
+    }
+
+    /// Whether `app_name` was stopped on purpose after the health check took
+    /// its snapshot (`pid`): a stop is under way, the reaper put it to sleep,
+    /// or its live slot now runs another process or none. The probe then
+    /// tested a process that was meant to go, and its failure means nothing.
+    async fn stopped_since(&self, app_name: &str, pid: Option<u32>) -> bool {
+        if self.stopping.lock().contains(app_name) || self.is_asleep(app_name) {
+            return true;
+        }
+        let apps = self.apps.lock().await;
+        apps.get(app_name).is_none_or(|app| {
+            let current = if app.current_slot == "blue" {
+                app.blue.pid
+            } else {
+                app.green.pid
+            };
+            current != pid
+        })
     }
 
     /// True when automatic remediation is suspended for this app after a failed
@@ -3530,6 +3569,11 @@ impl AppManager {
     /// Whether the reaper has stopped `app_name` for inactivity.
     pub fn is_asleep(&self, app_name: &str) -> bool {
         self.asleep.lock().contains(app_name)
+    }
+
+    /// Every app the reaper has stopped for inactivity.
+    pub fn asleep_apps(&self) -> Vec<String> {
+        self.asleep.lock().iter().cloned().collect()
     }
 
     /// If `host` belongs to a sleeping app, start it and wait until it is
@@ -5316,6 +5360,41 @@ admin = "$2b$12$adminhashadminhashadminhashadminhashadminhashadminhas"
         let route = manager.routes().get("live.example.com").cloned().unwrap();
         assert!(route.target.is_none());
         assert_eq!(&*route.app, "live.example.com");
+    }
+
+    /// A probe that fails because the app was stopped on purpose meanwhile —
+    /// the reaper putting it to sleep, a stop in progress, a new process in
+    /// the slot — is not a health failure. It logged `Health check failed
+    /// (1/3 before failover)` after every sleep in production.
+    #[tokio::test]
+    async fn a_probe_that_raced_a_stop_does_not_count() {
+        let temp_dir = TempDir::new().unwrap();
+        let sites = temp_dir.path().join("sites");
+        site_with_app_infos(
+            &sites,
+            "nap.example.com",
+            "name = \"nap.example.com\"\ndomain = \"nap.example.com\"\n",
+        );
+        let manager = test_manager(&temp_dir, &sites);
+        manager.discover_apps_readonly().await.unwrap();
+        mark_running(&manager, "nap.example.com").await;
+
+        // Same process, nobody stopping it: the failure is real.
+        assert!(!manager.stopped_since("nap.example.com", Some(4242)).await);
+
+        manager.stopping.lock().insert("nap.example.com".into());
+        assert!(manager.stopped_since("nap.example.com", Some(4242)).await);
+        manager.stopping.lock().clear();
+
+        manager.asleep.lock().insert("nap.example.com".into());
+        assert!(manager.stopped_since("nap.example.com", Some(4242)).await);
+        assert_eq!(manager.asleep_apps(), vec!["nap.example.com".to_string()]);
+        manager.asleep.lock().clear();
+
+        // The stop has finished: the slot no longer holds the probed process.
+        manager.stop("nap.example.com").await.unwrap();
+        assert!(manager.stopping.lock().is_empty(), "stop clears its marker");
+        assert!(manager.stopped_since("nap.example.com", Some(4242)).await);
     }
 
     #[test]

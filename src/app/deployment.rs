@@ -1780,6 +1780,18 @@ impl DeploymentManager {
                 }
                 Err(e) => format!("wait failed: {}", e),
             };
+            // An intentional stop (deploy switch, sleep, `stop`) is routine;
+            // only an exit nobody asked for deserves a warning.
+            if stopping_pids.lock().unwrap().remove(&pid) {
+                tracing::info!(
+                    "Process {} ({} slot {}) {}",
+                    pid,
+                    app_name,
+                    slot_name,
+                    reason
+                );
+                return;
+            }
             tracing::warn!(
                 "Process {} ({} slot {}) {}",
                 pid,
@@ -1787,10 +1799,6 @@ impl DeploymentManager {
                 slot_name,
                 reason
             );
-            // If this was an intentional stop, just clean up the marker
-            if stopping_pids.lock().unwrap().remove(&pid) {
-                return;
-            }
             // Unexpected exit — record reason so wait_for_health can surface
             // it, then notify AppManager for immediate failover
             exited_pids.lock().unwrap().insert(pid, reason);
