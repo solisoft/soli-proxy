@@ -1,499 +1,857 @@
+//! The apps screen: every app, sorted (by traffic unless `s` says otherwise),
+//! with its state as an animated glyph, a minute of traffic as a sparkline,
+//! and below the list the selected app's two slots — packets flowing to the
+//! one that serves, a stepper while it deploys, CPU and memory gliding.
+
 use std::collections::HashMap;
 
-use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Sparkline, Table},
-    Frame,
-};
+use ratatui::{layout::Rect, style::Style, Frame};
 
+use crate::app::{AppInfo, AppInstance, InstanceStatus};
+use crate::tui::anim::Anim;
 use crate::tui::app::{AppHistory, AppStats};
-use crate::tui::TuiContext;
+use crate::tui::events::{DeployProgress, Stage};
+use crate::tui::screens::common::{life, link, live_instance, stepper, Life};
+use crate::tui::theme::{self, put};
 
-pub struct AppsView<'a> {
-    pub selected_index: usize,
-    pub scroll_offset: usize,
-    pub search_query: &'a str,
-    pub app_stats: &'a HashMap<String, AppStats>,
-    pub app_history: &'a HashMap<String, AppHistory>,
+/// How the list is ordered; `s` cycles through them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AppSort {
+    #[default]
+    Traffic,
+    Name,
+    Memory,
+    Errors,
 }
 
-pub fn render(f: &mut Frame, area: Rect, ctx: &TuiContext, view: &AppsView) {
-    let all_apps = if let Some(ref mgr) = ctx.app_manager {
-        mgr.list_apps_sync()
-    } else {
-        Vec::new()
-    };
-
-    if all_apps.is_empty() {
-        let block = crate::tui::theme::list_block("apps");
-        f.render_widget(block, area);
-        let inner = crate::tui::theme::body(area);
-        let msg = if ctx.app_manager.is_none() {
-            "App manager not available. Check sites/ directory."
-        } else {
-            "No apps discovered. Apps are auto-discovered from the sites/ directory."
-        };
-        f.render_widget(Paragraph::new(msg), inner);
-        return;
+impl AppSort {
+    pub fn next(self) -> Self {
+        match self {
+            AppSort::Traffic => AppSort::Name,
+            AppSort::Name => AppSort::Memory,
+            AppSort::Memory => AppSort::Errors,
+            AppSort::Errors => AppSort::Traffic,
+        }
     }
 
-    let total_count = all_apps.len();
-    let mut apps: Vec<_> = if view.search_query.is_empty() {
-        all_apps
-    } else {
-        let search_lower = view.search_query.to_lowercase();
-        all_apps
-            .into_iter()
-            .filter(|app| {
-                app.config.name.to_lowercase().contains(&search_lower)
-                    || app.config.domain.to_lowercase().contains(&search_lower)
-            })
-            .collect()
+    pub fn label(self) -> &'static str {
+        match self {
+            AppSort::Traffic => "traffic",
+            AppSort::Name => "name",
+            AppSort::Memory => "memory",
+            AppSort::Errors => "errors",
+        }
+    }
+}
+
+/// Order `apps` for the list. `rank` is smoothed traffic, so the traffic
+/// order does not reshuffle with every second's jitter.
+pub fn sort_apps(
+    apps: &mut [AppInfo],
+    sort: AppSort,
+    stats: &HashMap<String, AppStats>,
+    rank: &HashMap<String, f64>,
+) {
+    let num = |m: &HashMap<String, f64>, a: &AppInfo| m.get(&a.config.name).copied().unwrap_or(0.0);
+    let mem = |a: &AppInfo| {
+        stats
+            .get(&a.config.name)
+            .and_then(|s| s.memory_bytes)
+            .unwrap_or(0)
     };
-    apps.sort_by(|a, b| {
+    let errs = |a: &AppInfo| {
+        stats
+            .get(&a.config.name)
+            .map_or((0.0, 0), |s| (s.eps, s.errors))
+    };
+    let by_name = |a: &AppInfo, b: &AppInfo| {
         a.config
             .name
             .to_lowercase()
             .cmp(&b.config.name.to_lowercase())
-    });
+    };
+    match sort {
+        AppSort::Name => apps.sort_by(by_name),
+        AppSort::Traffic => apps.sort_by(|a, b| {
+            num(rank, b)
+                .partial_cmp(&num(rank, a))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| by_name(a, b))
+        }),
+        AppSort::Memory => apps.sort_by(|a, b| mem(b).cmp(&mem(a)).then_with(|| by_name(a, b))),
+        AppSort::Errors => apps.sort_by(|a, b| {
+            let (ea, ta) = errs(a);
+            let (eb, tb) = errs(b);
+            eb.partial_cmp(&ea)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(tb.cmp(&ta))
+                .then_with(|| by_name(a, b))
+        }),
+    }
+}
 
-    if apps.is_empty() && total_count > 0 {
-        let block = Block::default()
-            .title(format!(
-                " Applications (no match for '{}') ",
-                view.search_query
-            ))
-            .borders(Borders::ALL);
-        f.render_widget(block, area);
-        let inner = crate::tui::theme::body(area);
-        f.render_widget(Paragraph::new("No apps match your search."), inner);
+pub struct AppsView<'a> {
+    /// Already filtered by the search and sorted.
+    pub apps: &'a [AppInfo],
+    pub total: usize,
+    pub selected_index: usize,
+    pub scroll_offset: usize,
+    pub search_query: &'a str,
+    pub sort: AppSort,
+    pub app_stats: &'a HashMap<String, AppStats>,
+    pub app_history: &'a HashMap<String, AppHistory>,
+    pub deploys: &'a HashMap<String, DeployProgress>,
+    pub waking: &'a [String],
+}
+
+/// Rows the detail panel takes under the list.
+pub const DETAIL_HEIGHT: u16 = 9;
+
+pub fn render(f: &mut Frame, area: Rect, view: &AppsView, anim: &mut Anim) {
+    let buf = f.buffer_mut();
+    let muted = Style::default().fg(theme::MUTED);
+    let chip = Style::default().fg(theme::INK).bg(theme::ACCENT).bold();
+
+    let mut x = put(buf, area, 0, 0, " apps ", chip) + 2;
+    let summary = if view.search_query.is_empty() {
+        format!("sorted by {} · {}", view.sort.label(), view.total)
+    } else {
+        format!(
+            "“{}” · {} of {} · sorted by {}",
+            view.search_query,
+            view.apps.len(),
+            view.total,
+            view.sort.label()
+        )
+    };
+    x += put(buf, area, x, 0, &summary, muted) + 3;
+    x += put(
+        buf,
+        area,
+        x,
+        0,
+        "s",
+        Style::default().fg(theme::ACCENT).bold(),
+    );
+    put(buf, area, x + 1, 0, "sort", muted);
+
+    if view.apps.is_empty() {
+        let msg = if view.total == 0 {
+            "No apps discovered: apps are found in the sites/ directory."
+        } else {
+            "No app matches the search."
+        };
+        put(buf, area, 1, 2, msg, muted);
         return;
     }
 
-    let has_detail = view.selected_index < apps.len();
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(if has_detail {
-            vec![Constraint::Min(6), Constraint::Length(10)]
-        } else {
-            vec![Constraint::Min(6), Constraint::Length(0)]
-        })
-        .split(area);
-
-    render_app_table(
-        f,
-        chunks[0],
-        &apps,
-        view.selected_index,
-        view.scroll_offset,
-        view.app_stats,
-    );
-
+    let has_detail = view.selected_index < view.apps.len() && area.height > DETAIL_HEIGHT + 5;
+    let list_h = if has_detail {
+        area.height - DETAIL_HEIGHT
+    } else {
+        area.height
+    };
+    let list = Rect::new(area.x, area.y, area.width, list_h);
+    render_list(f, list, view, anim);
     if has_detail {
-        let app = &apps[view.selected_index];
-        let stats = view.app_stats.get(&app.config.name);
-        let history = view.app_history.get(&app.config.name);
-        render_app_detail(f, chunks[1], app, stats, history);
+        let detail = Rect::new(area.x, area.y + list_h, area.width, DETAIL_HEIGHT);
+        let app = &view.apps[view.selected_index];
+        render_detail(f, detail, app, view, anim);
     }
 }
 
-fn render_app_table(
-    f: &mut Frame,
-    area: Rect,
-    apps: &[crate::app::AppInfo],
-    selected_index: usize,
-    scroll_offset: usize,
-    app_stats: &HashMap<String, AppStats>,
-) {
-    let block = crate::tui::theme::list_block("apps");
-    f.render_widget(block, area);
+struct Cols {
+    name: u16,
+    name_w: usize,
+    spark: Option<u16>,
+    rps: u16,
+    mem: u16,
+    soli: u16,
+    up: u16,
+}
 
-    let inner = crate::tui::theme::body(area);
+fn columns(width: u16) -> Cols {
+    // glyph 2 | name | spark 12+2 | req/s 7+2 | memory 10 | soli 17 | up 6
+    let spark = width >= 76;
+    let fixed: u16 = 2 + if spark { 14 } else { 0 } + 9 + 10 + 17 + 6;
+    let name_w = width.saturating_sub(fixed + 1).clamp(14, 34);
+    let mut x = 2 + name_w + 1;
+    let spark_x = if spark {
+        let s = x;
+        x += 14;
+        Some(s)
+    } else {
+        None
+    };
+    let rps = x;
+    x += 9;
+    let mem = x;
+    x += 10;
+    let soli = x;
+    x += 17;
+    Cols {
+        name: 2,
+        name_w: name_w as usize,
+        spark: spark_x,
+        rps,
+        mem,
+        soli,
+        up: x,
+    }
+}
 
-    let header = Row::new(vec![
-        "Name", "Domain", "Status", "Soli", "Up", "CPU", "Memory", "Reqs", "Errors", "Avg RT",
-    ])
-    .style(Style::default().fg(crate::tui::theme::ACCENT).bold());
+fn render_list(f: &mut Frame, area: Rect, view: &AppsView, anim: &mut Anim) {
+    let buf = f.buffer_mut();
+    let muted = Style::default().fg(theme::MUTED);
+    let head = Style::default().fg(theme::MUTED).bold();
+    let c = columns(area.width);
+    put(buf, area, c.name, 1, "app", head);
+    if let Some(sx) = c.spark {
+        put(buf, area, sx, 1, "last minute", head);
+    }
+    put(buf, area, c.rps + 2, 1, "req/s", head);
+    put(buf, area, c.mem, 1, "memory", head);
+    put(buf, area, c.soli, 1, "soli", head);
+    put(buf, area, c.up + 4, 1, "up", head);
 
-    let max_rows = inner.height.saturating_sub(1) as usize;
-
-    let rows: Vec<Row> = apps
+    let rows = area.height.saturating_sub(2) as usize;
+    for (i, app) in view
+        .apps
         .iter()
-        .skip(scroll_offset)
-        .take(max_rows)
         .enumerate()
-        .map(|(idx, app)| {
-            let visual_idx = scroll_offset + idx;
-            let is_selected = visual_idx == selected_index;
-            let inst = if app.current_slot == "blue" {
-                &app.blue
+        .skip(view.scroll_offset)
+        .take(rows)
+    {
+        let y = 2 + (i - view.scroll_offset) as u16;
+        let selected = i == view.selected_index;
+        let bg = selected.then_some(theme::SELECT_BG);
+        if let Some(bg) = bg {
+            theme::shade(buf, area, 0, y, area.width, bg);
+        }
+        let st = |color| match bg {
+            Some(bg) => Style::default().fg(color).bg(bg),
+            None => Style::default().fg(color),
+        };
+        let name = app.config.name.as_str();
+        let stats = view.app_stats.get(name);
+        let deploy = view.deploys.get(name);
+        let waking = view.waking.iter().any(|w| w == name);
+        let l = life(app, stats, deploy, waking);
+        let (glyph, gcolor) = l.glyph(anim);
+        put(buf, area, 0, y, &glyph, st(gcolor));
+        let quiet = matches!(l, Life::Asleep | Life::Stopped);
+        put(
+            buf,
+            area,
+            c.name,
+            y,
+            &theme::fit(name, c.name_w),
+            if selected {
+                st(theme::FG).bold()
+            } else if quiet {
+                st(theme::MUTED)
             } else {
-                &app.green
-            };
-
-            let s = app_stats.get(&app.config.name);
-
-            // Asleep is a stopped app the next request starts again: worth
-            // telling apart from one that stays down until someone acts.
-            let asleep =
-                inst.status == crate::app::InstanceStatus::Stopped && s.is_some_and(|s| s.asleep);
-            let status_color = match inst.status {
-                _ if asleep => crate::tui::theme::MAGENTA,
-                crate::app::InstanceStatus::Running => Color::Green,
-                crate::app::InstanceStatus::Starting => Color::Yellow,
-                crate::app::InstanceStatus::Stopped => Color::DarkGray,
-                crate::app::InstanceStatus::Unhealthy => Color::Red,
-                crate::app::InstanceStatus::Failed => Color::Red,
-            };
-            let status_label = if asleep {
-                "Sleeping".to_string()
-            } else {
-                inst.status.to_string()
-            };
-
-            let style = crate::tui::theme::row_style(is_selected);
-
-            let cpu = s
-                .and_then(|s| s.cpu_percent)
-                .map(|c| format!("{:.1}%", c))
-                .unwrap_or_else(|| "-".to_string());
-
-            let mem = s
-                .and_then(|s| s.memory_bytes)
-                .map(fmt_bytes)
-                .unwrap_or_else(|| "-".to_string());
-
-            let reqs = s.map_or("-".to_string(), |s| fmt_num(s.requests));
-            let errs = s.map_or("-".to_string(), |s| {
-                if s.errors > 0 {
-                    fmt_num(s.errors)
-                } else {
-                    "0".to_string()
-                }
-            });
-            let avg_rt = s.map_or("-".to_string(), |s| {
-                if s.avg_response_time_ms > 0.0 {
-                    fmt_ms(s.avg_response_time_ms)
-                } else {
-                    "-".to_string()
-                }
-            });
-
-            // The version, flagged when the binary was replaced or deleted
-            // after the process started: it still runs the old one.
-            let runtime = s.map(|s| &s.runtime);
-            let soli = runtime
-                .and_then(|r| r.version.as_deref())
-                .map(|v| {
-                    if runtime.is_some_and(|r| r.replaced) {
-                        format!("{v}!")
-                    } else {
-                        v.to_string()
-                    }
-                })
-                .unwrap_or_else(|| "-".to_string());
-            let soli_style = if !is_selected && runtime.is_some_and(|r| r.replaced) {
-                Style::default().fg(Color::Yellow)
-            } else {
-                style
-            };
-            let up = runtime
-                .and_then(|r| r.started_at)
-                .map(|t| crate::tui::runtime::fmt_uptime(t, std::time::SystemTime::now()))
-                .unwrap_or_else(|| "-".to_string());
-
-            let err_style = if is_selected {
-                style
-            } else if s.is_some_and(|s| s.errors > 0) {
-                Style::default().fg(Color::Red)
-            } else {
-                style
-            };
-
-            Row::new(vec![
-                Cell::from(app.config.name.clone()).style(style),
-                Cell::from(app.config.domain.clone()).style(style),
-                Cell::from(status_label).style(style.fg(status_color)),
-                Cell::from(soli).style(soli_style),
-                Cell::from(up).style(style),
-                Cell::from(cpu).style(style),
-                Cell::from(mem).style(style),
-                Cell::from(reqs).style(style),
-                Cell::from(errs).style(err_style),
-                Cell::from(avg_rt).style(style),
-            ])
-        })
-        .collect();
-
-    let table = Table::new(
-        std::iter::once(header).chain(rows),
-        [
-            Constraint::Percentage(15),
-            Constraint::Percentage(18),
-            Constraint::Length(10),
-            Constraint::Length(8),
-            Constraint::Length(6),
-            Constraint::Length(8),
-            Constraint::Length(10),
-            Constraint::Length(8),
-            Constraint::Length(8),
-            Constraint::Length(8),
-        ],
-    )
-    .column_spacing(1);
-
-    f.render_widget(table, inner);
-}
-
-fn render_app_detail(
-    f: &mut Frame,
-    area: Rect,
-    app: &crate::app::AppInfo,
-    stats: Option<&AppStats>,
-    history: Option<&AppHistory>,
-) {
-    let block = crate::tui::theme::list_block(&app.config.name);
-    f.render_widget(block, area);
-
-    let inner = Rect::new(
-        area.x + 1,
-        area.y + 1,
-        area.width.saturating_sub(2),
-        area.height.saturating_sub(2),
-    );
-
-    // Split: info (left) | charts (right)
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(42), Constraint::Min(20)])
-        .split(inner);
-
-    render_detail_info(f, cols[0], app, stats);
-    render_detail_charts(f, cols[1], stats, history);
-}
-
-fn render_detail_info(
-    f: &mut Frame,
-    area: Rect,
-    app: &crate::app::AppInfo,
-    stats: Option<&AppStats>,
-) {
-    let inst = if app.current_slot == "blue" {
-        &app.blue
-    } else {
-        &app.green
-    };
-
-    let pid_str = inst
-        .pid
-        .map(|p| p.to_string())
-        .unwrap_or_else(|| "-".to_string());
-    let port_str = if inst.port > 0 {
-        format!(":{}", inst.port)
-    } else {
-        "-".to_string()
-    };
-
-    let (reqs, errs, avg_rt, bytes_in, bytes_out) = if let Some(s) = stats {
-        (
-            fmt_num(s.requests),
-            fmt_num(s.errors),
-            if s.avg_response_time_ms > 0.0 {
-                fmt_ms(s.avg_response_time_ms)
-            } else {
-                "-".to_string()
+                st(theme::FG)
             },
-            fmt_bytes(s.bytes_received),
-            fmt_bytes(s.bytes_sent),
-        )
-    } else {
-        ("-".into(), "-".into(), "-".into(), "-".into(), "-".into())
-    };
+        );
 
-    // Two-column info table
-    let info_rows = vec![
-        Row::new(vec![
-            Cell::from("Requests").style(Style::default().fg(Color::DarkGray)),
-            Cell::from(reqs).style(Style::default().fg(Color::Cyan)),
-            Cell::from("Port").style(Style::default().fg(Color::DarkGray)),
-            Cell::from(port_str).style(Style::default().fg(Color::White)),
-        ]),
-        Row::new(vec![
-            Cell::from("Errors").style(Style::default().fg(Color::DarkGray)),
-            Cell::from(errs).style(Style::default().fg(if stats.is_some_and(|s| s.errors > 0) {
-                Color::Red
+        if let Some(sx) = c.spark {
+            let hist: Vec<f64> = view
+                .app_history
+                .get(name)
+                .map(|h| minute_buckets(&h.rps, 12))
+                .unwrap_or_default();
+            let any = hist.iter().any(|v| *v > 0.0);
+            let text = if any {
+                theme::bars(&hist)
             } else {
-                Color::White
-            })),
-            Cell::from("PID").style(Style::default().fg(Color::DarkGray)),
-            Cell::from(pid_str).style(Style::default().fg(Color::White)),
-        ]),
-        Row::new(vec![
-            Cell::from("Avg RT").style(Style::default().fg(Color::DarkGray)),
-            Cell::from(avg_rt).style(Style::default().fg(Color::Cyan)),
-            Cell::from("Slot").style(Style::default().fg(Color::DarkGray)),
-            Cell::from(app.current_slot.clone()).style(Style::default().fg(Color::White)),
-        ]),
-        Row::new(vec![
-            Cell::from("Bytes In").style(Style::default().fg(Color::DarkGray)),
-            Cell::from(bytes_in).style(Style::default().fg(Color::Cyan)),
-            Cell::from("Bytes Out").style(Style::default().fg(Color::DarkGray)),
-            Cell::from(bytes_out).style(Style::default().fg(Color::Cyan)),
-        ]),
-    ];
-    let runtime = stats.map(|s| &s.runtime);
-    let replaced = runtime.is_some_and(|r| r.replaced);
-    let soli = match runtime.and_then(|r| r.version.as_deref()) {
-        Some(v) if replaced => format!("{v} (old binary: restart)"),
-        Some(v) => v.to_string(),
-        None => "-".to_string(),
-    };
-    let since = runtime
-        .and_then(|r| r.started_at)
-        .map(|t| {
-            format!(
-                "{} ({})",
-                crate::tui::runtime::fmt_started(t),
-                crate::tui::runtime::fmt_uptime(t, std::time::SystemTime::now())
-            )
-        })
-        .unwrap_or_else(|| "-".to_string());
-    // The runtime lines span the panel: a date or a warning is wider than a
-    // cell of the table above.
-    let label = |text: &'static str| {
-        ratatui::text::Span::styled(format!("{text:<10}"), Style::default().fg(Color::DarkGray))
-    };
-    let runtime_lines = vec![
-        ratatui::text::Line::from(vec![
-            label("Soli"),
-            ratatui::text::Span::styled(
-                soli,
-                Style::default().fg(if replaced {
-                    Color::Yellow
+                "·".repeat(12)
+            };
+            put(
+                buf,
+                area,
+                sx,
+                y,
+                &text,
+                st(if any { theme::ACCENT } else { theme::MUTED }),
+            );
+        }
+
+        match l {
+            Life::Asleep => {
+                put(
+                    buf,
+                    area,
+                    c.rps,
+                    y,
+                    &format!("{:>7}", "—"),
+                    st(theme::MUTED),
+                );
+                put(buf, area, c.mem, y, "asleep", st(theme::MAGENTA));
+            }
+            Life::Stopped | Life::Failed => {
+                put(
+                    buf,
+                    area,
+                    c.rps,
+                    y,
+                    &format!("{:>7}", "—"),
+                    st(theme::MUTED),
+                );
+                put(buf, area, c.mem, y, l.word(), st(gcolor));
+            }
+            _ => {
+                let rps = stats.map_or(0.0, |s| s.rps);
+                let shown = anim.tween(&format!("apps.rps.{name}"), rps);
+                let color = if stats.is_some_and(|s| s.eps > 0.0) {
+                    theme::DANGER
                 } else {
-                    Color::White
-                }),
-            ),
-        ]),
-        ratatui::text::Line::from(vec![
-            label("Since"),
-            ratatui::text::Span::styled(since, Style::default().fg(Color::White)),
-        ]),
-    ];
+                    theme::FG
+                };
+                let color = if shown < 0.05 && color == theme::FG {
+                    theme::MUTED
+                } else {
+                    color
+                };
+                put(
+                    buf,
+                    area,
+                    c.rps,
+                    y,
+                    &format!("{:>7}", fmt_rate(shown)),
+                    st(color),
+                );
+                let mem = stats.and_then(|s| s.memory_bytes);
+                let text = match mem {
+                    Some(b) => {
+                        let v = anim.tween(&format!("apps.mem.{name}"), b as f64);
+                        theme::fmt_bytes(v as u64)
+                    }
+                    None => "—".into(),
+                };
+                put(buf, area, c.mem, y, &text, st(theme::FG));
+            }
+        }
 
-    let parts = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(info_rows.len() as u16),
-            Constraint::Min(0),
-        ])
-        .split(area);
-    let table = Table::new(
-        info_rows,
-        [
-            Constraint::Length(10),
-            Constraint::Length(10),
-            Constraint::Length(10),
-            Constraint::Min(6),
-        ],
+        let runtime = stats.map(|s| &s.runtime);
+        if let Some(v) = runtime.and_then(|r| r.version.as_deref()) {
+            let replaced = runtime.is_some_and(|r| r.replaced);
+            let w = put(
+                buf,
+                area,
+                c.soli,
+                y,
+                v,
+                st(if replaced { theme::WARN } else { theme::FG }),
+            );
+            if replaced {
+                put(buf, area, c.soli + w + 1, y, "↻ restart", st(theme::WARN));
+            }
+        } else {
+            put(buf, area, c.soli, y, "—", st(theme::MUTED));
+        }
+        let up = runtime
+            .and_then(|r| r.started_at)
+            .and_then(|t| std::time::SystemTime::now().duration_since(t).ok())
+            .map(|d| theme::fmt_age(d.as_secs()))
+            .unwrap_or_else(|| "—".into());
+        put(buf, area, c.up, y, &format!("{up:>6}"), st(theme::MUTED));
+    }
+    if view.apps.len() > view.scroll_offset + rows {
+        // On the title line, where it covers nothing.
+        let more = format!("↓ {} more", view.apps.len() - view.scroll_offset - rows);
+        let w = more.chars().count() as u16;
+        put(buf, area, area.width.saturating_sub(w + 1), 0, &more, muted);
+    }
+}
+
+fn render_detail(f: &mut Frame, area: Rect, app: &AppInfo, view: &AppsView, anim: &mut Anim) {
+    let buf = f.buffer_mut();
+    let muted = Style::default().fg(theme::MUTED);
+    let name = app.config.name.as_str();
+    let stats = view.app_stats.get(name);
+    let deploy = view.deploys.get(name);
+    let waking = view.waking.iter().any(|w| w == name);
+    let l = life(app, stats, deploy, waking);
+
+    put(
+        buf,
+        area,
+        0,
+        0,
+        &"─".repeat(area.width as usize),
+        Style::default().fg(theme::ACCENT_DIM),
     );
-    f.render_widget(table, parts[0]);
-    f.render_widget(Paragraph::new(runtime_lines), parts[1]);
+    let w = put(
+        buf,
+        area,
+        0,
+        1,
+        &format!(" {name} "),
+        Style::default().fg(theme::INK).bg(theme::ACCENT).bold(),
+    );
+    let (headline, color) = headline(app, l, deploy);
+    let mut x = w + 2;
+    x += put(
+        buf,
+        area,
+        x,
+        1,
+        &headline,
+        Style::default().fg(color).bold(),
+    );
+    if app.config.domain != app.config.name {
+        put(buf, area, x + 3, 1, &app.config.domain, muted);
+    }
+
+    // Row 3: the stepper while deploying, else the essentials.
+    match deploy {
+        Some(d) => {
+            stepper(buf, area, 1, 3, d, anim, true);
+        }
+        None => {
+            let inst = live_instance(app);
+            let mut parts = vec![format!("slot {}", app.current_slot)];
+            if inst.port > 0 {
+                parts.push(format!("port :{}", inst.port));
+            }
+            if let Some(pid) = inst.pid {
+                parts.push(format!("pid {pid}"));
+            }
+            if let Some(s) = stats {
+                parts.push(format!("{} requests", theme::fmt_num(s.requests)));
+                if s.errors > 0 {
+                    parts.push(format!("{} errors", theme::fmt_num(s.errors)));
+                }
+                if s.avg_response_time_ms > 0.0 {
+                    parts.push(format!("{} avg", theme::fmt_ms(s.avg_response_time_ms)));
+                }
+            }
+            put(buf, area, 1, 3, &parts.join(" · "), muted);
+        }
+    }
+
+    // Rows 5-6: the two slots.
+    let rps = stats.map_or(0.0, |s| s.rps);
+    let eps = stats.map_or(0.0, |s| s.eps);
+    put(buf, area, 1, 5, "proxy", Style::default().fg(theme::FG));
+    put(
+        buf,
+        area,
+        7,
+        5,
+        "─┬",
+        Style::default().fg(theme::ACCENT_DIM),
+    );
+    put(buf, area, 8, 6, "└", Style::default().fg(theme::ACCENT_DIM));
+    for (row, slot_name, inst) in [(5u16, "blue", &app.blue), (6u16, "green", &app.green)] {
+        let serving =
+            app.current_slot == slot_name && inst.pid.is_some() && !matches!(l, Life::Asleep);
+        let (state, scolor) = slot_state(slot_name, inst, app, deploy, serving, anim);
+        let alive = inst.pid.is_some() || state.contains("starting") || state.contains("health");
+        link(
+            buf,
+            area,
+            9,
+            row,
+            19,
+            if serving { rps } else { 0.0 },
+            ratio(eps, rps),
+            !serving,
+            anim,
+        );
+        put(
+            buf,
+            area,
+            28,
+            row,
+            "▶",
+            Style::default().fg(if alive { theme::ACCENT } else { theme::MUTED }),
+        );
+        let port = if inst.port > 0 {
+            format!(":{}", inst.port)
+        } else {
+            "-".into()
+        };
+        put(
+            buf,
+            area,
+            30,
+            row,
+            &format!("{slot_name:<5} {port:<6}"),
+            Style::default().fg(if alive { theme::FG } else { theme::MUTED }),
+        );
+        put(buf, area, 44, row, &state, Style::default().fg(scolor));
+    }
+
+    // Resources on the right, when there is room.
+    if area.width >= 96 {
+        let rx = area.width - 30;
+        let cpu = stats.and_then(|s| s.cpu_percent);
+        let mem = stats.and_then(|s| s.memory_bytes);
+        let both = app.blue.pid.is_some() && app.green.pid.is_some();
+        let cpu_v = anim.tween(&format!("detail.cpu.{name}"), cpu.unwrap_or(0.0));
+        let mem_v = anim.tween(&format!("detail.mem.{name}"), mem.unwrap_or(0) as f64);
+        let mem_max = view
+            .app_history
+            .get(name)
+            .and_then(|h| h.mem.iter().copied().max())
+            .unwrap_or(0)
+            .max(mem.unwrap_or(0))
+            .max(64 * 1024 * 1024) as f64;
+        meter(
+            buf,
+            area,
+            rx,
+            5,
+            "cpu",
+            cpu.map(|_| cpu_v / 100.0),
+            &cpu.map(|_| format!("{:.0}%", cpu_v)).unwrap_or("—".into()),
+            if cpu_v > 50.0 {
+                theme::WARN
+            } else {
+                theme::ACCENT
+            },
+        );
+        meter(
+            buf,
+            area,
+            rx,
+            6,
+            "mem",
+            mem.map(|_| mem_v / mem_max),
+            &mem.map(|_| theme::fmt_bytes(mem_v as u64))
+                .unwrap_or("—".into()),
+            theme::ACCENT,
+        );
+        if both {
+            put(buf, area, rx, 7, "2 slots in memory", muted);
+        }
+    }
+
+    // Row 8: runtime.
+    let runtime = stats.map(|s| &s.runtime);
+    let mut parts = Vec::new();
+    if let Some(v) = runtime.and_then(|r| r.version.as_deref()) {
+        if runtime.is_some_and(|r| r.replaced) {
+            parts.push(format!(
+                "Soli {v}, binary replaced since: restart to run the new one"
+            ));
+        } else {
+            parts.push(format!("Soli {v}"));
+        }
+    }
+    if let Some(t) = runtime.and_then(|r| r.started_at) {
+        parts.push(format!(
+            "since {} ({})",
+            crate::tui::runtime::fmt_started(t),
+            crate::tui::runtime::fmt_uptime(t, std::time::SystemTime::now())
+        ));
+    }
+    if !parts.is_empty() {
+        let replaced = runtime.is_some_and(|r| r.replaced);
+        put(
+            buf,
+            area,
+            1,
+            8,
+            &parts.join(" · "),
+            Style::default().fg(if replaced { theme::WARN } else { theme::MUTED }),
+        );
+    }
 }
 
-fn render_detail_charts(
-    f: &mut Frame,
+fn headline(
+    app: &AppInfo,
+    l: Life,
+    deploy: Option<&DeployProgress>,
+) -> (String, ratatui::style::Color) {
+    if let Some(d) = deploy {
+        return match d.finished {
+            Some((at, true)) => {
+                let took = at.duration_since(d.started).as_secs_f64();
+                if d.wake {
+                    (format!("awake in {took:.1} s"), theme::SUCCESS)
+                } else {
+                    (format!("live on {} in {took:.1} s", d.slot), theme::SUCCESS)
+                }
+            }
+            Some((_, false)) => (
+                format!(
+                    "deploy failed: {}",
+                    d.detail.as_deref().unwrap_or("see the logs")
+                ),
+                theme::DANGER,
+            ),
+            None if d.wake => ("waking up for a request".into(), theme::WARN),
+            None => (format!("deploying → {}", d.slot), theme::WARN),
+        };
+    }
+    match l {
+        Life::Running => (
+            format!("{} serves the traffic", app.current_slot),
+            theme::SUCCESS,
+        ),
+        Life::Erroring => (
+            format!("{} serves, with 5xx", app.current_slot),
+            theme::WARN,
+        ),
+        Life::Asleep => ("asleep · the next request wakes it".into(), theme::MAGENTA),
+        Life::Stopped => ("stopped".into(), theme::MUTED),
+        Life::Failed => ("failed to start · see its log".into(), theme::DANGER),
+        Life::Unhealthy => ("unhealthy".into(), theme::DANGER),
+        Life::Starting => ("starting".into(), theme::WARN),
+        Life::Waking => ("waking up for a request".into(), theme::WARN),
+        Life::Deploying => ("deploying".into(), theme::WARN),
+    }
+}
+
+fn slot_state(
+    slot: &str,
+    inst: &AppInstance,
+    app: &AppInfo,
+    deploy: Option<&DeployProgress>,
+    serving: bool,
+    anim: &mut Anim,
+) -> (String, ratatui::style::Color) {
+    if let Some(d) = deploy.filter(|d| d.finished.is_none()) {
+        if d.slot == slot {
+            return match d.stage {
+                Stage::Start => (format!("{} starting…", anim.spinner()), theme::WARN),
+                Stage::Health => (format!("{} health check…", anim.spinner()), theme::WARN),
+                Stage::Switch | Stage::Drain if serving => {
+                    ("● serves the traffic".into(), theme::SUCCESS)
+                }
+                Stage::Switch | Stage::Drain => ("● ready".into(), theme::SUCCESS),
+            };
+        }
+        if d.from == slot && d.stage == Stage::Drain {
+            let left = d
+                .drain_secs
+                .map(|s| s.saturating_sub(anim.now().duration_since(d.stage_since).as_secs()));
+            anim.moving();
+            return match left {
+                Some(n) if n > 0 => (format!("◌ draining {n}s"), theme::WARN),
+                _ => ("◌ stopping".into(), theme::WARN),
+            };
+        }
+    }
+    if serving {
+        return ("● serves the traffic".into(), theme::SUCCESS);
+    }
+    match inst.status {
+        InstanceStatus::Failed => ("✕ failed".into(), theme::DANGER),
+        InstanceStatus::Unhealthy => ("● unhealthy".into(), theme::DANGER),
+        InstanceStatus::Starting => (format!("{} starting", anim.spinner()), theme::WARN),
+        _ if inst.pid.is_some() => ("● running, not serving".into(), theme::MUTED),
+        _ if app.current_slot == slot => ("○ stopped".into(), theme::MUTED),
+        _ => ("○ free".into(), theme::MUTED),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn meter(
+    buf: &mut ratatui::buffer::Buffer,
     area: Rect,
-    stats: Option<&AppStats>,
-    history: Option<&AppHistory>,
+    x: u16,
+    y: u16,
+    label: &str,
+    fraction: Option<f64>,
+    value: &str,
+    color: ratatui::style::Color,
 ) {
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(area);
+    const W: usize = 16;
+    put(buf, area, x, y, label, Style::default().fg(theme::MUTED));
+    let filled = fraction.map_or(0, |f| (f.clamp(0.0, 1.0) * W as f64).round() as usize);
+    put(
+        buf,
+        area,
+        x + 4,
+        y,
+        &"█".repeat(filled),
+        Style::default().fg(color),
+    );
+    put(
+        buf,
+        area,
+        x + 4 + filled as u16,
+        y,
+        &"·".repeat(W - filled),
+        Style::default().fg(theme::MUTED),
+    );
+    put(
+        buf,
+        area,
+        x + 5 + W as u16,
+        y,
+        &format!("{value:>8}"),
+        Style::default().fg(theme::FG),
+    );
+}
 
-    // CPU chart
-    let cpu_now = stats
-        .and_then(|s| s.cpu_percent)
-        .map(|c| format!("{:.1}%", c))
-        .unwrap_or_else(|| "-".to_string());
-
-    let cpu_block = Block::default()
-        .title(format!(" CPU {} ", cpu_now))
-        .borders(Borders::ALL)
-        .style(Style::default().fg(Color::DarkGray));
-
-    if let Some(h) = history {
-        let cpu_data: Vec<u64> = h.cpu.iter().copied().collect();
-        let sparkline = Sparkline::default()
-            .block(cpu_block)
-            .data(&cpu_data)
-            .max(1000) // 100.0% × 10
-            .style(Style::default().fg(Color::Green));
-        f.render_widget(sparkline, rows[0]);
-    } else {
-        f.render_widget(cpu_block, rows[0]);
+/// `n` buckets over the history (one sample a second), each the mean of its
+/// slice, so a minute fits in a few cells.
+pub fn minute_buckets(hist: &std::collections::VecDeque<f64>, n: usize) -> Vec<f64> {
+    if hist.is_empty() || n == 0 {
+        return Vec::new();
     }
+    let per = hist.len().div_ceil(n).max(1);
+    let v: Vec<f64> = hist.iter().copied().collect();
+    let mut out: Vec<f64> = v
+        .chunks(per)
+        .map(|c| c.iter().sum::<f64>() / c.len() as f64)
+        .collect();
+    // Right-align: the newest bucket is the last cell.
+    while out.len() < n {
+        out.insert(0, 0.0);
+    }
+    out
+}
 
-    // Memory chart
-    let mem_now = stats
-        .and_then(|s| s.memory_bytes)
-        .map(fmt_bytes)
-        .unwrap_or_else(|| "-".to_string());
-
-    let mem_block = Block::default()
-        .title(format!(" Mem {} ", mem_now))
-        .borders(Borders::ALL)
-        .style(Style::default().fg(Color::DarkGray));
-
-    if let Some(h) = history {
-        let mem_data: Vec<u64> = h.mem.iter().copied().collect();
-        let max_mem = mem_data.iter().copied().max().unwrap_or(1).max(1);
-        let sparkline = Sparkline::default()
-            .block(mem_block)
-            .data(&mem_data)
-            .max(max_mem)
-            .style(Style::default().fg(Color::Magenta));
-        f.render_widget(sparkline, rows[1]);
+fn ratio(eps: f64, rps: f64) -> f64 {
+    if rps > 0.0 {
+        (eps / rps).min(1.0)
     } else {
-        f.render_widget(mem_block, rows[1]);
+        0.0
     }
 }
 
-// ── helpers ────────────────────────────────────────────
-
-fn fmt_num(n: u64) -> String {
-    if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
-    } else if n >= 10_000 {
-        format!("{:.1}K", n as f64 / 1_000.0)
+fn fmt_rate(r: f64) -> String {
+    if r <= 0.0 {
+        "0".into()
+    } else if r >= 100.0 {
+        format!("{r:.0}")
     } else {
-        n.to_string()
+        format!("{r:.1}")
     }
 }
 
-fn fmt_bytes(b: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = KB * 1024;
-    const GB: u64 = MB * 1024;
-    if b >= GB {
-        format!("{:.1} GB", b as f64 / GB as f64)
-    } else if b >= MB {
-        format!("{:.1} MB", b as f64 / MB as f64)
-    } else if b >= KB {
-        format!("{:.1} KB", b as f64 / KB as f64)
-    } else {
-        format!("{} B", b)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_minute_fits_in_twelve_cells() {
+        let hist: std::collections::VecDeque<f64> = (0..60).map(|i| i as f64).collect();
+        let b = minute_buckets(&hist, 12);
+        assert_eq!(b.len(), 12);
+        assert_eq!(b[0], 2.0); // mean of 0..5
+        assert_eq!(b[11], 57.0);
+        let short: std::collections::VecDeque<f64> = [5.0, 5.0].into_iter().collect();
+        let b = minute_buckets(&short, 12);
+        assert_eq!(b.len(), 12);
+        assert_eq!(b[11], 5.0);
+        assert_eq!(b[0], 0.0);
+    }
+
+    #[test]
+    fn columns_fit_an_80_column_terminal() {
+        let c = columns(80);
+        assert!(c.up + 6 <= 80, "up ends at {}", c.up + 6);
+        assert!(c.name_w >= 14);
+        assert!(columns(60).spark.is_none());
     }
 }
 
-fn fmt_ms(ms: f64) -> String {
-    if ms >= 1000.0 {
-        format!("{:.2}s", ms / 1000.0)
-    } else if ms >= 1.0 {
-        format!("{:.1}ms", ms)
-    } else {
-        format!("{:.0}us", ms * 1000.0)
+#[cfg(test)]
+mod render_tests {
+    use super::*;
+    use crate::app::{AppConfig, AppInstance};
+    use ratatui::{backend::TestBackend, Terminal};
+    use std::time::{Duration, Instant};
+
+    fn instance(slot: &str, port: u16, pid: Option<u32>, status: InstanceStatus) -> AppInstance {
+        AppInstance {
+            name: "shop.test".into(),
+            slot: slot.into(),
+            port,
+            pid,
+            status,
+            last_started: None,
+        }
+    }
+
+    fn app() -> AppInfo {
+        AppInfo {
+            config: AppConfig {
+                name: "shop.test".into(),
+                domain: "shop.test".into(),
+                ..AppConfig::default()
+            },
+            path: "/tmp/shop.test".into(),
+            blue: instance("blue", 31000, Some(4242), InstanceStatus::Running),
+            green: instance("green", 31001, Some(4343), InstanceStatus::Running),
+            current_slot: "blue".into(),
+            quarantined: false,
+            maintenance: false,
+            error_pages: None,
+        }
+    }
+
+    fn screen(term: &Terminal<TestBackend>) -> String {
+        let buf = term.backend().buffer();
+        (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn a_deploy_shows_its_stepper_and_both_slots() {
+        let apps = vec![app()];
+        let mut stats = HashMap::new();
+        stats.insert(
+            "shop.test".to_string(),
+            AppStats {
+                rps: 12.0,
+                requests: 900,
+                ..AppStats::default()
+            },
+        );
+        let now = Instant::now();
+        let mut deploys = HashMap::new();
+        deploys.insert(
+            "shop.test".to_string(),
+            DeployProgress {
+                slot: "green".into(),
+                from: "blue".into(),
+                stage: Stage::Health,
+                started: now - Duration::from_secs(2),
+                stage_since: now - Duration::from_secs(1),
+                drain_secs: None,
+                finished: None,
+                detail: None,
+                wake: false,
+            },
+        );
+        let history = HashMap::new();
+        let view = AppsView {
+            apps: &apps,
+            total: 1,
+            selected_index: 0,
+            scroll_offset: 0,
+            search_query: "",
+            sort: AppSort::Traffic,
+            app_stats: &stats,
+            app_history: &history,
+            deploys: &deploys,
+            waking: &[],
+        };
+        let mut anim = Anim::new(false);
+        anim.begin(now);
+        let mut term = Terminal::new(TestBackend::new(110, 24)).unwrap();
+        term.draw(|f| render(f, f.area(), &view, &mut anim))
+            .unwrap();
+        let text = screen(&term);
+        assert!(text.contains("sorted by traffic · 1"), "{text}");
+        assert!(text.contains("deploying → green"), "{text}");
+        assert!(text.contains("✓ start"), "{text}");
+        assert!(text.contains("health check…"), "{text}");
+        assert!(text.contains("blue  :31000"), "{text}");
+        assert!(text.contains("● serves the traffic"), "{text}");
     }
 }

@@ -117,6 +117,30 @@ fn parse_failure_line(line: &str) -> Option<ErrorEntry> {
 }
 
 impl ErrorEntry {
+    /// Identifies the failure across re-reads of the log, to tell which
+    /// rows are new.
+    pub fn key(&self) -> String {
+        format!(
+            "{}|{}|{}|{}",
+            self.timestamp,
+            self.host.as_deref().unwrap_or(""),
+            self.path.as_deref().unwrap_or(""),
+            self.status_label()
+        )
+    }
+
+    /// Local wall-clock time of the failure, `HH:MM:SS`; the raw timestamp
+    /// when it does not parse.
+    pub fn clock(&self) -> String {
+        chrono::DateTime::parse_from_rfc3339(&self.timestamp)
+            .map(|t| {
+                t.with_timezone(&chrono::Local)
+                    .format("%H:%M:%S")
+                    .to_string()
+            })
+            .unwrap_or_else(|_| self.timestamp.clone())
+    }
+
     /// One-line status token for the list view: `502` or `ERR`.
     pub fn status_label(&self) -> String {
         match self.status {

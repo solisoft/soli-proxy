@@ -1,5 +1,7 @@
+pub mod anim;
 pub mod app;
 pub mod errors;
+pub mod events;
 pub mod route_form;
 pub mod runtime;
 pub mod screens;
@@ -256,16 +258,16 @@ fn run_tui_loop(terminal: &mut ratatui::DefaultTerminal, ctx: TuiContext) -> Res
     terminal.draw(|f| app.render(f))?;
 
     let metrics_tick = Duration::from_secs(1);
-    let poll_timeout = Duration::from_millis(100);
     let mut last_tick = Instant::now();
 
     loop {
-        // Only repaint when something actually moved. The loop wakes ten times a
-        // second to animate the spinner and expire toasts; redrawing on every
-        // wake (and on every mouse event) burns CPU for an identical frame.
+        // Only repaint when something actually moved. The loop wakes ten times
+        // a second to expire toasts, and fifteen while an animation is on
+        // screen; redrawing on every wake (and on every mouse event) when
+        // nothing moves would burn CPU for an identical frame.
         let mut dirty = false;
 
-        if crossterm::event::poll(poll_timeout)? {
+        if crossterm::event::poll(app.poll_timeout())? {
             match crossterm::event::read()? {
                 crossterm::event::Event::Key(key) => {
                     if app.handle_key(key) {

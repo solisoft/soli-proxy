@@ -14,7 +14,10 @@ use crate::circuit_breaker::CircuitBreakerInfo;
 use crate::config::ConfigManager;
 use crate::metrics::{AppMetricsJson, MetricsSnapshot};
 
+use super::anim::Anim;
 use super::errors::{load_request_errors, ErrorEntry};
+use super::events::{EventFeed, EventKind};
+use super::screens::apps::AppSort;
 use super::theme;
 use super::{route_form::RouteForm, screens, TuiContext};
 
@@ -37,13 +40,30 @@ pub struct AppStats {
     /// by the next request. Only the daemon knows; this process sees a
     /// stopped app either way.
     pub asleep: bool,
+    /// Requests per second over the last sample interval.
+    pub rps: f64,
+    /// Errors (5xx and failed requests) per second over the same interval.
+    pub eps: f64,
 }
 
 /// Rolling history for sparkline charts.
 pub struct AppHistory {
     pub cpu: VecDeque<u64>,
     pub mem: VecDeque<u64>,
+    /// Requests per second, one sample a second.
+    pub rps: VecDeque<f64>,
 }
+
+/// The daemon's `/api/v1/status`: its version and uptime, not the TUI's.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct DaemonInfo {
+    pub version: String,
+    pub uptime_secs: u64,
+}
+
+/// Weight of the newest sample in the smoothed traffic that orders apps:
+/// about a ten-second memory, so rows do not swap places every second.
+const RANK_WEIGHT: f64 = 0.1;
 
 const HISTORY_LEN: usize = 60; // 60 samples × 1s = 1 minute
 
@@ -113,6 +133,7 @@ impl DaemonStatus {
 struct DaemonSample {
     apps: HashMap<String, AppMetricsJson>,
     global: Option<MetricsSnapshot>,
+    info: Option<DaemonInfo>,
     /// Circuit-breaker state per target; `None` when the daemon could not be
     /// asked (shown as "unavailable", never as an empty list).
     circuits: Option<CircuitList>,
@@ -129,6 +150,8 @@ struct DaemonSample {
 struct DaemonFeed {
     latest: Arc<Mutex<DaemonSample>>,
     wake: Arc<tokio::sync::Notify>,
+    /// Deploy stages, sleeps and wake-ups from the daemon's event stream.
+    events: Arc<Mutex<EventFeed>>,
 }
 
 impl DaemonFeed {
@@ -139,6 +162,13 @@ impl DaemonFeed {
     ) -> Self {
         let latest = Arc::new(Mutex::new(DaemonSample::default()));
         let wake = Arc::new(tokio::sync::Notify::new());
+        let events = Arc::new(Mutex::new(EventFeed::default()));
+        super::events::spawn_listener(
+            runtime,
+            config_manager.clone(),
+            creds.clone(),
+            events.clone(),
+        );
         let cell = latest.clone();
         let signal = wake.clone();
         let interval = if creds.is_basic_only() {
@@ -177,7 +207,11 @@ impl DaemonFeed {
             }
         });
 
-        Self { latest, wake }
+        Self {
+            latest,
+            wake,
+            events,
+        }
     }
 
     /// Ask the poller to fetch again now instead of waiting out its interval.
@@ -209,6 +243,7 @@ async fn poll_daemon(
         .replace("0.0.0.0:", "127.0.0.1:")
         .replace("[::]:", "127.0.0.1:");
     let apps_url = format!("http://{}/api/v1/app-metrics", admin_addr);
+    let status_url = format!("http://{}/api/v1/status", admin_addr);
     let global_url = format!("http://{}/api/v1/metrics", admin_addr);
     let circuits_url = format!("http://{}/api/v1/circuit-breaker", admin_addr);
 
@@ -242,7 +277,7 @@ async fn poll_daemon(
         }
     };
 
-    let (apps, global, circuits) = tokio::join!(
+    let (apps, global, circuits, info) = tokio::join!(
         async {
             let resp = fetch(&apps_url).await?;
             resp.json::<Envelope<HashMap<String, AppMetricsJson>>>()
@@ -278,6 +313,13 @@ async fn poll_daemon(
             // HashMap order would reshuffle the rows on every poll.
             list.sort_by(|a, b| a.0.cmp(&b.0));
             Some(list)
+        },
+        async {
+            let resp = fetch(&status_url).await?;
+            resp.json::<Envelope<DaemonInfo>>()
+                .await
+                .ok()
+                .map(|e| e.data)
         }
     );
 
@@ -292,6 +334,7 @@ async fn poll_daemon(
     DaemonSample {
         apps: apps.unwrap_or_default(),
         global,
+        info,
         circuits,
         status,
         seq: 0,
@@ -380,9 +423,25 @@ pub struct TuiApp {
     /// not re-read from disk on every frame.
     config_text: String,
     config_line_count: usize,
-    last_sidebar: Rect,
+    shell: theme::Shell,
     last_body: Rect,
     visible_height: usize,
+    /// Motion: packets, spinners, gliding numbers, fades.
+    anim: Anim,
+    last_draw: Instant,
+    /// Request and error totals per app at the previous sample, for rates.
+    prev_app_totals: HashMap<String, (u64, u64)>,
+    last_app_sample_at: Option<Instant>,
+    /// Smoothed requests per second per app: the traffic order.
+    rank: HashMap<String, f64>,
+    app_sort: AppSort,
+    /// The app under the cursor on the apps screen, kept by name so the
+    /// cursor follows it when the traffic order changes.
+    selected_app: Option<String>,
+    daemon_info: Option<(DaemonInfo, Instant)>,
+    /// When each error row (by key) was first seen, for the arrival fade.
+    error_seen: HashMap<String, Instant>,
+    errors_loaded: bool,
 }
 
 impl TuiApp {
@@ -425,9 +484,19 @@ impl TuiApp {
             frame_ticks: 0,
             config_text: String::new(),
             config_line_count: 0,
-            last_sidebar: Rect::default(),
+            shell: theme::Shell::default(),
             last_body: Rect::default(),
             visible_height: 20,
+            anim: Anim::from_env(),
+            last_draw: Instant::now(),
+            prev_app_totals: HashMap::new(),
+            last_app_sample_at: None,
+            rank: HashMap::new(),
+            app_sort: AppSort::default(),
+            selected_app: None,
+            daemon_info: None,
+            error_seen: HashMap::new(),
+            errors_loaded: false,
         };
         app.collect_stats();
         app
@@ -440,7 +509,7 @@ impl TuiApp {
     /// Collect all per-app stats: traffic from the background daemon poller +
     /// system stats from /proc. Never blocks on the network.
     fn collect_stats(&mut self) {
-        let (traffic, global, circuits, status, seq) = self.read_daemon_sample();
+        let (traffic, global, circuits, status, seq, info) = self.read_daemon_sample();
         self.daemon_status = status;
         self.circuits = circuits;
 
@@ -448,6 +517,21 @@ impl TuiApp {
         // sample would show a delta of zero over a growing interval.
         let fresh = seq != self.last_daemon_seq;
         self.last_daemon_seq = seq;
+        if fresh {
+            self.daemon_info = info.map(|i| (i, Instant::now()));
+        }
+        // Per-app rates, from the change in each app's totals since the
+        // previous fresh sample.
+        let sample_secs = if fresh {
+            let now = Instant::now();
+            let secs = self
+                .last_app_sample_at
+                .map(|at| now.duration_since(at).as_secs_f64());
+            self.last_app_sample_at = if traffic.is_empty() { None } else { Some(now) };
+            secs
+        } else {
+            None
+        };
         if fresh {
             if let Some(ref snap) = global {
                 let now = Instant::now();
@@ -495,6 +579,8 @@ impl TuiApp {
             let name = &app.config.name;
 
             // Start with traffic data from the daemon (if available)
+            let previous = self.app_stats.get(name);
+            let (prev_rps, prev_eps) = previous.map_or((0.0, 0.0), |s| (s.rps, s.eps));
             let mut stats = traffic
                 .get(name)
                 .map(|m| AppStats {
@@ -507,8 +593,25 @@ impl TuiApp {
                     memory_bytes: None,
                     runtime: Default::default(),
                     asleep: m.asleep,
+                    rps: prev_rps,
+                    eps: prev_eps,
                 })
                 .unwrap_or_default();
+            if fresh {
+                let (rps, eps) = match (sample_secs, self.prev_app_totals.get(name)) {
+                    (Some(secs), Some(&(req0, err0))) if secs > 0.0 => (
+                        stats.requests.saturating_sub(req0) as f64 / secs,
+                        stats.errors.saturating_sub(err0) as f64 / secs,
+                    ),
+                    _ => (0.0, 0.0),
+                };
+                stats.rps = rps;
+                stats.eps = eps;
+                self.prev_app_totals
+                    .insert(name.clone(), (stats.requests, stats.errors));
+                let r = self.rank.entry(name.clone()).or_insert(rps);
+                *r = *r * (1.0 - RANK_WEIGHT) + rps * RANK_WEIGHT;
+            }
 
             // Read system metrics from /proc
             if let Some(pid) = inst.pid {
@@ -526,7 +629,14 @@ impl TuiApp {
                 .or_insert_with(|| AppHistory {
                     cpu: VecDeque::with_capacity(HISTORY_LEN),
                     mem: VecDeque::with_capacity(HISTORY_LEN),
+                    rps: VecDeque::with_capacity(HISTORY_LEN),
                 });
+            if fresh {
+                if history.rps.len() >= HISTORY_LEN {
+                    history.rps.pop_front();
+                }
+                history.rps.push_back(stats.rps);
+            }
 
             let cpu_val = stats.cpu_percent.map(|c| (c * 10.0) as u64).unwrap_or(0);
             let mem_val = stats.memory_bytes.unwrap_or(0);
@@ -550,7 +660,38 @@ impl TuiApp {
         let log_path =
             crate::logging::log_file_path(&self.ctx.config_manager.get_config().logging, true)
                 .unwrap_or_else(crate::logging::default_daemon_log_path);
-        self.errors = load_request_errors(&log_path);
+        let mut errors = load_request_errors(&log_path);
+        errors.reverse(); // newest first
+        let now = Instant::now();
+        let mut arrived = Vec::new();
+        for e in &errors {
+            let key = e.key();
+            if !self.error_seen.contains_key(&key) {
+                // What is already in the log when the TUI starts is not news.
+                let at = if self.errors_loaded {
+                    arrived.push(e.clone());
+                    now
+                } else {
+                    now - Duration::from_secs(60)
+                };
+                self.error_seen.insert(key, at);
+            }
+        }
+        if self.error_seen.len() > 2000 {
+            let keep: std::collections::HashSet<String> =
+                errors.iter().map(ErrorEntry::key).collect();
+            self.error_seen.retain(|k, _| keep.contains(k));
+        }
+        if let Ok(mut feed) = self.daemon.events.lock() {
+            for e in arrived.iter().rev() {
+                let app = e.host.clone().unwrap_or_else(|| "?".into());
+                let text = format!("{} {}", e.status_label(), e.path.as_deref().unwrap_or(""));
+                feed.push(now, &app, text, EventKind::Error);
+            }
+            feed.prune(now);
+        }
+        self.errors_loaded = true;
+        self.errors = errors;
 
         // Cached for the Config screen, which used to re-read the file on every
         // frame and had no way to know how far it could scroll.
@@ -564,6 +705,7 @@ impl TuiApp {
     /// Copy the newest sample produced by the background poller. Lock
     /// contention is a few microseconds and there is no I/O on this path, so
     /// this is safe to call from the render thread.
+    #[allow(clippy::type_complexity)]
     fn read_daemon_sample(
         &self,
     ) -> (
@@ -572,6 +714,7 @@ impl TuiApp {
         Option<CircuitList>,
         DaemonStatus,
         u64,
+        Option<DaemonInfo>,
     ) {
         match self.daemon.latest.lock() {
             Ok(slot) => (
@@ -580,6 +723,7 @@ impl TuiApp {
                 slot.circuits.clone(),
                 slot.status,
                 slot.seq,
+                slot.info.clone(),
             ),
             // Poisoned only if the poller panicked mid-write; report it rather
             // than propagating the panic into the render loop.
@@ -589,6 +733,7 @@ impl TuiApp {
                 None,
                 DaemonStatus::Unreachable,
                 self.last_daemon_seq,
+                None,
             ),
         }
     }
@@ -612,7 +757,7 @@ impl TuiApp {
     }
 
     /// Per-loop housekeeping. Returns true when the frame needs repainting, so
-    /// an idle TUI does not redraw ten times a second for an identical image.
+    /// an idle TUI does not redraw for an identical image.
     pub fn on_frame(&mut self) -> bool {
         self.frame_ticks += 1;
         let mut dirty = false;
@@ -622,8 +767,52 @@ impl TuiApp {
                 dirty = true;
             }
         }
+        // Something on screen moves: next frame once the interval is up.
+        let moving =
+            self.anim.wants_frame() && self.last_draw.elapsed() >= super::anim::FRAME_INTERVAL;
         // The footer spinner animates only while an action is in flight.
-        dirty || self.pending_action.is_some()
+        dirty || moving || self.pending_action.is_some()
+    }
+
+    /// How long the loop may wait for input: a frame while something moves,
+    /// longer otherwise.
+    pub fn poll_timeout(&self) -> Duration {
+        if self.anim.wants_frame() {
+            super::anim::FRAME_INTERVAL
+        } else {
+            Duration::from_millis(100)
+        }
+    }
+
+    /// The apps as the apps screen lists them: filtered by the search, in
+    /// the chosen order.
+    fn ordered_apps(&self) -> Vec<crate::app::AppInfo> {
+        let all = self
+            .ctx
+            .app_manager
+            .as_ref()
+            .map(|m| m.list_apps_sync())
+            .unwrap_or_default();
+        let mut apps: Vec<_> = if self.search_query.is_empty() {
+            all
+        } else {
+            let q = self.search_query.to_lowercase();
+            all.into_iter()
+                .filter(|a| {
+                    a.config.name.to_lowercase().contains(&q)
+                        || a.config.domain.to_lowercase().contains(&q)
+                })
+                .collect()
+        };
+        screens::apps::sort_apps(&mut apps, self.app_sort, &self.app_stats, &self.rank);
+        apps
+    }
+
+    /// The app under the cursor on the apps screen.
+    fn selected_app_name(&self) -> Option<String> {
+        self.ordered_apps()
+            .get(self.selected_index)
+            .map(|a| a.config.name.clone())
     }
 
     pub fn has_pending_action(&self) -> bool {
@@ -657,8 +846,12 @@ impl TuiApp {
     }
 
     pub fn render(&mut self, f: &mut Frame) {
+        let now = Instant::now();
+        self.anim.begin(now);
+        self.last_draw = now;
         let size = f.area();
-        let (sidebar, rest) = theme::split_shell(size);
+        let shell = theme::shell(size);
+        let rest = shell.rest;
         let has_toast = self.toast.is_some();
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -669,7 +862,7 @@ impl TuiApp {
             ])
             .split(rest);
 
-        self.last_sidebar = sidebar;
+        self.shell = shell;
         self.last_body = chunks[0];
         // Panel rows minus the title chip and the column header.
         self.visible_height = (chunks[0].height.saturating_sub(2) as usize).max(1);
@@ -685,7 +878,7 @@ impl TuiApp {
             Screen::Config => 5,
             Screen::Help => 0,
         };
-        theme::render_sidebar(f, sidebar, nav_idx, env!("CARGO_PKG_VERSION"));
+        theme::render_nav(f, shell, nav_idx, env!("CARGO_PKG_VERSION"));
         self.render_main(f, chunks[0]);
         if has_toast {
             if let Some((ref msg, _)) = self.toast {
@@ -813,6 +1006,26 @@ impl TuiApp {
             }
             KeyCode::Enter => {
                 self.handle_enter();
+            }
+            KeyCode::Char('m') => {
+                self.anim.toggle();
+                let state = if self.anim.enabled() { "on" } else { "off" };
+                self.show_toast(format!("motion {state}"));
+            }
+            KeyCode::Char('s') if self.current_screen == Screen::Apps => {
+                self.app_sort = self.app_sort.next();
+                // Keep the same app under the cursor in the new order.
+                self.show_toast(format!("sorted by {}", self.app_sort.label()));
+            }
+            KeyCode::Char(c @ ('D' | 'R' | 'L')) if self.current_screen == Screen::Apps => {
+                if let Some(name) = self.selected_app_name() {
+                    let idx = match c {
+                        'D' => 0,
+                        'R' => 1,
+                        _ => 4,
+                    };
+                    self.execute_app_action(&name, idx);
+                }
             }
             KeyCode::Char('a') if self.current_screen == Screen::Routes => {
                 self.route_form = Some(RouteForm::new_empty());
@@ -1263,6 +1476,7 @@ impl TuiApp {
         };
         self.selected_index = 0;
         self.scroll_offset = 0;
+        self.selected_app = None;
     }
 
     fn move_selection(&mut self, dir: i32) {
@@ -1276,7 +1490,7 @@ impl TuiApp {
         }
         let max_idx = (max as i32) - 1;
         let new_idx = ((self.selected_index as i32) + dir).clamp(0, max_idx);
-        self.selected_index = new_idx as usize;
+        self.select(new_idx as usize);
         let visible = self.get_visible_height() as i32;
         let scroll_threshold = (self.scroll_offset as i32) + visible - 2;
         if self.selected_index as i32 >= scroll_threshold {
@@ -1284,6 +1498,15 @@ impl TuiApp {
         }
         if self.selected_index < self.scroll_offset {
             self.scroll_offset = self.selected_index;
+        }
+    }
+
+    /// Put the cursor on row `idx`; on the apps screen, remember which app
+    /// that is so the cursor follows it through re-sorting.
+    fn select(&mut self, idx: usize) {
+        self.selected_index = idx;
+        if self.current_screen == Screen::Apps {
+            self.selected_app = self.selected_app_name();
         }
     }
 
@@ -1360,6 +1583,7 @@ impl TuiApp {
         self.current_screen = screen;
         self.selected_index = 0;
         self.scroll_offset = 0;
+        self.selected_app = None;
     }
 
     /// Returns true when the event changed something worth repainting.
@@ -1370,7 +1594,7 @@ impl TuiApp {
         }
         match mouse.kind {
             MouseEventKind::Down(_) => {
-                if let Some(idx) = theme::nav_at(self.last_sidebar, mouse.column, mouse.row) {
+                if let Some(idx) = theme::nav_hit(self.shell, mouse.column, mouse.row) {
                     let screen = match idx {
                         0 => Screen::Dashboard,
                         1 => Screen::Routes,
@@ -1384,15 +1608,20 @@ impl TuiApp {
                     return true;
                 }
                 // Row 0 of the panel is the title chip and row 1 the column
-                // header; data rows start at +2. Clamping instead of offsetting
-                // would make a click on the header select the first row.
-                let first_row = self.last_body.y.saturating_add(2);
-                let past_end = self.last_body.y.saturating_add(self.last_body.height);
+                // header; data rows start at +2 (the errors table sits under
+                // the per-app panel). Clamping instead of offsetting would
+                // make a click on the header select the first row.
+                let header_rows = match self.current_screen {
+                    Screen::Errors => screens::errors::table_top() + 1,
+                    _ => 2,
+                };
+                let first_row = self.last_body.y.saturating_add(header_rows);
+                let past_end = first_row.saturating_add(self.get_visible_height() as u16);
                 if mouse.row >= first_row && mouse.row < past_end {
                     let rel = (mouse.row - first_row) as usize;
                     let idx = self.scroll_offset + rel;
                     if idx < self.get_max_selection() && idx != self.selected_index {
-                        self.selected_index = idx;
+                        self.select(idx);
                         return true;
                     }
                 }
@@ -1431,30 +1660,8 @@ impl TuiApp {
             return;
         }
         if let Screen::Apps = self.current_screen {
-            if let Some(ref mgr) = self.ctx.app_manager {
-                let all_apps = mgr.list_apps_sync();
-                let mut apps: Vec<_> = if self.search_query.is_empty() {
-                    all_apps
-                } else {
-                    let search_lower = self.search_query.to_lowercase();
-                    all_apps
-                        .into_iter()
-                        .filter(|app| {
-                            app.config.name.to_lowercase().contains(&search_lower)
-                                || app.config.domain.to_lowercase().contains(&search_lower)
-                        })
-                        .collect()
-                };
-                apps.sort_by(|a, b| {
-                    a.config
-                        .name
-                        .to_lowercase()
-                        .cmp(&b.config.name.to_lowercase())
-                });
-                if self.selected_index < apps.len() {
-                    let app_name = apps[self.selected_index].config.name.clone();
-                    self.modal = Modal::AppActionMenu(app_name, 0);
-                }
+            if let Some(app_name) = self.selected_app_name() {
+                self.modal = Modal::AppActionMenu(app_name, 0);
             }
         }
     }
@@ -1480,19 +1687,52 @@ impl TuiApp {
     }
 
     fn render_main(&mut self, f: &mut Frame, area: Rect) {
-        match self.current_screen {
-            Screen::Dashboard => screens::dashboard::render(
-                f,
-                area,
-                &self.ctx,
-                &screens::dashboard::DashboardView {
-                    remote_snap: self.remote_snapshot.as_ref(),
-                    circuits: self.circuits.as_deref(),
-                    status: self.daemon_status,
-                    rps_history: &self.rps_history,
-                    app_stats: &self.app_stats,
-                },
+        let now = self.anim.now();
+        let (deploys, waking, journal, connected) = match self.daemon.events.lock() {
+            Ok(feed) => (
+                feed.deploys(now),
+                feed.waking(now),
+                feed.journal.iter().cloned().collect::<Vec<_>>(),
+                feed.connected,
             ),
+            Err(_) => (HashMap::new(), Vec::new(), Vec::new(), false),
+        };
+        match self.current_screen {
+            Screen::Dashboard => {
+                let apps = self
+                    .ctx
+                    .app_manager
+                    .as_ref()
+                    .map(|m| m.list_apps_sync())
+                    .unwrap_or_default();
+                let daemon =
+                    self.daemon_info
+                        .as_ref()
+                        .map(|(info, at)| screens::dashboard::DaemonView {
+                            version: info.version.clone(),
+                            uptime: Duration::from_secs(info.uptime_secs) + at.elapsed(),
+                        });
+                screens::dashboard::render(
+                    f,
+                    area,
+                    &self.ctx,
+                    &screens::dashboard::DashboardView {
+                        remote_snap: self.remote_snapshot.as_ref(),
+                        circuits: self.circuits.as_deref(),
+                        status: self.daemon_status,
+                        rps_history: &self.rps_history,
+                        apps: &apps,
+                        app_stats: &self.app_stats,
+                        rank: &self.rank,
+                        deploys: &deploys,
+                        waking: &waking,
+                        journal: &journal,
+                        stream_connected: connected,
+                        daemon,
+                    },
+                    &mut self.anim,
+                )
+            }
             Screen::Routes => screens::routes::render(
                 f,
                 area,
@@ -1502,39 +1742,52 @@ impl TuiApp {
                 &self.search_query,
             ),
             Screen::Apps => {
-                let all_apps = self
+                let apps = self.ordered_apps();
+                // Follow the selected app when the order changes under it.
+                if let Some(name) = &self.selected_app {
+                    if let Some(i) = apps.iter().position(|a| &a.config.name == name) {
+                        self.selected_index = i;
+                    }
+                }
+                if self.selected_index >= apps.len() && !apps.is_empty() {
+                    self.selected_index = apps.len() - 1;
+                }
+                self.selected_app = apps.get(self.selected_index).map(|a| a.config.name.clone());
+                self.filtered_apps_count = apps.len();
+                let list_h = if area.height > screens::apps::DETAIL_HEIGHT + 5 {
+                    area.height - screens::apps::DETAIL_HEIGHT
+                } else {
+                    area.height
+                };
+                self.visible_height = (list_h.saturating_sub(2) as usize).max(1);
+                let visible = self.visible_height;
+                if self.selected_index < self.scroll_offset {
+                    self.scroll_offset = self.selected_index;
+                } else if self.selected_index >= self.scroll_offset + visible {
+                    self.scroll_offset = self.selected_index + 1 - visible;
+                }
+                let total = self
                     .ctx
                     .app_manager
                     .as_ref()
-                    .map(|m| m.list_apps_sync())
-                    .unwrap_or_default();
-                let filtered_count = if self.search_query.is_empty() {
-                    all_apps.len()
-                } else {
-                    let search_lower = self.search_query.to_lowercase();
-                    all_apps
-                        .into_iter()
-                        .filter(|app| {
-                            app.config.name.to_lowercase().contains(&search_lower)
-                                || app.config.domain.to_lowercase().contains(&search_lower)
-                        })
-                        .count()
-                };
-                if self.selected_index >= filtered_count && filtered_count > 0 {
-                    self.selected_index = filtered_count - 1;
-                }
-                self.filtered_apps_count = filtered_count;
+                    .map(|m| m.list_apps_sync().len())
+                    .unwrap_or(0);
                 screens::apps::render(
                     f,
                     area,
-                    &self.ctx,
                     &screens::apps::AppsView {
+                        apps: &apps,
+                        total,
                         selected_index: self.selected_index,
                         scroll_offset: self.scroll_offset,
                         search_query: &self.search_query,
+                        sort: self.app_sort,
                         app_stats: &self.app_stats,
                         app_history: &self.app_history,
+                        deploys: &deploys,
+                        waking: &waking,
                     },
+                    &mut self.anim,
                 )
             }
             Screen::Circuits => screens::circuits::render(
@@ -1545,13 +1798,54 @@ impl TuiApp {
                 self.selected_index,
                 self.scroll_offset,
             ),
-            Screen::Errors => screens::errors::render(
-                f,
-                area,
-                &self.errors,
-                self.selected_index,
-                self.scroll_offset,
-            ),
+            Screen::Errors => {
+                self.visible_height =
+                    (area.height.saturating_sub(screens::errors::table_top() + 1) as usize).max(1);
+                let mut erroring: Vec<(String, f64)> = self
+                    .app_stats
+                    .iter()
+                    .filter(|(_, s)| s.eps > 0.0)
+                    .map(|(n, s)| (n.clone(), s.eps))
+                    .collect();
+                // Routes of proxy.conf have no per-app counters: count their
+                // failures of the last minute in the log, by host.
+                let cutoff = chrono::Utc::now() - chrono::Duration::seconds(60);
+                let mut by_host: HashMap<String, f64> = HashMap::new();
+                for e in &self.errors {
+                    let recent = chrono::DateTime::parse_from_rfc3339(&e.timestamp)
+                        .is_ok_and(|t| t >= cutoff);
+                    if !recent {
+                        // Newest first: the rest is older still.
+                        break;
+                    }
+                    if let Some(host) = &e.host {
+                        *by_host.entry(host.clone()).or_default() += 1.0 / 60.0;
+                    }
+                }
+                for (host, eps) in by_host {
+                    if !erroring.iter().any(|(n, _)| *n == host) {
+                        erroring.push((host, eps));
+                    }
+                }
+                erroring.sort_by(|a, b| {
+                    b.1.partial_cmp(&a.1)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| a.0.cmp(&b.0))
+                });
+                screens::errors::render(
+                    f,
+                    area,
+                    &screens::errors::ErrorsView {
+                        entries: &self.errors,
+                        selected_index: self.selected_index,
+                        scroll_offset: self.scroll_offset,
+                        seen: &self.error_seen,
+                        erroring: &erroring,
+                        total_5xx: self.remote_snapshot.as_ref().map(|s| s.status_5xx),
+                    },
+                    &mut self.anim,
+                )
+            }
             Screen::Config => screens::config_viewer::render(
                 f,
                 area,
@@ -1573,12 +1867,14 @@ impl TuiApp {
 
         let keys = match self.modal {
             Modal::None => match self.current_screen {
-                Screen::Routes => "1-6 nav  j/k  a add  e edit  d delete  /  r  ?  q",
-                Screen::Apps => "1-6 nav  j/k  Enter action  /  r  ?  q",
-                Screen::Errors => "1-6 nav  j/k  Enter detail  r  ?  q",
-                Screen::Circuits => "1-6 nav  j/k  r  ?  q",
-                Screen::Config => "1-6 nav  j/k  r  ?  q",
-                _ => "1-6 nav  Tab cycle  r  ?  q",
+                Screen::Routes => "1-6 screens  j/k  a add  e edit  d delete  /  ?  q",
+                Screen::Apps => {
+                    "1-6  j/k  Enter actions  D deploy  R restart  L logs  s sort  /  ?  q"
+                }
+                Screen::Errors => "1-6 screens  j/k  Enter detail  y copy  ?  q",
+                Screen::Circuits => "1-6 screens  j/k  r  ?  q",
+                Screen::Config => "1-6 screens  j/k  r  ?  q",
+                _ => "1-6 screens  Tab cycle  m motion  r  ?  q",
             },
             Modal::RouteForm => "Tab fields  Enter save  Esc cancel",
             Modal::DeleteConfirm(_) => "y confirm  n/Esc cancel",
@@ -1602,29 +1898,38 @@ impl TuiApp {
             Span::raw("")
         };
 
-        let line = Line::from(vec![
-            Span::styled(format!(" {keys} "), Style::default().fg(theme::MUTED)),
-            Span::raw("  "),
-            spinner,
-            daemon,
-        ]);
-        f.render_widget(Paragraph::new(line).alignment(Alignment::Left), area);
+        let motion = if self.anim.enabled() {
+            Span::raw("")
+        } else {
+            Span::styled(" motion off ", Style::default().fg(theme::MUTED))
+        };
+        let left = Line::from(vec![Span::styled(
+            format!(" {keys} "),
+            Style::default().fg(theme::MUTED),
+        )]);
+        f.render_widget(Paragraph::new(left).alignment(Alignment::Left), area);
+        let right = Line::from(vec![spinner, motion, daemon]);
+        f.render_widget(Paragraph::new(right).alignment(Alignment::Right), area);
     }
 
     fn render_help(&self, f: &mut Frame, area: Rect) {
-        let modal = theme::centered_modal(area, 64, 22);
+        let modal = theme::centered_modal(area, 66, 22);
         f.render_widget(Clear, modal);
-        let help_text = "\
+        // No line continuation on the first line: `\` + newline would also
+        // eat the indentation of the line after it.
+        let help_text = "
   1-6            Jump to screen     Tab / S-Tab  Cycle
   j/k  PgUp/Dn   Move               g / G        First / last
   /              Search             r            Refresh now
   Enter          Select / open      Esc          Back
-  a/e/d          Route add/edit/del
+  m              Motion on / off (NO_MOTION=1 starts with it off)
   Mouse          Click nav, click rows, wheel scrolls
   q              Quit
 
-  Apps: Enter → Deploy / Restart / Stop / Rollback / Logs
-  Errors: Enter detail · y copy (OSC 52)
+  Apps    s sort (traffic, name, memory, errors)
+          D deploy · R restart · L logs · Enter all actions
+  Routes  a add · e edit · d delete
+  Errors  Enter detail · y copy (OSC 52)
 
   Any key closes this overlay";
         let block = theme::list_block("help");
