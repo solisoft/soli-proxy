@@ -17,6 +17,7 @@ pub mod response;
 pub mod scripting;
 pub mod server;
 pub mod shutdown;
+pub mod systemd;
 pub mod tls;
 pub mod tui;
 pub mod upstream;

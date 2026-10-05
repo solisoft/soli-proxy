@@ -312,6 +312,15 @@ fn main() -> Result<()> {
         std::process::exit(1);
     }
 
+    // Next to a proxy systemd runs, a second one on the same ports would
+    // share them (SO_REUSEPORT) and fight it over the apps — and `-d` would
+    // first stop it through proxy.pid. Refused, foreground or daemon alike.
+    let ports = soli_proxy::config::read_listen_ports(&cli.conf);
+    if let Some(instance) = soli_proxy::systemd::conflicting_instance(&ports) {
+        eprintln!("Error: {}", instance.refusal());
+        std::process::exit(1);
+    }
+
     if cli.daemon {
         kill_existing_daemon(&cli.conf)?;
         daemonize()?;

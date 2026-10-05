@@ -532,6 +532,25 @@ pub fn read_shutdown_grace_period(config_path: &str) -> std::time::Duration {
         .shutdown_grace_period()
 }
 
+/// The ports the proxy's listeners would take, from `[server] bind` and
+/// `https_port` in the `config.toml` next to `config_path` (the defaults
+/// when the file is missing or does not parse). Read before startup, to
+/// tell whether another proxy already holds them.
+pub fn read_listen_ports(config_path: &str) -> Vec<u16> {
+    let path = PathBuf::from(config_path);
+    let toml_path = path.parent().unwrap_or(Path::new(".")).join("config.toml");
+    let server = std::fs::read_to_string(&toml_path)
+        .ok()
+        .and_then(|content| toml::from_str::<TomlConfig>(&content).ok())
+        .map(|cfg| cfg.server)
+        .unwrap_or_default();
+    let mut ports = vec![server.https_port];
+    if let Ok(http) = server.bind.parse::<std::net::SocketAddr>() {
+        ports.insert(0, http.port());
+    }
+    ports
+}
+
 /// Read just `[logging]` from the `config.toml` next to `config_path`, before
 /// the logger exists. Defaults when the file is missing; a file that does not
 /// parse also yields defaults here, and `ConfigManager::new` then reports the

@@ -1150,8 +1150,8 @@ soli-proxy check -c /etc/soli-proxy/proxy.conf --sites-dir /srv/sites   # with t
 sudo systemctl restart soli-proxy                   # drains, exits, the new one adopts the apps
 ```
 
-With `-d` instead of systemd, run `soli-proxy -d` with the same flags again: it signals the
-running daemon, waits for its drain (`shutdown_grace_period` plus 5 s) and takes over the apps.
+With `-d` instead of systemd, run `soli-proxy -d` with the same flags again (refused while
+systemd runs the proxy, see [Systemd Service](#systemd-service)): it signals the running daemon, waits for its drain (`shutdown_grace_period` plus 5 s) and takes over the apps.
 Between the old process closing its listeners and the new one opening them, new connections
 are refused: for as long as the slowest in-flight request takes to finish (bounded by the grace
 period), plus the new process's startup — typically well under a second. A hand-over of the listening sockets, which would close
@@ -1771,6 +1771,19 @@ journalctl -u soli-proxy -f
 process to adopt — the unit sets `KillMode=process` for that; see
 [Restarts and upgrades](#restarts-and-upgrades). `systemctl stop` leaves them running too: run
 `soli-proxy stop --all` first to stop them.
+
+**Once systemd runs it, the proxy cannot be started by hand.** `soli-proxy` (in the
+foreground or with `-d`) refuses to start when a systemd unit's main process is already a
+soli-proxy and a port it would listen on (`[server] bind`, `https_port`) is already taken. It
+prints the unit, its PID and the ports, and exits 1 with the `systemctl` commands to use
+instead. Two proxies would not fail to bind: the listeners use `SO_REUSEPORT`, so the second
+would silently share :80 and :443 with the first and both would supervise the same apps — and
+`-d` would first stop whatever `proxy.pid` names. To run one by hand, `systemctl stop` the unit
+first. A proxy on other ports (a second instance with its own config, a test suite) shares
+nothing with the managed one and starts normally. The subcommands (`tui`, `check`, `restart <app>`, `stop`, `logs`, `update`…) are not
+affected. The check asks systemd for the unit's `MainPID`, so a proxy started from a terminal
+that a desktop session launched as a service (uwsm's `app-…@….service`) is not mistaken for a
+managed one. Linux only.
 
 ### Privileges
 

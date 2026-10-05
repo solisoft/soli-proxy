@@ -168,6 +168,8 @@
 <span class="tf">StateDirectory</span>=soli-proxy
 <span class="tf">WorkingDirectory</span>=/var/lib/soli-proxy
 <span class="tc"># --conf is proxy.conf; config.toml is read from the same directory</span>
+<span class="tc"># While this unit runs, `soli-proxy` started by hand (even with -d) is refused:</span>
+<span class="tc"># it would share :80/:443 (SO_REUSEPORT) and fight this one over the apps.</span>
 <span class="tf">ExecStart</span>=<span class="ts">/usr/local/bin/soli-proxy --conf /etc/soli-proxy/proxy.conf --sites-dir /srv/sites</span>
 <span class="tf">ExecReload</span>=<span class="ts">/bin/kill -USR1 $MAINPID</span>
 <span class="tf">Restart</span>=always

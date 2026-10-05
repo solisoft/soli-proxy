@@ -78,7 +78,9 @@ ExecStart=/usr/local/bin/soli-proxy \
     --sites-dir /srv/sites
 
 # Do NOT add -d/--daemon here: it forks and detaches, so systemd would lose
-# track of the process and restart it forever. Type=simple wants the proxy in
+# track of the process and restart it forever. While this unit runs, starting
+# soli-proxy by hand (foreground or -d) is refused with a message pointing
+# here: a second proxy would share :80/:443 (SO_REUSEPORT) and the apps. Type=simple wants the proxy in
 # the foreground, and its own log then goes to the journal.
 # `systemctl reload soli-proxy` re-reads proxy.conf and config.toml (SIGUSR1).
 ExecReload=/bin/kill -USR1 $MAINPID
