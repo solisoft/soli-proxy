@@ -384,7 +384,7 @@
                                 <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
                                     <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">GET</span></td>
                                     <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/events/apps</td>
-                                    <td class="px-6 py-4 text-gray-400">Server-Sent Events stream of app lifecycle events (deploys, status changes, quarantine)</td>
+                                    <td class="px-6 py-4 text-gray-400">Server-Sent Events stream of app lifecycle events: each step of a deploy as it happens (<code class="text-emerald-300 text-xs">DeployStage</code>: start, health, switch, drain, done or failed), apps falling asleep and waking up (<code class="text-emerald-300 text-xs">Asleep</code>, <code class="text-emerald-300 text-xs">Waking</code>), status changes and quarantine. The TUI draws from it.</td>
                                 </tr>
                                 <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
                                     <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">GET</span></td>

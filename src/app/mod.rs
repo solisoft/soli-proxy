@@ -1442,6 +1442,29 @@ pub enum AppEvent {
     Restarted {
         app_name: String,
     },
+    /// A step of a blue/green deploy, as it happens: `start` (the new slot's
+    /// process is being spawned), `health` (waiting for its health check),
+    /// `switch` (traffic moves to it), `drain` (the old slot finishes its
+    /// requests, `detail` = seconds), then `done` or `failed` (`detail` =
+    /// why). Restarts, failovers and wake-ups are deploys too. `from` is the
+    /// slot that served before.
+    DeployStage {
+        app_name: String,
+        slot: String,
+        from: String,
+        stage: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
+    /// The idle reaper stopped the app after `idle_secs` without a request.
+    Asleep {
+        app_name: String,
+        idle_secs: u64,
+    },
+    /// A request arrived for a sleeping app, which is being started.
+    Waking {
+        app_name: String,
+    },
 }
 
 /// The domain a static rule would shadow an app on, if it would shadow one.
@@ -1630,6 +1653,23 @@ impl AppManager {
 
     fn emit_event(&self, event: AppEvent) {
         let _ = self.event_tx.send(event);
+    }
+
+    fn emit_stage(
+        &self,
+        app_name: &str,
+        slot: &str,
+        from: &str,
+        stage: &str,
+        detail: Option<String>,
+    ) {
+        self.emit_event(AppEvent::DeployStage {
+            app_name: app_name.to_string(),
+            slot: slot.to_string(),
+            from: from.to_string(),
+            stage: stage.to_string(),
+            detail,
+        });
     }
 
     pub fn set_circuit_breaker(&mut self, cb: SharedCircuitBreaker) {
@@ -2880,7 +2920,12 @@ impl AppManager {
         // Likewise the single place an app stops being asleep: whoever starts
         // it — a held request or an operator — it is awake from here on, and
         // its idle clock restarts so the reaper does not stop it again at once.
-        self.asleep.lock().remove(app_name);
+        // Only the deploy holding the lock gets here, so it is said once.
+        if self.asleep.lock().remove(app_name) {
+            self.emit_event(AppEvent::Waking {
+                app_name: app_name.to_string(),
+            });
+        }
         self.touch(app_name);
 
         let app = self
@@ -2909,6 +2954,7 @@ impl AppManager {
 
         // Start new instance
         tracing::info!("Starting {} slot {}", app.config.name, slot);
+        self.emit_stage(app_name, slot, &old_slot, "start", None);
         let pid = match self.deployment_manager.start_instance(&app, slot).await {
             Ok(pid) => pid,
             Err(e) => {
@@ -2933,6 +2979,13 @@ impl AppManager {
                     slot: slot.to_string(),
                     status: "failed".to_string(),
                 });
+                self.emit_stage(
+                    app_name,
+                    slot,
+                    &old_slot,
+                    "failed",
+                    Some(format!("could not be spawned: {e:#}")),
+                );
                 self.quarantine(
                     app_name,
                     &format!("slot {} could not be spawned: {:#}", slot, e),
@@ -2966,6 +3019,7 @@ impl AppManager {
         // Wait for health check. wait_for_health returns a descriptive error
         // (with the app's last health-response error and a pointer to the log
         // file) so we just propagate it.
+        self.emit_stage(app_name, slot, &old_slot, "health", None);
         if let Err(e) = self
             .deployment_manager
             .wait_for_health(&app, slot, pid)
@@ -2991,6 +3045,13 @@ impl AppManager {
                 slot: slot.to_string(),
                 status: "failed".to_string(),
             });
+            self.emit_stage(
+                app_name,
+                slot,
+                &old_slot,
+                "failed",
+                Some("health check never passed".to_string()),
+            );
             // The app failed to start: stop here instead of letting the health
             // loop retry forever. The previous slot, if any, keeps serving.
             self.quarantine(
@@ -3003,6 +3064,7 @@ impl AppManager {
             return Err(e);
         }
         tracing::info!("Health check passed for {} slot {}", app.config.name, slot);
+        self.emit_stage(app_name, slot, &old_slot, "switch", None);
 
         // Switch traffic AND persist atomically
         {
@@ -3056,6 +3118,7 @@ impl AppManager {
             };
             if let Some(pid) = old_pid {
                 let drain = app.config.drain_delay as u64;
+                self.emit_stage(app_name, slot, &old_slot, "drain", Some(drain.to_string()));
                 if drain > 0 {
                     tracing::info!("Draining old slot {} for {}s", old_slot, drain);
                     tokio::time::sleep(std::time::Duration::from_secs(drain)).await;
@@ -3089,6 +3152,7 @@ impl AppManager {
         }
         self.health_failures.lock().remove(app_name);
 
+        self.emit_stage(app_name, slot, &old_slot, "done", None);
         self.emit_event(AppEvent::Deployed {
             app_name: app_name.to_string(),
             slot: slot.to_string(),
@@ -3674,6 +3738,10 @@ impl AppManager {
             match self.stop(&name).await {
                 Ok(()) => {
                     self.asleep.lock().insert(name.clone());
+                    self.emit_event(AppEvent::Asleep {
+                        app_name: name.clone(),
+                        idle_secs: idle_for.as_secs(),
+                    });
                     tracing::info!(
                         "{} put to sleep after {}s without a request (idle_timeout = {}s)",
                         name,

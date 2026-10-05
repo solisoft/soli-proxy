@@ -1542,7 +1542,7 @@ Served on `[admin] bind` (loopback `127.0.0.1:9090` by default); see
 | POST | `/api/v1/certs/reload` | Rescan `certs/` |
 | GET | `/api/v1/metrics` | Prometheus metrics |
 | GET | `/api/v1/app-metrics`, `/api/v1/app-metrics/system`, `/api/v1/apps/{name}/metrics` | Per-app traffic, memory and CPU; `asleep` marks an app stopped by scale to zero |
-| GET | `/api/v1/events/apps` | Server-Sent Events: app deploys, status changes, quarantine |
+| GET | `/api/v1/events/apps` | Server-Sent Events, one JSON object per `data:` line with a `type`: `DeployStage` (`stage` = `start`, `health`, `switch`, `drain`, then `done` or `failed`; `slot`, `from`, `detail`), `Asleep` (`idle_secs`), `Waking`, `Deployed`, `StatusChanged`, `Stopped`, `Restarted` |
 | GET | `/api/v1/apps`, `/api/v1/apps/{name}`, `/api/v1/apps/by-domain` | Managed apps |
 | POST | `/api/v1/apps/{name}/deploy` \| `restart` \| `rollback` \| `stop` | App lifecycle |
 | POST | `/api/v1/apps/stop-all` | Stop every app, both slots (the proxy keeps running) |
