@@ -988,7 +988,7 @@
                             </div>
                             <pre class="p-4 text-sm overflow-x-auto"><code><span class="tk">[compression]</span>
 <span class="tf">enabled</span> = <span class="tn">true</span>                       <span class="tc"># default false</span>
-<span class="tf">algorithms</span> = [<span class="ts">"br"</span>, <span class="ts">"zstd"</span>, <span class="ts">"gzip"</span>]  <span class="tc"># preference on a tie</span>
+<span class="tf">algorithms</span> = [<span class="ts">"zstd"</span>, <span class="ts">"br"</span>, <span class="ts">"gzip"</span>]  <span class="tc"># preference on a tie</span>
 <span class="tf">gzip_level</span> = <span class="tn">5</span>
 <span class="tf">brotli_level</span> = <span class="tn">4</span>
 <span class="tf">zstd_level</span> = <span class="tn">3</span>
@@ -1005,7 +1005,7 @@
                                 </tr></thead>
                                 <tbody class="text-gray-300">
                                     <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">enabled</td><td class="py-2 pr-4">bool</td><td class="py-2 pr-4 text-gray-500">false</td><td class="py-2">Compress eligible responses on routes and apps that do not opt out.</td></tr>
-                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">algorithms</td><td class="py-2 pr-4">list</td><td class="py-2 pr-4 text-gray-500">["br", "zstd", "gzip"]</td><td class="py-2">Codings offered, in order of preference when a client accepts several equally.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">algorithms</td><td class="py-2 pr-4">list</td><td class="py-2 pr-4 text-gray-500">["zstd", "br", "gzip"]</td><td class="py-2">Codings offered, in order of preference when a client accepts several equally. zstd first: as small as brotli 4 or gzip 5 on HTML, in a quarter to a third of the time.</td></tr>
                                     <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">gzip_level</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">5</td><td class="py-2">1&ndash;9.</td></tr>
                                     <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">brotli_level</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">4</td><td class="py-2">0&ndash;11. Levels above ~5 cost several times more CPU for a few percent.</td></tr>
                                     <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">zstd_level</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">3</td><td class="py-2">1&ndash;19.</td></tr>

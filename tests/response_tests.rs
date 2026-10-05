@@ -254,12 +254,21 @@ async fn each_coding_decodes_back_to_the_backends_body() {
         assert!(body.len() < page().len() / 3, "{coding} barely shrank");
         assert_eq!(decode(coding, &body), page().into_bytes(), "{coding}");
     }
-    // A browser's usual list picks brotli.
+    // A browser's usual list picks zstd (Chrome, Firefox)...
     let resp = get(
         &proxy,
         "site.test",
         "/big",
         &[("Accept-Encoding", "gzip, deflate, br, zstd")],
+    )
+    .await;
+    assert_eq!(header(&resp, "content-encoding"), Some("zstd"));
+    // ...and brotli for one without zstd (Safari).
+    let resp = get(
+        &proxy,
+        "site.test",
+        "/big",
+        &[("Accept-Encoding", "gzip, deflate, br")],
     )
     .await;
     assert_eq!(header(&resp, "content-encoding"), Some("br"));

@@ -89,7 +89,9 @@ pub struct CompressionConfig {
     /// out. Default `false`: see the module documentation.
     pub enabled: bool,
     /// The codings offered, in the proxy's order of preference when a client
-    /// accepts several equally. Default `["br", "zstd", "gzip"]`.
+    /// accepts several equally. Default `["zstd", "br", "gzip"]`: at the
+    /// levels a proxy can afford per request, zstd compresses as well as the
+    /// others in a fraction of the time (see the README's level table).
     pub algorithms: Vec<Coding>,
     /// 1–9. Default 5.
     pub gzip_level: u32,
@@ -137,7 +139,7 @@ impl Default for CompressionConfig {
     fn default() -> Self {
         let mut config = Self {
             enabled: false,
-            algorithms: vec![Coding::Brotli, Coding::Zstd, Coding::Gzip],
+            algorithms: vec![Coding::Zstd, Coding::Brotli, Coding::Gzip],
             gzip_level: 5,
             brotli_level: 4,
             zstd_level: 3,
@@ -278,7 +280,7 @@ fn parse_q(value: &str) -> Option<Q> {
 ///
 /// RFC 9110 §12.5.3: a coding not listed is acceptable only through `*`;
 /// `q=0` refuses one. The highest q wins; a tie goes to the configured order
-/// (br before zstd before gzip by default). Identity is compared only when
+/// (zstd before br before gzip by default). Identity is compared only when
 /// the client ranked it (`identity;q=…`, or `*`), and a coding never loses a
 /// tie to it. No header at all
 /// means no compression: in theory "anything", in practice a client that
@@ -762,19 +764,19 @@ mod tests {
             (&["x-gzip"], Some("gzip")),
             (&["GZIP, Deflate"], Some("gzip")),
             (&["gzip, deflate, br"], Some("br")),
-            (&["gzip, deflate, br, zstd"], Some("br")),
+            (&["gzip, deflate, br, zstd"], Some("zstd")),
             (&["gzip, zstd"], Some("zstd")),
             (&["br;q=0.5, gzip"], Some("gzip")),
-            (&["br;q=0.9, zstd;q=0.9, gzip;q=0.9"], Some("br")),
+            (&["br;q=0.9, zstd;q=0.9, gzip;q=0.9"], Some("zstd")),
             (&["br;q=0, gzip;q=0"], None),
-            (&["*"], Some("br")),
-            (&["*;q=0.5, br;q=0"], Some("zstd")),
+            (&["*"], Some("zstd")),
+            (&["*;q=0.5, zstd;q=0"], Some("br")),
             (&["identity"], None),
             (&["deflate"], None),
             // identity preferred over the only coding offered
             (&["gzip;q=0.5, identity"], None),
             // `*` ranks identity and the unlisted codings alike
-            (&["gzip;q=0.5, *"], Some("br")),
+            (&["gzip;q=0.5, *"], Some("zstd")),
             (&["gzip;q=0.5, br;q=0.4, zstd;q=0, *"], None),
             // an unranked identity does not compete
             (&["gzip;q=0.5"], Some("gzip")),

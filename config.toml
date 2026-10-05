@@ -187,7 +187,7 @@ hook_timeout_ms = 10  # Max execution time per hook call in milliseconds
 # what BREACH exploits. Per route: @compress:on|off; per app: compress = false.
 # [compression]
 # enabled = true
-# algorithms = ["br", "zstd", "gzip"]   # preference order on a tie
+# algorithms = ["zstd", "br", "gzip"]   # preference order on a tie
 # gzip_level = 5                        # 1-9
 # brotli_level = 4                      # 0-11
 # zstd_level = 3                        # 1-19

@@ -801,7 +801,7 @@ included) for its rule, longer or shorter; `@connect_timeout` replaces the 5 s c
 ```toml
 [compression]
 enabled = true                       # default false
-algorithms = ["br", "zstd", "gzip"]  # offered, in this order of preference on a tie
+algorithms = ["zstd", "br", "gzip"]  # offered, in this order of preference on a tie
 gzip_level = 5                       # 1–9
 brotli_level = 4                     # 0–11
 zstd_level = 3                       # 1–19
@@ -858,8 +858,10 @@ two real pages — the single-page HTML Standard (15.6 MB) and RFC 9110 (1.2 MB)
 | zstd 3 (default) | 28 ms, 6.97× | 2.4 ms, 5.69× |
 | zstd 6 | 93 ms, 8.49× | 7.4 ms, 6.36× |
 
-zstd at 3 compresses about as well as gzip at 5 in a third of the time; past gzip 5 and brotli 4
-each step costs far more than it saves. The numbers depend on the page: measure your own with
+zstd at 3 compresses about as well as gzip at 5 in a third of the time, and as well as brotli
+at 4 in a quarter of it — hence `zstd` first in the default `algorithms`: Chrome, Edge and
+Firefox accept it, and Safari, which does not, gets brotli. Past gzip 5 and brotli 4 each step
+costs far more than it saves. The numbers depend on the page: measure your own with
 `SOLI_BENCH_HTML=page.html cargo bench --bench compression`, which also times a body arriving in
 16 KiB frames, as it does off a socket.
 
