@@ -7,9 +7,11 @@
 //!
 //! **Why off by default.** Compression is the most expensive thing a proxy
 //! can do to a response — passthrough moves gigabytes per second per core;
-//! gzip at level 5 manages ~50–80 MB/s, brotli at 4 ~60–100 MB/s, zstd at 3
-//! ~300 MB/s. Turned on by an upgrade, it would multiply the proxy's CPU per
-//! text byte by one to two orders of magnitude without anyone asking. It also
+//! on real HTML, gzip at level 5 manages ~150–190 MB/s, brotli at 4
+//! ~100–140 MB/s, zstd at 3 ~500 MB/s (`benches/compression.rs`). gzip is
+//! flate2 on its zlib-rs backend: miniz_oxide, the default, was 40 % slower.
+//! Turned on by an upgrade, it would multiply the proxy's CPU per text byte
+//! by one to two orders of magnitude without anyone asking. It also
 //! changes what clients and caches see (weak ETags, `Vary`), and compressing
 //! responses that reflect request input next to a secret (a CSRF token) is
 //! what BREACH exploits — an app that chose not to compress may have chosen
@@ -22,10 +24,17 @@
 //! is split across polls rather than compressed in one go.
 //!
 //! **Streaming is preserved.** Input is compressed without flushing while the
-//! backend keeps producing; the moment the backend has nothing more to give
-//! (its body returns `Pending`), the encoder is flushed and what it holds is
-//! sent. A progressively rendered page, or a chunked JSON stream, reaches the
-//! client as it is produced, at the cost of a few bytes per flush.
+//! backend keeps producing. When the backend has nothing more to give (its
+//! body returns `Pending`) and stays quiet for [`FLUSH_DELAY`], the encoder is
+//! flushed and what it holds is sent. A progressively rendered page, or a
+//! chunked JSON stream, reaches the client as it is produced, at most
+//! `FLUSH_DELAY` late.
+//!
+//! The delay is what makes a large body cheap. A body read off a socket is
+//! `Pending` between nearly every read, and flushing at each one cut the
+//! deflate stream into blocks of a few kilobytes: a sync flush ends the block
+//! and its Huffman tables, so the page came out 2–6 % larger and took ~10 %
+//! longer to compress, for a pause the client could never have noticed.
 
 use crate::pool::BoxError;
 use crate::server::BoxBody;
@@ -35,6 +44,7 @@ use hyper::body::{Body, Frame, SizeHint};
 use hyper::header::{self, HeaderMap, HeaderValue};
 use hyper::Response;
 use serde::{Deserialize, Serialize};
+use std::future::Future;
 use std::io::Write;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -44,6 +54,11 @@ pub const INPUT_BUDGET: usize = 64 * 1024;
 
 /// Compressed output accumulated before it is sent as a frame.
 const OUTPUT_CHUNK: usize = 16 * 1024;
+
+/// How long the backend may stay quiet before what was compressed so far is
+/// flushed to the client. Counted from its first pause after new input, not
+/// reset by more input, so a slow trickle is still flushed this often.
+pub const FLUSH_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
 
 /// A content coding the proxy can produce.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -550,8 +565,11 @@ impl Encoder {
         }
     }
 
+    /// The compressed output so far, leaving a buffer sized for the next
+    /// frame: `Bytes` takes the old one, and growing a fresh `Vec` from
+    /// empty cost half a dozen reallocations per frame.
     fn take(&mut self) -> Vec<u8> {
-        std::mem::take(self.buffered())
+        std::mem::replace(self.buffered(), Vec::with_capacity(OUTPUT_CHUNK * 2))
     }
 
     /// Write the stream's end and return everything still buffered.
@@ -574,6 +592,9 @@ struct CompressBody {
     pending: Bytes,
     /// Input was written since the last flush.
     dirty: bool,
+    /// Armed when the backend pauses with unflushed input; the flush is due
+    /// when it fires. See [`FLUSH_DELAY`].
+    flush_timer: Option<Pin<Box<tokio::time::Sleep>>>,
     inner_done: bool,
     /// The backend's trailers, sent after the compressed stream ends.
     trailers: Option<HeaderMap>,
@@ -587,6 +608,7 @@ impl CompressBody {
             encoder: Some(encoder),
             pending: Bytes::new(),
             dirty: false,
+            flush_timer: None,
             inner_done: false,
             trailers: None,
             done: false,
@@ -662,15 +684,24 @@ impl Body for CompressBody {
                 Poll::Ready(Some(Err(e))) => return Poll::Ready(Some(Err(e))),
                 Poll::Ready(None) => this.inner_done = true,
                 Poll::Pending => {
-                    // The backend is thinking: send what we have rather than
-                    // sit on it until it speaks again.
-                    if this.dirty {
-                        this.dirty = false;
-                        encoder.flush()?;
-                        let out = encoder.take();
-                        if !out.is_empty() {
-                            return data_frame(out);
-                        }
+                    // The backend is thinking. Most pauses are the gap between
+                    // two socket reads and end at once; one that lasts
+                    // FLUSH_DELAY gets what we hold sent rather than sat on.
+                    if !this.dirty {
+                        return Poll::Pending;
+                    }
+                    let timer = this
+                        .flush_timer
+                        .get_or_insert_with(|| Box::pin(tokio::time::sleep(FLUSH_DELAY)));
+                    if timer.as_mut().poll(cx).is_pending() {
+                        return Poll::Pending;
+                    }
+                    this.flush_timer = None;
+                    this.dirty = false;
+                    encoder.flush()?;
+                    let out = encoder.take();
+                    if !out.is_empty() {
+                        return data_frame(out);
                     }
                     return Poll::Pending;
                 }
@@ -957,6 +988,64 @@ mod tests {
             let mut expected = big.clone();
             expected.extend_from_slice(b"tail");
             assert_eq!(decode(coding, &body_bytes(resp).await), expected);
+        }
+    }
+
+    /// A pause shorter than FLUSH_DELAY — the gap between two socket reads —
+    /// does not cut the stream: the whole body comes out as one frame at the
+    /// end, where flushing at every `Pending` used to emit one per pause.
+    #[tokio::test]
+    async fn a_brief_pause_does_not_flush() {
+        /// `parts`, with a `Pending` (immediately re-woken) before each one.
+        struct Trickle {
+            parts: Vec<&'static [u8]>,
+            paused: bool,
+        }
+        impl Body for Trickle {
+            type Data = Bytes;
+            type Error = BoxError;
+            fn poll_frame(
+                mut self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<Frame<Bytes>, BoxError>>> {
+                if self.parts.is_empty() {
+                    return Poll::Ready(None);
+                }
+                if !self.paused {
+                    self.paused = true;
+                    cx.waker().wake_by_ref();
+                    return Poll::Pending;
+                }
+                self.paused = false;
+                let part = self.parts.remove(0);
+                Poll::Ready(Some(Ok(Frame::data(Bytes::from_static(part)))))
+            }
+        }
+
+        let mut resp = Response::new(
+            Trickle {
+                parts: vec![b"<html><body>first part, ", b"second part</body></html>"],
+                paused: false,
+            }
+            .boxed(),
+        );
+        resp.headers_mut()
+            .insert(header::CONTENT_TYPE, "text/html".parse().unwrap());
+        let started = std::time::Instant::now();
+        let mut body = apply(resp, wants(Coding::Gzip), &enabled()).into_body();
+        let mut frames = Vec::new();
+        while let Some(frame) = body.frame().await {
+            frames.push(frame.unwrap().into_data().unwrap());
+        }
+        let all: Vec<u8> = frames.concat();
+        assert_eq!(
+            decode(Coding::Gzip, &all),
+            b"<html><body>first part, second part</body></html>"
+        );
+        // A worker stalled past the delay would rightly flush; only a run
+        // that stayed under it says anything.
+        if started.elapsed() < FLUSH_DELAY {
+            assert_eq!(frames.len(), 1, "a brief pause must not flush");
         }
     }
 

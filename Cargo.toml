@@ -58,7 +58,9 @@ instant-acme = "0.8"
 libc = "0.2"
 socket2 = { version = "0.5", features = ["all"] }
 mlua = { version = "0.10", features = ["lua54", "vendored", "send"], optional = true }
-flate2 = "1.1.9"
+# zlib-rs: gzip ~1.7x faster than the default miniz_oxide backend
+# (benches/compression.rs); pure Rust, so no C toolchain for any target.
+flate2 = { version = "1.1.9", default-features = false, features = ["zlib-rs"] }
 brotli = "8"
 zstd = { version = "0.13", default-features = false }
 bcrypt = "0.15"
@@ -92,6 +94,10 @@ harness = false
 
 [[bench]]
 name = "config_parsing"
+harness = false
+
+[[bench]]
+name = "compression"
 harness = false
 
 [profile.release]

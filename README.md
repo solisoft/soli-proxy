@@ -828,16 +828,40 @@ proxy's CPU is the operator's call). On a path-prefix mount whose HTML is rewrit
 happens first and the rewritten page is what gets compressed.
 
 **Why it is off by default.** Passthrough moves gigabytes per second per core; compression does
-not — roughly 50–80 MB/s for gzip at 5, 60–100 MB/s for brotli at 4, 300 MB/s for zstd at 3. An
+not — on real HTML, roughly 150–190 MB/s per core for gzip at 5, 100–140 MB/s for brotli at 4,
+500 MB/s for zstd at 3 (see the table below). An
 upgrade that switched it on would multiply the proxy's CPU per text byte by one to two orders of
 magnitude without anyone deciding to. It also changes what caches see (`Vary`, weak ETags), and
 compressing a page that reflects request input next to a secret is what BREACH exploits — an
 app that does not compress may not by accident. Caddy (`encode`), nginx (`gzip on`) and Traefik
 (the `compress` middleware) are opt-in too. Encoding runs on the request's worker, at most
 64 KiB of input per poll before it yields, so a large body never holds a worker for more than a
-fraction of a millisecond; and the encoder is flushed whenever the backend pauses, so a streamed
-or progressively rendered response reaches the client as it is produced. Each response being
-compressed holds an encoder: about 256 KiB for gzip, 1–2 MiB for brotli (1 MiB window) or zstd.
+fraction of a millisecond; and the encoder is flushed when the backend pauses for 10 ms, so a
+streamed or progressively rendered response reaches the client as it is produced, at most 10 ms
+late. (It used to flush at every pause, including the gap between two socket reads, which cut a
+large page into small deflate blocks: 2–6 % larger, and ~10 % slower to compress.) Each response
+being compressed holds an encoder: about 256 KiB for gzip, 1–2 MiB for brotli (1 MiB window) or
+zstd.
+
+**Choosing levels.** Time to compress and size reached, on one core of a recent desktop CPU, for
+two real pages — the single-page HTML Standard (15.6 MB) and RFC 9110 (1.2 MB):
+
+| Level | HTML Standard | RFC 9110 |
+|---|---|---|
+| gzip 1 | 31 ms, 4.40× | 2.8 ms, 3.60× |
+| gzip 5 (default) | 79 ms, 7.07× | 7.4 ms, 5.54× |
+| gzip 6 | 115 ms, 7.15× | 11.0 ms, 5.58× |
+| br 1 | 40 ms, 5.46× | 3.9 ms, 4.52× |
+| br 4 (default) | 109 ms, 6.54× | 10.7 ms, 5.90× |
+| br 5 | 190 ms, 4.91× | 17.2 ms, 6.44× |
+| zstd 1 | 23 ms, 6.53× | 2.0 ms, 5.21× |
+| zstd 3 (default) | 28 ms, 6.97× | 2.4 ms, 5.69× |
+| zstd 6 | 93 ms, 8.49× | 7.4 ms, 6.36× |
+
+zstd at 3 compresses about as well as gzip at 5 in a third of the time; past gzip 5 and brotli 4
+each step costs far more than it saves. The numbers depend on the page: measure your own with
+`SOLI_BENCH_HTML=page.html cargo bench --bench compression`, which also times a body arriving in
+16 KiB frames, as it does off a socket.
 
 ### Custom error pages
 
