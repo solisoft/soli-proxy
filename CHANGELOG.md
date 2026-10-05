@@ -1,5 +1,49 @@
 # Changelog
 
+## [1.1.0](https://github.com/solisoft/soli-proxy/compare/v1.0.6...v1.1.0) (2026-10-05)
+
+### Features
+
+* **tui: the proxy at work, with motion.** The dashboard opens on a strip of figures, then the
+  traffic panel: each active app is a branch of the proxy, with packets travelling down it as
+  densely as it receives requests, red ones for 5xx, a still dotted line when it is asleep or
+  stopped; idle apps are summed up on one line. A deploy unrolls its stages under its app
+  (`start › health › switch › drain`, the drain counting down, then "live on green in 4.1 s"),
+  a wake-up reads "waking", then "awake in 1.0 s", and a journal on the right lists deploys,
+  traffic switches, sleeps, wake-ups and new request failures, each lit up as it arrives. The
+  apps screen sorts by smoothed traffic (`s` cycles traffic, name, memory, errors; the cursor
+  follows its app), shows a minute of traffic per app, flags a process still running a replaced
+  Soli binary with `↻ restart`, and draws the selected app's two slots: packets flow to the one
+  that serves, the other reads `starting…`, `health check…`, `draining 7s` or `free`, under the
+  deploy stepper and next to CPU and memory bars. `D`, `R` and `L` deploy, restart and open the
+  logs. The errors screen shows 5xx per minute per app (daemon counters, no setting needed) and
+  per route host (from the log), then the failures newest first with cause and duration; a new
+  one lights up and fades. Numbers glide to their new value. Motion is computed from the clock
+  and repaints at 15 frames a second only while something moves — 0.2 % of a core idle, 0.6 %
+  animating — and `m` or `NO_MOTION=1` turn it off. Below 140 columns the screens are tabs on the
+  top line instead of a sidebar, and every screen fits 80×24.
+* **apps: deploy stages, sleeps and wake-ups on the event stream.** `/api/v1/events/apps` said
+  nothing until a deploy had finished. It now emits `DeployStage` at each step as it happens
+  (`start`, `health`, `switch`, `drain` with its delay in `detail`, then `done` or `failed` with
+  why), `Asleep` when the idle reaper stops an app (`idle_secs`), and `Waking`, once, when a
+  request starts a sleeping one. Existing clients only see new event types.
+* **cli: no second proxy next to a systemd one.** The listeners use `SO_REUSEPORT`, so a proxy
+  started by hand where systemd runs one did not fail to bind: it silently shared :80 and :443
+  and both supervised the same apps, and `-d` first stopped whatever `proxy.pid` named.
+  `soli-proxy` (foreground or `-d`) now exits 1 with the unit, its PID, the taken ports and the
+  `systemctl` commands to use, when a systemd unit's main process is a soli-proxy and a port it
+  would listen on is already taken. systemd itself confirms the main process (`MainPID`), so a
+  proxy started from a terminal that a desktop session launched as a service is not mistaken for
+  a managed one, and a proxy on other ports starts normally. Subcommands are not affected.
+  Linux only.
+
+### Bug Fixes
+
+* **tui: the dashboard's uptime is the proxy's.** It was the TUI's own (a TUI opened two
+  seconds ago read "2s" on a proxy up for days); it now comes from the daemon's `/api/v1/status`.
+* **tui: the errors screen points at the right file.** Its hint said `log_endpoints` goes in
+  `proxy.conf`; it is `[logging] log_endpoints = true` in `config.toml`.
+
 ## [1.0.6](https://github.com/solisoft/soli-proxy/compare/v1.0.5...v1.0.6) (2026-10-05)
 
 ### Performance

@@ -46,11 +46,61 @@
                     </p>
                 </div>
 
+                <!-- 1.1.0 -->
+                <div class="mb-10 reveal-on-scroll">
+                    <div class="flex items-center gap-3 mb-5 flex-wrap">
+                        <h2 class="text-2xl font-bold text-white font-mono">v1.1.0</h2>
+                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
+                        <span class="text-sm text-gray-500">2026-10-05</span>
+                    </div>
+
+                    <div class="space-y-4">
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">feat</span>
+                                <h3 class="text-base font-semibold text-white">A TUI that shows the proxy at work</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                The dashboard draws each active app as a branch of the proxy, with packets travelling down it as densely as it gets requests, red for 5xx, a still dotted line when it is asleep. Deploys unroll their stages under their app as they happen, wake-ups read &ldquo;awake in 1.0 s&rdquo;, and a journal on the right tells what just happened. The apps screen sorts by traffic and shows both slots of the selected app, with the traffic moving from one to the other at the switch; <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">D</code>, <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">R</code> and <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">L</code> deploy, restart and open the logs. Motion repaints only while something moves; <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">m</code> turns it off. Below 140 columns the screens become tabs and everything fits 80&times;24.
+                            </p>
+                        </div>
+
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">feat</span>
+                                <h3 class="text-base font-semibold text-white">Deploy stages, sleeps and wake-ups on the event stream</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">/api/v1/events/apps</code> now emits each step of a deploy as it happens (<code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">DeployStage</code>: start, health, switch, drain, done or failed), and <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">Asleep</code> and <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">Waking</code> for scale to zero. Existing clients only see new event types.
+                            </p>
+                        </div>
+
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">feat</span>
+                                <h3 class="text-base font-semibold text-white">No second proxy next to a systemd one</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                Started by hand, in the foreground or with <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">-d</code>, while systemd runs a proxy on the same ports, <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">soli-proxy</code> now refuses with the unit, its PID and the <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">systemctl</code> commands to use. It used to share :80 and :443 silently through SO_REUSEPORT and fight the managed one over the apps.
+                            </p>
+                        </div>
+
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">fix</span>
+                                <h3 class="text-base font-semibold text-white">The TUI shows the proxy&rsquo;s uptime, and the right setting for error details</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                The dashboard&rsquo;s uptime was the TUI&rsquo;s own. The errors screen pointed at <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">proxy.conf</code> for <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">log_endpoints</code>, which lives in <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">config.toml</code>; it now also shows 5xx per app without any setting.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- 1.0.6 -->
                 <div class="mb-10 reveal-on-scroll">
                     <div class="flex items-center gap-3 mb-5 flex-wrap">
                         <h2 class="text-2xl font-bold text-white font-mono">v1.0.6</h2>
-                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
                         <span class="text-sm text-gray-500">2026-10-05</span>
                     </div>
 
