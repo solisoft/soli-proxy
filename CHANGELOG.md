@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.0.6](https://github.com/solisoft/soli-proxy/compare/v1.0.5...v1.0.6) (2026-10-05)
+
+### Performance
+
+* **compress: gzip is ~40 % faster on large pages.** gzip ran on flate2's default miniz_oxide
+  backend; it now runs on zlib-rs (pure Rust as well), 1.7× faster at the same level with
+  slightly smaller output. And the encoder was flushed at every `Pending` from the backend —
+  for a body read off a socket, between nearly every read — so a large page came out in small
+  deflate blocks, 2–6 % larger and ~10 % slower. It is now flushed once the backend has been
+  quiet for 10 ms, counted from its first pause: a streamed page still reaches the client at
+  most 10 ms late. End to end, a 15.6 MB page compresses in 95 ms instead of 153 ms.
+  `benches/compression.rs` measures it (`SOLI_BENCH_HTML=page.html` for a real page), and the
+  README has the measured level table.
+
+### Features
+
+* **compress: zstd is preferred when the client accepts several codings.** The default
+  `algorithms` becomes `["zstd", "br", "gzip"]`: at the levels a proxy affords per request, zstd
+  3 compresses HTML as well as brotli 4 or gzip 5 in a quarter to a third of the time. Chrome,
+  Edge and Firefox accept it; Safari, which does not, still gets brotli. A config that sets
+  `algorithms` keeps its own order.
+
 ## [1.0.5](https://github.com/solisoft/soli-proxy/compare/v1.0.4...v1.0.5) (2026-10-04)
 
 ### Features

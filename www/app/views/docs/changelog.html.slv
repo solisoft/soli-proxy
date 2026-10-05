@@ -46,11 +46,41 @@
                     </p>
                 </div>
 
+                <!-- 1.0.6 -->
+                <div class="mb-10 reveal-on-scroll">
+                    <div class="flex items-center gap-3 mb-5 flex-wrap">
+                        <h2 class="text-2xl font-bold text-white font-mono">v1.0.6</h2>
+                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
+                        <span class="text-sm text-gray-500">2026-10-05</span>
+                    </div>
+
+                    <div class="space-y-4">
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">perf</span>
+                                <h3 class="text-base font-semibold text-white">gzip compression is 40% faster on large pages</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                gzip now runs on the zlib-rs backend, 1.7&times; faster than miniz_oxide at the same level. The encoder is also no longer flushed at every pause of the backend &mdash; between nearly every socket read &mdash; but once it has been quiet for 10&nbsp;ms, so a large page compresses in fewer, larger blocks: smaller and faster, while a streamed page still arrives at most 10&nbsp;ms late. A 15.6&nbsp;MB page went from 153&nbsp;ms to 95&nbsp;ms.
+                            </p>
+                        </div>
+
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">feat</span>
+                                <h3 class="text-base font-semibold text-white">zstd is preferred when the client accepts several codings</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                The default <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">algorithms</code> becomes <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">[&quot;zstd&quot;, &quot;br&quot;, &quot;gzip&quot;]</code>: on HTML, zstd at level 3 is as small as brotli 4 or gzip 5 in a quarter to a third of the time. Chrome, Edge and Firefox get zstd; Safari still gets brotli. A config that sets <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">algorithms</code> keeps its order.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- 1.0.5 -->
                 <div class="mb-10 reveal-on-scroll">
                     <div class="flex items-center gap-3 mb-5 flex-wrap">
                         <h2 class="text-2xl font-bold text-white font-mono">v1.0.5</h2>
-                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
                         <span class="text-sm text-gray-500">2026-10-04</span>
                     </div>
 
