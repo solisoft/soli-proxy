@@ -46,11 +46,40 @@
                     </p>
                 </div>
 
+                <!-- 1.5.0 -->
+                <div class="mb-10 reveal-on-scroll">
+                    <div class="flex items-center gap-3 mb-5 flex-wrap">
+                        <h2 class="text-2xl font-bold text-white font-mono">v1.5.0</h2>
+                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
+                        <span class="text-sm text-gray-500">2026-10-06</span>
+                    </div>
+
+                    <div class="space-y-4">
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">feat</span>
+                                <h3 class="text-base font-semibold text-white">Apps start on their first request after a restart</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                An app that was not running when the proxy starts, and may sleep, is left asleep and woken by its first request instead of starting with all the others: after a reboot, only the visited sites start. Running apps are adopted as before, and apps with <code>idle_timeout = 0</code> start right away.
+                            </p>
+                        </div>
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">fix</span>
+                                <h3 class="text-base font-semibold text-white">Dev certificates cover sleeping apps</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                The <code>.test</code> fallback certificate listed only running apps, so a sleeping app&rsquo;s first HTTPS request failed before it could wake it.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- 1.4.0 -->
                 <div class="mb-10 reveal-on-scroll">
                     <div class="flex items-center gap-3 mb-5 flex-wrap">
                         <h2 class="text-2xl font-bold text-white font-mono">v1.4.0</h2>
-                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
                         <span class="text-sm text-gray-500">2026-10-06</span>
                     </div>
 

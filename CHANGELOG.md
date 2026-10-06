@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.5.0](https://github.com/solisoft/soli-proxy/compare/v1.4.0...v1.5.0) (2026-10-06)
+
+### Features
+
+* **apps: apps stay asleep at startup until their first request.** The proxy still adopts what
+  is running; an app that was not running and may sleep is no longer started with all the
+  others but left asleep, and its first request wakes it (`N app(s) left asleep until their
+  first request: …` in the log). After a reboot only the visited sites start. Apps that never
+  sleep (`idle_timeout = 0`, `_admin`) start right away, and a site added while the proxy runs
+  is started as before.
+
+### Bug Fixes
+
+* **dev: the fallback certificate covers sleeping apps.** It listed only running apps' `.test`
+  hosts, so a sleeping app's first request failed its TLS handshake before it could wake it.
+
 ## [1.4.0](https://github.com/solisoft/soli-proxy/compare/v1.3.0...v1.4.0) (2026-10-06)
 
 ### Features
