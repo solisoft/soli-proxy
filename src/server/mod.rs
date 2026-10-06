@@ -2129,10 +2129,16 @@ async fn serve_http1<I>(
     // starts reading the next request head, so it bounds both a slow head
     // and an idle keep-alive connection. hyper 1.9 panics with "timeout
     // `header_read_timeout` set, but no timer set" without `.timer(...)`.
+    // No `pipeline_flush`: it makes hyper's write buffer report room at all
+    // times (`can_buffer()` is `flush_pipeline || …`), so a response body was
+    // read from the backend as fast as the backend sent it, whatever the
+    // client's speed. A 120 MB download to a slow client sat in the proxy's
+    // memory in under a second, and the backend's request was over long
+    // before the client's. Without it hyper stops reading the body once
+    // ~400 KB wait to be written.
     let conn = hyper::server::conn::http1::Builder::new()
         .timer(TokioTimer::new())
         .keep_alive(true)
-        .pipeline_flush(true)
         .header_read_timeout(header_timeout)
         .serve_connection(io, svc)
         .with_upgrades();
