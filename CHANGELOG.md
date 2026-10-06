@@ -1,5 +1,38 @@
 # Changelog
 
+## [1.3.0](https://github.com/solisoft/soli-proxy/compare/v1.2.2...v1.3.0) (2026-10-06)
+
+### Features
+
+* **maintenance: windows with an end.** `for_secs` or `until` (RFC 3339) on the admin API's
+  toggles, at most a week ahead. The proxy reopens the site by itself when the end passes
+  (checked every five seconds, logged), and `Retry-After` counts down to it. Windows are
+  persisted to `run/maintenance.json` with their end, so a restart keeps it.
+* **maintenance: `soli-proxy maintenance on <app>|all [--for 30m | --until <time>] [-m
+  <message>]`, `off` and `status`.** It goes through the running daemon's admin API, with the
+  address and credentials from `config.toml`; `--for` takes `90s`, `30m`, `2h`, `1h30m`, `1d`.
+* **maintenance: a built-in page worth showing.** It names the app (`display_name`, a new
+  `app.infos` key, else the host), shows the message and when the site is back in the visitor's
+  time zone ("back around 14:00 · in about 25 min"), is in French or English after the browser's
+  `Accept-Language` (`[maintenance] language = "auto" | "fr" | "en"`), light or dark, and
+  reloads itself once the site answers again. Under 6 KiB, with no external resource.
+* **maintenance: an app's own page.** `<site>/public/maintenance.html` is used when the app has
+  no `error_pages/maintenance.html`, and while the app is closed the proxy serves the files of
+  `<site>/public/maintenance/` at `/maintenance/<file>` — stylesheet, logo, fonts — even though
+  the app behind it is stopped (plain names, 1 MiB each, a fixed list of types, `nosniff`, no
+  symlinks in multi-tenant mode). Templates also get `{{app}}`, `{{since}}` and `{{until}}`.
+* **tui: maintenance.** `M` on an app in the Apps screen asks for a duration (default `30m`,
+  empty for no end) and a message and closes it; `M` again reopens it. Closed apps show
+  `◆ maintenance` with their end time in the dashboard and the Apps screen, and the journal
+  records each opening and closing.
+
+### Bug Fixes
+
+* **cli: `-c` and `--sites-dir` given before a subcommand are no longer dropped.** Each
+  subcommand has its own, defaulting to `./proxy.conf` and `./sites`, which silently won:
+  `soli-proxy -c /etc/soli-proxy/proxy.conf deploy shop` read `./proxy.conf`. One given after
+  the subcommand still wins.
+
 ## [1.2.2](https://github.com/solisoft/soli-proxy/compare/v1.2.1...v1.2.2) (2026-10-06)
 
 ### Bug Fixes
