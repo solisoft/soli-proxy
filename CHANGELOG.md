@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.6.1](https://github.com/solisoft/soli-proxy/compare/v1.6.0...v1.6.1) (2026-10-06)
+
+1.6.0 was tagged, but its release build failed on a test that raced with another one's
+`fork` (`Text file busy`), so no 1.6.0 binaries were published. 1.6.1 is the first release
+with 1.6.0's changes; the test now retries.
+
 ## [1.6.0](https://github.com/solisoft/soli-proxy/compare/v1.5.0...v1.6.0) (2026-10-06)
 
 ### Features

@@ -46,10 +46,10 @@
                     </p>
                 </div>
 
-                <!-- 1.6.0 -->
+                <!-- 1.6.1 (1.6.0's build failed; 1.6.1 carries its changes) -->
                 <div class="mb-10 reveal-on-scroll">
                     <div class="flex items-center gap-3 mb-5 flex-wrap">
-                        <h2 class="text-2xl font-bold text-white font-mono">v1.6.0</h2>
+                        <h2 class="text-2xl font-bold text-white font-mono">v1.6.1</h2>
                         <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
                         <span class="text-sm text-gray-500">2026-10-06</span>
                     </div>
