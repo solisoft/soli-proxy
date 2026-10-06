@@ -1,0 +1,85 @@
+<!-- Source of www/public/images/og.png (1200x630), the link-preview image.
+     Render: chromium --headless=new --hide-scrollbars --force-device-scale-factor=1 \
+       --window-size=1200,630 --virtual-time-budget=6000 --screenshot=og.png "file://$PWD/og.html" -->
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500;600&display=block" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1200px; height: 630px; overflow: hidden; }
+  body {
+    font-family: "Geist", system-ui, sans-serif;
+    color: #f8fafc;
+    background-color: #030712;
+    background-image:
+      radial-gradient(ellipse 70% 60% at 18% -10%, rgba(16, 185, 129, 0.28) 0%, transparent 60%),
+      radial-gradient(ellipse 55% 55% at 100% 105%, rgba(6, 182, 212, 0.22) 0%, transparent 60%),
+      radial-gradient(ellipse 40% 35% at 0% 100%, rgba(20, 184, 166, 0.12) 0%, transparent 60%);
+    position: relative;
+  }
+  /* faint grid, like a terminal canvas */
+  body::before {
+    content: ""; position: absolute; inset: 0;
+    background-image:
+      linear-gradient(rgba(255,255,255,0.035) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.035) 1px, transparent 1px);
+    background-size: 40px 40px;
+    mask-image: radial-gradient(ellipse 90% 80% at 50% 40%, black 30%, transparent 80%);
+  }
+  .wrap { position: relative; height: 100%; padding: 64px 72px; display: grid; grid-template-columns: 1fr 440px; gap: 44px; align-items: center; }
+  .brand { display: flex; align-items: center; gap: 18px; margin-bottom: 44px; }
+  .tile { position: relative; width: 64px; height: 64px; }
+  .tile::before { content: ""; position: absolute; inset: -6px; border-radius: 22px; background: linear-gradient(135deg, #10b981, #06b6d4); filter: blur(18px); opacity: .55; }
+  .tile span { position: relative; display: grid; place-items: center; width: 64px; height: 64px; border-radius: 18px; background: linear-gradient(135deg, #10b981, #06b6d4); font-weight: 800; font-size: 34px; color: #fff; box-shadow: 0 10px 30px -10px rgba(16,185,129,.8); }
+  .word { font-size: 38px; font-weight: 700; letter-spacing: -0.02em; }
+  .word em { font-style: normal; font-weight: 400; color: #34d399; }
+  h1 { font-size: 54px; white-space: nowrap; line-height: 1.02; font-weight: 800; letter-spacing: -0.035em; }
+  h1 .g { background: linear-gradient(135deg, #6ee7b7 0%, #67e8f9 55%, #5eead4 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .sub { margin-top: 24px; font-size: 23px; line-height: 1.45; color: #9ca3af; max-width: 560px; }
+  .chips { margin-top: 34px; display: flex; flex-wrap: wrap; gap: 10px; }
+  .chip { font: 500 16px "Geist Mono", monospace; color: #a7f3d0; border: 1px solid rgba(110, 231, 183, 0.28); background: rgba(16, 185, 129, 0.08); border-radius: 999px; padding: 6px 14px; }
+
+  /* the TUI's traffic panel */
+  .term { border: 1px solid rgba(255,255,255,0.09); border-radius: 18px; background: rgba(10, 14, 20, 0.82); box-shadow: 0 30px 80px -30px rgba(0,0,0,.9), inset 0 1px 0 rgba(255,255,255,.04); overflow: hidden; }
+  .bar { display: flex; align-items: center; gap: 8px; padding: 14px 18px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+  .bar i { width: 11px; height: 11px; border-radius: 50%; background: rgba(255,255,255,.14); }
+  .bar b { margin-left: 10px; font: 500 14px "Geist Mono", monospace; color: #64748b; }
+  .body { padding: 22px 22px 24px; font: 16px/1.85 "Geist Mono", monospace; color: #cbd5e1; white-space: pre; }
+  .a { color: #00d4aa; } .m { color: #6272a4; } .ok { color: #50fa7b; } .w { color: #ffb86c; } .f { color: #f8f8f2; font-weight: 600; }
+  .half { display: inline-block; width: 0.62em; height: 0.62em; border-radius: 50%; border: 2px solid #ffb86c; background: linear-gradient(90deg, #ffb86c 50%, transparent 50%); vertical-align: -0.05em; }
+  .pill { display: inline-block; background: #00d4aa; color: #0a0c10; font-weight: 600; padding: 0 8px; border-radius: 4px; line-height: 1.5; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div>
+      <div class="brand">
+        <div class="tile"><span>S</span></div>
+        <div class="word">Soli <em>Proxy</em></div>
+      </div>
+      <h1>HTTP/2 reverse proxy<br><span class="g">built in Rust</span></h1>
+      <p class="sub">Automatic TLS, blue-green app deploys, scale to zero and bot defence, in one binary.</p>
+      <div class="chips">
+        <span class="chip">Let’s Encrypt</span>
+        <span class="chip">blue · green</span>
+        <span class="chip">asleep → on</span>
+              </div>
+    </div>
+    <div class="term">
+      <div class="bar"><i></i><i></i><i></i><b>soli-proxy tui</b></div>
+<div class="body"><span class="pill">traffic</span>  <span class="m">1 204 req/s · 0.3 ms</span>
+
+<span class="m">clients</span> <span class="a">──▶</span> <span class="ok">●</span> <span class="f">soli-proxy</span> <span class="m">:443</span>
+              <span class="a">│</span>
+              <span class="a">├──▶</span> <span class="ok">●</span> shop     <span class="m">blue</span>
+              <span class="a">├──▶</span> <span class="ok">●</span> docs     <span class="m">green</span>
+              <span class="a">├┄┄▶</span> <span class="half"></span> blog     <span class="m">asleep</span>
+              <span class="a">└┄┄▶</span> <span class="w">◆</span> crm      <span class="m">maint.</span>
+
+<span class="m">bots   </span> <span class="w">3 banned</span> <span class="m">· /.env, /wp-login</span></div>
+    </div>
+  </div>
+</body>
+</html>
