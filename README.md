@@ -160,7 +160,10 @@ requests and 404s, newest first, with path, cause and duration; a new one lights
 `f` shows all of them, the 5xx only, or the 404s only — and in 404 mode the top panel lists
 the missing URLs asked for most, which tells a broken link from a scanner. 404s stay off the
 dashboard's journal and out of the 5xx counts. The individual rows need `[logging]
-log_endpoints = true` in `config.toml` and the log in JSON (the default).
+log_endpoints = true` in `config.toml`, the log in JSON (the default) and written to a file the
+TUI can read (`output = "file:…"`, or the `-d` default `./proxy.log`; a proxy logging to the
+systemd journal leaves the list empty). The TUI reads the last 16 MB of that file when it
+starts, then follows what is appended, rotation included.
 
 **Motion.** Numbers glide to their new value, packets move, new rows fade in. All of it is
 computed from the clock, repaints at 15 frames a second only while something on screen moves,

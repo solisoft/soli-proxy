@@ -15,7 +15,7 @@ use crate::config::ConfigManager;
 use crate::metrics::{AppMetricsJson, MetricsSnapshot};
 
 use super::anim::Anim;
-use super::errors::{load_request_errors, ErrorEntry};
+use super::errors::{ErrorEntry, ErrorLog};
 use super::events::{EventFeed, EventKind};
 use super::screens::apps::AppSort;
 use super::theme;
@@ -450,6 +450,8 @@ pub struct TuiApp {
     apps_memory: Option<(u64, usize)>,
     system_memory: Option<crate::metrics::SystemMemory>,
     errors_filter: screens::errors::ErrorsFilter,
+    /// Follows the daemon's log for the errors screen.
+    error_log: Option<ErrorLog>,
 }
 
 impl TuiApp {
@@ -508,6 +510,7 @@ impl TuiApp {
             apps_memory: None,
             system_memory: None,
             errors_filter: screens::errors::ErrorsFilter::default(),
+            error_log: None,
         };
         app.collect_stats();
         app
@@ -693,8 +696,12 @@ impl TuiApp {
         let log_path =
             crate::logging::log_file_path(&self.ctx.config_manager.get_config().logging, true)
                 .unwrap_or_else(crate::logging::default_daemon_log_path);
-        let mut errors = load_request_errors(&log_path);
-        errors.reverse(); // newest first
+        if self.error_log.as_ref().map(ErrorLog::path) != Some(log_path.as_path()) {
+            self.error_log = Some(ErrorLog::new(log_path));
+        }
+        let log = self.error_log.as_mut().expect("set just above");
+        log.refresh();
+        let errors = log.newest_first();
         let now = Instant::now();
         let mut arrived = Vec::new();
         for e in &errors {

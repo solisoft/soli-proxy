@@ -30,51 +30,130 @@ pub struct ErrorEntry {
     pub elapsed_ms: Option<u64>,
 }
 
-/// Only parse the tail of the log — it can grow large and this runs on every
-/// ~2s tick.
-const TAIL_BYTES: u64 = 256 * 1024;
-/// Cap on how many failures we keep in memory / show.
+/// How much of the log the first read covers, from its end. A dev proxy logs
+/// a line per request — livereload sockets and asset fetches included — so
+/// the 256 KB this used to read held a few hundred lines and the failures of
+/// an hour ago were already out of sight while the counters still showed
+/// them. Lines that cannot be failures are skipped before any JSON parsing,
+/// so a large window stays cheap.
+const INITIAL_SCAN_BYTES: u64 = 16 * 1024 * 1024;
+/// Most a single refresh reads: a burst beyond it skips ahead rather than
+/// stalling the screen.
+const MAX_READ_BYTES: u64 = 8 * 1024 * 1024;
+/// Cap on how many entries we keep in memory / show.
 const MAX_ERRORS: usize = 500;
 
-/// Read the tail of the daemon's log at `path`, parse request-failure lines,
-/// and return them oldest-first (so `G`/scroll-to-bottom lands on the most
-/// recent, consistent with the log viewer). Best effort: returns empty on any
-/// IO/parse trouble — including a log in `format = "text"`, which has no
-/// fields to parse.
-pub fn load_request_errors(path: &std::path::Path) -> Vec<ErrorEntry> {
-    let Ok(mut file) = std::fs::File::open(path) else {
-        return Vec::new();
-    };
-    let Ok(len) = file.metadata().map(|m| m.len()) else {
-        return Vec::new();
-    };
+/// Follows the daemon's log: one scan of its last [`INITIAL_SCAN_BYTES`],
+/// then only what was appended since, a tick at a time. Survives rotation and
+/// truncation (the file shrinking starts it over from the top).
+pub struct ErrorLog {
+    path: std::path::PathBuf,
+    offset: Option<u64>,
+    /// A line cut by the end of the last read, completed by the next one.
+    partial: Vec<u8>,
+    /// Oldest first.
+    entries: std::collections::VecDeque<ErrorEntry>,
+}
 
-    let start = len.saturating_sub(TAIL_BYTES);
-    if file.seek(SeekFrom::Start(start)).is_err() {
-        return Vec::new();
-    }
-    let mut buf = String::new();
-    if file.read_to_string(&mut buf).is_err() {
-        // Tail may slice a multi-byte UTF-8 char; fall back to lossy bytes.
-        let mut bytes = Vec::new();
-        if file.seek(SeekFrom::Start(start)).is_err() || file.read_to_end(&mut bytes).is_err() {
-            return Vec::new();
+impl ErrorLog {
+    pub fn new(path: std::path::PathBuf) -> Self {
+        Self {
+            path,
+            offset: None,
+            partial: Vec::new(),
+            entries: std::collections::VecDeque::new(),
         }
-        buf = String::from_utf8_lossy(&bytes).into_owned();
     }
 
-    let mut lines = buf.lines();
-    // The first line is likely a partial record from slicing mid-file — drop it
-    // unless we started at the very beginning of the file.
-    if start > 0 {
-        lines.next();
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
     }
 
-    let mut out: Vec<ErrorEntry> = lines.filter_map(parse_failure_line).collect();
-    if out.len() > MAX_ERRORS {
-        out.drain(0..out.len() - MAX_ERRORS);
+    /// Read what the log gained since the last call. Best effort: a missing
+    /// or unreadable file leaves the entries as they were.
+    pub fn refresh(&mut self) {
+        let Ok(mut file) = std::fs::File::open(&self.path) else {
+            return;
+        };
+        let Ok(len) = file.metadata().map(|m| m.len()) else {
+            return;
+        };
+        let mut start = match self.offset {
+            None => len.saturating_sub(INITIAL_SCAN_BYTES),
+            // Rotated or truncated: what is there now is new.
+            Some(off) if len < off => 0,
+            Some(off) => off,
+        };
+        if len - start > MAX_READ_BYTES {
+            start = len - MAX_READ_BYTES;
+            self.partial.clear();
+        }
+        // Started mid-file, not where the last read stopped: the first line
+        // is cut. Skip it.
+        let cut = start > 0 && self.offset != Some(start);
+        if file.seek(SeekFrom::Start(start)).is_err() {
+            return;
+        }
+        let mut bytes = Vec::with_capacity((len - start) as usize);
+        if (&mut file)
+            .take(len - start)
+            .read_to_end(&mut bytes)
+            .is_err()
+        {
+            return;
+        }
+        self.offset = Some(start + bytes.len() as u64);
+        let mut data = std::mem::take(&mut self.partial);
+        if cut {
+            data.clear();
+        }
+        data.extend_from_slice(&bytes);
+        let complete = match data.iter().rposition(|&b| b == b'\n') {
+            Some(i) => i + 1,
+            None => {
+                self.partial = data;
+                return;
+            }
+        };
+        self.partial = data[complete..].to_vec();
+        let text = String::from_utf8_lossy(&data[..complete]);
+        let mut lines = text.lines();
+        if cut {
+            lines.next();
+        }
+        for line in lines {
+            if !may_be_failure(line) {
+                continue;
+            }
+            if let Some(e) = parse_failure_line(line) {
+                if self.entries.len() >= MAX_ERRORS {
+                    self.entries.pop_front();
+                }
+                self.entries.push_back(e);
+            }
+        }
     }
-    out
+
+    /// Every entry kept, newest first.
+    pub fn newest_first(&self) -> Vec<ErrorEntry> {
+        self.entries.iter().rev().cloned().collect()
+    }
+}
+
+/// A cheap test that skips the lines that cannot be failures — most of
+/// them — before any JSON parsing.
+fn may_be_failure(line: &str) -> bool {
+    line.contains("endpoint request failed")
+        || line.contains("\"status\":5")
+        || line.contains("\"status\":404")
+}
+
+/// Read the tail of the daemon's log at `path` and return its failures and
+/// 404s oldest-first: an [`ErrorLog`]'s first read, for one-off callers.
+pub fn load_request_errors(path: &std::path::Path) -> Vec<ErrorEntry> {
+    let mut log = ErrorLog::new(path.to_path_buf());
+    log.refresh();
+    log.entries.into_iter().collect()
 }
 
 /// Parse one JSON log line into an `ErrorEntry` if it represents a request
@@ -233,5 +312,54 @@ mod tests {
         assert!(block.contains("Status:    500"));
         assert!(block.contains("Host:      bonfire.solisoft.test"));
         assert!(block.contains("2026-06-04T09:20:32.276889Z"));
+    }
+}
+
+#[cfg(test)]
+mod follow_tests {
+    use super::*;
+    use std::io::Write;
+
+    fn line(status: u16, path: &str) -> String {
+        format!(
+            r#"{{"timestamp":"2026-10-06T09:00:00Z","level":"INFO","fields":{{"message":"endpoint request","method":"GET","host":"a.test","path":"{path}","status":{status}}},"target":"soli_proxy::server"}}"#
+        ) + "\n"
+    }
+
+    #[test]
+    fn follows_appends_partial_lines_and_truncation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("proxy.log");
+        let mut f = std::fs::File::create(&path).unwrap();
+        // A failure buried under thousands of ordinary lines is still found.
+        f.write_all(line(502, "/old").as_bytes()).unwrap();
+        for _ in 0..5000 {
+            f.write_all(line(200, "/ok").as_bytes()).unwrap();
+        }
+        f.flush().unwrap();
+
+        let mut log = ErrorLog::new(path.clone());
+        log.refresh();
+        assert_eq!(log.newest_first().len(), 1);
+
+        // An append is picked up, even one cut mid-line between two reads.
+        let next = line(404, "/missing");
+        let (a, b) = next.split_at(40);
+        f.write_all(a.as_bytes()).unwrap();
+        f.flush().unwrap();
+        log.refresh();
+        assert_eq!(log.newest_first().len(), 1, "half a line is not a line");
+        f.write_all(b.as_bytes()).unwrap();
+        f.flush().unwrap();
+        log.refresh();
+        let rows = log.newest_first();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].path.as_deref(), Some("/missing"));
+
+        // Rotation: the file starts over, and what is in it now is new.
+        drop(f);
+        std::fs::write(&path, line(500, "/after")).unwrap();
+        log.refresh();
+        assert_eq!(log.newest_first()[0].path.as_deref(), Some("/after"));
     }
 }
