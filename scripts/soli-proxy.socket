@@ -14,11 +14,13 @@
 #
 #   sudo cp soli-proxy.socket soli-proxy.service /etc/systemd/system/
 #   sudo systemctl daemon-reload
-#   sudo systemctl enable --now soli-proxy.socket
-#   sudo systemctl restart soli-proxy.service
+#   sudo systemctl enable soli-proxy.socket
+#   sudo systemctl stop soli-proxy && sudo systemctl start soli-proxy.socket soli-proxy
 #
-# On a host where the proxy already runs, ReusePort=yes lets systemd bind
-# next to it, so the switch-over itself refuses nothing either.
+# systemd will not start a socket while its service runs, so moving a live
+# host onto it takes that one stop/start (a second of refused connections,
+# like any restart before; the apps keep running). Every restart after it
+# refuses nothing.
 [Unit]
 Description=Soli Proxy listening sockets (held across restarts)
 Documentation=https://github.com/solisoft/soli-proxy#restarts-without-a-refused-connection
@@ -30,7 +32,6 @@ ListenStream=0.0.0.0:443
 # ListenStream=[::]:80
 # ListenStream=[::]:443
 # BindIPv6Only=both
-ReusePort=yes
 Backlog=8192
 Service=soli-proxy.service
 

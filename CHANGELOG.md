@@ -8,8 +8,8 @@
   systemd binds `:80` and `:443` and hands them to the service (socket activation); the proxy
   serves on them instead of binding its own. They stay open while the service restarts, so a
   connection arriving then waits in the kernel's queue and is answered by the new proxy instead
-  of being refused — behind Cloudflare, no more 521 during an upgrade. `ReusePort=yes` lets a
-  live host move onto it without a gap. The sockets are close-on-exec, so no app inherits them.
+  of being refused — behind Cloudflare, no more 521 during an upgrade. The sockets are
+  close-on-exec, so no app inherits them.
 
 ### Bug Fixes
 

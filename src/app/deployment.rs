@@ -1895,12 +1895,28 @@ impl DeploymentManager {
             return false;
         };
         let exe = format!("/proc/{pid}/exe");
-        if std::fs::read_link(&exe).is_ok_and(|p| p.to_string_lossy().ends_with(" (deleted)")) {
-            return true;
+        let Ok(link) = std::fs::read_link(&exe) else {
+            return false;
+        };
+        let link = link.to_string_lossy().into_owned();
+        if link.ends_with(" (deleted)") {
+            return true; // the file it runs was replaced (or removed)
         }
         let Ok(running) = std::fs::metadata(&exe) else {
             return false;
         };
+        let identity = |m: &std::fs::Metadata| (m.dev(), m.ino());
+        // Its path now names another file.
+        if std::fs::metadata(&link).is_ok_and(|now| identity(&now) != identity(&running)) {
+            return true;
+        }
+        // The start command's program, as it would be found now — only when
+        // it is the binary itself: a wrapper (`env TZ=… soli serve`) runs
+        // another program than the one the process ended up as.
+        let file_name = |p: &str| Path::new(p).file_name().map(|n| n.to_os_string());
+        if file_name(&launch.program) != file_name(&link) {
+            return false;
+        }
         let program = Path::new(&launch.program);
         let current = if launch.program.contains('/') {
             Some(app.path.join(program))
@@ -1917,7 +1933,7 @@ impl DeploymentManager {
                 .find(|candidate| candidate.is_file())
         };
         match current.and_then(|c| std::fs::metadata(c).ok()) {
-            Some(now) => (now.dev(), now.ino()) != (running.dev(), running.ino()),
+            Some(now) => identity(&now) != identity(&running),
             None => false,
         }
     }
@@ -3520,6 +3536,16 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(!manager.runs_replaced_binary(&app, "blue", pid));
+        // Started through a wrapper (`env TZ=… soli serve`): the process is
+        // the copy, the command's program is `env` — not a replacement.
+        let wrapped = AppInfo {
+            config: AppConfig {
+                start_script: Some("env TZ=Europe/Paris ./soli-test 60".to_string()),
+                ..app.config.clone()
+            },
+            ..app.clone()
+        };
+        assert!(!manager.runs_replaced_binary(&wrapped, "blue", pid));
 
         // Installed the way upgrades install: a new file renamed over it.
         let fresh = site.path().join("soli-test.new");
