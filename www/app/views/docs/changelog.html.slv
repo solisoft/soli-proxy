@@ -46,11 +46,31 @@
                     </p>
                 </div>
 
+                <!-- 1.2.2 -->
+                <div class="mb-10 reveal-on-scroll">
+                    <div class="flex items-center gap-3 mb-5 flex-wrap">
+                        <h2 class="text-2xl font-bold text-white font-mono">v1.2.2</h2>
+                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
+                        <span class="text-sm text-gray-500">2026-10-06</span>
+                    </div>
+
+                    <div class="space-y-4">
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">fix</span>
+                                <h3 class="text-base font-semibold text-white">The errors screen shows more than the last few hundred requests</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                It re-read only the last 256&nbsp;KB of the log, a few hundred lines on a busy proxy, so older 5xx and 404s were missing while the header counted them. The TUI now scans the last 16&nbsp;MB once, then follows what is appended, rotation included.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- 1.2.1 -->
                 <div class="mb-10 reveal-on-scroll">
                     <div class="flex items-center gap-3 mb-5 flex-wrap">
                         <h2 class="text-2xl font-bold text-white font-mono">v1.2.1</h2>
-                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
                         <span class="text-sm text-gray-500">2026-10-06</span>
                     </div>
 

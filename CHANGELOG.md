@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.2.2](https://github.com/solisoft/soli-proxy/compare/v1.2.1...v1.2.2) (2026-10-06)
+
+### Bug Fixes
+
+* **tui: the errors screen shows errors older than the last 256 KB of the log.** It re-read
+  only that much of `proxy.log` every tick. A dev proxy logs a line per request, livereload
+  sockets included, so the window held a few hundred lines: on one machine it had 3 of the
+  log's 109 404s and none of its 520 5xx, while the header counted them. The TUI now scans the
+  last 16 MB once, then follows what is appended (a line cut between two reads, rotation and
+  truncation included), skipping lines that cannot be failures before any JSON parsing.
+
 ## [1.2.1](https://github.com/solisoft/soli-proxy/compare/v1.2.0...v1.2.1) (2026-10-06)
 
 ### Features
