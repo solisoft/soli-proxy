@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.7.0](https://github.com/solisoft/soli-proxy/compare/v1.6.1...v1.7.0) (2026-10-06)
+
+### Features
+
+* **systemd: restarts that refuse no connection.** With the new `scripts/soli-proxy.socket`,
+  systemd binds `:80` and `:443` and hands them to the service (socket activation); the proxy
+  serves on them instead of binding its own. They stay open while the service restarts, so a
+  connection arriving then waits in the kernel's queue and is answered by the new proxy instead
+  of being refused — behind Cloudflare, no more 521 during an upgrade. `ReusePort=yes` lets a
+  live host move onto it without a gap. The sockets are close-on-exec, so no app inherits them.
+
+### Bug Fixes
+
+* **bots: no WordPress paths among the default traps.** A site migrated from WordPress gets real
+  requests for `/wp-admin/`, `/wp-content/` and `/wp-login.php` (its editors' bookmarks, old
+  links), and 1.4 banned a newsroom's own staff for one. The default traps are now secrets, VCS
+  files and tools no visitor asks for (`/.env*`, `/.git/*`, `/.aws/*`, `/.ssh/*`,
+  `/wp-config.php*`, `/phpmyadmin*`, `/vendor/phpunit/*`…).
+* **bots: a ban is on the exact address.** IPv6 bans covered the /64, which hosting providers
+  share between customers: a scanner's neighbour was banned with it.
+* **bots: every refusal is in the request log.** Responses given before routing — a `[bots]`
+  refusal, a maintenance page — now have their `log_endpoints` line, with `"answered_by"`, and
+  a ban's reason carries the user agent, so a client's `403` can be traced.
+
 ## [1.6.1](https://github.com/solisoft/soli-proxy/compare/v1.6.0...v1.6.1) (2026-10-06)
 
 1.6.0 was tagged, but its release build failed on a test that raced with another one's
