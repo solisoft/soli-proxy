@@ -1685,12 +1685,13 @@ async fn run_server(
 
         // In dev mode, regenerate the self-signed fallback cert to include .test domains
         if dev_mode {
-            let app_domains = manager.get_running_app_domains().await;
-            let test_domains: Vec<String> = app_domains
-                .keys()
+            // Sleeping apps included: their first request comes over TLS.
+            let mut test_domains: Vec<String> = manager
+                .app_hosts()
+                .into_iter()
                 .filter(|d| d.ends_with(".test"))
-                .cloned()
                 .collect();
+            test_domains.sort();
             if !test_domains.is_empty() {
                 tracing::info!(
                     "Regenerating fallback cert with .test domains: {:?}",
@@ -1724,12 +1725,12 @@ async fn run_server(
                 loop {
                     if let Ok(event) = rx.recv().await {
                         if matches!(event, AppEvent::Deployed { .. }) {
-                            let domains = mgr_for_events.get_running_app_domains().await;
-                            let test_domains: Vec<String> = domains
-                                .keys()
+                            let mut test_domains: Vec<String> = mgr_for_events
+                                .app_hosts()
+                                .into_iter()
                                 .filter(|d| d.ends_with(".test"))
-                                .cloned()
                                 .collect();
+                            test_domains.sort();
                             if !test_domains.is_empty() {
                                 tracing::info!(
                                     "Dev mode: regenerating fallback cert with .test domains: {:?}",

@@ -3,7 +3,7 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::broadcast;
@@ -784,9 +784,13 @@ pub struct AppManager {
     /// store; the routing table holds the same cells.
     activity: Arc<parking_lot::Mutex<HashMap<String, Arc<AppActivity>>>>,
     epoch: std::time::Instant,
-    /// Apps the reaper stopped for inactivity. A request for one of these is
-    /// held while the app is started again, instead of answering 421.
+    /// Apps the reaper stopped for inactivity, and the ones the first
+    /// discovery left asleep. A request for one of these is held while the
+    /// app is started again, instead of answering 421.
     asleep: Arc<parking_lot::Mutex<HashSet<String>>>,
+    /// Set by the first auto-starting discovery: the apps it finds not
+    /// running and allowed to sleep are left asleep rather than started.
+    booted: Arc<AtomicBool>,
     /// Apps an intentional [`stop`](Self::stop) is taking down right now.
     /// The health check runs concurrently and would otherwise count the
     /// refused connection of a process that is exiting on purpose.
@@ -1678,6 +1682,7 @@ impl AppManager {
             activity: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             epoch: std::time::Instant::now(),
             asleep: Arc::new(parking_lot::Mutex::new(HashSet::new())),
+            booted: Arc::new(AtomicBool::new(false)),
             stopping: Arc::new(parking_lot::Mutex::new(HashSet::new())),
             aliases: Arc::new(parking_lot::Mutex::new(read_aliases_file())),
             routes: Arc::new(ArcSwap::from_pointee(AppRoutes::default())),
@@ -1841,6 +1846,13 @@ impl AppManager {
 
     /// Domain -> (port, health_check) for every host currently served by a
     /// running app.
+    /// Every host an app claims, running or not: what a dev-mode certificate
+    /// must cover, since a sleeping app's first request arrives over TLS
+    /// before it can wake.
+    pub fn app_hosts(&self) -> Vec<String> {
+        self.routes().hosts.keys().cloned().collect()
+    }
+
     pub async fn get_running_app_domains(&self) -> HashMap<String, (u16, Option<String>)> {
         self.routes()
             .hosts
@@ -2314,6 +2326,36 @@ impl AppManager {
             apps_to_start.retain(|name| !adopted.contains(name));
         }
 
+        // At startup, an app that is not running and may sleep is not started
+        // either: it is left asleep, and its first request wakes it. A reboot
+        // then costs nothing for the sites nobody visits, instead of starting
+        // all of them at once. Apps that never sleep (`idle_timeout = 0`,
+        // `_admin`) are started as before: they may have work of their own.
+        // Sites added later are started on discovery, as before.
+        let mut left_asleep: Vec<String> = Vec::new();
+        if auto_start && !self.booted.swap(true, Ordering::SeqCst) && !apps_to_start.is_empty() {
+            let apps = self.apps.lock().await;
+            apps_to_start.retain(|name| {
+                let lazy = apps
+                    .get(name)
+                    .is_some_and(|app| self.idle_timeout_for(app) > 0);
+                if lazy {
+                    left_asleep.push(name.clone());
+                }
+                !lazy
+            });
+            drop(apps);
+            if !left_asleep.is_empty() {
+                left_asleep.sort();
+                self.asleep.lock().extend(left_asleep.iter().cloned());
+                tracing::info!(
+                    "{} app(s) left asleep until their first request: {}",
+                    left_asleep.len(),
+                    left_asleep.join(", ")
+                );
+            }
+        }
+
         // Auto-start discovered apps in parallel (locks are per-app) and
         // return WITHOUT awaiting the deploy task. The caller (main.rs) then
         // proceeds to bind the HTTP/HTTPS listeners immediately, so a single
@@ -2328,6 +2370,23 @@ impl AppManager {
         if auto_start {
             let manager = self.clone();
             tokio::spawn(async move {
+                // A sleeping app's slots may still be held by a process a
+                // previous proxy spawned and could not adopt: free them now
+                // rather than on the first request, which would wait for it.
+                for app_name in &left_asleep {
+                    if let Some(app) = manager.get_app(app_name).await {
+                        for (slot_name, port) in
+                            [("blue", app.blue.port), ("green", app.green.port)]
+                        {
+                            if is_port_in_use(port).await {
+                                manager
+                                    .deployment_manager
+                                    .reclaim_port(&app, slot_name, port)
+                                    .await;
+                            }
+                        }
+                    }
+                }
                 let mut handles = Vec::new();
                 for app_name in apps_to_start {
                     let mgr = manager.clone();
@@ -5709,6 +5768,43 @@ admin = "$2b$12$adminhashadminhashadminhashadminhashadminhashadminhas"
         let port_manager =
             Arc::new(PortManager::new(temp_dir.path().join("run").to_str().unwrap()).unwrap());
         AppManager::new(sites.to_str().unwrap(), port_manager, config_manager, false).unwrap()
+    }
+
+    /// At startup, an app that is not running and may sleep is left asleep
+    /// for its first request to wake, instead of being started with all the
+    /// others; the next discovery does not put anything to sleep.
+    #[tokio::test]
+    async fn the_first_discovery_leaves_sleepy_apps_asleep() {
+        let temp_dir = TempDir::new().unwrap();
+        let sites = temp_dir.path().join("sites");
+        for name in ["blog.example.com", "shop.example.com"] {
+            site_with_app_infos(
+                &sites,
+                name,
+                &format!("name = \"{name}\"\ndomain = \"{name}\"\nstart_script = \"sleep 60\"\n"),
+            );
+        }
+        let manager = test_manager(&temp_dir, &sites);
+        manager.discover_apps().await.unwrap();
+        let mut asleep = manager.asleep_apps();
+        asleep.sort();
+        assert_eq!(asleep, vec!["blog.example.com", "shop.example.com"]);
+        for name in ["blog.example.com", "shop.example.com"] {
+            let app = manager.get_app(name).await.unwrap();
+            assert!(
+                app.blue.pid.is_none() && app.green.pid.is_none(),
+                "{name} was started"
+            );
+        }
+        // The routing table still claims their hosts, for the wake.
+        let mut hosts = manager.app_hosts();
+        hosts.sort();
+        assert!(hosts.contains(&"shop.example.com".to_string()));
+
+        // A rediscovery (a site edited) leaves the state alone.
+        manager.asleep.lock().remove("blog.example.com");
+        manager.discover_apps().await.unwrap();
+        assert_eq!(manager.asleep_apps(), vec!["shop.example.com".to_string()]);
     }
 
     /// `maintenance.flag`, `error_pages/` and `compress` reach the routing

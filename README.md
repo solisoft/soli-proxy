@@ -1310,6 +1310,16 @@ fails a check is handled as follows:
 - **a container without the labels** (started by an older version) — replaced, as a fresh start
   always replaced `<app>-<slot>`.
 
+**What is not running is not started — unless it never sleeps.** An app that was not adopted and
+may sleep (see [Scale to zero](#scale-to-zero)) is left asleep: its first request starts it, as
+after an idle period, and the log says `N app(s) left asleep until their first request: …`. After
+a reboot the proxy is up at once and starts only the sites that are visited, instead of every
+site at the same time. Apps that never sleep — `idle_timeout = 0`, or `[apps] idle_timeout = 0`
+for the whole fleet, and `_admin` — are started as before, since they may have cron jobs or
+workers to run. A stale process of a sleeping app's (one the checks above stop) is stopped at
+startup all the same, so its port is free for the first request. A site added while the proxy
+runs is started at once, as before.
+
 Apps survive because nothing ties them to the proxy: native apps run in their own session
 (`setsid`), with no parent-death signal, stdin on `/dev/null` and stdout/stderr written straight
 to `run/logs/<app>/<slot>.log` — never to a pipe the proxy holds, so they cannot die of SIGPIPE
@@ -1497,6 +1507,9 @@ What happens:
 - A sleeping app keeps its certificate registered and keeps winning over
   static `proxy.conf` rules for its domains, exactly as a running one does.
 - `soli-proxy restart <app>` or a deploy wakes it too, and resets the clock.
+- A proxy start leaves it asleep too: an app that was not running when the proxy started, and
+  may sleep, waits for its first request rather than starting with all the others (see
+  [Restarts and upgrades](#restarts-and-upgrades)).
 - `/api/v1/app-metrics` and `/api/v1/apps/{name}/metrics` report it with
   `"asleep": true`, and the TUI shows it as **Sleeping** (`◐ sleep` on the
   dashboard) rather than Stopped: an app that comes back on the next request,

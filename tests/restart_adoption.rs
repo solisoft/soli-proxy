@@ -219,12 +219,22 @@ async fn apps_survive_a_proxy_restart_and_are_adopted() {
 
     let mut proxy = install.start();
     cleanup.0.push(proxy.id());
+    // Nothing runs it yet: a fresh proxy leaves a sleep-capable app asleep,
+    // and its first request starts it.
+    assert!(
+        install.running_app(Duration::from_secs(3)).await.is_none(),
+        "started before any request; log:\n{}",
+        install.log()
+    );
+    assert!(install
+        .log()
+        .contains("left asleep until their first request"));
+    assert!(install.served_through_proxy().await, "{}", install.log());
     let (pid, port) = install
         .running_app(Duration::from_secs(30))
         .await
         .unwrap_or_else(|| panic!("app never started; log:\n{}", install.log()));
     cleanup.0.push(pid);
-    assert!(install.served_through_proxy().await);
 
     // Restart: the proxy drains and exits, the app keeps running.
     sigterm(&proxy);
@@ -332,9 +342,11 @@ async fn an_app_left_running_by_a_pre_registry_proxy_is_restarted_not_quarantine
     let install = Installation::new();
     let mut cleanup = Cleanup(Vec::new());
 
-    // A proxy starts the app and stops, leaving it running...
+    // A proxy starts the app (on its first request) and stops, leaving it
+    // running...
     let mut first = install.start();
     cleanup.0.push(first.id());
+    assert!(install.served_through_proxy().await, "{}", install.log());
     let (old_pid, port) = install
         .running_app(Duration::from_secs(30))
         .await
@@ -349,6 +361,8 @@ async fn an_app_left_running_by_a_pre_registry_proxy_is_restarted_not_quarantine
 
     let mut second = install.start();
     cleanup.0.push(second.id());
+    // Not adoptable, so left asleep: the next request starts it afresh.
+    assert!(install.served_through_proxy().await, "{}", install.log());
     let (new_pid, new_port) = install
         .running_app(Duration::from_secs(40))
         .await

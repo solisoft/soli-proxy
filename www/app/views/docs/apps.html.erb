@@ -185,7 +185,7 @@ workers = <span class="tn">8</span></code></pre>
         <!-- Scale to zero -->
         <div class="mb-16" id="scale-to-zero">
             <h2 class="text-xl font-bold text-white mb-4">Scale to zero</h2>
-            <p class="text-gray-400 mb-4">Most fleets are mostly idle. On a box hosting thirty small sites, a day's traffic typically touches a handful &mdash; and every one of the others holds its full runtime in memory for nothing. <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">idle_timeout</code> lets the proxy put such an app to sleep and start it again on the next request.</p>
+            <p class="text-gray-400 mb-4">Most fleets are mostly idle. On a box hosting thirty small sites, a day's traffic typically touches a handful &mdash; and every one of the others holds its full runtime in memory for nothing. <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">idle_timeout</code> lets the proxy put such an app to sleep and start it again on the next request. The proxy&rsquo;s own start works the same way: an app that is not already running and may sleep is left asleep, and its first request starts it &mdash; after a reboot, only the sites that are visited start. Apps with <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">idle_timeout = 0</code> start right away.</p>
 
             <div class="rounded-2xl bg-gray-950 ring-1 ring-white/10 overflow-hidden code-window mb-6">
                 <div class="flex items-center justify-between px-4 py-3 border-b border-white/5 bg-white/5">
