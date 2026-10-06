@@ -1247,7 +1247,7 @@ admin = "$2b$12$..."   # generate with: hash-password (cost 4..=13)
 | `docker_options` | string | _none_ | Extra flags appended to `docker run`. Whitespace-split, no shell. Single-tenant: a denylist rejects `--privileged`, `--cap-add`, `--device`, `--security-opt`, `--userns`, `--volumes-from`, `--env-file`, `--group-add`, joining the `host` or another container's namespaces, and docker-socket / root mounts in every spelling (`-v/:/x`, `--mount type=bind,source=/`, `/./`, `/etc/..`). Multi-tenant: only the allowlist below is accepted. |
 | `docker_network` | string | `"soli-apps"` | Docker network the container joins (created automatically if missing). A plain network name only: `host` and `container:<id>` are refused in every mode, since the value goes straight to `--network`. Ignored in multi-tenant mode, where each app gets a private network. |
 | `compress` | bool | _unset_ | `false`: never compress this app's responses. `true`: compress them even with `[compression] enabled = false` — ignored in multi-tenant mode. Unset follows `[compression]`. See [Compression](#compression). |
-| `idle_timeout` | int (seconds) | `[apps].idle_timeout` from `config.toml`, itself `900` (`0` under `--dev`) | Scale to zero: after this many seconds without a request (and with none still open) the proxy stops the app and starts it again on the next one, holding that request until the app is healthy. `0` means the app never sleeps. See [Scale to zero](#scale-to-zero). |
+| `idle_timeout` | int (seconds) | `[apps].idle_timeout` from `config.toml`, itself `900` (`3600` under `--dev`) | Scale to zero: after this many seconds without a request (and with none still open) the proxy stops the app and starts it again on the next one, holding that request until the app is healthy. `0` means the app never sleeps. See [Scale to zero](#scale-to-zero). |
 | `[auth.users]` | table | _empty_ | `username = "bcrypt hash"` entries. When non-empty, every request to this app's domains must present matching HTTP Basic Auth credentials. Generate a hash with `hash-password`; only bcrypt hashes at cost 4 to 13 are accepted. |
 | `[auth] noauth` | list of strings | _empty_ | Paths served without credentials, for callers that cannot send a password (a payment webhook, a health probe). Exact path, or a prefix ending in `*` — the same syntax as the `@noauth:` route directive, and the same fail-closed rule: a path carrying percent-encoding or a `..` segment is never exempt. Skips forward-auth too. |
 | `[auth] forward` | string | _none_ | Auth service asked before every request to this app's domains, WebSocket upgrades included — the app equivalent of `@forward_auth:`. See [Forward authentication](#forward-authentication). With `[auth.users]` too, Basic Auth runs first and both must pass. In multi-tenant mode it must be covered by `[forward_auth] allowed_urls`. |
@@ -1359,8 +1359,9 @@ What happens:
 jobs, background job workers, a warm cache that takes more than a moment to
 rebuild. Asleep, it runs none of them until a request wakes it. (Open
 connections are covered: a chat's WebSockets keep its app up.) `_admin` never
-sleeps regardless of its manifest. Under `--dev` apps never sleep unless their
-manifest or `config.toml` says so. The fleet-wide default goes in `config.toml`:
+sleeps regardless of its manifest. Under `--dev` the default is an hour: a laptop
+running a dozen apps gets its memory back without a wake-up after every short
+break. The fleet-wide default goes in `config.toml`:
 
 ```toml
 [apps]

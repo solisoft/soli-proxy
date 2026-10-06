@@ -100,8 +100,9 @@ pub struct AppsTomlConfig {
     pub tenant_user: Option<String>,
     /// Scale to zero: seconds without a request before an app is stopped and
     /// restarted on demand. The default for apps whose `app.infos` does not
-    /// set `idle_timeout`: [`DEFAULT_IDLE_TIMEOUT_SECS`] (15 minutes), or `0`
-    /// — never — under `--dev`. `0` here leaves every app running.
+    /// set `idle_timeout`: [`DEFAULT_IDLE_TIMEOUT_SECS`] (15 minutes), or
+    /// [`DEFAULT_DEV_IDLE_TIMEOUT_SECS`] (an hour) under `--dev`. `0` here
+    /// leaves every app running.
     pub idle_timeout: Option<u64>,
     /// Platform-owned port range for app slots (default 20000-30000). In
     /// multi_tenant mode it is the only range used; otherwise it backs an app
@@ -127,6 +128,8 @@ pub const DEFAULT_RESTART_TRIGGER_POLL_SECS: u64 = 2;
 /// `[apps] idle_timeout` when unset: an app sleeps after 15 minutes without a
 /// request (or an open one: a streaming response, a WebSocket).
 pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 900;
+/// The same under `--dev`: an hour.
+pub const DEFAULT_DEV_IDLE_TIMEOUT_SECS: u64 = 3600;
 
 impl AppsTomlConfig {
     pub fn restart_trigger_file(&self) -> String {
@@ -142,12 +145,12 @@ impl AppsTomlConfig {
 
     /// Fleet-wide idle threshold, in seconds. `0` means apps never sleep.
     ///
-    /// Unset, apps sleep after 15 minutes without a request — except under
-    /// `--dev`, where a laptop's apps are the developer's own and a second's
-    /// wait after every coffee break helps nobody.
+    /// Unset, apps sleep after 15 minutes without a request, and after an
+    /// hour under `--dev`: a laptop running a dozen apps gets its memory
+    /// back, without a wake-up after every short break.
     pub fn idle_timeout(&self, dev_mode: bool) -> u64 {
         self.idle_timeout.unwrap_or(if dev_mode {
-            0
+            DEFAULT_DEV_IDLE_TIMEOUT_SECS
         } else {
             DEFAULT_IDLE_TIMEOUT_SECS
         })
@@ -1316,7 +1319,7 @@ burst_size = 2000
 # restart_trigger_poll_secs = 2   # 0 disables the trigger entirely
 # idle_timeout = 900              # scale to zero: seconds idle before an app is
 #                                 # stopped and restarted on demand (default 900,
-#                                 # 0 under --dev; 0 = never); per-app
+#                                 # 3600 under --dev; 0 = never); per-app
 #                                 # `idle_timeout` in app.infos overrides this
 # Untrusted apps: require a docker_image and impose container hardening the
 # app cannot weaken (read-only rootfs, cap-drop ALL, no-new-privileges,
@@ -2414,13 +2417,13 @@ default_user = "rocky"
     }
 
     #[test]
-    fn apps_idle_timeout_defaults_to_fifteen_minutes_except_in_dev() {
+    fn apps_idle_timeout_defaults_to_fifteen_minutes_and_an_hour_in_dev() {
         // Scale to zero is opt-in: a config that predates the key must leave
         // every app running.
         let cfg: TomlConfig = toml::from_str("[apps]\ndefault_user = \"rocky\"\n").unwrap();
         let apps = cfg.apps.unwrap_or_default();
         assert_eq!(apps.idle_timeout(false), 900);
-        assert_eq!(apps.idle_timeout(true), 0);
+        assert_eq!(apps.idle_timeout(true), 3600);
         let cfg: TomlConfig = toml::from_str("[apps]\nidle_timeout = 1800\n").unwrap();
         let apps = cfg.apps.unwrap_or_default();
         assert_eq!(apps.idle_timeout(false), 1800);
