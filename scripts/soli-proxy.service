@@ -1,8 +1,12 @@
 [Unit]
 Description=Soli Proxy Server
 Documentation=https://github.com/solisoft/soli-proxy#systemd-service
-After=network-online.target
+After=network-online.target soli-proxy.socket
 Wants=network-online.target
+# :80 and :443 come from soli-proxy.socket, which keeps them open while this
+# service restarts. Without the socket unit the proxy binds them itself, as
+# before (and then needs CAP_NET_BIND_SERVICE below).
+Wants=soli-proxy.socket
 
 [Service]
 Type=simple

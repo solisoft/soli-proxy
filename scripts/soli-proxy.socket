@@ -1,0 +1,38 @@
+# /etc/systemd/system/soli-proxy.socket
+#
+# systemd holds :80 and :443 and hands them to soli-proxy.service, so a
+# restart (an upgrade, a changed config.toml) refuses no connection: while
+# the old proxy drains and the new one starts, connections wait in the
+# kernel's queue and are served a moment later. Without it a restart is a
+# second or two of refused connections — behind Cloudflare, a 521.
+#
+# The addresses must be the ones config.toml listens on: [server] bind and
+# https_port. The proxy logs "Listening on … through the socket systemd
+# holds" for each socket it uses, and warns about one it does not.
+#
+# Install, with soli-proxy.service from this directory:
+#
+#   sudo cp soli-proxy.socket soli-proxy.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now soli-proxy.socket
+#   sudo systemctl restart soli-proxy.service
+#
+# On a host where the proxy already runs, ReusePort=yes lets systemd bind
+# next to it, so the switch-over itself refuses nothing either.
+[Unit]
+Description=Soli Proxy listening sockets (held across restarts)
+Documentation=https://github.com/solisoft/soli-proxy#restarts-without-a-refused-connection
+
+[Socket]
+ListenStream=0.0.0.0:80
+ListenStream=0.0.0.0:443
+# For IPv6 too, listen on [::] instead (config.toml: bind = "[::]:80"):
+# ListenStream=[::]:80
+# ListenStream=[::]:443
+# BindIPv6Only=both
+ReusePort=yes
+Backlog=8192
+Service=soli-proxy.service
+
+[Install]
+WantedBy=sockets.target

@@ -290,7 +290,7 @@ enum MaintenanceAction {
 enum BotsAction {
     /// The bans in force and the user agents refused (the default).
     Status,
-    /// Lift the ban on a client (an IPv6 address lifts its /64's).
+    /// Lift the ban on a client.
     Unban { ip: String },
 }
 
@@ -341,6 +341,9 @@ fn inherit_global_paths(cli: &mut Cli) {
 }
 
 fn main() -> Result<()> {
+    // Before any thread exists: the sockets systemd passed (socket
+    // activation) are claimed and hidden from everything spawned later.
+    soli_proxy::systemd::take_listen_fds();
     let mut cli = Cli::parse();
     inherit_global_paths(&mut cli);
 

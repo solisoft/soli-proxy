@@ -102,10 +102,16 @@ pub fn unit_from_cgroup(content: &str) -> Option<(String, bool)> {
 #[cfg(target_os = "linux")]
 pub fn conflicting_instance(ports: &[u16]) -> Option<ManagedInstance> {
     let listening = listening_ports();
+    // A port held by a socket this process was handed (socket activation)
+    // is its own, not another proxy's.
+    let inherited: Vec<u16> = INHERITED
+        .get()
+        .map(|all| all.iter().map(|s| s.addr.port()).collect())
+        .unwrap_or_default();
     let busy_ports: Vec<u16> = ports
         .iter()
         .copied()
-        .filter(|p| listening.contains(p))
+        .filter(|p| listening.contains(p) && !inherited.contains(p))
         .collect();
     if busy_ports.is_empty() {
         return None;
@@ -251,9 +257,132 @@ pub fn kill_mode_warning(unit: &str, user_unit: bool, kill_mode: &str) -> Option
     ))
 }
 
+/// Listening sockets systemd handed over (socket activation: a
+/// `soli-proxy.socket` unit holds :80 and :443 and passes them in), with
+/// whether a listener has taken each one yet.
+///
+/// What this buys is a restart nobody sees. systemd keeps the sockets open
+/// while the service restarts, so a connection arriving between the old
+/// proxy's exit and the new one's first `accept` waits in the kernel's
+/// queue instead of being refused, and is served a moment later. Without
+/// it, each restart is a second or two of refused connections — behind
+/// Cloudflare, a 521 for whoever arrived then.
+static INHERITED: std::sync::OnceLock<Vec<Inherited>> = std::sync::OnceLock::new();
+
+struct Inherited {
+    addr: std::net::SocketAddr,
+    listener: std::net::TcpListener,
+    used: std::sync::atomic::AtomicBool,
+}
+
+/// Take the sockets systemd passed (`LISTEN_PID`, `LISTEN_FDS`, from fd 3),
+/// once, at the very start of `main`: mark them close-on-exec so no app
+/// inherits a listening :443, and remove the variables so nothing spawned
+/// later believes they are its own. Anything that is not a listening TCP
+/// socket is left alone. No-op outside socket activation.
+#[cfg(target_os = "linux")]
+pub fn take_listen_fds() {
+    use std::os::fd::FromRawFd;
+    const SD_LISTEN_FDS_START: i32 = 3;
+    let mine = std::env::var("LISTEN_PID")
+        .ok()
+        .and_then(|p| p.parse::<u32>().ok())
+        == Some(std::process::id());
+    let count = std::env::var("LISTEN_FDS")
+        .ok()
+        .and_then(|n| n.parse::<i32>().ok())
+        .unwrap_or(0);
+    for var in ["LISTEN_PID", "LISTEN_FDS", "LISTEN_FDNAMES"] {
+        std::env::remove_var(var);
+    }
+    if !mine || count <= 0 {
+        let _ = INHERITED.set(Vec::new());
+        return;
+    }
+    let mut sockets = Vec::new();
+    for fd in SD_LISTEN_FDS_START..SD_LISTEN_FDS_START + count {
+        // SAFETY: fcntl on an fd number systemd says is open; a failure
+        // (EBADF) only skips it.
+        if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
+            continue;
+        }
+        // SAFETY: systemd hands these fds to this process to own.
+        let socket = unsafe { socket2::Socket::from_raw_fd(fd) };
+        let listening = socket.r#type().ok() == Some(socket2::Type::STREAM)
+            && socket.is_listener().unwrap_or(false);
+        let addr = socket.local_addr().ok().and_then(|a| a.as_socket());
+        match (listening, addr) {
+            (true, Some(addr)) => sockets.push(Inherited {
+                addr,
+                listener: socket.into(),
+                used: std::sync::atomic::AtomicBool::new(false),
+            }),
+            // Not ours to use, and not ours to close either.
+            _ => std::mem::forget(socket),
+        }
+    }
+    let _ = INHERITED.set(sockets);
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn take_listen_fds() {}
+
+fn same_listener(a: std::net::SocketAddr, b: std::net::SocketAddr) -> bool {
+    a.port() == b.port() && (a.ip() == b.ip() || a.ip().is_unspecified() || b.ip().is_unspecified())
+}
+
+/// A listener on `addr` from the sockets systemd passed: a duplicate of it,
+/// so each accept loop gets its own descriptor of the one socket.
+pub fn inherited_listener(addr: std::net::SocketAddr) -> Option<std::net::TcpListener> {
+    let found = INHERITED
+        .get()?
+        .iter()
+        .find(|s| same_listener(s.addr, addr))?;
+    let listener = found.listener.try_clone().ok()?;
+    if !found.used.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        tracing::info!(
+            "Listening on {} through the socket systemd holds (restarts queue connections \
+             instead of refusing them)",
+            found.addr
+        );
+    }
+    Some(listener)
+}
+
+/// Whether systemd passed a socket for `addr`.
+pub fn has_inherited(addr: std::net::SocketAddr) -> bool {
+    INHERITED
+        .get()
+        .is_some_and(|all| all.iter().any(|s| same_listener(s.addr, addr)))
+}
+
+/// Sockets systemd passed that no listener matched: a `ListenStream=` the
+/// configuration does not serve, worth a warning.
+pub fn unused_inherited() -> Vec<std::net::SocketAddr> {
+    INHERITED
+        .get()
+        .map(|all| {
+            all.iter()
+                .filter(|s| !s.used.load(std::sync::atomic::Ordering::Relaxed))
+                .map(|s| s.addr)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_inherited_socket_matches_its_port_on_any_address() {
+        let a = |s: &str| s.parse::<std::net::SocketAddr>().unwrap();
+        assert!(same_listener(a("0.0.0.0:443"), a("0.0.0.0:443")));
+        assert!(same_listener(a("[::]:443"), a("0.0.0.0:443")));
+        assert!(same_listener(a("0.0.0.0:80"), a("203.0.113.1:80")));
+        assert!(!same_listener(a("0.0.0.0:80"), a("0.0.0.0:443")));
+        assert!(!same_listener(a("10.0.0.1:80"), a("10.0.0.2:80")));
+    }
 
     #[test]
     fn only_kill_mode_process_keeps_the_apps() {

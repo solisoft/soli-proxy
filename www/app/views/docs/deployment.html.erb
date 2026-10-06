@@ -193,6 +193,14 @@
                         </div>
                     </div>
                     <p class="text-gray-400 mt-4">With any other <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">KillMode</code>, stopping the unit kills every app with the proxy and the next one starts them all cold; the proxy logs a warning at startup when its unit would do that. On restart, apps still running are adopted, an adopted app on a binary replaced since it started (<code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">soli</code> upgraded) is redeployed blue-green onto the new one, and only apps that were not running at all are left asleep until their first request.</p>
+                    <p class="text-gray-400 mt-4"><strong class="text-white">Restarts without a refused connection.</strong> Install <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">scripts/soli-proxy.socket</code> next to the service: systemd then holds <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">:80</code> and <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">:443</code> and hands the sockets to the proxy, which serves on them instead of binding its own. While the service restarts the sockets stay open, so a connection arriving in that second waits in the kernel&rsquo;s queue and is answered by the new proxy &mdash; a moment of latency instead of a refused connection (a 521 behind Cloudflare). Its <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">ListenStream=</code> lines must match <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">[server] bind</code> and <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">https_port</code>.</p>
+                    <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden mt-4">
+                        <pre class="p-4 text-sm leading-relaxed overflow-x-auto"><code><span class="tf">sudo</span> cp scripts/soli-proxy.socket /etc/systemd/system/
+<span class="tf">sudo</span> systemctl daemon-reload
+<span class="tf">sudo</span> systemctl enable --now soli-proxy.socket   <span class="tc"># ReusePort: binds next to a running proxy</span>
+<span class="tf">sudo</span> systemctl restart soli-proxy              <span class="tc"># from now on, on systemd's sockets</span></code></pre>
+                    </div>
+
                 </div>
 
                 <!-- ============================================================ -->
