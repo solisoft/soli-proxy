@@ -219,6 +219,21 @@ hook_timeout_ms = 10  # Max execution time per hook call in milliseconds
 # allow_paths = ["/up"]                 # exact paths, or prefixes ending in *
 # language = "auto"                     # built-in page: "auto" (browser's), "fr", "en"
 
+# Bots: all off by default. Bans are in memory; `soli-proxy bots` lists
+# them, `soli-proxy bots unban <ip>` lifts one. Requests a page made a
+# browser send (Sec-Fetch-Site) never ban; allow_ips, loopback and the
+# trusted_proxies are never refused. An app's app.infos may set [bots]
+# enabled = false|true (wins over the switch below, both ways),
+# traps = false (a WordPress) or its own block_agents.
+# [bots]
+# enabled = true                        # master switch; false keeps the settings
+# block_agents = ["ai-training", "scanners"]  # also "ai-assistants", "seo", or substrings
+# traps = true                          # /.env, /wp-login.php, /.git/… ban the client
+# max_404_per_minute = 60               # 0 = off
+# ban_secs = 3600
+# allow_ips = ["203.0.113.7"]
+# trap_paths = ["/.env*", "/wp-admin/*"]  # replaces the built-in list
+
 # Authentication
 # There is no [auth] section. HTTP Basic auth is set where it applies —
 #   * per route in proxy.conf:      app.example.com -> http://... @auth:user:<bcrypt>

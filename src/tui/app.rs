@@ -204,6 +204,14 @@ impl DaemonStatus {
     }
 }
 
+/// A ban, as `/api/v1/bots` lists it.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct BanRow {
+    pub ip: String,
+    pub since: String,
+    pub reason: String,
+}
+
 /// One completed poll of the admin API.
 #[derive(Default)]
 struct DaemonSample {
@@ -211,6 +219,8 @@ struct DaemonSample {
     global: Option<MetricsSnapshot>,
     info: Option<DaemonInfo>,
     maintenance: Option<MaintenanceInfo>,
+    /// The bans `[bots]` has in force (`/api/v1/bots`).
+    bans: Option<Vec<BanRow>>,
     /// Circuit-breaker state per target; `None` when the daemon could not be
     /// asked (shown as "unavailable", never as an empty list).
     circuits: Option<CircuitList>,
@@ -322,6 +332,7 @@ async fn poll_daemon(
     let apps_url = format!("http://{}/api/v1/app-metrics", admin_addr);
     let status_url = format!("http://{}/api/v1/status", admin_addr);
     let maintenance_url = format!("http://{}/api/v1/maintenance", admin_addr);
+    let bots_url = format!("http://{}/api/v1/bots", admin_addr);
     let global_url = format!("http://{}/api/v1/metrics", admin_addr);
     let circuits_url = format!("http://{}/api/v1/circuit-breaker", admin_addr);
 
@@ -355,7 +366,12 @@ async fn poll_daemon(
         }
     };
 
-    let (apps, global, circuits, info, maintenance) = tokio::join!(
+    #[derive(serde::Deserialize)]
+    struct BotsData {
+        bans: Vec<BanRow>,
+    }
+
+    let (apps, global, circuits, info, maintenance, bans) = tokio::join!(
         async {
             let resp = fetch(&apps_url).await?;
             resp.json::<Envelope<HashMap<String, AppMetricsJson>>>()
@@ -405,6 +421,14 @@ async fn poll_daemon(
                 .await
                 .ok()
                 .map(|e| e.data)
+        },
+        async {
+            // Absent from daemons before 1.4: no journal entries, no error.
+            let resp = fetch(&bots_url).await?;
+            resp.json::<Envelope<BotsData>>()
+                .await
+                .ok()
+                .map(|e| e.data.bans)
         }
     );
 
@@ -421,6 +445,7 @@ async fn poll_daemon(
         global,
         info,
         maintenance,
+        bans,
         circuits,
         status,
         seq: 0,
@@ -549,6 +574,9 @@ pub struct TuiApp {
     error_log: Option<ErrorLog>,
     /// What the daemon has closed for maintenance; `None` until known.
     maintenance: Option<MaintenanceInfo>,
+    /// The bans already journaled (client and start); `None` until the
+    /// first sample, whose bans are not news.
+    known_bans: Option<std::collections::HashSet<(String, String)>>,
 }
 
 impl TuiApp {
@@ -609,6 +637,7 @@ impl TuiApp {
             errors_filter: screens::errors::ErrorsFilter::default(),
             error_log: None,
             maintenance: None,
+            known_bans: None,
         };
         app.collect_stats();
         app
@@ -640,6 +669,10 @@ impl TuiApp {
             if let Some(next) = next {
                 self.note_maintenance_changes(&next);
                 self.maintenance = Some(next);
+            }
+            let bans = self.daemon.latest.lock().ok().and_then(|s| s.bans.clone());
+            if let Some(bans) = bans {
+                self.note_new_bans(&bans);
             }
         }
         // Per-app rates, from the change in each app's totals since the
@@ -1000,6 +1033,26 @@ impl TuiApp {
                 feed.push(now, &app, text, EventKind::Maintenance);
             }
         }
+    }
+
+    /// Journal the bans that appeared since the last sample.
+    fn note_new_bans(&mut self, bans: &[BanRow]) {
+        let current: std::collections::HashSet<(String, String)> = bans
+            .iter()
+            .map(|b| (b.ip.clone(), b.since.clone()))
+            .collect();
+        if let Some(known) = &self.known_bans {
+            let now = Instant::now();
+            if let Ok(mut feed) = self.daemon.events.lock() {
+                for b in bans
+                    .iter()
+                    .filter(|b| !known.contains(&(b.ip.clone(), b.since.clone())))
+                {
+                    feed.push(now, &b.ip, format!("banned · {}", b.reason), EventKind::Ban);
+                }
+            }
+        }
+        self.known_bans = Some(current);
     }
 
     /// The error rows the errors screen shows, under its filter.

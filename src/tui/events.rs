@@ -117,6 +117,8 @@ pub enum EventKind {
     Waking,
     Error,
     Maintenance,
+    /// `[bots]` banned a client.
+    Ban,
 }
 
 #[derive(Debug, Clone)]

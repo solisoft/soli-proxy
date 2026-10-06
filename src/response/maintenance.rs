@@ -92,7 +92,7 @@ impl Default for MaintenanceConfig {
 }
 
 /// `addr` or `addr/prefix`, with the prefix length checked.
-fn parse_cidr(text: &str) -> Option<(IpAddr, u8)> {
+pub(crate) fn parse_cidr(text: &str) -> Option<(IpAddr, u8)> {
     let (addr, prefix) = match text.trim().split_once('/') {
         Some((a, p)) => (a, Some(p)),
         None => (text.trim(), None),
@@ -107,7 +107,7 @@ fn parse_cidr(text: &str) -> Option<(IpAddr, u8)> {
     Some((ip, prefix))
 }
 
-fn in_net(ip: IpAddr, (net, prefix): (IpAddr, u8)) -> bool {
+pub(crate) fn in_net(ip: IpAddr, (net, prefix): (IpAddr, u8)) -> bool {
     match (ip.to_canonical(), net) {
         (IpAddr::V4(ip), IpAddr::V4(net)) => {
             let mask = u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0);
@@ -456,7 +456,7 @@ pub(crate) fn client_ip<B>(req: &Request<B>, peer: Option<SocketAddr>) -> Option
 /// must not expire because a site was closed for an evening) and the proxy's
 /// own health and metrics endpoints (a load balancer in front must not pull
 /// the proxy that is serving the maintenance page).
-fn always_allowed(path: &str, config: &crate::config::Config) -> bool {
+pub(crate) fn always_allowed(path: &str, config: &crate::config::Config) -> bool {
     if path.starts_with("/.well-known/acme-challenge/") {
         return true;
     }

@@ -15,6 +15,7 @@ reload, Lua scripting, and blue-green deploys for the apps it hosts.
   per-route upstream TLS (private CA, SNI, client certificates) and timeouts
 - **WebSocket Support**: Full WebSocket proxy capabilities, with idle/lifetime/size limits
 - **Middleware**: HTTP Basic auth (per route, per app, admin API), [forward authentication](#forward-authentication) to an SSO service (oauth2-proxy, Authelia, Authentik, …), per-IP rate limiting, request header rules, Lua hooks, JSON or text logging
+- **Bots and scanners**: refuse AI, SEO and scanner crawlers by user agent (presets), ban clients that probe `/.env` or `/wp-login.php` or pile up 404s — never on a page's own subrequests
 - **Behind a CDN or load balancer**: real client IP from trusted proxies (`X-Forwarded-For`, `CF-Connecting-IP`, PROXY protocol v1/v2), request IDs, and an access log (JSON or combined)
 - **Not included**: JWT/OIDC validation or API-key checks inside the proxy itself — delegate them to an SSO service with [forward authentication](#forward-authentication), or use a Lua `on_request` hook or the backend
 - **Responses**: gzip / brotli / zstd compression (opt-in), custom HTML error pages, maintenance mode (global or per app)
@@ -83,6 +84,7 @@ soli-proxy logs    [-c <conf>] <app_name>   # Print deployment logs for both slo
 soli-proxy maintenance [-c <conf>] on <app_name>|all [--for 30m | --until <time>] [-m <message>]
 soli-proxy maintenance [-c <conf>] off <app_name>|all
 soli-proxy maintenance [-c <conf>] status   # What is closed (see Maintenance mode)
+soli-proxy bots [-c <conf>] [status | unban <ip>]   # Bans and refused bots (see Bots and scanners)
 ```
 
 `-c` and `--sites-dir` may also come before the subcommand (`soli-proxy -c /etc/soli-proxy/proxy.conf
@@ -217,7 +219,7 @@ format = "json"       # or "text"
 output = "stdout"     # "stderr", or "file:/var/log/soli-proxy/proxy.log"
 max_size = "100MB"    # file output: rotate past this size ("0" = never)
 max_files = 5         # file output: rotated files kept (proxy.log.1 … proxy.log.5)
-log_endpoints = true  # log one line per request (method, path, host, status, latency)
+log_endpoints = true  # log one line per request (method, path, host, status, latency, user agent)
 access_log = "off"    # "stdout", "stderr" or a path: one line per completed request
 access_log_format = "json"  # or "combined"
 
@@ -782,6 +784,85 @@ name that is not a plain `*.lua` file, an unterminated `headers` block. At start
 on a hot reload the previous configuration stays in force and the error is logged. (Earlier
 versions skipped such lines, which could silently drop a route or the `@auth` protecting it.)
 
+### Bots and scanners
+
+```toml
+[bots]
+enabled = true                # the master switch (sites can say otherwise, see below)
+block_agents = ["ai-training", "scanners"]  # refused with a 403 (presets or substrings)
+traps = true                  # a request for /.env, /wp-login.php… bans its client
+max_404_per_minute = 60       # so does a stream of 404s; 0 = off (the default)
+ban_secs = 3600               # how long a ban lasts (at most a week)
+allow_ips = ["203.0.113.7"]   # never refused nor banned (IP or CIDR)
+# trap_paths = ["/.env*", "/wp-admin/*"]    # replaces the built-in list
+```
+
+Everything is off until the section turns it on; `enabled = false` turns it all off again —
+bans included — without losing the settings. Search engines' crawlers (Googlebot, Bingbot…)
+are in no preset: what this section is for is the rest.
+
+**`block_agents`** refuses a request whose `User-Agent` contains one of its entries, compared
+without case, with a `403`. An entry is a substring of at least three characters, or a preset:
+
+| Preset | Who |
+|---|---|
+| `ai-training` | Crawlers that collect pages to train models: GPTBot, ClaudeBot, CCBot, Bytespider, meta-externalagent, Diffbot, cohere-training-data-crawler… |
+| `ai-assistants` | Assistants fetching a page for someone's question, and AI search: ChatGPT-User, OAI-SearchBot, Claude-User, PerplexityBot, Amazonbot, DuckAssistBot… |
+| `seo` | Backlink and keyword databases: AhrefsBot, SemrushBot, MJ12bot, DotBot, DataForSeoBot… |
+| `scanners` | Scanners that say what they are: zgrab, masscan, Nuclei, sqlmap, Nikto, WPScan, CensysInspect… |
+
+(The full lists are in `src/response/bots.rs`.) This stops crawlers that say who they are,
+which the big ones do; one that poses as a browser needs the two defences below, or a challenge.
+
+**`traps`** bans, for `ban_secs`, a client that asks for a path none of the sites behind the
+proxy serves: `/.env*`, `/.git/*`, `/.svn/*`, `/.aws/*`, `/.ssh/*`, `/.DS_Store`,
+`/wp-login.php`, `/wp-admin/*`, `/wp-includes/*`, `/wp-content/*`, `/wp-config.php*`,
+`/xmlrpc.php`, `/phpmyadmin*`, `/pma/*`, `/vendor/phpunit/*`, `/cgi-bin/*`, `/boaform/*`,
+`/HNAP1` — or `trap_paths`, in `@noauth` syntax, instead. The trap answers `404`; the ban that
+follows answers `403` to everything the client asks, on every site, until it ends. Scanners go
+down a list of such paths, so the first one costs them the rest. **`max_404_per_minute`** bans
+the same way a client past that many 404s in a minute.
+
+A request a page made a browser send never bans anyone — any request with a `Sec-Fetch-Site`
+header other than `none`: an image, a script, a link followed from another site. Otherwise any
+site could put `<img src="https://your.site/.env">` on its pages and get its visitors banned from
+yours, and a page with broken images would count against whoever views it. Scanners do not send
+the header. Never refused nor banned either: `allow_ips`, loopback, the `trusted_proxies`
+themselves (banning a Cloudflare edge would ban everyone behind it — which is also why
+`trusted_proxies` has to be right before turning this on), and the paths that always work: ACME
+challenges, the proxy's health and metrics endpoints. IPv6 clients are banned by /64, as the rate
+limiter counts them.
+
+A site changes this for its own hosts with `[bots]` in its `app.infos`:
+
+```toml
+[bots]
+enabled = false                     # none of it here: a banned client is served too
+# enabled = true                    # or: here, even with enabled = false in config.toml
+traps = false                       # a WordPress: its /wp-admin/ is real
+block_agents = ["ai-training"]      # replaces config.toml's list here ([] refuses none)
+```
+
+`enabled` on a site wins over the global one, both ways, so the protection can be on everywhere
+but one site, or off everywhere but one; the site uses `config.toml`'s settings either way. An
+`app.infos` change is picked up within a couple of seconds, a `config.toml` one on reload
+(`systemctl reload soli-proxy`). `traps = false` means requests to that app never get a client banned, neither by its trap paths
+nor by its 404s; `traps = true` turns traps on for that app alone. A ban, once made, applies to
+every app.
+
+Bans live in memory: a restart forgets them (a returning scanner is banned again on its first
+probe). Each ban is logged once (`bots: banned 203.0.113.9 for 3600s: /.env on shop.example.com`)
+and shows in the TUI's journal. To see them, or lift one:
+
+```bash
+soli-proxy bots                       # bans in force, and the user agents refused, by entry
+soli-proxy bots unban 203.0.113.9     # an IPv6 address lifts its /64's ban
+```
+
+— or `GET /api/v1/bots` and `DELETE /api/v1/bots/bans/{ip}` on the admin API. The request log
+(`log_endpoints`) carries each request's `user_agent`, to see who is there before refusing
+anyone.
+
 ### Upstreams
 
 **Retries.** When an attempt fails before any response byte, the request goes to the rule's next
@@ -1179,7 +1260,7 @@ listener addresses (`[server] bind`, `https_port`, `worker_threads`), the admin 
 `[logging]` `level`/`format`/`output`/`access_log`/`access_log_format`. Per-request settings —
 routes, `force_https`, HSTS, timeouts, body-size limit, `log_endpoints`, admin credentials,
 `[forward_auth] timeout_secs`, `trusted_proxies`, `real_ip_header`, `request_id_header`,
-`[compression]`, `[maintenance]` allowlists, `[error_pages]` (whose pages are re-read),
+`[compression]`, `[maintenance]` allowlists, `[bots]` (bans are kept), `[error_pages]` (whose pages are re-read),
 `[upstream]` retries and the per-route upstream options (`@h2`, `@tls_*`, ...) — take effect on
 the next request, `proxy_protocol` on the next connection, `[forward_auth] allowed_urls` at the
 next app discovery, and health checks are restarted to match within a second. Maintenance
@@ -1301,6 +1382,7 @@ admin = "$2b$12$..."   # generate with: hash-password (cost 4..=13)
 | `name` | string | directory name | Logical app name (used in logs, admin API). |
 | `domain` | string | directory name (when auto-detected) | Domain the app serves. Matched against the `Host` header. |
 | `display_name` | string | — | Human name for the app, shown as `{{app}}` on its maintenance page (else the host). |
+| `[bots]` | table | — | `enabled = false` (none of `[bots]` on this site) or `true` (on here even when off globally), `traps = false` (requests to this app never ban anyone) or `true`, and `block_agents` replacing `config.toml`'s list. See [Bots and scanners](#bots-and-scanners). |
 | `start_script` | string | auto-detected (see below) | Command used to launch the app. Supports `$PORT` and `$WORKERS` substitution. Parsed without a shell — no pipes/redirects/globs. |
 | `stop_script` | string | _none_ | Optional command to run when stopping the app. |
 | `health_check` | string | `"/health"` (`"/up"` for an auto-detected Soli app, `"/"` for LuaOnBeans) | HTTP path the proxy polls every 30s to decide if the app is alive. See [App Health Monitoring](#app-health-monitoring). |
@@ -1665,6 +1747,8 @@ Served on `[admin] bind` (loopback `127.0.0.1:9090` by default); see
 | GET / PUT | `/api/v1/settings` | Admin UI settings (`{"theme": ...}`) |
 | GET / PUT | `/api/v1/maintenance` | Maintenance mode for the whole proxy: `{"enabled", "retry_after"?, "message"?, "for_secs"? \| "until"?}` (see [Maintenance mode](#maintenance-mode)) |
 | PUT | `/api/v1/apps/{name}/maintenance` | Maintenance mode for one app, same body |
+| GET | `/api/v1/bots` | `[bots]`: the bans in force, bans since start, user agents refused by entry (see [Bots and scanners](#bots-and-scanners)) |
+| DELETE | `/api/v1/bots/bans/{ip}` | Lift a ban (an IPv6 address lifts its /64's) |
 
 `POST /api/v1/config/validate` runs `soli-proxy check`'s checks (sites aside) on the text it is
 given; a part left out is read from the running proxy's files, so a proposed `proxy.conf` is

@@ -297,10 +297,20 @@
                                     <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/maintenance</td>
                                     <td class="px-6 py-4 text-gray-400">What is in maintenance: the global window, per-app windows, and apps closed by a <code>maintenance.flag</code> file</td>
                                 </tr>
-                                <tr class="hover:bg-white/[0.02] transition-colors">
+                                <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
                                     <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">PUT</span></td>
                                     <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/maintenance</td>
                                     <td class="px-6 py-4 text-gray-400">Maintenance mode for the whole proxy (same body): 503 with <code>Retry-After</code> and the maintenance page, except for <code>[maintenance] allow_ips</code> / <code>allow_paths</code></td>
+                                </tr>
+                                <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">GET</span></td>
+                                    <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/bots</td>
+                                    <td class="px-6 py-4 text-gray-400"><code>[bots]</code>: the bans in force (client, since, until, reason), bans since start, and the requests refused for their user agent, by entry</td>
+                                </tr>
+                                <tr class="hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-red-500/10 text-red-400 border border-red-500/20">DELETE</span></td>
+                                    <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/bots/bans/{ip}</td>
+                                    <td class="px-6 py-4 text-gray-400">Lift a ban; an IPv6 address lifts its /64&rsquo;s</td>
                                 </tr>
                             </tbody>
                         </table>

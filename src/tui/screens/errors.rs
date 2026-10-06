@@ -449,6 +449,7 @@ mod filter_tests {
             error: None,
             client_ip: None,
             elapsed_ms: Some(1),
+            user_agent: None,
         }
     }
 

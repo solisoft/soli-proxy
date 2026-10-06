@@ -7,6 +7,7 @@
 //! The request path calls into these modules from a handful of small call
 //! sites in `server/mod.rs`; the logic lives here.
 
+pub mod bots;
 pub mod compress;
 pub mod error_pages;
 pub mod maintenance;

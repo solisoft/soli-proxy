@@ -28,6 +28,8 @@ pub struct ErrorEntry {
     pub error: Option<String>,
     pub client_ip: Option<String>,
     pub elapsed_ms: Option<u64>,
+    /// Logged since 1.4; empty when the client sent none.
+    pub user_agent: Option<String>,
 }
 
 /// How much of the log the first read covers, from its end. A dev proxy logs
@@ -195,6 +197,7 @@ fn parse_failure_line(line: &str) -> Option<ErrorEntry> {
         error: str_field("error"),
         client_ip: str_field("client_ip"),
         elapsed_ms: fields.get("elapsed_ms").and_then(|e| e.as_u64()),
+        user_agent: str_field("user_agent").filter(|u| !u.is_empty()),
     })
 }
 
@@ -265,6 +268,9 @@ impl ErrorEntry {
                 .map(|m| format!("{} ms", m))
                 .unwrap_or_else(|| dash.clone())
         ));
+        if let Some(ref ua) = self.user_agent {
+            s.push_str(&format!("Agent:     {}\n", ua));
+        }
         if let Some(ref e) = self.error {
             s.push_str(&format!("Error:     {}\n", e));
         }

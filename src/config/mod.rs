@@ -56,6 +56,8 @@ pub struct TomlConfig {
     #[serde(default)]
     pub maintenance: Option<crate::response::maintenance::MaintenanceConfig>,
     #[serde(default)]
+    pub bots: Option<crate::response::bots::BotsConfig>,
+    #[serde(default)]
     pub upstream: Option<crate::upstream::UpstreamTomlConfig>,
     #[serde(default)]
     pub health_checks: Option<crate::upstream::HealthChecksTomlConfig>,
@@ -662,6 +664,9 @@ pub struct Config {
     /// `[maintenance]`: allowlists and defaults. The on/off state is not
     /// configuration; it lives in `ConfigManager::maintenance`.
     pub maintenance: crate::response::maintenance::MaintenanceConfig,
+    /// `[bots]`: user agents to refuse, trap paths, the 404 budget. The bans
+    /// are runtime state, in `ConfigManager::bots`.
+    pub bots: crate::response::bots::BotsConfig,
     /// `[upstream]`: retries.
     pub upstream: crate::upstream::UpstreamConfig,
     /// `[health_checks]`: active checks of static targets.
@@ -1213,6 +1218,8 @@ pub struct ConfigManager {
     /// Maintenance mode's on/off state: runtime state the admin API toggles,
     /// not configuration, so it survives reloads. Shared by every clone.
     pub maintenance: Arc<crate::response::maintenance::Maintenance>,
+    /// Bans and bot counters: runtime state, kept across reloads.
+    pub bots: Arc<crate::response::bots::Bots>,
 }
 
 impl Clone for ConfigManager {
@@ -1224,6 +1231,7 @@ impl Clone for ConfigManager {
             own_write_hash: self.own_write_hash.clone(),
             app_acme_domains: self.app_acme_domains.clone(),
             maintenance: self.maintenance.clone(),
+            bots: self.bots.clone(),
         }
     }
 }
@@ -1239,6 +1247,7 @@ impl ConfigManager {
             own_write_hash: Arc::new(AtomicU64::new(0)),
             app_acme_domains: Arc::new(RwLock::new(Vec::new())),
             maintenance: Arc::default(),
+            bots: Arc::default(),
         })
     }
 
@@ -1504,6 +1513,7 @@ hook_timeout_ms = 10
             compression: toml_config.compression.unwrap_or_default().validated()?,
             error_pages: toml_config.error_pages.unwrap_or_default().loaded()?,
             maintenance: toml_config.maintenance.unwrap_or_default().validated()?,
+            bots: toml_config.bots.unwrap_or_default().validated()?,
             upstream: crate::upstream::UpstreamConfig::from_toml(toml_config.upstream.as_ref())?,
             health_checks: crate::upstream::HealthChecksConfig::from_toml(
                 toml_config.health_checks.as_ref(),

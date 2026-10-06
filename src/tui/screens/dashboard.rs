@@ -180,6 +180,7 @@ fn kind_color(kind: EventKind) -> ratatui::style::Color {
         EventKind::Failed | EventKind::Error => theme::DANGER,
         EventKind::Asleep => theme::MAGENTA,
         EventKind::Maintenance => theme::WARN,
+        EventKind::Ban => theme::DANGER,
     }
 }
 

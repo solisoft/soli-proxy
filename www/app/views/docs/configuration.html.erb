@@ -1091,6 +1091,50 @@
                         </div>
                     </div>
 
+                    <!-- [bots] -->
+                    <div class="mb-8 ml-11">
+                        <h3 class="text-lg font-semibold text-white mb-1 flex items-center gap-2">
+                            <span class="text-emerald-400 font-mono text-sm">[bots]</span>
+                        </h3>
+                        <p class="text-gray-400 text-sm mb-3">Off until turned on. <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">block_agents</code> refuses with a <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">403</code> the user agents it names: presets <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">ai-training</code> (GPTBot, ClaudeBot, CCBot, Bytespider&hellip;), <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">ai-assistants</code> (ChatGPT-User, PerplexityBot, Amazonbot&hellip;), <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">seo</code> (AhrefsBot, SemrushBot&hellip;), <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">scanners</code> (zgrab, Nuclei, sqlmap&hellip;), or substrings. Search engines&rsquo; crawlers are in no preset. <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">traps</code> bans a client that asks for <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">/.env</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">/wp-login.php</code>, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">/.git/</code> and the like, and <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">max_404_per_minute</code> one that collects too many 404s: a banned client gets a <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">403</code> on every site until the ban ends.</p>
+                        <p class="text-gray-400 text-sm mb-3">Requests a page made a browser send (a <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">Sec-Fetch-Site</code> other than <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">none</code>) never ban anyone, so no site can get your visitors banned with an <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">&lt;img src="/.env"&gt;</code>. <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">allow_ips</code>, loopback and the <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">trusted_proxies</code> are never refused. A site sets <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">[bots] enabled = false</code> in its <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">app.infos</code> to opt out entirely, or <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">enabled = true</code> to opt in while it is off everywhere else; <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">traps = false</code> when it serves such paths (a WordPress), or its own <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">block_agents</code>. Bans live in memory: <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">soli-proxy bots</code> lists them, <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">soli-proxy bots unban &lt;ip&gt;</code> lifts one.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">config.toml</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tk">[bots]</span>
+<span class="tf">enabled</span> = <span class="tn">true</span>
+<span class="tf">block_agents</span> = [<span class="ts">"ai-training"</span>, <span class="ts">"scanners"</span>]
+<span class="tf">traps</span> = <span class="tn">true</span>
+<span class="tf">max_404_per_minute</span> = <span class="tn">60</span>
+<span class="tf">ban_secs</span> = <span class="tn">3600</span>
+<span class="tf">allow_ips</span> = [<span class="ts">"203.0.113.7"</span>]</code></pre>
+                        </div>
+                        <div class="mt-3 overflow-x-auto">
+                            <table class="w-full text-sm text-left">
+                                <thead><tr class="border-b border-white/10 text-gray-400">
+                                    <th class="py-2 pr-4 font-medium">Key</th>
+                                    <th class="py-2 pr-4 font-medium">Type</th>
+                                    <th class="py-2 pr-4 font-medium">Default</th>
+                                    <th class="py-2 font-medium">Description</th>
+                                </tr></thead>
+                                <tbody class="text-gray-300">
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">enabled</td><td class="py-2 pr-4">boolean</td><td class="py-2 pr-4 text-gray-500">true</td><td class="py-2">The master switch: <code>false</code> turns everything off, bans included, but keeps the settings. A site&rsquo;s <code>[bots] enabled</code> in its <code>app.infos</code> wins over it, both ways.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">block_agents</td><td class="py-2 pr-4">list</td><td class="py-2 pr-4 text-gray-500">[]</td><td class="py-2">User agents refused with a 403: presets or substrings of at least three characters, compared without case.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">traps</td><td class="py-2 pr-4">boolean</td><td class="py-2 pr-4 text-gray-500">false</td><td class="py-2">Ban a client that asks for one of the trap paths (answered 404).</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">trap_paths</td><td class="py-2 pr-4">list</td><td class="py-2 pr-4 text-gray-500">built-in</td><td class="py-2">Replaces the built-in list (<code>/.env*</code>, <code>/.git/*</code>, <code>/wp-admin/*</code>, <code>/xmlrpc.php</code>, <code>/phpmyadmin*</code>&hellip;). Exact paths, or prefixes ending in <code>*</code>.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">max_404_per_minute</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">0</td><td class="py-2">Ban a client past this many 404s in a minute. <code>0</code>: off.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">ban_secs</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">3600</td><td class="py-2">How long a ban lasts, at most a week. IPv6 clients are banned by /64.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">allow_ips</td><td class="py-2 pr-4">list</td><td class="py-2 pr-4 text-gray-500">[]</td><td class="py-2">IPs or CIDRs never refused nor banned.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
                     <!-- Full config.toml example -->
                     <div class="ml-11">
                         <h3 class="text-lg font-semibold text-white mb-3">Complete config.toml Example</h3>

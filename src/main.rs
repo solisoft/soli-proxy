@@ -235,6 +235,15 @@ enum Commands {
         #[command(subcommand)]
         action: MaintenanceAction,
     },
+    /// Who `[bots]` banned and what it refused, or lift a ban. Goes through
+    /// the running daemon's admin API.
+    Bots {
+        #[arg(short, long, default_value = "./proxy.conf")]
+        conf: String,
+
+        #[command(subcommand)]
+        action: Option<BotsAction>,
+    },
     /// Print an app's deployment logs (both slots).
     Logs {
         #[arg(short, long, default_value = "./proxy.conf")]
@@ -277,6 +286,14 @@ enum MaintenanceAction {
     Status,
 }
 
+#[derive(clap::Subcommand, Debug)]
+enum BotsAction {
+    /// The bans in force and the user agents refused (the default).
+    Status,
+    /// Lift the ban on a client (an IPv6 address lifts its /64's).
+    Unban { ip: String },
+}
+
 /// `soli-proxy -c prod.conf maintenance on all` must reach the proxy of
 /// `prod.conf`: a subcommand's own `-c` / `--sites-dir` default to
 /// `./proxy.conf` / `./sites`, so a path given before the subcommand would
@@ -317,6 +334,7 @@ fn inherit_global_paths(cli: &mut Cli) {
         Some(Commands::Deploy { conf: c, .. })
         | Some(Commands::Restart { conf: c, .. })
         | Some(Commands::Maintenance { conf: c, .. })
+        | Some(Commands::Bots { conf: c, .. })
         | Some(Commands::Logs { conf: c, .. }) => conf(c),
         _ => {}
     }
@@ -384,6 +402,10 @@ fn main() -> Result<()> {
 
     if let Some(Commands::Maintenance { conf, action }) = cli.command {
         return run_maintenance(&conf, action);
+    }
+
+    if let Some(Commands::Bots { conf, action }) = cli.command {
+        return run_bots(&conf, action.unwrap_or(BotsAction::Status));
     }
 
     if !std::path::Path::new(&cli.conf).exists() {
@@ -841,20 +863,6 @@ fn print_upgrade_restart_hint() {
 }
 
 fn run_maintenance(config_path: &str, action: MaintenanceAction) -> Result<()> {
-    let config = ConfigManager::new(config_path)?;
-    let cfg = config.get_config();
-    if !cfg.admin.enabled.unwrap_or(true) {
-        anyhow::bail!(
-            "maintenance mode is switched through the admin API, and [admin] enabled = false"
-        );
-    }
-    let admin = cfg
-        .admin
-        .bind
-        .replace("0.0.0.0:", "127.0.0.1:")
-        .replace("[::]:", "127.0.0.1:");
-    let api_key = cfg.admin.api_key.clone();
-
     let (method, path, body) = match &action {
         MaintenanceAction::On {
             target,
@@ -887,8 +895,59 @@ fn run_maintenance(config_path: &str, action: MaintenanceAction) -> Result<()> {
         ),
     };
 
+    let json = admin_call(
+        config_path,
+        "maintenance mode is switched",
+        method,
+        &path,
+        body,
+    )?;
+
+    match action {
+        MaintenanceAction::On { target, .. } => {
+            let window = if target == "all" {
+                &json["data"]["global"]
+            } else {
+                &json["data"]["apps"][&target]
+            };
+            let until = window["until"]
+                .as_str()
+                .map(|u| format!(" until {u}"))
+                .unwrap_or_else(|| " until switched off".to_string());
+            println!("{} closed for maintenance{until}", describe_target(&target));
+        }
+        MaintenanceAction::Off { target } => {
+            println!("{} reopened", describe_target(&target));
+        }
+        MaintenanceAction::Status => print_maintenance_status(&json["data"]),
+    }
+    Ok(())
+}
+
+/// One call to the running daemon's admin API, at the address and with the
+/// key of `config_path`'s `config.toml`. `what` starts the error when the
+/// admin API is off ("maintenance mode is switched").
+fn admin_call(
+    config_path: &str,
+    what: &str,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<serde_json::Value>,
+) -> Result<serde_json::Value> {
+    let config = ConfigManager::new(config_path)?;
+    let cfg = config.get_config();
+    if !cfg.admin.enabled.unwrap_or(true) {
+        anyhow::bail!("{what} through the admin API, and [admin] enabled = false");
+    }
+    let admin = cfg
+        .admin
+        .bind
+        .replace("0.0.0.0:", "127.0.0.1:")
+        .replace("[::]:", "127.0.0.1:");
+    let api_key = cfg.admin.api_key.clone();
+
     let rt = tokio::runtime::Runtime::new()?;
-    let json: serde_json::Value = rt.block_on(async {
+    rt.block_on(async {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
             .build()?;
@@ -919,27 +978,85 @@ fn run_maintenance(config_path: &str, action: MaintenanceAction) -> Result<()> {
             anyhow::bail!("{detail}{hint}");
         }
         Ok::<_, anyhow::Error>(json)
-    })?;
+    })
+}
 
+fn run_bots(config_path: &str, action: BotsAction) -> Result<()> {
     match action {
-        MaintenanceAction::On { target, .. } => {
-            let window = if target == "all" {
-                &json["data"]["global"]
-            } else {
-                &json["data"]["apps"][&target]
-            };
-            let until = window["until"]
-                .as_str()
-                .map(|u| format!(" until {u}"))
-                .unwrap_or_else(|| " until switched off".to_string());
-            println!("{} closed for maintenance{until}", describe_target(&target));
+        BotsAction::Unban { ip } => {
+            let path = format!("/api/v1/bots/bans/{ip}");
+            admin_call(
+                config_path,
+                "bans are managed",
+                reqwest::Method::DELETE,
+                &path,
+                None,
+            )?;
+            println!("{ip} unbanned");
         }
-        MaintenanceAction::Off { target } => {
-            println!("{} reopened", describe_target(&target));
+        BotsAction::Status => {
+            let json = admin_call(
+                config_path,
+                "bans are listed",
+                reqwest::Method::GET,
+                "/api/v1/bots",
+                None,
+            )?;
+            print_bots_status(&json["data"]);
         }
-        MaintenanceAction::Status => print_maintenance_status(&json["data"]),
     }
     Ok(())
+}
+
+fn print_bots_status(data: &serde_json::Value) {
+    let policy = &data["policy"];
+    let agents: Vec<&str> = policy["block_agents"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+    let mut on = Vec::new();
+    if !agents.is_empty() {
+        on.push(format!("refusing {}", agents.join(", ")));
+    }
+    if policy["traps"].as_bool() == Some(true) {
+        on.push("traps".to_string());
+    }
+    if let Some(n) = policy["max_404_per_minute"].as_u64().filter(|n| *n > 0) {
+        on.push(format!("ban past {n} 404s a minute"));
+    }
+    if policy["enabled"].as_bool() == Some(false) {
+        println!("[bots] is off (enabled = false); sites with enabled = true still use it.");
+    } else if on.is_empty() {
+        println!("[bots] is off (apps may still set their own).");
+    } else {
+        println!(
+            "[bots]: {} · bans last {}s",
+            on.join(" · "),
+            policy["ban_secs"].as_u64().unwrap_or(0)
+        );
+    }
+    let bans = data["bans"].as_array().cloned().unwrap_or_default();
+    println!(
+        "\n{} banned now, {} since the proxy started:",
+        bans.len(),
+        data["banned_total"].as_u64().unwrap_or(0)
+    );
+    for b in &bans {
+        println!(
+            "  {:<24} until {}  {}",
+            b["ip"].as_str().unwrap_or(""),
+            b["until"].as_str().unwrap_or(""),
+            b["reason"].as_str().unwrap_or("")
+        );
+    }
+    if let Some(blocked) = data["blocked"].as_object().filter(|b| !b.is_empty()) {
+        println!("\nRefused for their user agent:");
+        let mut rows: Vec<_> = blocked.iter().collect();
+        rows.sort_by_key(|(_, n)| std::cmp::Reverse(n.as_u64().unwrap_or(0)));
+        for (name, n) in rows {
+            println!("  {name:<24} {}", n.as_u64().unwrap_or(0));
+        }
+    }
 }
 
 fn maintenance_path(target: &str) -> String {

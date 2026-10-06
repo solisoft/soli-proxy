@@ -229,6 +229,9 @@ pub struct AppConfig {
     /// maintenance page's `{{app}}`). Unset: the domain they asked for.
     #[serde(default)]
     pub display_name: Option<String>,
+    /// `[bots]`: this app's exceptions to `config.toml`'s `[bots]`.
+    #[serde(default)]
+    pub bots: crate::response::bots::AppBots,
 }
 
 impl Default for AppConfig {
@@ -253,6 +256,7 @@ impl Default for AppConfig {
             idle_timeout: None,
             compress: None,
             display_name: None,
+            bots: Default::default(),
         }
     }
 }
@@ -280,7 +284,7 @@ const ENV_SECTIONS: [&str; 2] = ["development", "production"];
 ///
 /// `known_root_keys_match_app_config` fails if a field is added to
 /// `AppConfig` without being listed here.
-const KNOWN_ROOT_KEYS: [&str; 19] = [
+const KNOWN_ROOT_KEYS: [&str; 20] = [
     "name",
     "domain",
     "start_script",
@@ -300,6 +304,7 @@ const KNOWN_ROOT_KEYS: [&str; 19] = [
     "idle_timeout",
     "compress",
     "display_name",
+    "bots",
 ];
 
 /// Parse an `app.infos`, folding in the overlay for the environment this proxy
@@ -616,6 +621,7 @@ impl AppInfo {
             validate_health_check_path(health_check)?;
         }
         config.auth.validate()?;
+        config.bots.validate()?;
         if multi_tenant && config.compress == Some(true) {
             // Opting in spends the operator's CPU, which is the operator's
             // call (`[compression] enabled`); opting out is the tenant's.
@@ -957,6 +963,8 @@ pub struct AppRoute {
     pub site: Arc<Path>,
     /// `display_name` from `app.infos`.
     pub display_name: Option<Arc<str>>,
+    /// `[bots]` from `app.infos`, when it sets anything.
+    pub bots: Option<Arc<crate::response::bots::AppBotsPolicy>>,
     /// The app's idle clock (see `AppManager::touch`), shared by all of its
     /// hosts and across rebuilds: a request records itself with one store.
     activity: Arc<AppActivity>,
@@ -1068,6 +1076,9 @@ pub struct AppRoutes {
     any_maintenance: bool,
     /// Some app has error pages: only then is a request's host kept for them.
     any_error_pages: bool,
+    /// Some app has a `[bots]` section: only then does the bots check look
+    /// the host up.
+    any_bots: bool,
 }
 
 impl AppRoutes {
@@ -1146,6 +1157,7 @@ fn build_routes(
         error_pages: app.error_pages.clone(),
         site: Arc::from(app.path.as_path()),
         display_name: app.config.display_name.as_deref().map(Arc::from),
+        bots: app.config.bots.compiled(),
         activity: activity.entry(app.config.name.clone()).or_default().clone(),
     };
     let mut routes = AppRoutes::default();
@@ -1210,6 +1222,7 @@ fn build_routes(
 
     routes.any_maintenance = routes.hosts.values().any(|r| r.maintenance);
     routes.any_error_pages = routes.hosts.values().any(|r| r.error_pages.is_some());
+    routes.any_bots = routes.hosts.values().any(|r| r.bots.is_some());
 
     for app in &ordered {
         let name: Arc<str> = Arc::from(app.config.name.as_str());
@@ -1788,6 +1801,11 @@ impl AppManager {
     /// Whether some app has error pages. One atomic load.
     pub fn any_error_pages(&self) -> bool {
         self.routes.load().any_error_pages
+    }
+
+    /// Whether some app has a `[bots]` section. One atomic load.
+    pub fn any_bots(&self) -> bool {
+        self.routes.load().any_bots
     }
 
     /// Rebuild the routing table from `apps` and publish it.
@@ -4926,6 +4944,11 @@ typo_here = true
             idle_timeout: Some(0),
             compress: Some(false),
             display_name: Some("The Shop".to_string()),
+            bots: crate::response::bots::AppBots {
+                enabled: Some(true),
+                traps: Some(false),
+                block_agents: Some(vec!["ai-training".to_string()]),
+            },
         };
 
         let toml::Value::Table(table) = toml::Value::try_from(config).unwrap() else {

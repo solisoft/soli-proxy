@@ -2548,9 +2548,25 @@ async fn handle_request(
     // A malformed request (userinfo in its authority, two Hosts…) is not
     // looked at here: `handle_request_inner` refuses it with a 400 first
     // thing, and its host is not one maintenance should judge.
-    let maintenance = match reject_malformed_request(&req) {
-        Some(_) => None,
-        None => crate::response::maintenance::check(
+    //
+    // `[bots]` goes first: a banned scanner or a refused crawler is not shown
+    // the maintenance page either.
+    let malformed = reject_malformed_request(&req).is_some();
+    let bots = &config_manager.bots;
+    let verdict = match malformed {
+        true => crate::response::bots::Verdict::Pass { count_404: None },
+        false => {
+            crate::response::bots::check(&req, &config, bots, app_manager.as_deref(), peer_addr)
+        }
+    };
+    let (refusal, count_404) = match verdict {
+        crate::response::bots::Verdict::Refuse(resp) => (Some(resp), None),
+        crate::response::bots::Verdict::Pass { count_404 } => (None, count_404),
+    };
+    let maintenance = match (malformed, refusal) {
+        (_, Some(resp)) => Some(resp),
+        (true, None) => None,
+        (false, None) => crate::response::maintenance::check(
             &req,
             &config,
             &config_manager.maintenance,
@@ -2559,7 +2575,7 @@ async fn handle_request(
         ),
     };
     let mut result = if let Some(resp) = maintenance {
-        metrics.record_request(0, 0, 503, Duration::ZERO);
+        metrics.record_request(0, 0, resp.status().as_u16(), Duration::ZERO);
         with_hsts(Ok(resp), is_tls, &config)
     } else {
         // What a custom error page would need, kept only if one could be served.
@@ -2579,7 +2595,11 @@ async fn handle_request(
             rate_limiter,
         )
         .await;
-        crate::response::error_pages::apply(result, error_page, &config)
+        let result = crate::response::error_pages::apply(result, error_page, &config);
+        if let Ok(resp) = &result {
+            crate::response::bots::after(bots, &config, count_404, resp.status().as_u16());
+        }
+        result
     };
 
     if let (Ok(resp), Some((name, id))) = (&mut result, request_id) {
@@ -2654,6 +2674,18 @@ async fn serve_request(
     let client_ip = crate::edge::client_ip(req.extensions())
         .map(|ip| ip.to_string())
         .unwrap_or_default();
+    // Who is asking, for telling crawlers and scanners apart in the logs.
+    // Clipped: a 16 KiB User-Agent would otherwise make a 16 KiB line.
+    let user_agent: String = req
+        .headers()
+        .get(hyper::header::USER_AGENT)
+        .map(|v| {
+            String::from_utf8_lossy(v.as_bytes())
+                .chars()
+                .take(256)
+                .collect()
+        })
+        .unwrap_or_default();
     let start = std::time::Instant::now();
 
     let result = handle_request_inner(
@@ -2683,6 +2715,7 @@ async fn serve_request(
             status = resp.status().as_u16(),
             elapsed_ms = elapsed_ms,
             client_ip = %client_ip,
+            user_agent = %user_agent,
             "endpoint request"
         ),
         Err(e) => tracing::info!(
@@ -2694,6 +2727,7 @@ async fn serve_request(
             error = %e,
             elapsed_ms = elapsed_ms,
             client_ip = %client_ip,
+            user_agent = %user_agent,
             "endpoint request failed"
         ),
     }
