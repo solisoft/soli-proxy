@@ -815,13 +815,17 @@ without case, with a `403`. An entry is a substring of at least three characters
 which the big ones do; one that poses as a browser needs the two defences below, or a challenge.
 
 **`traps`** bans, for `ban_secs`, a client that asks for a path none of the sites behind the
-proxy serves: `/.env*`, `/.git/*`, `/.svn/*`, `/.aws/*`, `/.ssh/*`, `/.DS_Store`,
-`/wp-login.php`, `/wp-admin/*`, `/wp-includes/*`, `/wp-content/*`, `/wp-config.php*`,
-`/xmlrpc.php`, `/phpmyadmin*`, `/pma/*`, `/vendor/phpunit/*`, `/cgi-bin/*`, `/boaform/*`,
-`/HNAP1` — or `trap_paths`, in `@noauth` syntax, instead. The trap answers `404`; the ban that
-follows answers `403` to everything the client asks, on every site, until it ends. Scanners go
-down a list of such paths, so the first one costs them the rest. **`max_404_per_minute`** bans
-the same way a client past that many 404s in a minute.
+proxy serves and no visitor ever asks for: `/.env*`, `/.git/*`, `/.svn/*`, `/.aws/*`, `/.ssh/*`,
+`/.DS_Store`, `/wp-config.php*`, `/phpmyadmin*`, `/vendor/phpunit/*`, `/boaform/*`, `/HNAP1` —
+or `trap_paths`, in `@noauth` syntax, instead. The trap answers `404`; the ban that follows
+answers `403` to everything the client asks, on every site, until it ends. Scanners go down a
+list of such paths, so the first one costs them the rest. **`max_404_per_minute`** bans the same
+way a client past that many 404s in a minute.
+
+There are deliberately no WordPress paths in the list (`/wp-admin/`, `/wp-content/`,
+`/wp-login.php`): a site migrated from WordPress gets real requests for them — its editors'
+bookmarks, old links, images hotlinked years ago — and 1.4 banned a newsroom's own staff for
+one. Add them with `trap_paths` only where no site behind the proxy was ever a WordPress.
 
 A request a page made a browser send never bans anyone — any request with a `Sec-Fetch-Site`
 header other than `none`: an image, a script, a link followed from another site. Otherwise any
@@ -830,8 +834,10 @@ yours, and a page with broken images would count against whoever views it. Scann
 the header. Never refused nor banned either: `allow_ips`, loopback, the `trusted_proxies`
 themselves (banning a Cloudflare edge would ban everyone behind it — which is also why
 `trusted_proxies` has to be right before turning this on), and the paths that always work: ACME
-challenges, the proxy's health and metrics endpoints. IPv6 clients are banned by /64, as the rate
-limiter counts them.
+challenges, the proxy's health and metrics endpoints. A ban is on the exact address, IPv6
+included: hosting providers put many customers in one /64 (OVH gives each VPS an address in a
+shared one), so banning the block would ban the neighbours of a scanner. A shared address — an
+office NAT, a VPN exit — is banned as a whole; put the ones you know in `allow_ips`.
 
 A site changes this for its own hosts with `[bots]` in its `app.infos`:
 
@@ -851,12 +857,15 @@ nor by its 404s; `traps = true` turns traps on for that app alone. A ban, once m
 every app.
 
 Bans live in memory: a restart forgets them (a returning scanner is banned again on its first
-probe). Each ban is logged once (`bots: banned 203.0.113.9 for 3600s: /.env on shop.example.com`)
-and shows in the TUI's journal. To see them, or lift one:
+probe). Each ban is logged once, with the request and the user agent that caused it
+(`bots: banned 203.0.113.9 for 3600s: /.env on shop.example.com · curl/8.5.0`), and shows in the
+TUI's journal. With `log_endpoints`, every refused request is in the request log too, with
+`"answered_by": "bots"` (and a maintenance page with `"answered_by": "maintenance"`), so a client
+who reports a `403` can be found. To see the bans, or lift one:
 
 ```bash
 soli-proxy bots                       # bans in force, and the user agents refused, by entry
-soli-proxy bots unban 203.0.113.9     # an IPv6 address lifts its /64's ban
+soli-proxy bots unban 203.0.113.9
 ```
 
 — or `GET /api/v1/bots` and `DELETE /api/v1/bots/bans/{ip}` on the admin API. The request log
@@ -1361,6 +1370,33 @@ sudo systemctl restart soli-proxy                   # drains, exits, the new one
 
 With `-d` instead of systemd, run `soli-proxy -d` with the same flags again (refused while
 systemd runs the proxy, see [Systemd Service](#systemd-service)): it signals the running daemon, waits for its drain (`shutdown_grace_period` plus 5 s) and takes over the apps.
+
+### Restarts without a refused connection
+
+Apps survive a restart; the proxy's own ports do not, by themselves. Between the old proxy
+closing its listeners and the new one opening them — a second or two, longer while the old one
+drains — a connection is refused, and behind Cloudflare the visitor gets a 521.
+
+`scripts/soli-proxy.socket` closes that gap. systemd binds `:80` and `:443` itself and hands the
+sockets to the service (socket activation, `LISTEN_FDS`); the proxy serves on them instead of
+binding its own, and logs `Listening on 0.0.0.0:443 through the socket systemd holds`. The
+sockets stay open while the service restarts, so a connection arriving then waits in the kernel's
+queue (`Backlog=8192`) and is answered as soon as the new proxy is up: a moment of latency, no
+error. Open WebSockets still close and reconnect. With `ReusePort=yes` systemd can bind next to a
+proxy already running, so moving a live host onto the socket refuses nothing either:
+
+```bash
+sudo cp scripts/soli-proxy.socket /etc/systemd/system/    # adjust ListenStream= to config.toml
+sudo systemctl daemon-reload
+sudo systemctl enable --now soli-proxy.socket
+sudo systemctl restart soli-proxy                         # from now on, on systemd's sockets
+```
+
+`ListenStream=` must name what `config.toml` listens on (`[server] bind`, `https_port`): a socket
+the configuration does not use is logged as a warning, and a port with no socket is bound by the
+proxy as before. The sockets are marked close-on-exec, so no app inherits them. A side effect:
+systemd binds the privileged ports, so the service itself no longer needs
+`CAP_NET_BIND_SERVICE` for them.
 Between the old process closing its listeners and the new one opening them, new connections
 are refused: for as long as the slowest in-flight request takes to finish (bounded by the grace
 period), plus the new process's startup — typically well under a second. A hand-over of the listening sockets, which would close
@@ -1780,7 +1816,7 @@ Served on `[admin] bind` (loopback `127.0.0.1:9090` by default); see
 | GET / PUT | `/api/v1/maintenance` | Maintenance mode for the whole proxy: `{"enabled", "retry_after"?, "message"?, "for_secs"? \| "until"?}` (see [Maintenance mode](#maintenance-mode)) |
 | PUT | `/api/v1/apps/{name}/maintenance` | Maintenance mode for one app, same body |
 | GET | `/api/v1/bots` | `[bots]`: the bans in force, bans since start, user agents refused by entry (see [Bots and scanners](#bots-and-scanners)) |
-| DELETE | `/api/v1/bots/bans/{ip}` | Lift a ban (an IPv6 address lifts its /64's) |
+| DELETE | `/api/v1/bots/bans/{ip}` | Lift a ban |
 
 `POST /api/v1/config/validate` runs `soli-proxy check`'s checks (sites aside) on the text it is
 given; a part left out is read from the running proxy's files, so a proposed `proxy.conf` is
@@ -1977,10 +2013,14 @@ sudo chown -R soli-proxy:soli-proxy /etc/soli-proxy /srv/sites
 # Copy the service file and adjust the paths in it
 sudo cp scripts/soli-proxy.service /etc/systemd/system/
 
+# And the socket unit, which holds :80/:443 across restarts (see below)
+sudo cp scripts/soli-proxy.socket /etc/systemd/system/
+
 # Reload systemd
 sudo systemctl daemon-reload
 
 # Enable and start
+sudo systemctl enable --now soli-proxy.socket
 sudo systemctl enable soli-proxy
 sudo systemctl start soli-proxy
 

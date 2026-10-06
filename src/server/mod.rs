@@ -1185,6 +1185,11 @@ fn create_auth_busy_response() -> Response<BoxBody> {
 }
 
 fn create_listener(addr: SocketAddr) -> Result<TcpListener> {
+    // Socket activation: systemd holds the port across restarts.
+    if let Some(listener) = crate::systemd::inherited_listener(addr) {
+        listener.set_nonblocking(true)?;
+        return Ok(TcpListener::from_std(listener)?);
+    }
     let domain = if addr.is_ipv4() {
         Domain::IPV4
     } else {
@@ -1211,6 +1216,9 @@ fn create_listener(addr: SocketAddr) -> Result<TcpListener> {
 /// before it is dropped gets an RST — a restart would then reject a handful of
 /// real requests to find out something it can learn without them.
 fn probe_bind(addr: SocketAddr) -> Result<()> {
+    if crate::systemd::has_inherited(addr) {
+        return Ok(()); // bound already, by systemd
+    }
     let domain = if addr.is_ipv4() {
         Domain::IPV4
     } else {
@@ -1590,6 +1598,20 @@ impl ProxyServer {
         probe_bind(http_addr)?;
         if let Some(addr) = https_addr {
             probe_bind(addr)?;
+        }
+
+        for addr in crate::systemd::unused_inherited()
+            .into_iter()
+            .filter(|a| !crate::systemd::has_inherited(http_addr) || a.port() != http_addr.port())
+        {
+            if https_addr.is_some_and(|h| h.port() == addr.port()) {
+                continue;
+            }
+            tracing::warn!(
+                "systemd passed a socket for {} that the configuration does not listen on \
+                 ([server] bind / https_port): ListenStream= and config.toml disagree",
+                addr
+            );
         }
 
         // One shared connection pool for every accept loop (HTTP + HTTPS).
@@ -2563,8 +2585,8 @@ async fn handle_request(
         crate::response::bots::Verdict::Refuse(resp) => (Some(resp), None),
         crate::response::bots::Verdict::Pass { count_404 } => (None, count_404),
     };
-    let maintenance = match (malformed, refusal) {
-        (_, Some(resp)) => Some(resp),
+    let early = match (malformed, refusal) {
+        (_, Some(resp)) => Some((resp, "bots")),
         (true, None) => None,
         (false, None) => crate::response::maintenance::check(
             &req,
@@ -2572,10 +2594,16 @@ async fn handle_request(
             &config_manager.maintenance,
             app_manager.as_deref(),
             peer_addr,
-        ),
+        )
+        .map(|resp| (resp, "maintenance")),
     };
-    let mut result = if let Some(resp) = maintenance {
+    let mut result = if let Some((resp, answered_by)) = early {
         metrics.record_request(0, 0, resp.status().as_u16(), Duration::ZERO);
+        // Not served by `serve_request`, so logged here: a 403 a client
+        // complains about must be findable in the request log.
+        if config.logging.log_endpoints.unwrap_or(false) {
+            log_early_response(&req, is_tls, resp.status().as_u16(), answered_by);
+        }
         with_hsts(Ok(resp), is_tls, &config)
     } else {
         // What a custom error page would need, kept only if one could be served.
@@ -2613,6 +2641,43 @@ async fn handle_request(
         }
         (result, None) => result,
     }
+}
+
+/// The request-log line (`log_endpoints`) for a response the proxy gave
+/// before routing — a `[bots]` refusal, a maintenance page — with what gave
+/// it as `answered_by`.
+fn log_early_response<B>(req: &Request<B>, is_tls: bool, status: u16, answered_by: &str) {
+    let host = req
+        .uri()
+        .host()
+        .or_else(|| req.headers().get("host").and_then(|v| v.to_str().ok()))
+        .unwrap_or("");
+    let client_ip = crate::edge::client_ip(req.extensions())
+        .map(|ip| ip.to_string())
+        .unwrap_or_default();
+    let user_agent: String = req
+        .headers()
+        .get(hyper::header::USER_AGENT)
+        .map(|v| {
+            String::from_utf8_lossy(v.as_bytes())
+                .chars()
+                .take(256)
+                .collect()
+        })
+        .unwrap_or_default();
+    tracing::info!(
+        layer = "endpoint",
+        method = %req.method(),
+        scheme = if is_tls { "https" } else { "http" },
+        host = %host,
+        path = %req.uri().path(),
+        status = status,
+        elapsed_ms = 0u64,
+        client_ip = %client_ip,
+        user_agent = %user_agent,
+        answered_by = answered_by,
+        "endpoint request"
+    );
 }
 
 /// Serve one request once the door has seen it. When `[logging].log_endpoints`

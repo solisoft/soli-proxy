@@ -6,7 +6,7 @@
 //! - `block_agents`: a `User-Agent` containing one of these (presets such as
 //!   `"ai-training"` or plain substrings, case-insensitive) gets a 403.
 //! - `traps`: a request for a path no site here serves — `/.env`,
-//!   `/wp-login.php`, `/.git/config` — gets a 404 and its client is banned
+//!   `/.git/config`, `/.aws/credentials` — gets a 404 and its client is banned
 //!   for `ban_secs`, on every app.
 //! - `max_404_per_minute`: a client past that many 404s in a minute is banned
 //!   the same way.
@@ -132,9 +132,12 @@ pub const PRESETS: &[(&str, &[&str])] = &[
     ("scanners", SCANNERS),
 ];
 
-/// Paths `traps = true` bans on unless `trap_paths` replaces them: files and
-/// admin pages scanners look for, which none of a Soli proxy's apps serve.
-/// An app that does (a WordPress) sets `traps = false` in its `app.infos`.
+/// Paths `traps = true` bans on unless `trap_paths` replaces them: secrets,
+/// version-control files and tools that no visitor ever asks for, only
+/// scanners. Deliberately no WordPress paths: a site migrated from
+/// WordPress gets real requests for `/wp-admin/`, `/wp-content/uploads/…`
+/// and `/wp-login.php` — its editors' bookmarks, old links — and banning
+/// them banned a client.
 pub const DEFAULT_TRAP_PATHS: &[&str] = &[
     "/.env*",
     "/.git/*",
@@ -142,17 +145,10 @@ pub const DEFAULT_TRAP_PATHS: &[&str] = &[
     "/.aws/*",
     "/.ssh/*",
     "/.DS_Store",
-    "/wp-login.php",
-    "/wp-admin/*",
-    "/wp-includes/*",
-    "/wp-content/*",
     "/wp-config.php*",
-    "/xmlrpc.php",
     "/phpmyadmin*",
     "/phpMyAdmin*",
-    "/pma/*",
     "/vendor/phpunit/*",
-    "/cgi-bin/*",
     "/boaform/*",
     "/HNAP1",
 ];
@@ -384,7 +380,7 @@ pub struct BotsSnapshot {
 
 #[derive(Debug, Serialize)]
 pub struct BanInfo {
-    /// The client, or its /64 for IPv6.
+    /// The client's address.
     pub ip: String,
     pub since: String,
     pub until: String,
@@ -410,7 +406,7 @@ impl Bots {
         if self.ban_count.load(Ordering::Relaxed) == 0 {
             return false;
         }
-        let key = crate::server::client_key(ip);
+        let key = ip.to_canonical();
         let mut bans = self.bans.lock();
         match bans.get(&key) {
             Some(ban) if ban.until > now => true,
@@ -425,7 +421,7 @@ impl Bots {
 
     /// Ban `ip` for `secs`. Logged once; a ban already in force is extended.
     pub fn ban(&self, ip: IpAddr, secs: u64, reason: &str, now: Instant) {
-        let key = crate::server::client_key(ip);
+        let key = ip.to_canonical();
         let mut reason = reason.to_string();
         if reason.len() > MAX_REASON {
             let mut cut = MAX_REASON;
@@ -466,9 +462,9 @@ impl Bots {
         self.ban_count.store(bans.len(), Ordering::Relaxed);
     }
 
-    /// Lift the ban on `ip` (or its /64). Whether there was one.
+    /// Lift the ban on `ip`. Whether there was one.
     pub fn unban(&self, ip: IpAddr) -> bool {
-        let key = crate::server::client_key(ip);
+        let key = ip.to_canonical();
         let mut bans = self.bans.lock();
         let had = bans.remove(&key).is_some();
         self.ban_count.store(bans.len(), Ordering::Relaxed);
@@ -481,7 +477,7 @@ impl Bots {
 
     /// Count a 404 for `ip`; ban it past `limit` in a minute.
     pub fn note_404(&self, ip: IpAddr, limit: u32, ban_secs: u64, now: Instant) {
-        let key = crate::server::client_key(ip);
+        let key = ip.to_canonical();
         let minute = unix_minute();
         let over = {
             let mut misses = self.misses.lock();
@@ -549,12 +545,9 @@ impl Bots {
     }
 }
 
-/// A ban's key as people read it: the address, or its /64.
+/// A ban's key as people read it.
 fn shown(key: &IpAddr) -> String {
-    match key {
-        IpAddr::V6(_) => format!("{key}/64"),
-        IpAddr::V4(_) => key.to_string(),
-    }
+    key.to_string()
 }
 
 fn unix_minute() -> u64 {
@@ -664,12 +657,26 @@ pub fn check<B>(
         return PASS;
     }
     if app_traps.unwrap_or(policy.traps) && policy.is_trap(path) {
+        // Host header, or the authority of an HTTP/2 request.
         let host = req
             .headers()
             .get(header::HOST)
             .and_then(|h| h.to_str().ok())
-            .unwrap_or("");
-        bots.ban(ip, policy.ban_secs, &format!("{path} on {host}"), now);
+            .or_else(|| req.uri().authority().map(|a| a.as_str()))
+            .unwrap_or("-");
+        let agent = req
+            .headers()
+            .get(header::USER_AGENT)
+            .map(|v| String::from_utf8_lossy(v.as_bytes()).into_owned())
+            .unwrap_or_else(|| "no user agent".to_string());
+        // Who asked matters when a ban turns out wrong: a browser on an old
+        // bookmark reads differently from a scanner.
+        bots.ban(
+            ip,
+            policy.ban_secs,
+            &format!("{path} on {host} · {agent}"),
+            now,
+        );
         return Verdict::Refuse(refusal(StatusCode::NOT_FOUND, "Not Found\n"));
     }
     Verdict::Pass {
@@ -825,7 +832,10 @@ mod tests {
         );
         let snap = bots.snapshot();
         assert_eq!(snap.bans.len(), 1);
-        assert_eq!(snap.bans[0].reason, "/.env.production on shop.example.com");
+        assert_eq!(
+            snap.bans[0].reason,
+            "/.env.production on shop.example.com · curl/8"
+        );
         assert!(bots.unban(ip.parse().unwrap()));
         assert_eq!(
             refused(&check(&req("/", "x", ip), &c, &bots, None, None)),
@@ -850,7 +860,7 @@ mod tests {
     }
 
     #[test]
-    fn too_many_404s_ban_and_ipv6_is_banned_per_64() {
+    fn too_many_404s_ban_and_an_ipv6_address_alone_is_banned() {
         let c = config("max_404_per_minute = 3");
         let bots = Bots::default();
         let ip: IpAddr = "2001:db8:1:2::5".parse().unwrap();
@@ -860,9 +870,13 @@ mod tests {
         after(&bots, &c, Some(ip), 200);
         assert!(!bots.banned(ip, Instant::now()));
         after(&bots, &c, Some(ip), 404);
+        assert!(bots.banned(ip, Instant::now()));
+        // Not its /64: hosting providers put many customers in one (OVH
+        // gives each VPS an address in a shared /64), and banning the block
+        // banned a client for a neighbour's scan.
         let neighbour: IpAddr = "2001:db8:1:2::ffff".parse().unwrap();
-        assert!(bots.banned(neighbour, Instant::now()));
-        assert_eq!(bots.snapshot().bans[0].ip, "2001:db8:1:2::/64");
+        assert!(!bots.banned(neighbour, Instant::now()));
+        assert_eq!(bots.snapshot().bans[0].ip, "2001:db8:1:2::5");
     }
 
     #[test]
@@ -912,5 +926,29 @@ trap_paths = ["/secret", "/admin/*"]"#,
         );
         assert!(c.bots.is_trap("/admin/x") && c.bots.is_trap("/secret"));
         assert!(!c.bots.is_trap("/.env"));
+    }
+
+    /// A site migrated from WordPress gets real requests for its old paths —
+    /// editors' bookmarks, old links, images — so they are no traps by
+    /// default; secrets and VCS files are.
+    #[test]
+    fn wordpress_paths_are_no_traps_by_default() {
+        let c = config("traps = true");
+        for path in [
+            "/wp-admin/",
+            "/wp-login.php",
+            "/wp-content/uploads/a.jpg",
+            "/cgi-bin/x",
+        ] {
+            assert!(!c.bots.is_trap(path), "{path}");
+        }
+        for path in [
+            "/.env",
+            "/.git/config",
+            "/.aws/credentials",
+            "/wp-config.php.bak",
+        ] {
+            assert!(c.bots.is_trap(path), "{path}");
+        }
     }
 }

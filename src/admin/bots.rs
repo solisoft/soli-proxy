@@ -1,8 +1,7 @@
 //! Admin API for `[bots]` (see `response::bots`):
 //!
 //! - `GET /api/v1/bots` — the bans in force, and what was refused;
-//! - `DELETE /api/v1/bots/bans/{ip}` — lift a ban (an IPv6 address lifts
-//!   its /64's).
+//! - `DELETE /api/v1/bots/bans/{ip}` — lift a ban.
 
 use super::{error_response, ok_response, AdminState, BoxBody};
 use hyper::Response;
