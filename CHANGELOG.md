@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.7.1](https://github.com/solisoft/soli-proxy/compare/v1.7.0...v1.7.1) (2026-10-06)
+
+### Bug Fixes
+
+* **apps: an app started through a wrapper is not redeployed at every restart.** 1.6's check for
+  an upgraded binary compared the running one with the start command's program, which for
+  `env TZ=Europe/Paris soli serve …` is `env`: such an app was redeployed (blue-green, so without
+  downtime, but for nothing) on each restart. A binary now counts as replaced when the file it
+  runs was deleted or its path names another file.
+* **docs: moving a running host onto `soli-proxy.socket` takes one stop/start.** systemd refuses
+  to start a socket while its service runs, so the `ReusePort=yes` switch-over 1.7.0 described
+  does not exist; the unit no longer sets it.
+
 ## [1.7.0](https://github.com/solisoft/soli-proxy/compare/v1.6.1...v1.7.0) (2026-10-06)
 
 ### Features
