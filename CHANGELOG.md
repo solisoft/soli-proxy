@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.2.1](https://github.com/solisoft/soli-proxy/compare/v1.2.0...v1.2.1) (2026-10-06)
+
+### Features
+
+* **tui: memory on the dashboard.** What the apps hold in memory — the resident memory of every
+  app process, both slots counted while one deploys — and the host's used, total and available
+  memory from `/proc/meminfo`, in the strip and in a panel of the right-hand column: a bar of
+  the apps, the rest of the system and what is available (amber under 20 % available, red under
+  10 %), then the figures; one line under the traffic panel on a narrow terminal. The apps
+  screen's header shows the total too. Linux only for the host's figures.
+* **tui: the dashboard's error rate is the share of 5xx responses.** It divided `errors_total`,
+  which mostly counts the proxy's own refusals (421, failed auth), by the request count.
+* **tui: 404s on the errors screen.** They are listed next to the 5xx and failed requests; `f`
+  shows all of them, the 5xx only or the 404s only, and in 404 mode the top panel ranks the
+  missing URLs asked for most — a broken link reads differently from a scanner. 404s stay out
+  of the 5xx counts and off the dashboard's journal. (The rows need `[logging] log_endpoints =
+  true`.)
+* **tui: time since each app's last request.** A `last` column in the apps list, next to `up`
+  (green under a minute, `—` when the app has had none since the daemon started), and in the
+  detail panel.
+* **apps: apps sleep after an hour by default under `--dev`.** 1.2.0 left `[apps]
+  idle_timeout` at `0` under `--dev`, so a laptop running a dozen apps kept every one of them
+  in memory; unset, it is now 3600 there (900 otherwise, unchanged).
+
 ## [1.2.0](https://github.com/solisoft/soli-proxy/compare/v1.1.0...v1.2.0) (2026-10-06)
 
 **Upgrading:** apps without an `idle_timeout` now sleep after 15 minutes without a request.

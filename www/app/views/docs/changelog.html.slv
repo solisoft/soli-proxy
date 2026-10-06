@@ -46,11 +46,51 @@
                     </p>
                 </div>
 
+                <!-- 1.2.1 -->
+                <div class="mb-10 reveal-on-scroll">
+                    <div class="flex items-center gap-3 mb-5 flex-wrap">
+                        <h2 class="text-2xl font-bold text-white font-mono">v1.2.1</h2>
+                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
+                        <span class="text-sm text-gray-500">2026-10-06</span>
+                    </div>
+
+                    <div class="space-y-4">
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">feat</span>
+                                <h3 class="text-base font-semibold text-white">Memory on the TUI dashboard</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                What the apps hold in memory, and the host&rsquo;s used, total and available memory, in the strip and in a panel with a bar; the apps screen shows the total too. The error rate is now the share of 5xx responses.
+                            </p>
+                        </div>
+
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">feat</span>
+                                <h3 class="text-base font-semibold text-white">404s on the errors screen, and when each app last had a request</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                The errors screen lists 404s next to the 5xx; <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">f</code> shows all, 5xx only or 404 only, and in 404 mode ranks the missing URLs asked for most. The apps list gains a <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">last</code> column: the time since each app&rsquo;s last request.
+                            </p>
+                        </div>
+
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">feat</span>
+                                <h3 class="text-base font-semibold text-white">Apps sleep after an hour under --dev</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                1.2.0 kept every app awake under <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">--dev</code>. Unset, <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">idle_timeout</code> is now an hour there (15 minutes otherwise, unchanged).
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- 1.2.0 -->
                 <div class="mb-10 reveal-on-scroll">
                     <div class="flex items-center gap-3 mb-5 flex-wrap">
                         <h2 class="text-2xl font-bold text-white font-mono">v1.2.0</h2>
-                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
                         <span class="text-sm text-gray-500">2026-10-06</span>
                     </div>
                     <p class="text-gray-400 leading-relaxed mb-4">Apps now sleep after 15 minutes without a request. Pin the ones that run cron jobs or background workers with <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">idle_timeout = 0</code> before upgrading, or keep the old behaviour with <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">[apps] idle_timeout = 0</code>.</p>
