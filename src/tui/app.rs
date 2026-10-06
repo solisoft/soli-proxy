@@ -44,6 +44,9 @@ pub struct AppStats {
     pub rps: f64,
     /// Errors (5xx and failed requests) per second over the same interval.
     pub eps: f64,
+    /// Unix milliseconds of the app's last request, as the daemon saw it;
+    /// `None` if it has had none since the daemon started.
+    pub last_request_ms: Option<u64>,
 }
 
 /// Rolling history for sparkline charts.
@@ -442,6 +445,11 @@ pub struct TuiApp {
     /// When each error row (by key) was first seen, for the arrival fade.
     error_seen: HashMap<String, Instant>,
     errors_loaded: bool,
+    /// Resident memory of every app process (both slots while one deploys),
+    /// and how many apps that covers; `None` when no process could be read.
+    apps_memory: Option<(u64, usize)>,
+    system_memory: Option<crate::metrics::SystemMemory>,
+    errors_filter: screens::errors::ErrorsFilter,
 }
 
 impl TuiApp {
@@ -497,6 +505,9 @@ impl TuiApp {
             daemon_info: None,
             error_seen: HashMap::new(),
             errors_loaded: false,
+            apps_memory: None,
+            system_memory: None,
+            errors_filter: screens::errors::ErrorsFilter::default(),
         };
         app.collect_stats();
         app
@@ -569,11 +580,17 @@ impl TuiApp {
             .map(|m| m.list_apps_sync())
             .unwrap_or_default();
 
+        let (mut mem_total, mut mem_apps) = (0u64, 0usize);
         for app in &apps {
             let inst = if app.current_slot == "blue" {
                 &app.blue
             } else {
                 &app.green
+            };
+            let other = if app.current_slot == "blue" {
+                &app.green
+            } else {
+                &app.blue
             };
 
             let name = &app.config.name;
@@ -595,6 +612,7 @@ impl TuiApp {
                     asleep: m.asleep,
                     rps: prev_rps,
                     eps: prev_eps,
+                    last_request_ms: m.last_request_ms,
                 })
                 .unwrap_or_default();
             if fresh {
@@ -620,6 +638,18 @@ impl TuiApp {
                     stats.memory_bytes = proc_stats.memory_rss_bytes;
                 }
                 stats.runtime = self.runtime_probe.probe(pid);
+            }
+            // What the app costs the host: its live process, plus the other
+            // slot's while a deploy runs both.
+            let mut app_mem = stats.memory_bytes.unwrap_or(0);
+            if let Some(pid) = other.pid.filter(|p| Some(*p) != inst.pid) {
+                if let Some(ps) = self.ctx.metrics.get_process_stats(pid) {
+                    app_mem += ps.memory_rss_bytes.unwrap_or(0);
+                }
+            }
+            if app_mem > 0 {
+                mem_total += app_mem;
+                mem_apps += 1;
             }
 
             // Update history
@@ -654,6 +684,9 @@ impl TuiApp {
             self.app_stats.insert(name.clone(), stats);
         }
 
+        self.apps_memory = (mem_apps > 0).then_some((mem_total, mem_apps));
+        self.system_memory = crate::metrics::system_memory();
+
         // Parse individual request failures from proxy.log for the Errors screen.
         // The file the daemon writes: `[logging] output = "file:…"`, else the
         // `-d` default `${SOLI_LOG_DIR:-.}/proxy.log`.
@@ -683,7 +716,9 @@ impl TuiApp {
             self.error_seen.retain(|k, _| keep.contains(k));
         }
         if let Ok(mut feed) = self.daemon.events.lock() {
-            for e in arrived.iter().rev() {
+            // 404s are listed on the errors screen, not announced: a scanner
+            // would bury everything else.
+            for e in arrived.iter().rev().filter(|e| e.is_server_error()) {
                 let app = e.host.clone().unwrap_or_else(|| "?".into());
                 let text = format!("{} {}", e.status_label(), e.path.as_deref().unwrap_or(""));
                 feed.push(now, &app, text, EventKind::Error);
@@ -806,6 +841,14 @@ impl TuiApp {
         };
         screens::apps::sort_apps(&mut apps, self.app_sort, &self.app_stats, &self.rank);
         apps
+    }
+
+    /// The error rows the errors screen shows, under its filter.
+    fn shown_errors(&self) -> Vec<&ErrorEntry> {
+        self.errors
+            .iter()
+            .filter(|e| self.errors_filter.matches(e))
+            .collect()
     }
 
     /// The app under the cursor on the apps screen.
@@ -1006,6 +1049,12 @@ impl TuiApp {
             }
             KeyCode::Enter => {
                 self.handle_enter();
+            }
+            KeyCode::Char('f') if self.current_screen == Screen::Errors => {
+                self.errors_filter = self.errors_filter.next();
+                self.selected_index = 0;
+                self.scroll_offset = 0;
+                self.show_toast(format!("errors: {}", self.errors_filter.label()));
             }
             KeyCode::Char('m') => {
                 self.anim.toggle();
@@ -1371,7 +1420,7 @@ impl TuiApp {
         let Modal::ErrorDetail(idx) = self.modal else {
             return false;
         };
-        let last = self.errors.len().saturating_sub(1);
+        let last = self.shown_errors().len().saturating_sub(1);
         match key.code {
             KeyCode::Esc => {
                 self.modal = Modal::None;
@@ -1389,7 +1438,7 @@ impl TuiApp {
                 self.modal = Modal::ErrorDetail(new_idx);
             }
             KeyCode::Char('y') | KeyCode::Char('c') => {
-                if let Some(entry) = self.errors.get(idx) {
+                if let Some(entry) = self.shown_errors().get(idx) {
                     copy_to_clipboard_osc52(&entry.detail_block());
                     self.error_copied = true;
                 }
@@ -1400,7 +1449,8 @@ impl TuiApp {
     }
 
     fn render_error_detail(&self, f: &mut Frame, idx: usize) {
-        let Some(entry) = self.errors.get(idx) else {
+        let shown = self.shown_errors();
+        let Some(entry) = shown.get(idx) else {
             return;
         };
 
@@ -1418,7 +1468,7 @@ impl TuiApp {
             .title(format!(
                 " Error {}/{}{} [j/k:nav  y:copy  Esc:close] ",
                 idx + 1,
-                self.errors.len(),
+                shown.len(),
                 copied
             ))
             .borders(Borders::ALL)
@@ -1522,7 +1572,7 @@ impl TuiApp {
             }
             Screen::Apps => self.filtered_apps_count,
             Screen::Circuits => self.circuits.as_ref().map_or(0, Vec::len),
-            Screen::Errors => self.errors.len(),
+            Screen::Errors => self.shown_errors().len(),
             Screen::Config => 0,
             Screen::Help => 0,
         }
@@ -1653,7 +1703,7 @@ impl TuiApp {
 
     fn handle_enter(&mut self) {
         if self.current_screen == Screen::Errors {
-            if self.selected_index < self.errors.len() {
+            if self.selected_index < self.shown_errors().len() {
                 self.error_copied = false;
                 self.modal = Modal::ErrorDetail(self.selected_index);
             }
@@ -1729,6 +1779,10 @@ impl TuiApp {
                         journal: &journal,
                         stream_connected: connected,
                         daemon,
+                        memory: screens::dashboard::MemoryView {
+                            apps: self.apps_memory,
+                            system: self.system_memory,
+                        },
                     },
                     &mut self.anim,
                 )
@@ -1786,6 +1840,7 @@ impl TuiApp {
                         app_history: &self.app_history,
                         deploys: &deploys,
                         waking: &waking,
+                        memory_total: self.apps_memory.map(|(b, _)| b),
                     },
                     &mut self.anim,
                 )
@@ -1818,6 +1873,9 @@ impl TuiApp {
                         // Newest first: the rest is older still.
                         break;
                     }
+                    if !e.is_server_error() {
+                        continue;
+                    }
                     if let Some(host) = &e.host {
                         *by_host.entry(host.clone()).or_default() += 1.0 / 60.0;
                     }
@@ -1832,11 +1890,21 @@ impl TuiApp {
                         .unwrap_or(std::cmp::Ordering::Equal)
                         .then_with(|| a.0.cmp(&b.0))
                 });
+                // Borrow the error list alone: `self.anim` is lent mutably below.
+                let filter = self.errors_filter;
+                let shown: Vec<&ErrorEntry> =
+                    self.errors.iter().filter(|e| filter.matches(e)).collect();
+                let all: Vec<&ErrorEntry> = self.errors.iter().collect();
+                let not_found = screens::errors::top_not_found(&all, 4);
+                let not_found_total = all.iter().filter(|e| e.status == Some(404)).count();
                 screens::errors::render(
                     f,
                     area,
                     &screens::errors::ErrorsView {
-                        entries: &self.errors,
+                        entries: &shown,
+                        filter: self.errors_filter,
+                        not_found: &not_found,
+                        not_found_total,
                         selected_index: self.selected_index,
                         scroll_offset: self.scroll_offset,
                         seen: &self.error_seen,
@@ -1871,7 +1939,7 @@ impl TuiApp {
                 Screen::Apps => {
                     "1-6  j/k  Enter actions  D deploy  R restart  L logs  s sort  /  ?  q"
                 }
-                Screen::Errors => "1-6 screens  j/k  Enter detail  y copy  ?  q",
+                Screen::Errors => "1-6 screens  j/k  Enter detail  f 5xx/404  y copy  ?  q",
                 Screen::Circuits => "1-6 screens  j/k  r  ?  q",
                 Screen::Config => "1-6 screens  j/k  r  ?  q",
                 _ => "1-6 screens  Tab cycle  m motion  r  ?  q",
@@ -1929,7 +1997,7 @@ impl TuiApp {
   Apps    s sort (traffic, name, memory, errors)
           D deploy · R restart · L logs · Enter all actions
   Routes  a add · e edit · d delete
-  Errors  Enter detail · y copy (OSC 52)
+  Errors  f all / 5xx / 404 · Enter detail · y copy (OSC 52)
 
   Any key closes this overlay";
         let block = theme::list_block("help");

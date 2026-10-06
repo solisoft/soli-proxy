@@ -28,6 +28,14 @@ pub struct DaemonView {
     pub uptime: Duration,
 }
 
+/// Memory: what the apps hold, and what the host has.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MemoryView {
+    /// Resident memory of every app process, and how many apps that covers.
+    pub apps: Option<(u64, usize)>,
+    pub system: Option<crate::metrics::SystemMemory>,
+}
+
 /// `remote_snap` carries traffic counters fetched from the daemon's admin API.
 /// The TUI runs in its own process, so its local metrics registry is always
 /// empty — `status` is what decides whether the numbers mean anything.
@@ -46,6 +54,7 @@ pub struct DashboardView<'a> {
     pub journal: &'a [JournalEntry],
     pub stream_connected: bool,
     pub daemon: Option<DaemonView>,
+    pub memory: MemoryView,
 }
 
 /// Right-hand column width, when the terminal is wide enough for it.
@@ -83,9 +92,17 @@ pub fn render(f: &mut Frame, area: Rect, ctx: &TuiContext, view: &DashboardView,
         render_flow(f, flow, ctx, view, anim);
         render_side(f, side, view, anim);
     } else if body.height >= 16 {
-        // No room for the right-hand column: the journal goes underneath.
+        // No room for the right-hand column: memory and the journal go
+        // underneath.
         let journal_h = (body.height / 3).clamp(4, 8);
-        let flow = Rect::new(body.x, body.y, body.width, body.height - journal_h);
+        let mem_h: u16 = 2;
+        let flow = Rect::new(body.x, body.y, body.width, body.height - journal_h - mem_h);
+        let mem = Rect::new(
+            body.x,
+            body.y + body.height - journal_h - mem_h,
+            body.width,
+            1,
+        );
         let below = Rect::new(
             body.x,
             body.y + body.height - journal_h,
@@ -93,6 +110,7 @@ pub fn render(f: &mut Frame, area: Rect, ctx: &TuiContext, view: &DashboardView,
             journal_h,
         );
         render_flow(f, flow, ctx, view, anim);
+        render_memory_line(f.buffer_mut(), mem, &view.memory, anim);
         render_journal_compact(f, below, view, anim);
     } else {
         render_flow(f, body, ctx, view, anim);
@@ -242,19 +260,26 @@ fn render_strip(
         (theme::fmt_ms(lat), Style::default().fg(theme::WARN).bold()),
         (" latency".into(), muted),
     ]);
-    let err = if snap.requests_total > 0 {
-        snap.errors_total as f64 / snap.requests_total as f64 * 100.0
+    // The share of responses that were 5xx: what went wrong on the server
+    // side. (`errors_total` also counts the proxy's own refusals — 421s,
+    // failed auth — which are not failures of anything.)
+    let answered = snap.status_2xx + snap.status_3xx + snap.status_4xx + snap.status_5xx;
+    let rate_5xx = if answered > 0 {
+        snap.status_5xx as f64 / answered as f64 * 100.0
     } else {
         0.0
     };
-    let err_color = if snap.errors_total > 0 {
+    let rate_color = if snap.status_5xx > 0 {
         theme::DANGER
     } else {
         theme::SUCCESS
     };
     groups.push(vec![
-        (format!("{err:.2} %"), Style::default().fg(err_color).bold()),
-        (" errors".into(), muted),
+        (
+            format!("{rate_5xx:.2} %"),
+            Style::default().fg(rate_color).bold(),
+        ),
+        (" 5xx".into(), muted),
     ]);
     if let Some(circuits) = view.circuits {
         let open = circuits.iter().filter(|(_, c)| c.state == "open").count();
@@ -286,6 +311,25 @@ fn render_strip(
         ),
         (" apps".into(), muted),
     ]);
+    if let Some((bytes, _)) = view.memory.apps {
+        let shown = anim.tween("kpi.apps_mem", bytes as f64);
+        groups.push(vec![
+            (
+                theme::fmt_bytes(shown as u64),
+                Style::default().fg(theme::MAGENTA).bold(),
+            ),
+            (" in apps".into(), muted),
+        ]);
+    }
+    if let Some(sys) = view.memory.system {
+        groups.push(vec![
+            (
+                theme::fmt_bytes(sys.available_bytes),
+                Style::default().fg(available_color(sys)).bold(),
+            ),
+            (" free".into(), muted),
+        ]);
+    }
     groups.push(vec![
         (
             ctx.config_manager.get_config().rules.len().to_string(),
@@ -677,18 +721,21 @@ fn render_side(f: &mut Frame, area: Rect, view: &DashboardView, anim: &mut Anim)
         }
     }
 
-    put(buf, area, 1, 7, " events ", chip);
+    let top = render_memory(buf, area, 7, &view.memory, anim);
+
+    put(buf, area, 1, top, " events ", chip);
     let now = anim.now();
-    let rows = area.height.saturating_sub(9) / 2;
+    let first = top + 2;
+    let rows = area.height.saturating_sub(first) / 2;
     if view.journal.is_empty() {
-        put(buf, area, 1, 9, "nothing yet", muted);
+        put(buf, area, 1, first, "nothing yet", muted);
         if !view.stream_connected {
-            put(buf, area, 1, 10, "event stream offline", muted);
+            put(buf, area, 1, first + 1, "event stream offline", muted);
         }
         return;
     }
     for (i, e) in view.journal.iter().rev().take(rows as usize).enumerate() {
-        let y = 9 + (i as u16) * 2;
+        let y = first + (i as u16) * 2;
         let fresh = anim.fade(now.duration_since(e.at));
         let (bg, fg_override) = match fresh {
             Some(0) => (Some(theme::FRESH_BG), Some(theme::WARN)),
@@ -728,6 +775,219 @@ fn render_side(f: &mut Frame, area: Rect, view: &DashboardView, anim: &mut Anim)
             &theme::fit(&e.text, area.width.saturating_sub(4) as usize),
             base(color),
         );
+    }
+}
+
+/// The memory panel of the right-hand column, from row `y`: a bar of the
+/// host's memory — the apps, the rest of what is used, what is available —
+/// then the figures. Returns the row after it.
+fn render_memory(
+    buf: &mut ratatui::buffer::Buffer,
+    area: Rect,
+    y: u16,
+    mem: &MemoryView,
+    anim: &mut Anim,
+) -> u16 {
+    let chip = Style::default().fg(theme::INK).bg(theme::ACCENT).bold();
+    let muted = Style::default().fg(theme::MUTED);
+    put(buf, area, 1, y, " memory ", chip);
+    let apps = mem
+        .apps
+        .map(|(b, n)| (anim.tween("mem.apps", b as f64) as u64, n));
+    let label = |t: &str| format!("{t:<6}");
+    let Some(sys) = mem.system else {
+        match apps {
+            Some((b, n)) => {
+                let x = 1 + put(buf, area, 1, y + 2, &label("apps"), muted);
+                let x = x + put(
+                    buf,
+                    area,
+                    x,
+                    y + 2,
+                    &theme::fmt_bytes(b),
+                    Style::default().fg(theme::MAGENTA).bold(),
+                );
+                put(buf, area, x, y + 2, &format!(" · {n}"), muted);
+            }
+            None => {
+                put(buf, area, 1, y + 2, "no app process to read", muted);
+            }
+        }
+        return y + 4;
+    };
+    let total = sys.total_bytes.max(1);
+    let used = sys.total_bytes.saturating_sub(sys.available_bytes);
+    let apps_b = apps.map_or(0, |(b, _)| b).min(used);
+    let w = area.width.saturating_sub(2) as usize;
+    let cells = |b: u64| ((b as f64 / total as f64) * w as f64).round() as usize;
+    let a = cells(apps_b).min(w);
+    let u = cells(used).clamp(a, w);
+    let bar_y = y + 2;
+    put(
+        buf,
+        area,
+        1,
+        bar_y,
+        &"█".repeat(a),
+        Style::default().fg(theme::MAGENTA),
+    );
+    put(
+        buf,
+        area,
+        1 + a as u16,
+        bar_y,
+        &"▓".repeat(u - a),
+        Style::default().fg(theme::MUTED),
+    );
+    put(
+        buf,
+        area,
+        1 + u as u16,
+        bar_y,
+        &"·".repeat(w - u),
+        Style::default().fg(theme::ACCENT_DIM),
+    );
+
+    if let Some((b, n)) = apps {
+        let x = 1 + put(buf, area, 1, y + 3, &label("apps"), muted);
+        let x = x + put(
+            buf,
+            area,
+            x,
+            y + 3,
+            &theme::fmt_bytes(b),
+            Style::default().fg(theme::MAGENTA).bold(),
+        );
+        put(buf, area, x, y + 3, &format!(" · {n} apps"), muted);
+    }
+    let x = 1 + put(buf, area, 1, y + 4, &label("used"), muted);
+    let x = x + put(
+        buf,
+        area,
+        x,
+        y + 4,
+        &theme::fmt_bytes(used),
+        Style::default().fg(theme::FG),
+    );
+    put(
+        buf,
+        area,
+        x,
+        y + 4,
+        &format!(" / {}", theme::fmt_bytes(sys.total_bytes)),
+        muted,
+    );
+    let x = 1 + put(buf, area, 1, y + 5, &label("free"), muted);
+    let pct = sys.available_bytes as f64 / total as f64 * 100.0;
+    let x = x + put(
+        buf,
+        area,
+        x,
+        y + 5,
+        &theme::fmt_bytes(sys.available_bytes),
+        Style::default().fg(available_color(sys)).bold(),
+    );
+    put(buf, area, x, y + 5, &format!(" · {pct:.0} %"), muted);
+    y + 7
+}
+
+/// Memory on one line, for narrow terminals: a short bar, then what the apps
+/// hold, what is used of the total and what is free.
+fn render_memory_line(
+    buf: &mut ratatui::buffer::Buffer,
+    area: Rect,
+    mem: &MemoryView,
+    anim: &mut Anim,
+) {
+    let muted = Style::default().fg(theme::MUTED);
+    let mut x = put(
+        buf,
+        area,
+        0,
+        0,
+        " memory ",
+        Style::default().fg(theme::INK).bg(theme::ACCENT).bold(),
+    ) + 2;
+    let apps = mem
+        .apps
+        .map(|(b, _)| anim.tween("mem.apps", b as f64) as u64);
+    if let Some(sys) = mem.system {
+        let total = sys.total_bytes.max(1);
+        let used = sys.total_bytes.saturating_sub(sys.available_bytes);
+        const W: usize = 12;
+        let cells = |b: u64| ((b as f64 / total as f64) * W as f64).round() as usize;
+        let a = cells(apps.unwrap_or(0).min(used)).min(W);
+        let u = cells(used).clamp(a, W);
+        x += put(
+            buf,
+            area,
+            x,
+            0,
+            &"█".repeat(a),
+            Style::default().fg(theme::MAGENTA),
+        );
+        x += put(buf, area, x, 0, &"▓".repeat(u - a), muted);
+        x += put(
+            buf,
+            area,
+            x,
+            0,
+            &"·".repeat(W - u),
+            Style::default().fg(theme::ACCENT_DIM),
+        );
+        x += 2;
+    }
+    if let Some(b) = apps {
+        x += put(
+            buf,
+            area,
+            x,
+            0,
+            &theme::fmt_bytes(b),
+            Style::default().fg(theme::MAGENTA).bold(),
+        );
+        x += put(buf, area, x, 0, " apps   ", muted);
+    }
+    if let Some(sys) = mem.system {
+        let used = sys.total_bytes.saturating_sub(sys.available_bytes);
+        x += put(
+            buf,
+            area,
+            x,
+            0,
+            &theme::fmt_bytes(used),
+            Style::default().fg(theme::FG),
+        );
+        x += put(
+            buf,
+            area,
+            x,
+            0,
+            &format!("/{} used   ", theme::fmt_bytes(sys.total_bytes)),
+            muted,
+        );
+        x += put(
+            buf,
+            area,
+            x,
+            0,
+            &theme::fmt_bytes(sys.available_bytes),
+            Style::default().fg(available_color(sys)).bold(),
+        );
+        put(buf, area, x, 0, " free", muted);
+    }
+}
+
+/// Green while a fifth of the memory is available, amber under it, red
+/// under a tenth.
+fn available_color(sys: crate::metrics::SystemMemory) -> ratatui::style::Color {
+    let share = sys.available_bytes as f64 / sys.total_bytes.max(1) as f64;
+    if share < 0.10 {
+        theme::DANGER
+    } else if share < 0.20 {
+        theme::WARN
+    } else {
+        theme::SUCCESS
     }
 }
 

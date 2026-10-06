@@ -123,22 +123,28 @@ otherwise, with admin Basic auth (`ADMIN_USER` + hash), the password typed at it
 is reused as the Basic credential, and it polls every 5 s instead of every second because each
 request costs the daemon a bcrypt check.
 
-**Dashboard.** A strip of figures (requests, req/s with a sparkline, latency, error rate, open
-circuits, the *daemon's* uptime, apps, routes), then the traffic panel: each active app is a
+**Dashboard.** A strip of figures (requests, req/s with a sparkline, latency, the share of
+responses that were 5xx, open circuits, the *daemon's* uptime, apps, the memory the apps hold
+and the memory still available, routes), then the traffic panel: each active app is a
 branch of the proxy, with packets travelling down it as densely as it receives requests, red
 ones for 5xx, a still dotted line when it is asleep or stopped. An app stays on the panel for a
 while after its last request; the others are summed up on one line ("46 without traffic · 3
 asleep"). A deploy unrolls its stages under its app — `start › health › switch › drain` with
 the drain counting down, then "live on green in 4.1 s" — and a wake-up reads "waking", then
-"awake in 1.0 s". On the right (underneath on a narrow terminal), the HTTP status mix and a
-journal of what just happened: deploys, traffic switches, sleeps, wake-ups, and new request
+"awake in 1.0 s". On the right (underneath on a narrow terminal), the HTTP status mix, the host's
+memory — a bar of what the apps hold, what the rest of the system uses and what is available,
+then the figures (the apps' resident memory, both slots counted while one deploys; used of
+total from `/proc/meminfo`; available, amber under 20 %, red under 10 %) — and a journal of
+what just happened: deploys, traffic switches, sleeps, wake-ups, and new request
 failures, each lit up for a moment when it arrives.
 
 **Apps.** Sorted by traffic (smoothed over about ten seconds, so rows do not trade places every
 second); `s` cycles through traffic, name, memory and errors, and the cursor stays on its app
 when the order changes. Each row shows the app's state as a glyph (a spinner while it deploys or
 wakes, `◐` asleep, `✕` failed), its last minute of traffic as a sparkline, req/s, memory, the
-**Soli version** its process runs and its uptime. The detail panel draws the app's two slots:
+**Soli version** its process runs, its uptime, and **`last`**: how long since its last request
+(green under a minute, `—` when it has had none since the daemon started) — what keeps an app
+awake, or how close it is to sleeping. The detail panel draws the app's two slots:
 packets flow to the one that serves, the other shows `starting…`, `health check…`, `draining 7s`
 or `free`, with the deploy stepper above and CPU and memory bars on the right. `D` deploys, `R`
 restarts, `L` opens the logs, `Enter` lists every action.
@@ -149,9 +155,12 @@ with: after `soli` is upgraded in place, an app that has not restarted still run
 version, shown in yellow with `↻ restart` until a restart picks up the new one.
 
 **Errors.** 5xx per minute for each app (from the daemon's counters, so with no configuration)
-and for each host of `proxy.conf` routes (from the log), then the individual failures, newest
-first, with path, cause and duration. The individual failures need `[logging] log_endpoints =
-true` in `config.toml` and the log in JSON (the default); a new one lights up and fades.
+and for each host of `proxy.conf` routes (from the log), then the individual 5xx, failed
+requests and 404s, newest first, with path, cause and duration; a new one lights up and fades.
+`f` shows all of them, the 5xx only, or the 404s only — and in 404 mode the top panel lists
+the missing URLs asked for most, which tells a broken link from a scanner. 404s stay off the
+dashboard's journal and out of the 5xx counts. The individual rows need `[logging]
+log_endpoints = true` in `config.toml` and the log in JSON (the default).
 
 **Motion.** Numbers glide to their new value, packets move, new rows fade in. All of it is
 computed from the clock, repaints at 15 frames a second only while something on screen moves,

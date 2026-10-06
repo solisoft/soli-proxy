@@ -1,6 +1,8 @@
 //! The errors screen: 5xx per app from the daemon's counters (available
-//! without any configuration), then the individual failures from the log,
-//! newest first. A failure that just arrived lights up and fades.
+//! without any configuration), then the individual failures and 404s from
+//! the log, newest first. A row that just arrived lights up and fades. `f`
+//! shows all of them, the 5xx only, or the 404s only — with, for those, the
+//! missing URLs asked for most.
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -11,9 +13,69 @@ use crate::tui::anim::Anim;
 use crate::tui::errors::ErrorEntry;
 use crate::tui::theme::{self, put};
 
+/// Which rows the errors screen lists; `f` cycles through them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ErrorsFilter {
+    #[default]
+    All,
+    ServerErrors,
+    NotFound,
+}
+
+impl ErrorsFilter {
+    pub fn next(self) -> Self {
+        match self {
+            ErrorsFilter::All => ErrorsFilter::ServerErrors,
+            ErrorsFilter::ServerErrors => ErrorsFilter::NotFound,
+            ErrorsFilter::NotFound => ErrorsFilter::All,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ErrorsFilter::All => "5xx and 404",
+            ErrorsFilter::ServerErrors => "5xx only",
+            ErrorsFilter::NotFound => "404 only",
+        }
+    }
+
+    pub fn matches(self, e: &ErrorEntry) -> bool {
+        match self {
+            ErrorsFilter::All => true,
+            ErrorsFilter::ServerErrors => e.is_server_error(),
+            ErrorsFilter::NotFound => e.status == Some(404),
+        }
+    }
+}
+
+/// The missing URLs asked for most in `entries`, as (host, path, count),
+/// most first.
+pub fn top_not_found(entries: &[&ErrorEntry], n: usize) -> Vec<(String, String, usize)> {
+    let mut counts: HashMap<(String, String), usize> = HashMap::new();
+    for e in entries.iter().filter(|e| e.status == Some(404)) {
+        let key = (
+            e.host.clone().unwrap_or_default(),
+            e.path.clone().unwrap_or_default(),
+        );
+        *counts.entry(key).or_default() += 1;
+    }
+    let mut v: Vec<_> = counts.into_iter().map(|((h, p), c)| (h, p, c)).collect();
+    v.sort_by(|a, b| {
+        b.2.cmp(&a.2)
+            .then_with(|| a.0.cmp(&b.0))
+            .then_with(|| a.1.cmp(&b.1))
+    });
+    v.truncate(n);
+    v
+}
+
 pub struct ErrorsView<'a> {
-    /// Newest first.
-    pub entries: &'a [ErrorEntry],
+    /// The rows the filter keeps, newest first.
+    pub entries: &'a [&'a ErrorEntry],
+    pub filter: ErrorsFilter,
+    /// Every 404 in the log, for the top panel in 404 mode.
+    pub not_found: &'a [(String, String, usize)],
+    pub not_found_total: usize,
     pub selected_index: usize,
     pub scroll_offset: usize,
     /// When each entry (by [`ErrorEntry::key`]) was first seen.
@@ -35,7 +97,7 @@ pub fn table_top() -> u16 {
 pub fn render(f: &mut Frame, area: Rect, view: &ErrorsView, anim: &mut Anim) {
     let buf = f.buffer_mut();
     let muted = Style::default().fg(theme::MUTED);
-    let head = Style::default().fg(theme::MUTED).bold();
+
     let chip = Style::default().fg(theme::INK).bg(theme::ACCENT).bold();
 
     let w = put(buf, area, 0, 0, " errors ", chip) + 2;
@@ -43,14 +105,88 @@ pub fn render(f: &mut Frame, area: Rect, view: &ErrorsView, anim: &mut Anim) {
         .total_5xx
         .map(|n| {
             format!(
-                "{} 5xx since the proxy started",
-                theme::fmt_num(anim.tween("errors.total", n as f64).round() as u64)
+                "{} 5xx since the proxy started · {} 404 in the log",
+                theme::fmt_num(anim.tween("errors.total", n as f64).round() as u64),
+                view.not_found_total
             )
         })
         .unwrap_or_else(|| "daemon counters unavailable".into());
-    put(buf, area, w, 0, &total, muted);
+    let x = w + put(buf, area, w, 0, &total, muted) + 3;
+    let x = x + put(
+        buf,
+        area,
+        x,
+        0,
+        "f",
+        Style::default().fg(theme::ACCENT).bold(),
+    );
+    put(buf, area, x + 1, 0, view.filter.label(), muted);
 
-    // 5xx per minute, per app, from the metrics.
+    if view.filter == ErrorsFilter::NotFound {
+        render_top_not_found(buf, area, view);
+    } else {
+        render_per_app(buf, area, view, anim);
+    }
+    render_table(buf, area, view, anim);
+}
+
+/// 404 mode's top panel: the missing URLs asked for most.
+fn render_top_not_found(buf: &mut ratatui::buffer::Buffer, area: Rect, view: &ErrorsView) {
+    let head = Style::default().fg(theme::MUTED).bold();
+    put(buf, area, 1, 2, "most requested missing URLs", head);
+    if view.not_found.is_empty() {
+        put(
+            buf,
+            area,
+            30,
+            2,
+            "none in the log",
+            Style::default().fg(theme::SUCCESS),
+        );
+        return;
+    }
+    for (i, (host, path, count)) in view
+        .not_found
+        .iter()
+        .take((PER_APP_ROWS - 1) as usize)
+        .enumerate()
+    {
+        let y = 3 + i as u16;
+        put(
+            buf,
+            area,
+            1,
+            y,
+            &format!("{count:>5}×"),
+            Style::default().fg(theme::WARN).bold(),
+        );
+        put(
+            buf,
+            area,
+            9,
+            y,
+            &theme::fit(host, 26),
+            Style::default().fg(theme::FG),
+        );
+        put(
+            buf,
+            area,
+            36,
+            y,
+            &theme::fit(path, area.width.saturating_sub(37) as usize),
+            Style::default().fg(theme::ACCENT),
+        );
+    }
+}
+
+/// 5xx per minute, per app, from the metrics.
+fn render_per_app(
+    buf: &mut ratatui::buffer::Buffer,
+    area: Rect,
+    view: &ErrorsView,
+    anim: &mut Anim,
+) {
+    let head = Style::default().fg(theme::MUTED).bold();
     put(buf, area, 1, 2, "5xx / min", head);
     if view.erroring.is_empty() {
         put(
@@ -100,15 +236,30 @@ pub fn render(f: &mut Frame, area: Rect, view: &ErrorsView, anim: &mut Anim) {
             Style::default().fg(theme::FG),
         );
     }
+}
 
+fn render_table(buf: &mut ratatui::buffer::Buffer, area: Rect, view: &ErrorsView, anim: &mut Anim) {
+    let muted = Style::default().fg(theme::MUTED);
+    let head = Style::default().fg(theme::MUTED).bold();
     let top = table_top();
+    if view.entries.is_empty() && view.filter != ErrorsFilter::All {
+        put(
+            buf,
+            area,
+            1,
+            top,
+            &format!("Nothing in the log for {}.", view.filter.label()),
+            Style::default().fg(theme::FG),
+        );
+        return;
+    }
     if view.entries.is_empty() {
         put(
             buf,
             area,
             1,
             top,
-            "No request failures in the log.",
+            "No 5xx and no 404 in the log.",
             Style::default().fg(theme::FG),
         );
         put(
@@ -116,7 +267,7 @@ pub fn render(f: &mut Frame, area: Rect, view: &ErrorsView, anim: &mut Anim) {
             area,
             1,
             top + 2,
-            "The list of individual failures (path, cause, duration) needs",
+            "The list of individual requests (path, cause, duration) needs",
             muted,
         );
         put(
@@ -250,6 +401,9 @@ mod tests {
         let erroring = vec![("grc.test".to_string(), 0.1)];
         let view = ErrorsView {
             entries: &[],
+            filter: ErrorsFilter::All,
+            not_found: &[],
+            not_found_total: 0,
             selected_index: 0,
             scroll_offset: 0,
             seen: &seen,
@@ -278,5 +432,57 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("proxy.conf"), "{text}");
+    }
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use super::*;
+
+    fn entry(status: Option<u16>, host: &str, path: &str) -> ErrorEntry {
+        ErrorEntry {
+            timestamp: "2026-10-06T08:00:00Z".into(),
+            method: Some("GET".into()),
+            host: Some(host.into()),
+            path: Some(path.into()),
+            status,
+            error: None,
+            client_ip: None,
+            elapsed_ms: Some(1),
+        }
+    }
+
+    #[test]
+    fn the_filter_splits_5xx_from_404() {
+        let rows = [
+            entry(Some(502), "a.test", "/x"),
+            entry(None, "a.test", "/y"),
+            entry(Some(404), "b.test", "/missing"),
+        ];
+        let count = |f: ErrorsFilter| rows.iter().filter(|e| f.matches(e)).count();
+        assert_eq!(count(ErrorsFilter::All), 3);
+        assert_eq!(count(ErrorsFilter::ServerErrors), 2);
+        assert_eq!(count(ErrorsFilter::NotFound), 1);
+        assert_eq!(ErrorsFilter::NotFound.next(), ErrorsFilter::All);
+    }
+
+    #[test]
+    fn missing_urls_are_ranked_by_how_often_they_are_asked_for() {
+        let rows = [
+            entry(Some(404), "b.test", "/wp-login.php"),
+            entry(Some(404), "b.test", "/old-page"),
+            entry(Some(404), "b.test", "/wp-login.php"),
+            entry(Some(502), "b.test", "/wp-login.php"),
+            entry(Some(404), "c.test", "/wp-login.php"),
+        ];
+        let refs: Vec<&ErrorEntry> = rows.iter().collect();
+        let top = top_not_found(&refs, 2);
+        assert_eq!(
+            top,
+            vec![
+                ("b.test".into(), "/wp-login.php".into(), 2),
+                ("b.test".into(), "/old-page".into(), 1),
+            ]
+        );
     }
 }

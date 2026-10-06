@@ -55,6 +55,45 @@ pub struct AppMetricsJson {
     pub asleep: bool,
 }
 
+/// The host's memory, from `/proc/meminfo`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SystemMemory {
+    pub total_bytes: u64,
+    /// What can be given to new processes without swapping (`MemAvailable`:
+    /// free memory plus the page cache and buffers the kernel can reclaim).
+    pub available_bytes: u64,
+}
+
+/// The host's memory, or `None` off Linux or when `/proc/meminfo` cannot be
+/// read.
+pub fn system_memory() -> Option<SystemMemory> {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string("/proc/meminfo")
+            .ok()
+            .and_then(|s| parse_meminfo(&s))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+/// `MemTotal` and `MemAvailable` from the text of `/proc/meminfo` (kB).
+pub fn parse_meminfo(text: &str) -> Option<SystemMemory> {
+    let field = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|kb| kb.parse::<u64>().ok())
+            .map(|kb| kb * 1024)
+    };
+    Some(SystemMemory {
+        total_bytes: field("MemTotal:")?,
+        available_bytes: field("MemAvailable:")?,
+    })
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SlotMetrics {
     pub memory_rss_bytes: Option<u64>,
@@ -744,6 +783,19 @@ mod slot_sum_tests {
 #[cfg(test)]
 mod idle_signal_tests {
     use super::*;
+
+    #[test]
+    fn meminfo_gives_total_and_available() {
+        let text = "MemTotal:       16314036 kB\nMemFree:          812344 kB\nMemAvailable:    9876544 kB\nBuffers:          123 kB\n";
+        assert_eq!(
+            parse_meminfo(text),
+            Some(SystemMemory {
+                total_bytes: 16314036 * 1024,
+                available_bytes: 9876544 * 1024,
+            })
+        );
+        assert_eq!(parse_meminfo("MemTotal: 10 kB\n"), None);
+    }
 
     fn ms_now() -> u64 {
         unix_millis()

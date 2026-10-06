@@ -89,9 +89,12 @@ fn parse_failure_line(line: &str) -> Option<ErrorEntry> {
         .and_then(|s| s.as_u64())
         .map(|s| s as u16);
 
+    // Failures, and the 404s: a missing page is not the server's fault, but
+    // which URLs are asked for and missing (a broken link, a scanner) is
+    // worth seeing next to them.
     let is_failure = match message {
         "endpoint request failed" => true,
-        "endpoint request" => status.is_some_and(|s| s >= 500),
+        "endpoint request" => status.is_some_and(|s| s >= 500 || s == 404),
         _ => false,
     };
     if !is_failure {
@@ -139,6 +142,11 @@ impl ErrorEntry {
                     .to_string()
             })
             .unwrap_or_else(|_| self.timestamp.clone())
+    }
+
+    /// A 5xx, or a request that got no response at all.
+    pub fn is_server_error(&self) -> bool {
+        self.status.is_none_or(|s| s >= 500)
     }
 
     /// One-line status token for the list view: `502` or `ERR`.
@@ -196,7 +204,7 @@ mod tests {
     const OTHER: &str = r#"{"timestamp":"2026-06-04T09:20:32Z","level":"INFO","fields":{"message":"App manager initialized"},"target":"soli_proxy"}"#;
 
     #[test]
-    fn keeps_5xx_and_failed_only() {
+    fn keeps_5xx_failed_and_404_only() {
         let e = parse_failure_line(REQ_5XX).expect("5xx is a failure");
         assert_eq!(e.status, Some(500));
         assert_eq!(e.method.as_deref(), Some("POST"));
@@ -207,8 +215,14 @@ mod tests {
         assert_eq!(f.error.as_deref(), Some("connection refused"));
         assert_eq!(f.status_label(), "ERR");
 
+        assert!(e.is_server_error() && f.is_server_error());
+
+        let nf = parse_failure_line(REQ_4XX).expect("a 404 is kept");
+        assert_eq!(nf.status, Some(404));
+        assert!(!nf.is_server_error());
+
         assert!(parse_failure_line(REQ_2XX).is_none());
-        assert!(parse_failure_line(REQ_4XX).is_none());
+        assert!(parse_failure_line(&REQ_4XX.replace("404", "403")).is_none());
         assert!(parse_failure_line(OTHER).is_none());
         assert!(parse_failure_line("not json").is_none());
     }

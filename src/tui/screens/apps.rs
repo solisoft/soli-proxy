@@ -102,6 +102,8 @@ pub struct AppsView<'a> {
     pub app_history: &'a HashMap<String, AppHistory>,
     pub deploys: &'a HashMap<String, DeployProgress>,
     pub waking: &'a [String],
+    /// Resident memory of all the apps together.
+    pub memory_total: Option<u64>,
 }
 
 /// Rows the detail panel takes under the list.
@@ -113,8 +115,12 @@ pub fn render(f: &mut Frame, area: Rect, view: &AppsView, anim: &mut Anim) {
     let chip = Style::default().fg(theme::INK).bg(theme::ACCENT).bold();
 
     let mut x = put(buf, area, 0, 0, " apps ", chip) + 2;
+    let mem = view
+        .memory_total
+        .map(|b| format!(" · {} in memory", theme::fmt_bytes(b)))
+        .unwrap_or_default();
     let summary = if view.search_query.is_empty() {
-        format!("sorted by {} · {}", view.sort.label(), view.total)
+        format!("sorted by {} · {}{mem}", view.sort.label(), view.total)
     } else {
         format!(
             "“{}” · {} of {} · sorted by {}",
@@ -168,12 +174,13 @@ struct Cols {
     mem: u16,
     soli: u16,
     up: u16,
+    last: u16,
 }
 
 fn columns(width: u16) -> Cols {
-    // glyph 2 | name | spark 12+2 | req/s 7+2 | memory 10 | soli 17 | up 6
+    // glyph 2 | name | spark 12+2 | req/s 7+2 | memory 10 | soli 17 | up 6 | last 7
     let spark = width >= 76;
-    let fixed: u16 = 2 + if spark { 14 } else { 0 } + 9 + 10 + 17 + 6;
+    let fixed: u16 = 2 + if spark { 14 } else { 0 } + 9 + 10 + 17 + 6 + 7;
     let name_w = width.saturating_sub(fixed + 1).clamp(14, 34);
     let mut x = 2 + name_w + 1;
     let spark_x = if spark {
@@ -197,6 +204,7 @@ fn columns(width: u16) -> Cols {
         mem,
         soli,
         up: x,
+        last: x + 7,
     }
 }
 
@@ -213,6 +221,7 @@ fn render_list(f: &mut Frame, area: Rect, view: &AppsView, anim: &mut Anim) {
     put(buf, area, c.mem, 1, "memory", head);
     put(buf, area, c.soli, 1, "soli", head);
     put(buf, area, c.up + 4, 1, "up", head);
+    put(buf, area, c.last + 2, 1, "last", head);
 
     let rows = area.height.saturating_sub(2) as usize;
     for (i, app) in view
@@ -356,6 +365,20 @@ fn render_list(f: &mut Frame, area: Rect, view: &AppsView, anim: &mut Anim) {
             .map(|d| theme::fmt_age(d.as_secs()))
             .unwrap_or_else(|| "—".into());
         put(buf, area, c.up, y, &format!("{up:>6}"), st(theme::MUTED));
+        // Time since the app's last request: what keeps it awake, or how
+        // long it has gone without one.
+        let (last, recent) = match stats.and_then(|s| s.last_request_ms).and_then(since) {
+            Some(secs) => (theme::fmt_age(secs), secs < 60),
+            None => ("—".to_string(), false),
+        };
+        put(
+            buf,
+            area,
+            c.last,
+            y,
+            &format!("{last:>6}"),
+            st(if recent { theme::SUCCESS } else { theme::MUTED }),
+        );
     }
     if view.apps.len() > view.scroll_offset + rows {
         // On the title line, where it covers nothing.
@@ -420,6 +443,9 @@ fn render_detail(f: &mut Frame, area: Rect, app: &AppInfo, view: &AppsView, anim
             }
             if let Some(s) = stats {
                 parts.push(format!("{} requests", theme::fmt_num(s.requests)));
+                if let Some(secs) = s.last_request_ms.and_then(since) {
+                    parts.push(format!("last {} ago", theme::fmt_age(secs)));
+                }
                 if s.errors > 0 {
                     parts.push(format!("{} errors", theme::fmt_num(s.errors)));
                 }
@@ -708,6 +734,15 @@ pub fn minute_buckets(hist: &std::collections::VecDeque<f64>, n: usize) -> Vec<f
     out
 }
 
+/// Seconds from the Unix time `ms` to now; `None` for a time in the future.
+fn since(ms: u64) -> Option<u64> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis() as u64;
+    now.checked_sub(ms).map(|d| d / 1000)
+}
+
 fn ratio(eps: f64, rps: f64) -> f64 {
     if rps > 0.0 {
         (eps / rps).min(1.0)
@@ -747,7 +782,8 @@ mod tests {
     #[test]
     fn columns_fit_an_80_column_terminal() {
         let c = columns(80);
-        assert!(c.up + 6 <= 80, "up ends at {}", c.up + 6);
+        assert!(c.last + 6 <= 80, "last ends at {}", c.last + 6);
+        assert_eq!(c.last, c.up + 7);
         assert!(c.name_w >= 14);
         assert!(columns(60).spark.is_none());
     }
@@ -840,6 +876,7 @@ mod render_tests {
             app_history: &history,
             deploys: &deploys,
             waking: &[],
+            memory_total: None,
         };
         let mut anim = Anim::new(false);
         anim.begin(now);
