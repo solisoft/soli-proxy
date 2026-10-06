@@ -3,7 +3,7 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::broadcast;
@@ -760,7 +760,7 @@ pub struct AppManager {
     /// reaper starts its clock on first sight rather than sleeping the app
     /// on the spot. Atomics, so the request path records itself with a
     /// store; the routing table holds the same cells.
-    activity: Arc<parking_lot::Mutex<HashMap<String, Arc<AtomicU64>>>>,
+    activity: Arc<parking_lot::Mutex<HashMap<String, Arc<AppActivity>>>>,
     epoch: std::time::Instant,
     /// Apps the reaper stopped for inactivity. A request for one of these is
     /// held while the app is started again, instead of answering 421.
@@ -938,7 +938,70 @@ pub struct AppRoute {
     pub error_pages: Option<Arc<crate::response::error_pages::ErrorPages>>,
     /// The app's idle clock (see `AppManager::touch`), shared by all of its
     /// hosts and across rebuilds: a request records itself with one store.
-    activity: Arc<AtomicU64>,
+    activity: Arc<AppActivity>,
+}
+
+/// An app's idle clock: when it last had a request, and how many of its
+/// requests — response bodies still streaming, WebSocket tunnels — are still
+/// open. Scale to zero counts idleness from the end of the last one, and
+/// never stops an app that has one open: a chat socket or a server-sent
+/// event stream can last far longer than `idle_timeout` without a single new
+/// request.
+#[derive(Debug, Default)]
+pub struct AppActivity {
+    last: AtomicU64,
+    open: AtomicUsize,
+}
+
+impl AppActivity {
+    fn store(&self, ms: u64, order: Ordering) {
+        self.last.store(ms, order);
+    }
+
+    fn load(&self, order: Ordering) -> u64 {
+        self.last.load(order)
+    }
+
+    fn open(&self) -> usize {
+        self.open.load(Ordering::Relaxed)
+    }
+}
+
+/// One open request to an app: while it lives the app is not idle, and when
+/// it drops the app's idle clock restarts from then. The proxy keeps it for
+/// as long as the response body streams, or the WebSocket tunnel stays up.
+pub struct OpenRequest {
+    cell: Arc<AppActivity>,
+    epoch: std::time::Instant,
+}
+
+impl OpenRequest {
+    fn new(cell: Arc<AppActivity>, epoch: std::time::Instant) -> Self {
+        cell.open.fetch_add(1, Ordering::Relaxed);
+        Self { cell, epoch }
+    }
+}
+
+impl Clone for OpenRequest {
+    fn clone(&self) -> Self {
+        Self::new(self.cell.clone(), self.epoch)
+    }
+}
+
+impl Drop for OpenRequest {
+    fn drop(&mut self) {
+        self.cell.store(
+            self.epoch.elapsed().as_millis() as u64 + 1,
+            Ordering::Relaxed,
+        );
+        self.cell.open.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+impl std::fmt::Debug for OpenRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("OpenRequest")
+    }
 }
 
 /// A resolved request: where to send it, and — for the proxy's own apps —
@@ -953,6 +1016,9 @@ pub struct AppTarget {
     pub auth: Option<Arc<AppAuth>>,
     /// The app's `compress =`; `None` for a cluster-pushed route.
     pub compress: Option<bool>,
+    /// Keeps the app awake while held (see [`OpenRequest`]); `None` for a
+    /// cluster-pushed route.
+    pub open: Option<OpenRequest>,
 }
 
 /// What the operator's static `proxy.conf` rules make of a request — the
@@ -1036,7 +1102,7 @@ fn build_routes(
     apps: &HashMap<String, AppInfo>,
     aliases: &HashMap<String, String>,
     dev_mode: bool,
-    activity: &mut HashMap<String, Arc<AtomicU64>>,
+    activity: &mut HashMap<String, Arc<AppActivity>>,
 ) -> AppRoutes {
     let mut ordered: Vec<&AppInfo> = apps.values().collect();
     ordered.sort_by(|a, b| a.config.name.cmp(&b.config.name));
@@ -1572,7 +1638,7 @@ impl AppManager {
             restart_triggers: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             restart_trigger_file: cfg.apps.restart_trigger_file(),
             restart_trigger_poll_secs: cfg.apps.restart_trigger_poll_secs(),
-            default_idle_timeout: cfg.apps.idle_timeout(),
+            default_idle_timeout: cfg.apps.idle_timeout(dev_mode),
             activity: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             epoch: std::time::Instant::now(),
             asleep: Arc::new(parking_lot::Mutex::new(HashSet::new())),
@@ -1718,7 +1784,7 @@ impl AppManager {
     }
 
     /// `app_name`'s idle clock.
-    fn activity_cell(&self, app_name: &str) -> Arc<AtomicU64> {
+    fn activity_cell(&self, app_name: &str) -> Arc<AppActivity> {
         self.activity
             .lock()
             .entry(app_name.to_string())
@@ -1880,6 +1946,7 @@ impl AppManager {
                     app: Some(route.app.clone()),
                     auth: route.auth.clone(),
                     compress: route.compress,
+                    open: Some(OpenRequest::new(route.activity.clone(), self.epoch)),
                 });
             }
         }
@@ -1900,6 +1967,7 @@ impl AppManager {
                 // it enforces the app's `[auth]` but this proxy.
                 auth: self.external_routes.auth(host).map(Arc::new),
                 compress: None,
+                open: None,
             })
     }
 
@@ -3728,6 +3796,11 @@ impl AppManager {
                 cell.store(now, Ordering::Relaxed);
                 continue;
             }
+            // A request still streaming, or a WebSocket still up: busy,
+            // however long ago it began.
+            if cell.open() > 0 {
+                continue;
+            }
             let idle_for = std::time::Duration::from_millis(now.saturating_sub(last));
             if idle_for.as_secs() < timeout {
                 continue;
@@ -5428,6 +5501,52 @@ admin = "$2b$12$adminhashadminhashadminhashadminhashadminhashadminhas"
         let route = manager.routes().get("live.example.com").cloned().unwrap();
         assert!(route.target.is_none());
         assert_eq!(&*route.app, "live.example.com");
+    }
+
+    /// A request still open — a streaming response, a WebSocket — keeps its
+    /// app awake past `idle_timeout`; the idle clock restarts when it ends.
+    #[tokio::test]
+    async fn an_open_request_keeps_the_app_awake() {
+        let temp_dir = TempDir::new().unwrap();
+        let sites = temp_dir.path().join("sites");
+        site_with_app_infos(
+            &sites,
+            "chat.example.com",
+            "name = \"chat.example.com\"\ndomain = \"chat.example.com\"\nidle_timeout = 1\n",
+        );
+        let manager = test_manager(&temp_dir, &sites);
+        manager.discover_apps_readonly().await.unwrap();
+        mark_running(&manager, "chat.example.com").await;
+
+        let target = manager
+            .resolve_app_request("chat.example.com", &|_| true)
+            .await
+            .unwrap();
+        let open = target.open.clone();
+        drop(target);
+        let cell = manager.activity_cell("chat.example.com");
+        assert_eq!(
+            cell.open(),
+            1,
+            "the clone counts, the dropped original does not"
+        );
+
+        // Well past the threshold, but the request is still open.
+        cell.store(1, Ordering::Relaxed);
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        manager.reap_idle().await;
+        assert!(!manager.is_asleep("chat.example.com"));
+
+        // It ends: the clock restarts now, so the app is not idle yet...
+        drop(open);
+        assert_eq!(cell.open(), 0);
+        manager.reap_idle().await;
+        assert!(!manager.is_asleep("chat.example.com"));
+
+        // ...and sleeps once the threshold passes with nothing open.
+        cell.store(1, Ordering::Relaxed);
+        manager.reap_idle().await;
+        assert!(manager.is_asleep("chat.example.com"));
     }
 
     /// A probe that fails because the app was stopped on purpose meanwhile —

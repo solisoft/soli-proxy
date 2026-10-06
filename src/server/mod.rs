@@ -231,6 +231,49 @@ impl ConnLease {
 /// client sees a truncated response rather than a complete-looking one.
 pub(crate) type BoxBody = http_body_util::combinators::BoxBody<Bytes, BoxError>;
 
+/// `resp` with `open` held until its body has been sent (or dropped): an app
+/// streaming a long response — server-sent events, a big download — is busy
+/// for scale to zero until the last byte, not just until the headers.
+fn hold_open(resp: Response<BoxBody>, open: Option<crate::app::OpenRequest>) -> Response<BoxBody> {
+    let Some(open) = open else {
+        return resp;
+    };
+    let (parts, body) = resp.into_parts();
+    Response::from_parts(
+        parts,
+        HeldBody {
+            inner: body,
+            _open: open,
+        }
+        .boxed(),
+    )
+}
+
+struct HeldBody {
+    inner: BoxBody,
+    _open: crate::app::OpenRequest,
+}
+
+impl hyper::body::Body for HeldBody {
+    type Data = Bytes;
+    type Error = BoxError;
+
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<hyper::body::Frame<Bytes>, BoxError>>> {
+        std::pin::Pin::new(&mut self.get_mut().inner).poll_frame(cx)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        self.inner.size_hint()
+    }
+}
+
 /// A complete in-memory body.
 pub(crate) fn full(b: impl Into<Bytes>) -> BoxBody {
     http_body_util::Full::new(b.into())
@@ -3706,6 +3749,8 @@ async fn handle_websocket_request(
     // For a rule: the configured target the tunnel goes to (the circuit
     // breaker's key) and whether a Lua hook replaced the URL.
     let mut ws_target: Option<(String, bool)> = None;
+    // For an app, held by the tunnel: the app is not idle while it is up.
+    let mut ws_open: Option<crate::app::OpenRequest> = None;
     let target_url = match &route {
         Some(matched) => {
             // Same gates as the HTTP path, `@auth` then `@forward_auth`,
@@ -3757,9 +3802,11 @@ async fn handle_websocket_request(
         }
         None => {
             if let (Some(ref manager), Some(ref h)) = (app_manager, host) {
-                if let Some(crate::app::AppTarget { target, auth, .. }) =
-                    manager.resolve_app_request(h, &|_| true).await
+                if let Some(crate::app::AppTarget {
+                    target, auth, open, ..
+                }) = manager.resolve_app_request(h, &|_| true).await
                 {
+                    ws_open = open;
                     // Same gate as the HTTP path: an upgrade must not be a way
                     // around the app's Basic Auth.
                     if let Some(auth) = auth {
@@ -4202,6 +4249,7 @@ async fn handle_websocket_request(
     // Spawn the bidirectional copy task
     tokio::spawn(async move {
         let _lease = lease; // released when the tunnel closes
+        let _open = ws_open; // the app stays awake while the tunnel is up
         match client_upgrade.await {
             Ok(upgraded) => {
                 let mut client_stream = TokioIo::new(upgraded);
@@ -4841,6 +4889,7 @@ async fn handle_regular_request(
                     app: served_app,
                     auth,
                     compress,
+                    open,
                 }) = manager.resolve_app_request(h, &available).await
                 {
                     // App domains are routed here, not through `config.rules`
@@ -5006,7 +5055,7 @@ async fn handle_regular_request(
                                     response.headers(),
                                 ) {
                                     return Ok((
-                                        apply_response_mods(response, mods),
+                                        hold_open(apply_response_mods(response, mods), open),
                                         target_url,
                                         vec![],
                                     ));
@@ -5015,7 +5064,11 @@ async fn handle_regular_request(
 
                             let (parts, body) = response.into_parts();
                             let boxed = body.map_err(BoxError::from).boxed();
-                            return Ok((Response::from_parts(parts, boxed), target_url, vec![]));
+                            return Ok((
+                                hold_open(Response::from_parts(parts, boxed), open),
+                                target_url,
+                                vec![],
+                            ));
                         }
                         Err(crate::upstream::SendError::BadUri(e)) => {
                             tracing::warn!(

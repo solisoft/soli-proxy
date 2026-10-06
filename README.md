@@ -1247,7 +1247,7 @@ admin = "$2b$12$..."   # generate with: hash-password (cost 4..=13)
 | `docker_options` | string | _none_ | Extra flags appended to `docker run`. Whitespace-split, no shell. Single-tenant: a denylist rejects `--privileged`, `--cap-add`, `--device`, `--security-opt`, `--userns`, `--volumes-from`, `--env-file`, `--group-add`, joining the `host` or another container's namespaces, and docker-socket / root mounts in every spelling (`-v/:/x`, `--mount type=bind,source=/`, `/./`, `/etc/..`). Multi-tenant: only the allowlist below is accepted. |
 | `docker_network` | string | `"soli-apps"` | Docker network the container joins (created automatically if missing). A plain network name only: `host` and `container:<id>` are refused in every mode, since the value goes straight to `--network`. Ignored in multi-tenant mode, where each app gets a private network. |
 | `compress` | bool | _unset_ | `false`: never compress this app's responses. `true`: compress them even with `[compression] enabled = false` — ignored in multi-tenant mode. Unset follows `[compression]`. See [Compression](#compression). |
-| `idle_timeout` | int (seconds) | `[apps].idle_timeout` from `config.toml`, itself `0` | Scale to zero: after this many seconds without a request the proxy stops the app and starts it again on the next one, holding that request until the app is healthy. `0` means the app never sleeps. See [Scale to zero](#scale-to-zero). |
+| `idle_timeout` | int (seconds) | `[apps].idle_timeout` from `config.toml`, itself `900` (`0` under `--dev`) | Scale to zero: after this many seconds without a request (and with none still open) the proxy stops the app and starts it again on the next one, holding that request until the app is healthy. `0` means the app never sleeps. See [Scale to zero](#scale-to-zero). |
 | `[auth.users]` | table | _empty_ | `username = "bcrypt hash"` entries. When non-empty, every request to this app's domains must present matching HTTP Basic Auth credentials. Generate a hash with `hash-password`; only bcrypt hashes at cost 4 to 13 are accepted. |
 | `[auth] noauth` | list of strings | _empty_ | Paths served without credentials, for callers that cannot send a password (a payment webhook, a health probe). Exact path, or a prefix ending in `*` — the same syntax as the `@noauth:` route directive, and the same fail-closed rule: a path carrying percent-encoding or a `..` segment is never exempt. Skips forward-auth too. |
 | `[auth] forward` | string | _none_ | Auth service asked before every request to this app's domains, WebSocket upgrades included — the app equivalent of `@forward_auth:`. See [Forward authentication](#forward-authentication). With `[auth.users]` too, Basic Auth runs first and both must pass. In multi-tenant mode it must be covered by `[forward_auth] allowed_urls`. |
@@ -1319,17 +1319,22 @@ reported the same way, with the section named.
 
 Most fleets are mostly idle: on a box hosting thirty small sites, a day's traffic
 typically touches a handful, and every one of the others holds its full runtime
-in memory for nothing. `idle_timeout` lets the proxy put such an app to sleep —
-stop its process — and start it again on the next request.
+in memory for nothing. So the proxy puts an app to sleep — stops its process —
+after **15 minutes without a request**, and starts it again on the next one.
+`idle_timeout` (seconds) changes the threshold, `0` turns it off:
 
 ```toml
 # app.infos
-idle_timeout = 900   # sleep after 15 minutes without a request
+idle_timeout = 0      # this app never sleeps
+# idle_timeout = 3600 # or: sleep after an hour
 ```
 
 What happens:
 
-- Every request the proxy routes to an app resets that app's idle clock.
+- Every request the proxy routes to an app resets that app's idle clock, and an
+  app with a request still open is never idle: a response still streaming
+  (server-sent events, a large download) or a WebSocket still up keeps it awake
+  however long it lasts, and the clock starts when the last one ends.
 - A reaper runs every 30 s. An app past its threshold is stopped the same way
   `soli-proxy stop` stops it, so the exit is not mistaken for a crash — no
   failover, no quarantine, and no health-check failure for the process going
@@ -1350,19 +1355,22 @@ What happens:
   fetch more often than its threshold never sleeps; its `requests` and
   `last_request_ms` in `/api/v1/app-metrics` show who keeps it up.
 
-The default is `0` — never sleep — and that is the right value for anything
-that does work without being asked: cron jobs, background workers, WebSocket
-rooms, a warm cache that takes more than a moment to rebuild. Set a threshold
-only on apps whose whole life is answering requests. `_admin` never sleeps
-regardless of its manifest. A fleet-wide default goes in `config.toml`:
+**Set `idle_timeout = 0` on an app that does work without being asked**: cron
+jobs, background job workers, a warm cache that takes more than a moment to
+rebuild. Asleep, it runs none of them until a request wakes it. (Open
+connections are covered: a chat's WebSockets keep its app up.) `_admin` never
+sleeps regardless of its manifest. Under `--dev` apps never sleep unless their
+manifest or `config.toml` says so. The fleet-wide default goes in `config.toml`:
 
 ```toml
 [apps]
 idle_timeout = 1800   # apps that don't say otherwise sleep after 30 minutes
+# idle_timeout = 0    # or: no app sleeps unless its app.infos asks
 ```
 
-An app that must stay up under a fleet-wide default says so with
-`idle_timeout = 0` in its own `app.infos`.
+Before 1.2 the default was `0`, never sleep: after upgrading, apps without an
+`idle_timeout` start sleeping after 15 minutes. Pin the ones that must stay up
+first, or set `[apps] idle_timeout = 0` to keep the old behaviour.
 
 ### The app's environment
 
