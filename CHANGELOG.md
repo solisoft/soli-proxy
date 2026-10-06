@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.4.0](https://github.com/solisoft/soli-proxy/compare/v1.3.0...v1.4.0) (2026-10-06)
+
+### Features
+
+* **bots: refuse crawlers by user agent.** `[bots] block_agents` answers a `403` to a
+  `User-Agent` containing one of its entries, compared without case: presets `ai-training`
+  (GPTBot, ClaudeBot, CCBot, Bytespider…), `ai-assistants` (ChatGPT-User, PerplexityBot,
+  Amazonbot…), `seo` (AhrefsBot, SemrushBot…) and `scanners` (zgrab, Nuclei, sqlmap…), or
+  substrings. Search engines' crawlers are in no preset.
+* **bots: ban scanners.** `traps = true` bans, for `ban_secs` (an hour by default), a client that
+  asks for `/.env*`, `/.git/*`, `/wp-login.php`, `/wp-admin/*`, `/xmlrpc.php`, `/phpmyadmin*`…
+  (or `trap_paths`), and `max_404_per_minute` one past that many 404s: a banned client gets a
+  `403` on every site until the ban ends. IPv6 clients are banned by /64. Requests a page made a
+  browser send (a `Sec-Fetch-Site` other than `none`) never ban, so no site can get your
+  visitors banned with an `<img src="/.env">`; `allow_ips`, loopback and the `trusted_proxies`
+  are never refused.
+* **bots: on and off, globally or per site.** `[bots] enabled` is the master switch, and a site's
+  `[bots] enabled` in its `app.infos` wins over it both ways; `traps = false` (a WordPress) and
+  `block_agents` there adjust it for that site.
+* **bots: see and lift bans.** Each ban is logged once and shows in the TUI's journal;
+  `soli-proxy bots` lists the bans and the user agents refused, `soli-proxy bots unban <ip>`
+  lifts one (`GET /api/v1/bots`, `DELETE /api/v1/bots/bans/{ip}` on the admin API).
+* **logging: the user agent of each request.** `log_endpoints` lines carry `user_agent` (clipped
+  to 256 characters), shown in the TUI's error detail.
+
 ## [1.3.0](https://github.com/solisoft/soli-proxy/compare/v1.2.2...v1.3.0) (2026-10-06)
 
 ### Features
