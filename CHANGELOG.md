@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.6.0](https://github.com/solisoft/soli-proxy/compare/v1.5.0...v1.6.0) (2026-10-06)
+
+### Features
+
+* **apps: an upgraded `soli` reaches running apps on restart.** A process keeps the binary it
+  started from, so after an upgrade an app ran the old version until someone restarted it. An
+  adopted app whose binary was replaced since it started (compared by file identity with what
+  its start command resolves to now) keeps serving, then is deployed blue-green onto the new
+  binary, four apps at a time, after the apps that were down.
+* **systemd: a warning when the unit would kill the apps.** With a `KillMode` other than
+  `process`, stopping the unit kills every app with the proxy (`mixed` with SIGKILL), so the
+  next proxy has nothing to adopt and every site starts cold. A proxy that is a unit's main
+  process now logs this at startup, with the fix.
+
+### Bug Fixes
+
+* **apps: an app that was up is never put to sleep by a restart.** 1.5.0 left asleep an app
+  found running but not adoptable (its launch changed, an unhealthy process, a pre-1.0
+  leftover) after stopping it; it is started again at once, as before. Only apps with nothing
+  running at all wait for their first request.
+
 ## [1.5.0](https://github.com/solisoft/soli-proxy/compare/v1.4.0...v1.5.0) (2026-10-06)
 
 ### Features
