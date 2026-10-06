@@ -3493,11 +3493,24 @@ mod tests {
         };
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let manager = DeploymentManager::new(false, None, None, tx);
-        let mut child = std::process::Command::new(&program)
-            .arg("60")
-            .current_dir(site.path())
-            .spawn()
-            .unwrap();
+        // A file just written can be "busy" for a moment: another test's
+        // fork may still hold the copy's write descriptor (ETXTBSY).
+        let mut child = (0..50)
+            .find_map(|_| {
+                match std::process::Command::new(&program)
+                    .arg("60")
+                    .current_dir(site.path())
+                    .spawn()
+                {
+                    Ok(child) => Some(child),
+                    Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                        std::thread::sleep(Duration::from_millis(20));
+                        None
+                    }
+                    Err(e) => panic!("cannot start the copy: {e}"),
+                }
+            })
+            .expect("the copy stayed busy");
         let pid = child.id();
         // Exec'd: /proc/<pid>/exe is the copy, not the test binary.
         for _ in 0..100 {
