@@ -1559,10 +1559,11 @@ What happens:
   failover, no quarantine, and no health-check failure for the process going
   away. The journal says `<app> put to sleep after <n>s without a request`.
 - The next request for one of its domains is **held** while the app is started
-  on its current slot and polled for health, then forwarded as usual. A Soli app
-  boots in a few hundred milliseconds, so the first visitor waits about a
-  second; everyone else finds it running. Concurrent first requests share one
-  start.
+  on its current slot and polled for health, then forwarded as usual. The
+  health check is polled every few milliseconds at first (10 ms, doubling up to
+  250 ms), so the first visitor waits about as long as the app takes to start —
+  under a tenth of a second for a small app; everyone else finds it running.
+  Concurrent first requests share one start.
 - A sleeping app keeps its certificate registered and keeps winning over
   static `proxy.conf` rules for its domains, exactly as a running one does.
 - `soli-proxy restart <app>` or a deploy wakes it too, and resets the clock.

@@ -2389,12 +2389,21 @@ impl DeploymentManager {
         let log_path = format!("run/logs/{}/{}.log", app.config.name, slot);
         let timeout_secs = 30;
         let mut last_err: Option<String> = None;
+        let started = std::time::Instant::now();
+        let deadline = started + Duration::from_secs(timeout_secs);
+        // Polled fast at first, then every 250 ms: a Soli app is up in about
+        // a tenth of a second, and every waking request waits on this. One
+        // poll a second made each wake cost a second at least, whatever the
+        // app's own start time. A refused connection costs nothing to retry.
+        let mut pause = Duration::from_millis(10);
+        let mut i = 0u32;
 
-        for i in 0..timeout_secs {
-            // Sleep between retries, but try immediately on the first attempt
+        while i == 0 || std::time::Instant::now() < deadline {
             if i > 0 {
-                sleep(Duration::from_secs(1)).await;
+                sleep(pause).await;
+                pause = (pause * 2).min(Duration::from_millis(250));
             }
+            i += 1;
 
             // Bail early if the process already died — no point polling a dead
             // port for the full 30s.
@@ -2413,10 +2422,10 @@ impl DeploymentManager {
             match self.http_client.get(&url).send().await {
                 Ok(resp) if resp.status().is_success() => {
                     tracing::info!(
-                        "Health check passed for {} slot {} after {}s",
+                        "Health check passed for {} slot {} after {} ms",
                         app.config.name,
                         slot,
-                        i
+                        started.elapsed().as_millis()
                     );
                     return Ok(());
                 }
@@ -2427,7 +2436,7 @@ impl DeploymentManager {
                         app.config.name,
                         slot,
                         status,
-                        i + 1
+                        i
                     );
                     last_err = Some(format!("HTTP {}", status));
                 }
@@ -2438,7 +2447,7 @@ impl DeploymentManager {
                         app.config.name,
                         slot,
                         reason,
-                        i + 1
+                        i
                     );
                     last_err = Some(reason);
                 }
