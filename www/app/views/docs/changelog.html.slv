@@ -46,11 +46,42 @@
                     </p>
                 </div>
 
+                <!-- 1.2.0 -->
+                <div class="mb-10 reveal-on-scroll">
+                    <div class="flex items-center gap-3 mb-5 flex-wrap">
+                        <h2 class="text-2xl font-bold text-white font-mono">v1.2.0</h2>
+                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
+                        <span class="text-sm text-gray-500">2026-10-06</span>
+                    </div>
+                    <p class="text-gray-400 leading-relaxed mb-4">Apps now sleep after 15 minutes without a request. Pin the ones that run cron jobs or background workers with <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">idle_timeout = 0</code> before upgrading, or keep the old behaviour with <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">[apps] idle_timeout = 0</code>.</p>
+
+                    <div class="space-y-4">
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">feat</span>
+                                <h3 class="text-base font-semibold text-white">Apps sleep after 15 minutes idle by default</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">[apps] idle_timeout</code> defaults to 900 seconds (never under <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">--dev</code>); an explicit value still wins and <code class="px-1.5 py-0.5 rounded bg-white/5 text-emerald-300 text-sm font-mono">0</code> turns it off. An app with a request still open is never idle: a streaming response or a WebSocket keeps it awake however long it lasts, and the clock starts when the last one ends.
+                            </p>
+                        </div>
+
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">fix</span>
+                                <h3 class="text-base font-semibold text-white">Slow downloads no longer fill the proxy&rsquo;s memory</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                The HTTP/1 server read a response from the backend as fast as the backend sent it, whatever the client&rsquo;s speed: a 120&nbsp;MB download to a slow client sat in memory within a second. It now reads only as fast as the client takes it (+3.7&nbsp;MB instead of +80&nbsp;MB measured); fast clients are as fast as before.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- 1.1.0 -->
                 <div class="mb-10 reveal-on-scroll">
                     <div class="flex items-center gap-3 mb-5 flex-wrap">
                         <h2 class="text-2xl font-bold text-white font-mono">v1.1.0</h2>
-                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
                         <span class="text-sm text-gray-500">2026-10-05</span>
                     </div>
 

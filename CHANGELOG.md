@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.2.0](https://github.com/solisoft/soli-proxy/compare/v1.1.0...v1.2.0) (2026-10-06)
+
+**Upgrading:** apps without an `idle_timeout` now sleep after 15 minutes without a request.
+Pin the ones that run cron jobs or background workers with `idle_timeout = 0` in their
+`app.infos` first, or keep the old behaviour fleet-wide with `[apps] idle_timeout = 0`.
+
+### Features
+
+* **apps: put apps to sleep after 15 minutes idle by default.** `[apps] idle_timeout` defaults
+  to 900 seconds instead of `0` (never), and stays `0` under `--dev`; an explicit value in
+  `config.toml` or `app.infos` still wins. An app with a request still open is never idle: the
+  proxy holds a token for as long as a response body streams (server-sent events, a large
+  download) or a WebSocket tunnel stays up, the reaper skips an app holding one, and the idle
+  clock starts when the last one ends — so a chat or an event stream is not cut after 15
+  minutes. Measured: a 60-second download through an app set to 30 s runs to the end, and the
+  app sleeps after it.
+
+### Bug Fixes
+
+* **server: a response is read only as fast as the client takes it.** The HTTP/1 server was
+  built with hyper's experimental `pipeline_flush`, which makes its write buffer report room at
+  all times: a response body was read from the backend as fast as the backend sent it, whatever
+  the client's speed. A 120 MB download to a slow client sat in the proxy's memory within a
+  second (+80 MB RSS in 6 s at 1 MB/s), on every path, static routes included, and the backend's
+  request was over long before the client's. Without it hyper stops reading once about 400 KB
+  wait to be written: +3.7 MB measured, and a fast client still gets 2.7 GB/s.
+
 ## [1.1.0](https://github.com/solisoft/soli-proxy/compare/v1.0.6...v1.1.0) (2026-10-05)
 
 ### Features
