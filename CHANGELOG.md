@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.7.2](https://github.com/solisoft/soli-proxy/compare/v1.7.1...v1.7.2) (2026-10-06)
+
+### Bug Fixes
+
+* **apps: `TZ` and `LANG` are left unset when the proxy has none.** Apps got them empty whenever
+  the proxy ran without them, which under systemd is always. An empty `TZ` is UTC, and soli does
+  not override a variable already set with its `.env`, so an app could not set its time zone
+  there and had to start with `env TZ=Europe/Paris soli serve …`. `TZ=Europe/Paris` in the app's
+  `.env` now works. Apps already running are adopted as before, not restarted for this.
+
 ## [1.7.1](https://github.com/solisoft/soli-proxy/compare/v1.7.0...v1.7.1) (2026-10-06)
 
 ### Bug Fixes
