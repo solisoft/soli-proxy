@@ -1091,6 +1091,26 @@ impl AppRoutes {
     }
 }
 
+/// What [`AppManager::try_adopt`] made of an app.
+#[derive(Default)]
+struct Adoption {
+    /// The slot and PID adopted.
+    adopted: Option<(String, u32)>,
+    /// Whether anything of the app's was running at all, adopted or not.
+    was_running: bool,
+    /// The adopted process runs a binary replaced since it started (`soli`
+    /// upgraded): it is redeployed onto the new one once adopted.
+    outdated: bool,
+}
+
+/// What [`AppManager::adopt_running`] did, by app name.
+#[derive(Default)]
+struct AdoptionReport {
+    adopted: HashSet<String>,
+    was_running: HashSet<String>,
+    outdated: Vec<String>,
+}
+
 /// The port of the slot that should take traffic: the current slot, or the
 /// other one when the current slot has no process (so a dead `current_slot`
 /// does not mean a permanent 421 while the other slot runs). `None` when
@@ -2321,24 +2341,32 @@ impl AppManager {
         // Before anything is started: take over what a previous proxy left
         // running. Done here, ahead of the listeners, so an adopted app is in
         // the routing table for the very first request after a restart.
+        let mut was_running: HashSet<String> = HashSet::new();
+        let mut outdated: Vec<String> = Vec::new();
         if auto_start && !apps_to_start.is_empty() {
-            let adopted = self.adopt_running(&apps_to_start).await;
-            apps_to_start.retain(|name| !adopted.contains(name));
+            let report = self.adopt_running(&apps_to_start).await;
+            apps_to_start.retain(|name| !report.adopted.contains(name));
+            was_running = report.was_running;
+            outdated = report.outdated;
         }
 
         // At startup, an app that is not running and may sleep is not started
         // either: it is left asleep, and its first request wakes it. A reboot
         // then costs nothing for the sites nobody visits, instead of starting
-        // all of them at once. Apps that never sleep (`idle_timeout = 0`,
-        // `_admin`) are started as before: they may have work of their own.
-        // Sites added later are started on discovery, as before.
+        // all of them at once. An app that *was* running — adopted, or found
+        // up but not adoptable (changed launch, unhealthy, a leftover of an
+        // older proxy) — is never put to sleep by a restart: the latter is
+        // started again at once. So are apps that never sleep (`idle_timeout
+        // = 0`, `_admin`): they may have work of their own. Sites added later
+        // are started on discovery, as before.
         let mut left_asleep: Vec<String> = Vec::new();
         if auto_start && !self.booted.swap(true, Ordering::SeqCst) && !apps_to_start.is_empty() {
             let apps = self.apps.lock().await;
             apps_to_start.retain(|name| {
-                let lazy = apps
-                    .get(name)
-                    .is_some_and(|app| self.idle_timeout_for(app) > 0);
+                let lazy = !was_running.contains(name)
+                    && apps
+                        .get(name)
+                        .is_some_and(|app| self.idle_timeout_for(app) > 0);
                 if lazy {
                     left_asleep.push(name.clone());
                 }
@@ -2416,6 +2444,37 @@ impl AppManager {
                 for handle in handles {
                     let _ = handle.await;
                 }
+                // Then the adopted apps still running an old binary (`soli` upgraded
+                // since they started): a blue-green deploy onto the new one,
+                // which keeps serving them meanwhile. A few at a time, so an
+                // upgrade does not boot every app on the host at once.
+                {
+                    use futures::StreamExt;
+                    futures::stream::iter(outdated.into_iter().map(|name| {
+                        let mgr = manager.clone();
+                        async move {
+                            let Some(app) = mgr.get_app(&name).await else {
+                                return;
+                            };
+                            let next = if app.current_slot == "blue" {
+                                "green"
+                            } else {
+                                "blue"
+                            };
+                            match mgr.deploy(&name, next).await {
+                                Ok(()) => tracing::info!("{} redeployed onto the new binary", name),
+                                Err(e) => tracing::error!(
+                                    "Could not redeploy {} onto the new binary: {:#}",
+                                    name,
+                                    e
+                                ),
+                            }
+                        }
+                    }))
+                    .buffer_unordered(4)
+                    .collect::<Vec<()>>()
+                    .await;
+                }
                 manager.sync_routes().await;
             });
         }
@@ -2423,8 +2482,9 @@ impl AppManager {
     }
 
     /// Adopt the instances a previous proxy left running for `names`, and
-    /// return the apps adopted. See [`Self::try_adopt`] for what qualifies.
-    async fn adopt_running(&self, names: &[String]) -> HashSet<String> {
+    /// return the apps adopted, then the apps that had something running
+    /// (adopted or not). See [`Self::try_adopt`] for what qualifies.
+    async fn adopt_running(&self, names: &[String]) -> AdoptionReport {
         use futures::StreamExt;
 
         // The slot each app was last promoted to. Discovery defaults every
@@ -2448,7 +2508,7 @@ impl AppManager {
         };
         // Bounded: each check is a `docker inspect` or a port lookup plus a
         // health probe, and a host can have hundreds of sites.
-        let outcomes: Vec<(AppInfo, Option<(String, u32)>)> =
+        let outcomes: Vec<(AppInfo, Adoption)> =
             futures::stream::iter(candidates.into_iter().map(|(app, slot)| {
                 let manager = self.clone();
                 async move {
@@ -2460,12 +2520,25 @@ impl AppManager {
             .collect()
             .await;
 
+        let mut report = AdoptionReport {
+            was_running: outcomes
+                .iter()
+                .filter(|(_, o)| o.was_running)
+                .map(|(app, _)| app.config.name.clone())
+                .collect(),
+            outdated: outcomes
+                .iter()
+                .filter(|(_, o)| o.outdated && o.adopted.is_some())
+                .map(|(app, _)| app.config.name.clone())
+                .collect(),
+            ..AdoptionReport::default()
+        };
         let adopted: Vec<(AppInfo, String, u32)> = outcomes
             .into_iter()
-            .filter_map(|(app, outcome)| outcome.map(|(slot, pid)| (app, slot, pid)))
+            .filter_map(|(app, o)| o.adopted.map(|(slot, pid)| (app, slot, pid)))
             .collect();
         if adopted.is_empty() {
-            return HashSet::new();
+            return report;
         }
         {
             let mut apps = self.apps.lock().await;
@@ -2500,7 +2573,8 @@ impl AppManager {
             "Adopted {} app(s) left running by the previous proxy",
             names.len()
         );
-        names
+        report.adopted = names;
+        report
     }
 
     /// Decide whether `app` can be taken over as it runs, trying the slot it
@@ -2517,13 +2591,19 @@ impl AppManager {
     ///   stopped;
     /// * not provably ours — left alone, not adopted; the fresh start then
     ///   meets it as it always did (and refuses to kill it).
-    async fn try_adopt(&self, app: &AppInfo, preferred: &str) -> Option<(String, u32)> {
+    ///
+    /// The `bool` says whether anything of the app's was running at all,
+    /// adopted or not: an app that was up is started again at once rather
+    /// than left asleep.
+    async fn try_adopt(&self, app: &AppInfo, preferred: &str) -> Adoption {
         let dm = &self.deployment_manager;
         let name = &app.config.name;
         let other = if preferred == "blue" { "green" } else { "blue" };
-        let mut adopted: Option<(String, u32)> = None;
+        let mut result = Adoption::default();
         for slot in [preferred, other] {
-            match dm.verify_slot(app, slot).await {
+            let ownership = dm.verify_slot(app, slot).await;
+            result.was_running |= !matches!(ownership, SlotOwnership::Absent);
+            match ownership {
                 SlotOwnership::Absent => {
                     // No record — but a proxy older than 1.0 kept none, and
                     // left its apps running. One found on this slot's port is
@@ -2534,9 +2614,9 @@ impl AppManager {
                     } else {
                         app.green.port
                     };
-                    dm.stop_pre_registry_instance(app, slot, port).await;
+                    result.was_running |= dm.stop_pre_registry_instance(app, slot, port).await;
                 }
-                SlotOwnership::Ours { pid } if adopted.is_none() => {
+                SlotOwnership::Ours { pid } if result.adopted.is_none() => {
                     match self.probe_adoptable(app, slot).await {
                         Ok(()) => {
                             tracing::info!(
@@ -2545,7 +2625,15 @@ impl AppManager {
                                 slot,
                                 pid
                             );
-                            adopted = Some((slot.to_string(), pid));
+                            result.adopted = Some((slot.to_string(), pid));
+                            if dm.runs_replaced_binary(app, slot, pid) {
+                                tracing::info!(
+                                    "{} runs a binary replaced since it started (soli upgraded?); \
+                                     redeploying it onto the new one",
+                                    name
+                                );
+                                result.outdated = true;
+                            }
                         }
                         Err(reason) => {
                             tracing::warn!(
@@ -2591,7 +2679,7 @@ impl AppManager {
                 ),
             }
         }
-        adopted
+        result
     }
 
     /// One health check for adoption: three tries, half a second apart, so a

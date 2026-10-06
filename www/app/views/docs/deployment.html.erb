@@ -192,6 +192,7 @@
 <span class="tf">WantedBy</span>=multi-user.target</code></pre>
                         </div>
                     </div>
+                    <p class="text-gray-400 mt-4">With any other <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">KillMode</code>, stopping the unit kills every app with the proxy and the next one starts them all cold; the proxy logs a warning at startup when its unit would do that. On restart, apps still running are adopted, an adopted app on a binary replaced since it started (<code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">soli</code> upgraded) is redeployed blue-green onto the new one, and only apps that were not running at all are left asleep until their first request.</p>
                 </div>
 
                 <!-- ============================================================ -->

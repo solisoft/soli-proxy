@@ -191,25 +191,81 @@ fn managed(pid: u32) -> Option<ManagedInstance> {
 /// missing, fails, or reports no main process (0).
 #[cfg(target_os = "linux")]
 fn main_pid(unit: &str, user_unit: bool) -> Option<u32> {
+    let pid: u32 = unit_property(unit, user_unit, "MainPID")?.parse().ok()?;
+    (pid != 0).then_some(pid)
+}
+
+/// One property of `unit` (`systemctl show --property=… --value`); `None`
+/// when systemctl is missing or fails.
+#[cfg(target_os = "linux")]
+fn unit_property(unit: &str, user_unit: bool, property: &str) -> Option<String> {
     let mut cmd = std::process::Command::new("systemctl");
     if user_unit {
         cmd.arg("--user");
     }
     let out = cmd
-        .args(["show", "--property=MainPID", "--value", unit])
+        .args(["show", &format!("--property={property}"), "--value", unit])
         .stderr(std::process::Stdio::null())
         .output()
         .ok()?;
     if !out.status.success() {
         return None;
     }
-    let pid: u32 = String::from_utf8_lossy(&out.stdout).trim().parse().ok()?;
-    (pid != 0).then_some(pid)
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Apps outlive a proxy restart only if systemd lets them: with any
+/// `KillMode` but `process`, stopping the unit signals its whole cgroup,
+/// apps included (`mixed` and `control-group` end them with SIGKILL), so
+/// the next proxy finds nothing to adopt and every site restarts cold. When
+/// this process is a unit's main process and the unit would do that, what
+/// to warn about. Best effort: anything unreadable says nothing.
+#[cfg(target_os = "linux")]
+pub fn unit_kills_apps() -> Option<String> {
+    let me = managed(std::process::id())?;
+    let kill_mode = unit_property(&me.unit, me.user_unit, "KillMode")?;
+    kill_mode_warning(&me.unit, me.user_unit, &kill_mode)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn unit_kills_apps() -> Option<String> {
+    None
+}
+
+/// The warning for a unit whose `KillMode` is `kill_mode`, if it is not
+/// `process`.
+pub fn kill_mode_warning(unit: &str, user_unit: bool, kill_mode: &str) -> Option<String> {
+    if kill_mode.is_empty() || kill_mode == "process" {
+        return None;
+    }
+    let ctl = if user_unit {
+        "systemctl --user"
+    } else {
+        "sudo systemctl"
+    };
+    Some(format!(
+        "{unit} has KillMode={kill_mode}: stopping or restarting it makes systemd kill every \
+         app along with the proxy, so the next proxy has nothing to adopt and each site starts \
+         cold. Set KillMode=process: `{ctl} edit {unit}`, add `[Service]` and \
+         `KillMode=process`, then `{ctl} daemon-reload` (scripts/soli-proxy.service has it)."
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_kill_mode_process_keeps_the_apps() {
+        assert!(kill_mode_warning("soli-proxy.service", false, "process").is_none());
+        assert!(kill_mode_warning("soli-proxy.service", false, "").is_none());
+        let w = kill_mode_warning("soli-proxy.service", false, "mixed").unwrap();
+        assert!(
+            w.contains("KillMode=mixed") && w.contains("sudo systemctl edit soli-proxy.service")
+        );
+        let w = kill_mode_warning("proxy.service", true, "control-group").unwrap();
+        assert!(w.contains("systemctl --user edit proxy.service"));
+    }
 
     #[test]
     fn units_from_cgroup_files() {

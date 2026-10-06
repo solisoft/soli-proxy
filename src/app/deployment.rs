@@ -1872,6 +1872,61 @@ impl DeploymentManager {
         }
     }
 
+    /// Whether the native process `pid` of `app`'s `slot` runs a binary that
+    /// is no longer the one its start command resolves to: `soli` upgraded
+    /// (or any program replaced) since it started. A process keeps the file
+    /// it was started from, so it goes on running the old version until it is
+    /// restarted. Compared by file identity — the running one through
+    /// `/proc/<pid>/exe`, which reaches it even deleted — against the program
+    /// found as the launch would find it now (`PATH` from its environment).
+    /// Containers, and anything unreadable, say no.
+    #[cfg(target_os = "linux")]
+    pub fn runs_replaced_binary(&self, app: &AppInfo, slot: &str, pid: u32) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        if app.config.docker_image.is_some() {
+            return false;
+        }
+        let port = if slot == "blue" {
+            app.blue.port
+        } else {
+            app.green.port
+        };
+        let Ok(launch) = self.native_launch(app, port) else {
+            return false;
+        };
+        let exe = format!("/proc/{pid}/exe");
+        if std::fs::read_link(&exe).is_ok_and(|p| p.to_string_lossy().ends_with(" (deleted)")) {
+            return true;
+        }
+        let Ok(running) = std::fs::metadata(&exe) else {
+            return false;
+        };
+        let program = Path::new(&launch.program);
+        let current = if launch.program.contains('/') {
+            Some(app.path.join(program))
+        } else {
+            let path = launch
+                .env
+                .iter()
+                .find(|(k, _)| k == "PATH")
+                .map(|(_, v)| v.clone())
+                .or_else(|| std::env::var("PATH").ok())
+                .unwrap_or_default();
+            std::env::split_paths(&path)
+                .map(|dir| dir.join(program))
+                .find(|candidate| candidate.is_file())
+        };
+        match current.and_then(|c| std::fs::metadata(c).ok()) {
+            Some(now) => (now.dev(), now.ino()) != (running.dev(), running.ino()),
+            None => false,
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn runs_replaced_binary(&self, _app: &AppInfo, _slot: &str, _pid: u32) -> bool {
+        false
+    }
+
     /// Stop the process holding `port` if it is an instance of `app` started
     /// by a proxy older than 1.0 (see [`is_pre_registry_instance`]). Returns
     /// whether one was stopped.
@@ -3407,6 +3462,60 @@ mod tests {
             label(&args(Some("--env FOO=bar")), LABEL_LAUNCH).unwrap(),
             launch
         );
+    }
+
+    /// An upgrade replaces the binary under a running app: the process keeps
+    /// the old file, which is how a restarted proxy knows to redeploy it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_binary_replaced_under_a_running_app_is_noticed() {
+        let site = TempDir::new().unwrap();
+        let sleep_bin = ["/usr/bin/sleep", "/bin/sleep"]
+            .into_iter()
+            .find(|p| Path::new(p).is_file())
+            .expect("a sleep binary");
+        let program = site.path().join("soli-test");
+        std::fs::copy(sleep_bin, &program).unwrap();
+        let app = AppInfo {
+            config: AppConfig {
+                name: "native.example.com".to_string(),
+                domain: "native.example.com".to_string(),
+                start_script: Some("./soli-test 60".to_string()),
+                ..AppConfig::default()
+            },
+            path: site.path().to_path_buf(),
+            blue: instance("blue"),
+            green: instance("green"),
+            current_slot: "blue".to_string(),
+            quarantined: false,
+            maintenance: false,
+            error_pages: None,
+        };
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let manager = DeploymentManager::new(false, None, None, tx);
+        let mut child = std::process::Command::new(&program)
+            .arg("60")
+            .current_dir(site.path())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        // Exec'd: /proc/<pid>/exe is the copy, not the test binary.
+        for _ in 0..100 {
+            if std::fs::read_link(format!("/proc/{pid}/exe")).is_ok_and(|p| p == program) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!manager.runs_replaced_binary(&app, "blue", pid));
+
+        // Installed the way upgrades install: a new file renamed over it.
+        let fresh = site.path().join("soli-test.new");
+        std::fs::copy(sleep_bin, &fresh).unwrap();
+        std::fs::rename(&fresh, &program).unwrap();
+        assert!(manager.runs_replaced_binary(&app, "blue", pid));
+
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     /// Adoption of a native slot: a process this proxy recorded, alive, on

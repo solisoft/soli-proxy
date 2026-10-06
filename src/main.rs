@@ -1343,6 +1343,13 @@ async fn run_server(
     let _ = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     let mut config_manager = ConfigManager::new(config_path)?;
+    // Apps are left running for the next proxy to adopt — unless systemd
+    // kills them with it. Said once per start, where an operator looks.
+    if !config_manager.get_config().apps.stop_on_shutdown(dev_mode) {
+        if let Some(warning) = soli_proxy::systemd::unit_kills_apps() {
+            tracing::warn!("{}", warning);
+        }
+    }
     if watch || dev_mode {
         config_manager.start_watcher()?;
     }

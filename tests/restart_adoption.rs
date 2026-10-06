@@ -361,8 +361,8 @@ async fn an_app_left_running_by_a_pre_registry_proxy_is_restarted_not_quarantine
 
     let mut second = install.start();
     cleanup.0.push(second.id());
-    // Not adoptable, so left asleep: the next request starts it afresh.
-    assert!(install.served_through_proxy().await, "{}", install.log());
+    // It was running, so it is started again at once, with no request: an
+    // app that was up is never left asleep by a restart.
     let (new_pid, new_port) = install
         .running_app(Duration::from_secs(40))
         .await

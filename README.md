@@ -1310,22 +1310,41 @@ fails a check is handled as follows:
 - **a container without the labels** (started by an older version) — replaced, as a fresh start
   always replaced `<app>-<slot>`.
 
-**What is not running is not started — unless it never sleeps.** An app that was not adopted and
-may sleep (see [Scale to zero](#scale-to-zero)) is left asleep: its first request starts it, as
-after an idle period, and the log says `N app(s) left asleep until their first request: …`. After
-a reboot the proxy is up at once and starts only the sites that are visited, instead of every
-site at the same time. Apps that never sleep — `idle_timeout = 0`, or `[apps] idle_timeout = 0`
-for the whole fleet, and `_admin` — are started as before, since they may have cron jobs or
-workers to run. A stale process of a sleeping app's (one the checks above stop) is stopped at
-startup all the same, so its port is free for the first request. A site added while the proxy
-runs is started at once, as before.
+**An adopted app on an old binary is redeployed.** A process keeps the file it was started from,
+so after `soli` is upgraded an app goes on running the old version until it restarts. When an
+adopted process's binary is no longer the file its start command resolves to now (compared by
+identity through `/proc/<pid>/exe`, which reaches it even deleted), the proxy adopts it — it keeps
+serving — then deploys it blue-green onto the new binary, four apps at a time, after the apps
+that were down have been started. The log says `<app> runs a binary replaced since it started
+(soli upgraded?); redeploying it onto the new one`. Native apps only: a container's image is its
+own business.
+
+**What was not running is not started — unless it never sleeps.** An app with nothing running at
+all — not adopted, and nothing of it found on its ports — that may sleep (see
+[Scale to zero](#scale-to-zero)) is left asleep: its first request starts it, as after an idle
+period, and the log says `N app(s) left asleep until their first request: …`. After a reboot the
+proxy is up at once and starts only the sites that are visited, instead of every site at the
+same time. **An app that was up is never put to sleep by a restart:** one found running but not
+adoptable (its launch changed, it failed its health check, it was left by a proxy older than 1.0)
+is stopped and started again at once, as before. Apps that never sleep — `idle_timeout = 0`, or
+`[apps] idle_timeout = 0` for the whole fleet, and `_admin` — are started at once too, since they
+may have cron jobs or workers to run. A site added while the proxy runs is started at once, as
+before.
 
 Apps survive because nothing ties them to the proxy: native apps run in their own session
 (`setsid`), with no parent-death signal, stdin on `/dev/null` and stdout/stderr written straight
 to `run/logs/<app>/<slot>.log` — never to a pipe the proxy holds, so they cannot die of SIGPIPE
 when it exits. Containers belong to the Docker daemon. Under systemd the unit needs
 `KillMode=process`, which `scripts/soli-proxy.service` sets: the default kills the whole cgroup,
-apps included.
+apps included (`mixed` too, with SIGKILL), and the next proxy then has nothing to adopt. A proxy
+that is a unit's main process checks this at startup and logs a warning naming the fix when the
+unit would kill its apps (unless `[apps] stop_on_shutdown = true`, where it stops them anyway).
+For a unit written by hand:
+
+```bash
+sudo systemctl edit soli-proxy      # add: [Service] / KillMode=process
+sudo systemctl daemon-reload        # applies to the next stop; nothing restarts now
+```
 
 **To stop the apps too:** `soli-proxy stop --all` (or `POST /api/v1/apps/stop-all`) stops every
 app and leaves the proxy running; run it before `systemctl stop soli-proxy` on a host being
