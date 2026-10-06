@@ -1605,7 +1605,8 @@ to inherit leaks into it. The child gets:
 | `PORT` | The blue/green slot's port. |
 | `WORKERS` | The `workers` setting. |
 | `HOME` | **The home directory of the `user` the app runs as**, read from the passwd database — not the proxy's own. |
-| `PATH`, `LANG`, `TZ` | Copied from the proxy. |
+| `PATH` | Copied from the proxy. |
+| `LANG`, `TZ` | Copied from the proxy **when it has them**. Under systemd it usually has neither, and they are then left unset rather than set empty: an empty `TZ` means UTC, and an app that reads its `.env` without overriding what is already set (soli does that) could not set its own time zone there. Before 1.7.2 they were set empty, which is why some `app.infos` start with `env TZ=Europe/Paris soli serve …`; `TZ=Europe/Paris` in the app's `.env` is enough now. |
 
 `HOME` matters more than it looks. The proxy usually runs as root and drops
 privileges to the app's `user`, so handing the child the proxy's own `HOME`

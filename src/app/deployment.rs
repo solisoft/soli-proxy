@@ -1048,6 +1048,27 @@ impl NativeLaunch {
         parts.extend(self.env.iter().map(|(k, v)| format!("{k}={v}")));
         launch_fingerprint(parts)
     }
+
+    /// The fingerprint the same launch had before 1.7.2, which set `LANG`
+    /// and `TZ` even when empty: an instance started then is still this
+    /// launch, and is adopted rather than restarted for that alone.
+    fn legacy_fingerprint(&self, cwd: &Path) -> String {
+        let mut legacy = NativeLaunch {
+            program: self.program.clone(),
+            args: self.args.clone(),
+            env: self.env.clone(),
+            user: self.user.clone(),
+            ids: self.ids,
+        };
+        for (index, name) in [(2, "LANG"), (3, "TZ")] {
+            if !legacy.env.iter().any(|(k, _)| k == name) {
+                legacy
+                    .env
+                    .insert(index.min(legacy.env.len()), (name.into(), String::new()));
+            }
+        }
+        legacy.fingerprint(cwd)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1292,8 +1313,12 @@ impl DeploymentManager {
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", std::env::var("HOME").unwrap_or_default())
-            .env("LANG", std::env::var("LANG").unwrap_or_default())
-            .env("TZ", std::env::var("TZ").unwrap_or_default())
+            .envs(["LANG", "TZ"].into_iter().filter_map(|n| {
+                std::env::var(n)
+                    .ok()
+                    .filter(|v| !v.is_empty())
+                    .map(|v| (n, v))
+            }))
             .env("PORT", port.to_string())
             .env("WORKERS", app.config.workers.to_string())
             .stdout(std::process::Stdio::piped())
@@ -1600,11 +1625,17 @@ impl DeploymentManager {
         let mut env: Vec<(String, String)> = vec![
             ("PATH".into(), std::env::var("PATH").unwrap_or_default()),
             ("HOME".into(), home),
-            ("LANG".into(), std::env::var("LANG").unwrap_or_default()),
-            ("TZ".into(), std::env::var("TZ").unwrap_or_default()),
-            ("PORT".into(), port.to_string()),
-            ("WORKERS".into(), app.config.workers.to_string()),
         ];
+        // LANG and TZ only when the proxy has them: an empty TZ is still a
+        // TZ (UTC), and an app that reads its own `.env` without overriding
+        // what is set (soli) could not set its time zone there.
+        for name in ["LANG", "TZ"] {
+            if let Some(value) = std::env::var(name).ok().filter(|v| !v.is_empty()) {
+                env.push((name.into(), value));
+            }
+        }
+        env.push(("PORT".into(), port.to_string()));
+        env.push(("WORKERS".into(), app.config.workers.to_string()));
         // A cleared environment is the right default, but a handful of
         // variables have to survive it or the child cannot do its job:
         // a shared toolchain cache, an outbound proxy, a custom CA bundle.
@@ -2107,11 +2138,15 @@ impl DeploymentManager {
                 record.port, port
             ));
         }
-        let expected = match self.native_launch(app, port) {
-            Ok(launch) => launch.fingerprint(&app.path),
+        let (expected, legacy) = match self.native_launch(app, port) {
+            Ok(launch) => (
+                launch.fingerprint(&app.path),
+                launch.legacy_fingerprint(&app.path),
+            ),
             Err(e) => return stale(format!("its launch cannot be recomputed: {:#}", e)),
         };
-        if record.launch.as_deref() != Some(expected.as_str()) {
+        let recorded = record.launch.as_deref();
+        if recorded != Some(expected.as_str()) && recorded != Some(legacy.as_str()) {
             return stale(
                 "its command, environment or user changed since it was started".to_string(),
             );
@@ -3478,6 +3513,57 @@ mod tests {
             label(&args(Some("--env FOO=bar")), LABEL_LAUNCH).unwrap(),
             launch
         );
+    }
+
+    /// 1.7.2 stopped setting an empty `LANG`/`TZ`; an instance started
+    /// before still matches through the legacy fingerprint, so it is
+    /// adopted instead of restarted for that alone.
+    #[test]
+    fn launches_from_before_the_empty_tz_fix_are_still_recognised() {
+        let launch = |env: &[(&str, &str)]| super::NativeLaunch {
+            program: "soli".into(),
+            args: vec!["serve".into(), ".".into()],
+            env: env
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            user: None,
+            ids: None,
+        };
+        let cwd = Path::new("/srv/sites/shop.example.com");
+        let now = launch(&[
+            ("PATH", "/usr/bin"),
+            ("HOME", "/root"),
+            ("PORT", "20001"),
+            ("WORKERS", "1"),
+        ]);
+        let before = launch(&[
+            ("PATH", "/usr/bin"),
+            ("HOME", "/root"),
+            ("LANG", ""),
+            ("TZ", ""),
+            ("PORT", "20001"),
+            ("WORKERS", "1"),
+        ]);
+        assert_ne!(now.fingerprint(cwd), before.fingerprint(cwd));
+        assert_eq!(now.legacy_fingerprint(cwd), before.fingerprint(cwd));
+        // With TZ set on the proxy, nothing changed: both agree.
+        let set = launch(&[
+            ("PATH", "/usr/bin"),
+            ("HOME", "/root"),
+            ("TZ", "Europe/Paris"),
+            ("PORT", "1"),
+            ("WORKERS", "1"),
+        ]);
+        let set_before = launch(&[
+            ("PATH", "/usr/bin"),
+            ("HOME", "/root"),
+            ("LANG", ""),
+            ("TZ", "Europe/Paris"),
+            ("PORT", "1"),
+            ("WORKERS", "1"),
+        ]);
+        assert_eq!(set.legacy_fingerprint(cwd), set_before.fingerprint(cwd));
     }
 
     /// An upgrade replaces the binary under a running app: the process keeps
