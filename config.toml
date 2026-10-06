@@ -210,12 +210,14 @@ hook_timeout_ms = 10  # Max execution time per hook call in milliseconds
 # intercept_upstream_errors = false     # true: also replace backends' 4xx/5xx
 
 # Maintenance mode policy. The on/off switch is runtime state, not config:
+# `soli-proxy maintenance on <app>|all --for 30m`, `M` in the TUI, or
 # PUT /api/v1/maintenance or /api/v1/apps/<name>/maintenance on the admin API
 # (persisted to run/maintenance.json), or touch sites/<domain>/maintenance.flag.
 # [maintenance]
 # retry_after = 300                     # seconds
 # allow_ips = ["10.0.0.0/8"]            # IPs / CIDRs served normally
 # allow_paths = ["/up"]                 # exact paths, or prefixes ending in *
+# language = "auto"                     # built-in page: "auto" (browser's), "fr", "en"
 
 # Authentication
 # There is no [auth] section. HTTP Basic auth is set where it applies —

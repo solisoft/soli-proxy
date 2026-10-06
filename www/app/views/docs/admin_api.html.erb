@@ -290,7 +290,7 @@
                                 <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
                                     <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">PUT</span></td>
                                     <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/apps/{name}/maintenance</td>
-                                    <td class="px-6 py-4 text-gray-400">Maintenance mode for one app: <code>{"enabled": true, "retry_after": 600, "message": "..."}</code>; persisted to <code>run/maintenance.json</code></td>
+                                    <td class="px-6 py-4 text-gray-400">Maintenance mode for one app: <code>{"enabled": true, "retry_after": 600, "message": "...", "for_secs": 1800}</code> (or <code>"until": "2026-10-06T14:00:00Z"</code>; with an end the app reopens by itself); persisted to <code>run/maintenance.json</code></td>
                                 </tr>
                                 <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
                                     <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">GET</span></td>

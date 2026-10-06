@@ -555,7 +555,8 @@ async fn per_app_pages_and_maintenance() {
     assert_eq!(resp.status(), 421);
     assert_eq!(resp.text().await.unwrap(), "<h1>shop says 421</h1>");
 
-    // other.test has a maintenance.flag: 503 with the built-in page.
+    // other.test has a maintenance.flag: 503 with the built-in page, in the
+    // browser's language.
     let resp = get(&proxy, "other.test", "/", &browser).await;
     assert_eq!(resp.status(), 503);
     assert_eq!(header(&resp, "retry-after"), Some("300"));
@@ -563,7 +564,22 @@ async fn per_app_pages_and_maintenance() {
         .text()
         .await
         .unwrap()
-        .contains("other.test is being worked on"));
+        .contains("other.test is down for maintenance"));
+    let resp = get(
+        &proxy,
+        "other.test",
+        "/",
+        &[
+            ("Accept", "text/html"),
+            ("Accept-Language", "fr-FR,fr;q=0.9"),
+        ],
+    )
+    .await;
+    assert!(resp
+        .text()
+        .await
+        .unwrap()
+        .contains("other.test est en maintenance"));
 
     // The shop, switched off through the API, uses its own page.
     let resp = admin_put(

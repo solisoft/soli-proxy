@@ -225,6 +225,10 @@ pub struct AppConfig {
     /// operator's CPU). Unset follows `[compression]`.
     #[serde(default)]
     pub compress: Option<bool>,
+    /// How the app is named to visitors on the proxy's own pages (the
+    /// maintenance page's `{{app}}`). Unset: the domain they asked for.
+    #[serde(default)]
+    pub display_name: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -248,6 +252,7 @@ impl Default for AppConfig {
             auth: AppAuth::default(),
             idle_timeout: None,
             compress: None,
+            display_name: None,
         }
     }
 }
@@ -275,7 +280,7 @@ const ENV_SECTIONS: [&str; 2] = ["development", "production"];
 ///
 /// `known_root_keys_match_app_config` fails if a field is added to
 /// `AppConfig` without being listed here.
-const KNOWN_ROOT_KEYS: [&str; 18] = [
+const KNOWN_ROOT_KEYS: [&str; 19] = [
     "name",
     "domain",
     "start_script",
@@ -294,6 +299,7 @@ const KNOWN_ROOT_KEYS: [&str; 18] = [
     "auth",
     "idle_timeout",
     "compress",
+    "display_name",
 ];
 
 /// Parse an `app.infos`, folding in the overlay for the environment this proxy
@@ -418,6 +424,22 @@ pub(crate) fn read_tenant_file(
     path: &Path,
     follow_symlinks: bool,
 ) -> Result<Option<String>, anyhow::Error> {
+    match read_tenant_bytes(path, follow_symlinks, MAX_TENANT_FILE_BYTES)? {
+        Some(buf) => String::from_utf8(buf)
+            .map(Some)
+            .map_err(|_| anyhow::anyhow!("{} is not UTF-8", path.display())),
+        None => Ok(None),
+    }
+}
+
+/// [`read_tenant_file`] for any bytes, up to `max_bytes`: a regular file,
+/// opened without blocking (a FIFO cannot hang the proxy) and, without
+/// `follow_symlinks`, without following a symlink.
+pub(crate) fn read_tenant_bytes(
+    path: &Path,
+    follow_symlinks: bool,
+    max_bytes: u64,
+) -> Result<Option<Vec<u8>>, anyhow::Error> {
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
 
@@ -441,28 +463,22 @@ pub(crate) fn read_tenant_file(
     if !meta.file_type().is_file() {
         anyhow::bail!("{} is not a regular file", path.display());
     }
-    if meta.len() > MAX_TENANT_FILE_BYTES {
+    if meta.len() > max_bytes {
         anyhow::bail!(
             "{} is {} bytes, above the {} byte limit",
             path.display(),
             meta.len(),
-            MAX_TENANT_FILE_BYTES
+            max_bytes
         );
     }
     // The size above is a hint, not a bound: the file can grow between the
     // fstat and the read. `take` is the bound.
     let mut buf = Vec::with_capacity(meta.len() as usize);
-    file.take(MAX_TENANT_FILE_BYTES + 1).read_to_end(&mut buf)?;
-    if buf.len() as u64 > MAX_TENANT_FILE_BYTES {
-        anyhow::bail!(
-            "{} is above the {} byte limit",
-            path.display(),
-            MAX_TENANT_FILE_BYTES
-        );
+    file.take(max_bytes + 1).read_to_end(&mut buf)?;
+    if buf.len() as u64 > max_bytes {
+        anyhow::bail!("{} is above the {} byte limit", path.display(), max_bytes);
     }
-    String::from_utf8(buf)
-        .map(Some)
-        .map_err(|_| anyhow::anyhow!("{} is not UTF-8", path.display()))
+    Ok(Some(buf))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -934,8 +950,13 @@ pub struct AppRoute {
     pub compress: Option<bool>,
     /// `<site>/maintenance.flag` exists.
     pub maintenance: bool,
-    /// The app's `error_pages/`.
+    /// The app's `error_pages/` (and `public/maintenance.html`).
     pub error_pages: Option<Arc<crate::response::error_pages::ErrorPages>>,
+    /// The site directory: where a maintenance page's own assets
+    /// (`public/maintenance/`) are served from while the app is closed.
+    pub site: Arc<Path>,
+    /// `display_name` from `app.infos`.
+    pub display_name: Option<Arc<str>>,
     /// The app's idle clock (see `AppManager::touch`), shared by all of its
     /// hosts and across rebuilds: a request records itself with one store.
     activity: Arc<AppActivity>,
@@ -1123,6 +1144,8 @@ fn build_routes(
         compress: app.config.compress,
         maintenance: app.maintenance,
         error_pages: app.error_pages.clone(),
+        site: Arc::from(app.path.as_path()),
+        display_name: app.config.display_name.as_deref().map(Arc::from),
         activity: activity.entry(app.config.name.clone()).or_default().clone(),
     };
     let mut routes = AppRoutes::default();
@@ -1754,6 +1777,12 @@ impl AppManager {
     /// Whether some app has a `maintenance.flag`. One atomic load.
     pub fn any_maintenance_flag(&self) -> bool {
         self.routes.load().any_maintenance
+    }
+
+    /// `[apps] multi_tenant`: site files are tenant input, read without
+    /// following symlinks.
+    pub fn multi_tenant(&self) -> bool {
+        self.multi_tenant
     }
 
     /// Whether some app has error pages. One atomic load.
@@ -4896,6 +4925,7 @@ typo_here = true
             auth: AppAuth::default(),
             idle_timeout: Some(0),
             compress: Some(false),
+            display_name: Some("The Shop".to_string()),
         };
 
         let toml::Value::Table(table) = toml::Value::try_from(config).unwrap() else {

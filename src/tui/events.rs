@@ -116,6 +116,7 @@ pub enum EventKind {
     Asleep,
     Waking,
     Error,
+    Maintenance,
 }
 
 #[derive(Debug, Clone)]

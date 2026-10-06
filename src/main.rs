@@ -226,6 +226,15 @@ enum Commands {
         #[arg(long)]
         dev: bool,
     },
+    /// Close an app (or the whole proxy) for maintenance, reopen it, or list
+    /// what is closed. Goes through the running daemon's admin API.
+    Maintenance {
+        #[arg(short, long, default_value = "./proxy.conf")]
+        conf: String,
+
+        #[command(subcommand)]
+        action: MaintenanceAction,
+    },
     /// Print an app's deployment logs (both slots).
     Logs {
         #[arg(short, long, default_value = "./proxy.conf")]
@@ -245,8 +254,77 @@ enum Commands {
     },
 }
 
+#[derive(clap::Subcommand, Debug)]
+enum MaintenanceAction {
+    /// Close an app (its name) or the whole proxy (`all`): visitors get the
+    /// maintenance page, `[maintenance] allow_ips` and `allow_paths` still
+    /// go through.
+    On {
+        target: String,
+        /// Reopen by itself after this long: `90s`, `30m`, `2h`, `1h30m`, `1d`.
+        #[arg(long = "for", value_name = "DURATION", conflicts_with = "until")]
+        for_: Option<String>,
+        /// Reopen by itself at this time (RFC 3339, e.g. 2026-10-06T14:30:00Z).
+        #[arg(long)]
+        until: Option<String>,
+        /// Shown on the page, e.g. "Mise à jour de la base de données".
+        #[arg(short, long)]
+        message: Option<String>,
+    },
+    /// Reopen an app, or the whole proxy (`all`).
+    Off { target: String },
+    /// What is closed, since when and until when.
+    Status,
+}
+
+/// `soli-proxy -c prod.conf maintenance on all` must reach the proxy of
+/// `prod.conf`: a subcommand's own `-c` / `--sites-dir` default to
+/// `./proxy.conf` / `./sites`, so a path given before the subcommand would
+/// otherwise be silently dropped. One given after it still wins.
+fn inherit_global_paths(cli: &mut Cli) {
+    const CONF: &str = "./proxy.conf";
+    const SITES: &str = "./sites";
+    let (top_conf, top_sites) = (cli.conf.clone(), cli.sites_dir.clone());
+    let conf = |c: &mut String| {
+        if c == CONF {
+            c.clone_from(&top_conf);
+        }
+    };
+    let sites = |s: &mut String| {
+        if s == SITES {
+            s.clone_from(&top_sites);
+        }
+    };
+    match &mut cli.command {
+        Some(Commands::Tui {
+            conf: c,
+            sites_dir: s,
+            ..
+        })
+        | Some(Commands::Stop {
+            conf: c,
+            sites_dir: s,
+            ..
+        })
+        | Some(Commands::Check {
+            conf: c,
+            sites_dir: s,
+            ..
+        }) => {
+            conf(c);
+            sites(s);
+        }
+        Some(Commands::Deploy { conf: c, .. })
+        | Some(Commands::Restart { conf: c, .. })
+        | Some(Commands::Maintenance { conf: c, .. })
+        | Some(Commands::Logs { conf: c, .. }) => conf(c),
+        _ => {}
+    }
+}
+
 fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    inherit_global_paths(&mut cli);
 
     if let Some(Commands::Tui {
         conf,
@@ -302,6 +380,10 @@ fn main() -> Result<()> {
 
     if let Some(Commands::HashPassword { cost }) = cli.command {
         return run_hash_password(cost);
+    }
+
+    if let Some(Commands::Maintenance { conf, action }) = cli.command {
+        return run_maintenance(&conf, action);
     }
 
     if !std::path::Path::new(&cli.conf).exists() {
@@ -758,6 +840,164 @@ fn print_upgrade_restart_hint() {
     println!("  soli-proxy check --conf <proxy.conf> --sites-dir <sites>");
 }
 
+fn run_maintenance(config_path: &str, action: MaintenanceAction) -> Result<()> {
+    let config = ConfigManager::new(config_path)?;
+    let cfg = config.get_config();
+    if !cfg.admin.enabled.unwrap_or(true) {
+        anyhow::bail!(
+            "maintenance mode is switched through the admin API, and [admin] enabled = false"
+        );
+    }
+    let admin = cfg
+        .admin
+        .bind
+        .replace("0.0.0.0:", "127.0.0.1:")
+        .replace("[::]:", "127.0.0.1:");
+    let api_key = cfg.admin.api_key.clone();
+
+    let (method, path, body) = match &action {
+        MaintenanceAction::On {
+            target,
+            for_,
+            until,
+            message,
+        } => {
+            let mut toggle = serde_json::json!({ "enabled": true });
+            if let Some(d) = for_ {
+                toggle["for_secs"] =
+                    serde_json::json!(soli_proxy::response::maintenance::parse_duration(d)?);
+            }
+            if let Some(u) = until {
+                toggle["until"] = serde_json::json!(u);
+            }
+            if let Some(m) = message {
+                toggle["message"] = serde_json::json!(m);
+            }
+            (reqwest::Method::PUT, maintenance_path(target), Some(toggle))
+        }
+        MaintenanceAction::Off { target } => (
+            reqwest::Method::PUT,
+            maintenance_path(target),
+            Some(serde_json::json!({ "enabled": false })),
+        ),
+        MaintenanceAction::Status => (
+            reqwest::Method::GET,
+            "/api/v1/maintenance".to_string(),
+            None,
+        ),
+    };
+
+    let rt = tokio::runtime::Runtime::new()?;
+    let json: serde_json::Value = rt.block_on(async {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()?;
+        let mut req = client
+            .request(method, format!("http://{admin}{path}"))
+            .header("X-Requested-With", "soli-cli");
+        if let Some(key) = &api_key {
+            req = req.header("X-Api-Key", key);
+        }
+        if let Some(body) = body {
+            req = req.json(&body);
+        }
+        let resp = req.send().await.map_err(|e| {
+            anyhow::anyhow!("no daemon answering on {admin} (is soli-proxy running?): {e}")
+        })?;
+        let status = resp.status();
+        let json: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
+        if !status.is_success() {
+            let detail = json["error"]
+                .as_str()
+                .map(String::from)
+                .unwrap_or_else(|| format!("HTTP {status}"));
+            let hint = if status == reqwest::StatusCode::UNAUTHORIZED {
+                " (set [admin] api_key in config.toml)"
+            } else {
+                ""
+            };
+            anyhow::bail!("{detail}{hint}");
+        }
+        Ok::<_, anyhow::Error>(json)
+    })?;
+
+    match action {
+        MaintenanceAction::On { target, .. } => {
+            let window = if target == "all" {
+                &json["data"]["global"]
+            } else {
+                &json["data"]["apps"][&target]
+            };
+            let until = window["until"]
+                .as_str()
+                .map(|u| format!(" until {u}"))
+                .unwrap_or_else(|| " until switched off".to_string());
+            println!("{} closed for maintenance{until}", describe_target(&target));
+        }
+        MaintenanceAction::Off { target } => {
+            println!("{} reopened", describe_target(&target));
+        }
+        MaintenanceAction::Status => print_maintenance_status(&json["data"]),
+    }
+    Ok(())
+}
+
+fn maintenance_path(target: &str) -> String {
+    if target == "all" {
+        "/api/v1/maintenance".to_string()
+    } else {
+        format!("/api/v1/apps/{target}/maintenance")
+    }
+}
+
+fn describe_target(target: &str) -> String {
+    if target == "all" {
+        "the whole proxy".to_string()
+    } else {
+        target.to_string()
+    }
+}
+
+fn print_maintenance_status(data: &serde_json::Value) {
+    let line = |name: &str, w: &serde_json::Value| {
+        let mut parts = Vec::new();
+        if let Some(s) = w["since"].as_str() {
+            parts.push(format!("since {s}"));
+        }
+        parts.push(match w["until"].as_str() {
+            Some(u) => format!("until {u}"),
+            None => "until switched off".to_string(),
+        });
+        if let Some(m) = w["message"].as_str() {
+            parts.push(format!("\"{m}\""));
+        }
+        println!("  {name:<32} {}", parts.join("  "));
+    };
+    let mut any = false;
+    if data["global"].is_object() {
+        println!("The whole proxy is closed:");
+        line("all", &data["global"]);
+        any = true;
+    }
+    if let Some(apps) = data["apps"].as_object().filter(|a| !a.is_empty()) {
+        println!("Apps closed through the API:");
+        for (name, w) in apps {
+            line(name, w);
+        }
+        any = true;
+    }
+    if let Some(flagged) = data["flagged"].as_array().filter(|f| !f.is_empty()) {
+        println!("Apps closed by their maintenance.flag file:");
+        for name in flagged.iter().filter_map(|n| n.as_str()) {
+            println!("  {name}");
+        }
+        any = true;
+    }
+    if !any {
+        println!("Nothing is in maintenance.");
+    }
+}
+
 fn run_app_command(config_path: &str, app_name: &str, action: &str) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async move {
@@ -999,6 +1239,35 @@ async fn run_server(
     let shutdown_for_signal = shutdown.clone();
     let shutdown_for_drain = shutdown.clone();
     let config_ref = Arc::new(config_manager);
+    // Windows opened with an end close by themselves. The request path
+    // already treats them as closed past their end; this takes them out of
+    // the state (and run/maintenance.json) so the API and the TUI agree.
+    {
+        let config = config_ref.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+            loop {
+                tick.tick().await;
+                match config.maintenance.expire_due(chrono::Utc::now()) {
+                    Ok(closed) => {
+                        for name in closed {
+                            if name == "*" {
+                                tracing::warn!(
+                                    "maintenance mode off for the whole proxy: its end time passed"
+                                );
+                            } else {
+                                tracing::warn!(
+                                    "maintenance mode off for {}: its end time passed",
+                                    name
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => tracing::error!("Could not close ended maintenance windows: {:#}", e),
+                }
+            }
+        });
+    }
     let metrics = new_metrics();
     let challenge_store = new_challenge_store();
 

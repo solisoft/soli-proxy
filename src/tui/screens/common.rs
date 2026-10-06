@@ -12,6 +12,8 @@ use crate::tui::theme;
 /// An app's situation, most urgent first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Life {
+    /// Closed for maintenance: visitors get the maintenance page.
+    Maintenance,
     Failed,
     Unhealthy,
     /// A request is starting it from sleep.
@@ -39,8 +41,12 @@ pub fn life(
     stats: Option<&AppStats>,
     deploy: Option<&DeployProgress>,
     waking: bool,
+    closed: bool,
 ) -> Life {
     let inst = live_instance(app);
+    if closed {
+        return Life::Maintenance;
+    }
     if waking {
         return Life::Waking;
     }
@@ -71,6 +77,7 @@ impl Life {
     /// the frame moving.
     pub fn glyph(self, anim: &mut Anim) -> (String, ratatui::style::Color) {
         match self {
+            Life::Maintenance => ("◆".into(), theme::WARN),
             Life::Failed => ("✕".into(), theme::DANGER),
             Life::Unhealthy => ("●".into(), theme::DANGER),
             Life::Waking | Life::Deploying | Life::Starting => {
@@ -85,6 +92,7 @@ impl Life {
 
     pub fn word(self) -> &'static str {
         match self {
+            Life::Maintenance => "maintenance",
             Life::Failed => "failed",
             Life::Unhealthy => "unhealthy",
             Life::Waking => "waking",
@@ -101,7 +109,7 @@ impl Life {
     pub fn idle_link(self) -> bool {
         matches!(
             self,
-            Life::Asleep | Life::Stopped | Life::Failed | Life::Waking
+            Life::Asleep | Life::Stopped | Life::Failed | Life::Waking | Life::Maintenance
         )
     }
 }

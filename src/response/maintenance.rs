@@ -5,9 +5,12 @@
 //!
 //! - **The admin API** — `PUT /api/v1/maintenance` (everything) and
 //!   `PUT /api/v1/apps/{name}/maintenance` (one app), with
-//!   `{"enabled": true, "retry_after": 600, "message": "…"}`. The state is
+//!   `{"enabled": true, "for_secs": 1800, "message": "…"}` (or `"until":
+//!   "<RFC 3339>"`, or neither: open until switched off). The state is
 //!   persisted to `run/maintenance.json` (written atomically) so a restart in
-//!   the middle of a maintenance window does not reopen the site.
+//!   the middle of a maintenance window does not reopen the site, and a window
+//!   with an end closes by itself then. `soli-proxy maintenance` drives it
+//!   from the command line, and the TUI's `M` from the apps screen.
 //! - **A flag file** — `<site>/maintenance.flag` exists → that app is in
 //!   maintenance. For deploy scripts that run on the box without admin
 //!   credentials (a tenant's, in multi-tenant mode): `touch` it before the
@@ -21,6 +24,15 @@
 //! Requests from `[maintenance] allow_ips` (CIDRs) and to `allow_paths` go
 //! through as usual, as do ACME challenges and the proxy's own health and
 //! metrics endpoints.
+//!
+//! The page: the app's own (`<site>/error_pages/maintenance.html`, then
+//! `<site>/public/maintenance.html`), else `[error_pages] dir`'s, else the
+//! built-in one — in French or English after the browser's `Accept-Language`
+//! (or `[maintenance] language`), with the time the site is back when the
+//! window has an end, reloading itself once the site answers again. While an
+//! app is closed the proxy serves `/maintenance/<file>` from its
+//! `public/maintenance/`, so the app's own page can keep its stylesheet and
+//! logo though the app is down.
 
 use crate::server::BoxBody;
 use arc_swap::ArcSwap;
@@ -42,6 +54,12 @@ const MAX_RETRY_AFTER: u64 = 7 * 24 * 3600;
 /// Longest maintenance message.
 const MAX_MESSAGE_LEN: usize = 1024;
 
+/// Longest window a toggle may ask for: a week, like `Retry-After`.
+const MAX_WINDOW_SECS: u64 = MAX_RETRY_AFTER;
+
+/// Largest file served from an app's `public/maintenance/`.
+const MAX_ASSET_BYTES: u64 = 1024 * 1024;
+
 /// `[maintenance]` in `config.toml`: policy, not state.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -54,6 +72,9 @@ pub struct MaintenanceConfig {
     /// Paths served normally during maintenance, `@noauth` syntax: an exact
     /// path or a prefix ending in `*` (`/up`, `/status/*`).
     pub allow_paths: Vec<String>,
+    /// The built-in page's language: `auto` (the browser's, French or
+    /// English; the default), `fr` or `en`.
+    pub language: String,
     #[serde(skip)]
     nets: Vec<(IpAddr, u8)>,
 }
@@ -64,6 +85,7 @@ impl Default for MaintenanceConfig {
             retry_after: 300,
             allow_ips: Vec::new(),
             allow_paths: Vec::new(),
+            language: "auto".to_string(),
             nets: Vec::new(),
         }
     }
@@ -102,6 +124,12 @@ fn in_net(ip: IpAddr, (net, prefix): (IpAddr, u8)) -> bool {
 impl MaintenanceConfig {
     /// Validate the section and parse its networks, once per loaded config.
     pub fn validated(mut self) -> anyhow::Result<Self> {
+        if !matches!(self.language.as_str(), "auto" | "fr" | "en") {
+            anyhow::bail!(
+                "[maintenance] language = {:?}: expected \"auto\", \"fr\" or \"en\"",
+                self.language
+            );
+        }
         if self.retry_after > MAX_RETRY_AFTER {
             anyhow::bail!(
                 "[maintenance] retry_after = {} is above the {} second ceiling",
@@ -151,6 +179,32 @@ pub struct Window {
     /// When it was switched on (RFC 3339).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since: Option<String>,
+    /// When it closes by itself (RFC 3339); `None`: when switched off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
+}
+
+impl Window {
+    fn until_time(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.until
+            .as_deref()
+            .and_then(|u| chrono::DateTime::parse_from_rfc3339(u).ok())
+            .map(|t| t.with_timezone(&chrono::Utc))
+    }
+
+    /// Its end has passed: closed, whatever the state file still says.
+    pub fn expired(&self, now: chrono::DateTime<chrono::Utc>) -> bool {
+        self.until_time().is_some_and(|u| u <= now)
+    }
+
+    /// `Retry-After`: what the window asked for, else the time left before
+    /// its end, else the policy's default.
+    fn retry_after(&self, default: u64, now: chrono::DateTime<chrono::Utc>) -> u64 {
+        self.retry_after.unwrap_or_else(|| match self.until_time() {
+            Some(u) => (u - now).num_seconds().max(1) as u64,
+            None => default,
+        })
+    }
 }
 
 /// Which windows are open. What `run/maintenance.json` holds.
@@ -165,7 +219,7 @@ pub struct MaintenanceState {
 
 /// The body of `PUT /api/v1/maintenance` and
 /// `PUT /api/v1/apps/{name}/maintenance`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Toggle {
     pub enabled: bool,
@@ -173,6 +227,12 @@ pub struct Toggle {
     pub retry_after: Option<u64>,
     #[serde(default)]
     pub message: Option<String>,
+    /// Close by itself at this time (RFC 3339)...
+    #[serde(default)]
+    pub until: Option<String>,
+    /// ...or this many seconds from now.
+    #[serde(default)]
+    pub for_secs: Option<u64>,
 }
 
 impl Toggle {
@@ -191,12 +251,70 @@ impl Toggle {
                 return Err("message contains control characters".to_string());
             }
         }
+        let now = chrono::Utc::now();
+        let until = match (self.until.as_deref(), self.for_secs) {
+            (Some(_), Some(_)) => return Err("give until or for_secs, not both".to_string()),
+            (Some(u), None) => {
+                let t = chrono::DateTime::parse_from_rfc3339(u)
+                    .map_err(|_| format!("until {u:?} is not an RFC 3339 time"))?
+                    .with_timezone(&chrono::Utc);
+                if t <= now {
+                    return Err(format!("until {u:?} is in the past"));
+                }
+                if (t - now).num_seconds() as u64 > MAX_WINDOW_SECS {
+                    return Err(format!("until is more than {MAX_WINDOW_SECS} seconds away"));
+                }
+                Some(t)
+            }
+            (None, Some(0)) => return Err("for_secs must be at least 1".to_string()),
+            (None, Some(secs)) if secs > MAX_WINDOW_SECS => {
+                return Err(format!("for_secs is above {MAX_WINDOW_SECS} seconds"))
+            }
+            (None, Some(secs)) => Some(now + chrono::Duration::seconds(secs as i64)),
+            (None, None) => None,
+        };
         Ok(self.enabled.then(|| Window {
             retry_after: self.retry_after,
             message: self.message.filter(|m| !m.is_empty()),
-            since: Some(chrono::Utc::now().to_rfc3339()),
+            since: Some(now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+            until: until.map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
         }))
     }
+}
+
+/// `90s`, `30m`, `2h`, `1h30m`, `1d` in seconds — what `soli-proxy
+/// maintenance on --for` and the TUI take. A bare number is refused rather
+/// than guessed.
+pub fn parse_duration(text: &str) -> anyhow::Result<u64> {
+    let mut total: u64 = 0;
+    let mut digits = String::new();
+    let mut units = 0;
+    for c in text.trim().chars() {
+        if c.is_ascii_digit() {
+            digits.push(c);
+            continue;
+        }
+        let n: u64 = digits
+            .parse()
+            .map_err(|_| anyhow::anyhow!("invalid duration {:?}", text))?;
+        digits.clear();
+        let unit = match c {
+            's' => 1,
+            'm' => 60,
+            'h' => 3600,
+            'd' => 86400,
+            _ => anyhow::bail!("invalid duration {:?}: units are s, m, h, d", text),
+        };
+        total = total.saturating_add(n.saturating_mul(unit));
+        units += 1;
+    }
+    if !digits.is_empty() || units == 0 {
+        anyhow::bail!(
+            "invalid duration {:?}: give a unit, e.g. 30m, 2h, 1h30m",
+            text
+        );
+    }
+    Ok(total)
 }
 
 /// The live maintenance state, shared by the request path (read, lock-free)
@@ -269,6 +387,33 @@ impl Maintenance {
                 state.apps.remove(app);
             }
         })
+    }
+
+    /// Close the windows whose end has passed, and persist that. Returns
+    /// what it closed: `"*"` for the proxy-wide window, else app names.
+    pub fn expire_due(&self, now: chrono::DateTime<chrono::Utc>) -> anyhow::Result<Vec<String>> {
+        let current = self.state.load();
+        let due_global = current.global.as_ref().is_some_and(|w| w.expired(now));
+        let due_apps: Vec<String> = current
+            .apps
+            .iter()
+            .filter(|(_, w)| w.expired(now))
+            .map(|(name, _)| name.clone())
+            .collect();
+        if !due_global && due_apps.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.update(|state| {
+            if state.global.as_ref().is_some_and(|w| w.expired(now)) {
+                state.global = None;
+            }
+            state.apps.retain(|_, w| !w.expired(now));
+        })?;
+        let mut closed = due_apps;
+        if due_global {
+            closed.insert(0, "*".to_string());
+        }
+        Ok(closed)
     }
 
     fn update(
@@ -363,12 +508,16 @@ pub fn check<B>(
     let route =
         apps.and_then(|m| m.serving_route(host, crate::server::static_route(req, &config.rules)));
 
+    // A window past its end is closed already, even before the expiry task
+    // has removed it from the state file.
+    let now = chrono::Utc::now();
+    let open = |w: &Option<Window>| w.as_ref().filter(|w| !w.expired(now)).cloned();
     let flag_window = Window::default();
-    let window = match (&state.global, &route) {
+    let window = match (open(&state.global), &route) {
         (Some(global), _) => global,
-        (None, Some(route)) => match state.apps.get(&*route.app) {
-            Some(w) => w,
-            None if route.maintenance => &flag_window,
+        (None, Some(route)) => match state.apps.get(&*route.app).filter(|w| !w.expired(now)) {
+            Some(w) => w.clone(),
+            None if route.maintenance => flag_window,
             None => return None,
         },
         (None, None) => return None,
@@ -382,10 +531,35 @@ pub fn check<B>(
     {
         return None;
     }
+    // The app's own maintenance page may need its stylesheet and images.
+    if let (Some(route), Some(file)) = (&route, path.strip_prefix("/maintenance/")) {
+        let tenant = apps.is_some_and(|m| m.multi_tenant());
+        if let Some(resp) = serve_asset(&route.site, file, !tenant) {
+            return Some(resp);
+        }
+    }
 
-    let retry_after = window.retry_after.unwrap_or(policy.retry_after);
+    let retry_after = window.retry_after(policy.retry_after, now);
     let message = window.message.as_deref().unwrap_or("");
     let mut resp = if super::accepts_html(req.headers()) {
+        // The ID the door stamped, under whatever `request_id_header` names.
+        let request_id = crate::edge::request_id(req.extensions())
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        let host = truncate(host_value, 256);
+        let app = route
+            .as_ref()
+            .and_then(|r| r.display_name.as_deref())
+            .unwrap_or(host);
+        let vars = super::error_pages::PageVars {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            host,
+            request_id: truncate(request_id, 256),
+            message,
+            app,
+            since: window.since.as_deref().unwrap_or(""),
+            until: window.until.as_deref().unwrap_or(""),
+        };
         let template = route
             .as_ref()
             .and_then(|r| r.error_pages.as_deref())
@@ -396,21 +570,11 @@ pub fn check<B>(
                     .pages
                     .as_deref()
                     .and_then(|p| p.maintenance())
-            })
-            .unwrap_or(BUILTIN_PAGE);
-        // The ID the door stamped, under whatever `request_id_header` names.
-        let request_id = crate::edge::request_id(req.extensions())
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        let html = super::error_pages::render(
-            template,
-            &super::error_pages::PageVars {
-                status: StatusCode::SERVICE_UNAVAILABLE,
-                host: truncate(host_value, 256),
-                request_id: truncate(request_id, 256),
-                message,
-            },
-        );
+            });
+        let html = match template {
+            Some(template) => super::error_pages::render(template, &vars),
+            None => builtin_page(language(req, &policy.language), &vars, window.until_time()),
+        };
         let mut resp = Response::new(crate::server::full(Bytes::new()));
         *resp.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
         super::error_pages::html_response(resp, html)
@@ -436,6 +600,106 @@ pub fn check<B>(
     Some(resp)
 }
 
+/// `/maintenance/<file>` from the app's `public/maintenance/`, while it is
+/// closed: one level, plain file names only, 1 MiB at most. `None` sends
+/// the request on to the maintenance page (a 503) like any other.
+fn serve_asset(site: &Path, file: &str, follow_symlinks: bool) -> Option<Response<BoxBody>> {
+    let valid = !file.is_empty()
+        && file.len() <= 128
+        && !file.starts_with('.')
+        && file
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'));
+    if !valid {
+        return None;
+    }
+    let bytes = match super::error_pages::read_site_bytes(
+        site,
+        "public/maintenance",
+        file,
+        follow_symlinks,
+        MAX_ASSET_BYTES,
+    ) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return None,
+        Err(e) => {
+            tracing::debug!("maintenance asset {}: {:#}", file, e);
+            return None;
+        }
+    };
+    let ext = file.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    let content_type = match ext.as_str() {
+        "css" => "text/css; charset=utf-8",
+        "js" => "text/javascript; charset=utf-8",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "avif" => "image/avif",
+        "ico" => "image/x-icon",
+        "woff2" => "font/woff2",
+        "woff" => "font/woff",
+        "json" => "application/json",
+        "txt" => "text/plain; charset=utf-8",
+        _ => return None,
+    };
+    let mut resp = Response::new(crate::server::full(Bytes::from(bytes)));
+    let h = resp.headers_mut();
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    h.insert(
+        header::HeaderName::from_static("x-content-type-options"),
+        HeaderValue::from_static("nosniff"),
+    );
+    super::mark_owned(&mut resp, super::BodyOwner::Rendered);
+    Some(resp)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lang {
+    Fr,
+    En,
+}
+
+/// The built-in page's language: `[maintenance] language`, or with `auto`
+/// the one of French and English the browser ranks higher (English when it
+/// names neither).
+fn language<B>(req: &Request<B>, setting: &str) -> Lang {
+    match setting {
+        "fr" => return Lang::Fr,
+        "en" => return Lang::En,
+        _ => {}
+    }
+    let header = req
+        .headers()
+        .get(header::ACCEPT_LANGUAGE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let (mut fr, mut en) = (0.0_f64, 0.0_f64);
+    for (pos, item) in header.split(',').enumerate() {
+        let mut parts = item.split(';');
+        let tag = parts.next().unwrap_or("").trim().to_ascii_lowercase();
+        let q = parts
+            .find_map(|p| p.trim().strip_prefix("q="))
+            .and_then(|q| q.trim().parse::<f64>().ok())
+            .unwrap_or(1.0);
+        // Earlier entries win ties: browsers list the preferred one first.
+        let weight = q - pos as f64 * 1e-6;
+        let primary = tag.split('-').next().unwrap_or("");
+        if primary == "fr" && weight > fr {
+            fr = weight;
+        } else if primary == "en" && weight > en {
+            en = weight;
+        }
+    }
+    if fr > en {
+        Lang::Fr
+    } else {
+        Lang::En
+    }
+}
+
 fn truncate(s: &str, max_chars: usize) -> &str {
     match s.char_indices().nth(max_chars) {
         Some((i, _)) => &s[..i],
@@ -443,31 +707,135 @@ fn truncate(s: &str, max_chars: usize) -> &str {
     }
 }
 
-/// The page served when no `maintenance.html` exists.
-const BUILTIN_PAGE: &str = r#"<!doctype html>
-<html lang="en">
+/// The page served when neither the app nor `[error_pages] dir` has a
+/// `maintenance.html`: one self-contained file (no request leaves it but its
+/// own check that the site is back), in the visitor's language, light or dark
+/// after their system, with the time the site is back when the window has an
+/// end. Under 6 KB.
+fn builtin_page(
+    lang: Lang,
+    vars: &super::error_pages::PageVars<'_>,
+    until: Option<chrono::DateTime<chrono::Utc>>,
+) -> String {
+    let esc = |s: &str| {
+        let mut out = String::new();
+        super::push_html_escaped(&mut out, s);
+        out
+    };
+    let (html_lang, title, lead, back_at, back_soon, live) = match lang {
+        Lang::Fr => (
+            "fr",
+            "On revient très vite",
+            format!(
+                "{} est en maintenance. Rien n’est perdu : revenez dans un moment.",
+                esc(vars.app)
+            ),
+            "Retour prévu vers",
+            "Retour dès que possible.",
+            "Cette page se recharge seule au retour du site",
+        ),
+        Lang::En => (
+            "en",
+            "We’ll be right back",
+            format!(
+                "{} is down for maintenance. Nothing is lost: come back in a little while.",
+                esc(vars.app)
+            ),
+            "Back around",
+            "Back as soon as possible.",
+            "This page reloads itself when the site is back",
+        ),
+    };
+    let message = if vars.message.is_empty() {
+        String::new()
+    } else {
+        format!("<p class=\"msg\">{}</p>", esc(vars.message))
+    };
+    // Without JavaScript the time reads in UTC; the script rewrites it in
+    // the visitor's own time zone, with the minutes left.
+    let eta = match until {
+        Some(u) => format!(
+            "<div class=\"eta\" data-until=\"{iso}\" data-lang=\"{html_lang}\"><b>{back_at} <span class=\"at\">{utc} UTC</span></b><span class=\"in\"></span></div>",
+            iso = u.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            utc = u.format("%H:%M"),
+        ),
+        None => format!("<div class=\"eta\"><b>{back_soon}</b></div>"),
+    };
+    let rid = if vars.request_id.is_empty() {
+        "503".to_string()
+    } else {
+        format!("503 · {}", esc(vars.request_id))
+    };
+    BUILTIN_PAGE
+        .replace("{{lang}}", html_lang)
+        .replace("{{title}}", title)
+        .replace("{{site}}", &esc(vars.host))
+        .replace("{{lead}}", &lead)
+        .replace("{{message}}", &message)
+        .replace("{{eta}}", &eta)
+        .replace("{{live}}", live)
+        .replace("{{rid}}", &rid)
+}
+
+/// The built-in page's markup; [`builtin_page`] fills it.
+const BUILTIN_PAGE: &str = r##"<!doctype html>
+<html lang="{{lang}}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Down for maintenance</title>
+<meta name="robots" content="noindex">
+<title>{{title}} · {{site}}</title>
 <style>
-body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
-font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;background:#f6f6f4;color:#222}
-main{max-width:32rem;padding:2rem}
-h1{font-size:1.5rem;margin:0 0 .5rem}
-p{margin:.5rem 0;color:#555}
-@media (prefers-color-scheme:dark){body{background:#151515;color:#eee}p{color:#aaa}}
+:root{--bg:#f6f5f1;--card:#fff;--fg:#1d2220;--muted:#5f6a64;--line:#e3e2dc;--accent:#2f6f5e;--tint:#e7f0ec;color-scheme:light dark}
+@media (prefers-color-scheme:dark){:root{--bg:#121514;--card:#1a1f1d;--fg:#e7ece9;--muted:#9aa59f;--line:#2a312e;--accent:#83c7b1;--tint:#1f2c27}}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:var(--bg);color:var(--fg);font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;display:flex;align-items:center;justify-content:center;padding:20px}
+.bar{position:fixed;top:0;left:0;right:0;height:3px;overflow:hidden;background:var(--line)}
+.bar i{position:absolute;top:0;bottom:0;width:30%;background:var(--accent);border-radius:3px;animation:s 2.4s ease-in-out infinite}
+@keyframes s{0%{left:-30%}100%{left:100%}}
+main{width:100%;max-width:30rem;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:28px 26px 22px;display:grid;gap:14px}
+.icon{width:44px;height:44px;border-radius:12px;background:var(--tint);display:grid;place-items:center}
+.icon svg{width:24px;height:24px;stroke:var(--accent)}
+.site{font:600 13px ui-monospace,Menlo,monospace;color:var(--muted);letter-spacing:.02em;overflow-wrap:anywhere}
+h1{margin:0;font-size:1.6rem;line-height:1.2;letter-spacing:-.01em}
+p{margin:0;color:var(--muted)}
+.msg{color:var(--fg);background:var(--tint);border-radius:10px;padding:10px 12px;white-space:pre-line}
+.eta{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline}
+.eta b{font-size:1.05rem}
+.eta .in{color:var(--muted);font-size:.95rem}
+footer{border-top:1px solid var(--line);padding-top:12px;display:flex;flex-wrap:wrap;gap:6px 14px;justify-content:space-between;font-size:.82rem;color:var(--muted)}
+.live{display:inline-flex;gap:6px;align-items:center}
+.live i{width:7px;height:7px;border-radius:50%;background:var(--accent);animation:p 2s ease-in-out infinite}
+@keyframes p{50%{opacity:.25}}
+.rid{font-family:ui-monospace,Menlo,monospace}
+@media (prefers-reduced-motion:reduce){.bar i,.live i{animation:none}.bar i{left:0;width:100%;opacity:.5}}
 </style>
 </head>
 <body>
+<div class="bar" aria-hidden="true"><i></i></div>
 <main>
-<h1>Down for maintenance</h1>
-<p>{{host}} is being worked on and will be back shortly.</p>
-<p>{{message}}</p>
+<div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.2L4 16.8V20h3.2l5.3-5.3a4 4 0 0 0 5.2-5.4l-2.4 2.4-2.3-.6-.6-2.3z"/></svg></div>
+<div class="site">{{site}}</div>
+<h1>{{title}}</h1>
+<p>{{lead}}</p>
+{{message}}
+{{eta}}
+<footer><span class="live"><i></i>{{live}}</span><span class="rid">{{rid}}</span></footer>
 </main>
+<script>
+(function(){
+var e=document.querySelector(".eta[data-until]");
+function eta(){if(!e)return;var u=new Date(e.dataset.until),fr=e.dataset.lang==="fr",m=Math.max(1,Math.round((u-Date.now())/60000));
+var h=u.getHours(),mi=("0"+u.getMinutes()).slice(-2);e.querySelector(".at").textContent=fr?h+"h"+mi:("0"+h).slice(-2)+":"+mi;
+e.querySelector(".in").textContent=u>Date.now()?(fr?"dans environ "+m+" min":"in about "+m+" min"):"";}
+eta();setInterval(eta,15000);
+function check(){fetch(location.href,{method:"HEAD",cache:"no-store"}).then(function(r){if(r.status!==503)location.reload();},function(){});}
+setInterval(check,30000);
+})();
+</script>
 </body>
 </html>
-"#;
+"##;
 
 #[cfg(test)]
 mod tests {
@@ -535,6 +903,7 @@ mod tests {
                 retry_after: Some(120),
                 message: Some("upgrading".into()),
                 since: None,
+                until: None,
             }))
             .unwrap();
         first.set_app("shop", Some(Window::default())).unwrap();
@@ -613,8 +982,12 @@ mod tests {
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         let body = String::from_utf8_lossy(&body);
         assert!(
-            body.contains("site.example:8080 is being worked on"),
+            body.contains("site.example:8080 is down for maintenance"),
             "{body}"
+        );
+        assert!(
+            body.contains("Back as soon as possible."),
+            "no end set: {body}"
         );
         assert!(
             body.contains("&lt;back soon&gt;"),
@@ -673,5 +1046,191 @@ mod tests {
         )
         .is_none());
         assert!(check(&request("/", "*/*"), &config, &maintenance, None, None).is_some());
+    }
+
+    #[test]
+    fn a_toggle_can_set_an_end() {
+        let w = Toggle {
+            enabled: true,
+            for_secs: Some(1800),
+            ..Default::default()
+        }
+        .into_window()
+        .unwrap()
+        .unwrap();
+        let now = chrono::Utc::now();
+        assert!(!w.expired(now));
+        assert!((1795..=1800).contains(&w.retry_after(300, now)));
+        assert!(w.expired(now + chrono::Duration::seconds(1801)));
+
+        let until = (now + chrono::Duration::hours(2)).to_rfc3339();
+        let w = Toggle {
+            enabled: true,
+            until: Some(until),
+            ..Default::default()
+        }
+        .into_window()
+        .unwrap()
+        .unwrap();
+        assert!(w.until.is_some());
+
+        for bad in [
+            Toggle {
+                enabled: true,
+                for_secs: Some(0),
+                ..Default::default()
+            },
+            Toggle {
+                enabled: true,
+                for_secs: Some(MAX_WINDOW_SECS + 1),
+                ..Default::default()
+            },
+            Toggle {
+                enabled: true,
+                until: Some("tomorrow".into()),
+                ..Default::default()
+            },
+            Toggle {
+                enabled: true,
+                until: Some("2001-01-01T00:00:00Z".into()),
+                ..Default::default()
+            },
+            Toggle {
+                enabled: true,
+                until: Some((now + chrono::Duration::hours(1)).to_rfc3339()),
+                for_secs: Some(60),
+                ..Default::default()
+            },
+        ] {
+            assert!(bad.into_window().is_err());
+        }
+    }
+
+    #[test]
+    fn windows_past_their_end_are_closed_and_persisted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("run/maintenance.json");
+        let m = Maintenance::default();
+        m.persist_to(&path).unwrap();
+        let now = chrono::Utc::now();
+        let ended = Window {
+            until: Some((now - chrono::Duration::seconds(5)).to_rfc3339()),
+            ..Default::default()
+        };
+        let running = Window {
+            until: Some((now + chrono::Duration::hours(1)).to_rfc3339()),
+            ..Default::default()
+        };
+        m.set_app("old", Some(ended.clone())).unwrap();
+        m.set_app("new", Some(running)).unwrap();
+        m.set_global(Some(ended)).unwrap();
+        assert_eq!(
+            m.expire_due(now).unwrap(),
+            vec!["*".to_string(), "old".to_string()]
+        );
+        let state = m.snapshot();
+        assert!(state.global.is_none());
+        assert_eq!(state.apps.keys().collect::<Vec<_>>(), vec!["new"]);
+        let reloaded = Maintenance::default();
+        reloaded.persist_to(&path).unwrap();
+        assert_eq!(
+            reloaded.snapshot().apps.keys().collect::<Vec<_>>(),
+            vec!["new"]
+        );
+        assert!(m.expire_due(now).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_page_follows_the_browser_language() {
+        let req = |al: &str| {
+            Request::builder()
+                .header("accept-language", al)
+                .body(())
+                .unwrap()
+        };
+        assert_eq!(language(&req("fr-FR,fr;q=0.9,en;q=0.8"), "auto"), Lang::Fr);
+        assert_eq!(language(&req("en-US,en;q=0.9,fr;q=0.8"), "auto"), Lang::En);
+        assert_eq!(language(&req("de-DE,fr;q=0.5"), "auto"), Lang::Fr);
+        assert_eq!(language(&req("de-DE"), "auto"), Lang::En);
+        assert_eq!(language(&req(""), "auto"), Lang::En);
+        assert_eq!(language(&req("en"), "fr"), Lang::Fr);
+        assert!(MaintenanceConfig {
+            language: "es".into(),
+            ..Default::default()
+        }
+        .validated()
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn the_builtin_page_says_when_the_site_is_back() {
+        let vars = crate::response::error_pages::PageVars {
+            host: "shop.example",
+            app: "La <Boutique>",
+            message: "Mise à jour",
+            request_id: "abc",
+            ..Default::default()
+        };
+        let until = chrono::DateTime::parse_from_rfc3339("2026-10-06T14:30:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let fr = builtin_page(Lang::Fr, &vars, Some(until));
+        assert!(fr.contains("<html lang=\"fr\">"));
+        assert!(fr.contains("On revient très vite"));
+        assert!(
+            fr.contains("La &lt;Boutique&gt; est en maintenance"),
+            "{fr}"
+        );
+        assert!(fr.contains("Retour prévu vers <span class=\"at\">14:30 UTC</span>"));
+        assert!(fr.contains("data-until=\"2026-10-06T14:30:00Z\""));
+        assert!(fr.contains("503 · abc"));
+        assert!(fr.len() < 6 * 1024, "{} bytes", fr.len());
+        let en = builtin_page(Lang::En, &vars, None);
+        assert!(en.contains("Back as soon as possible."));
+        assert!(!en.contains("data-until=\""), "no end, no time to show");
+    }
+
+    #[test]
+    fn maintenance_assets_are_plain_files_of_public_maintenance() {
+        let dir = tempfile::tempdir().unwrap();
+        let assets = dir.path().join("public/maintenance");
+        std::fs::create_dir_all(&assets).unwrap();
+        std::fs::write(assets.join("style.css"), "body{}").unwrap();
+        std::fs::write(assets.join("notes.exe"), "x").unwrap();
+        std::fs::write(dir.path().join("public/secret.css"), "no").unwrap();
+
+        let resp = serve_asset(dir.path(), "style.css", true).expect("served");
+        assert_eq!(
+            resp.headers()[header::CONTENT_TYPE],
+            "text/css; charset=utf-8"
+        );
+        for refused in [
+            "../secret.css",
+            "a/b.css",
+            ".hidden.css",
+            "notes.exe",
+            "missing.css",
+            "",
+        ] {
+            assert!(
+                serve_asset(dir.path(), refused, true).is_none(),
+                "{refused}"
+            );
+        }
+        assert!(
+            serve_asset(dir.path(), "style.css", false).is_some(),
+            "no symlink involved"
+        );
+    }
+
+    #[test]
+    fn durations_need_a_unit() {
+        assert_eq!(parse_duration("90s").unwrap(), 90);
+        assert_eq!(parse_duration("30m").unwrap(), 1800);
+        assert_eq!(parse_duration("1h30m").unwrap(), 5400);
+        assert_eq!(parse_duration("2d").unwrap(), 172800);
+        for bad in ["", "30", "m", "1x", "1h30"] {
+            assert!(parse_duration(bad).is_err(), "{bad}");
+        }
     }
 }

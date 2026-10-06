@@ -24,8 +24,13 @@
 //! errors too. A client that does not list `text/html` in `Accept` (an API
 //! client, `curl`) keeps getting the plain text.
 //!
+//! An app's maintenance page may also live in `<site>/public/maintenance.html`,
+//! next to its code; `error_pages/maintenance.html` wins when both exist.
+//!
 //! Templates may use `{{status}}`, `{{reason}}`, `{{host}}`, `{{request_id}}`
-//! and, in the maintenance page, `{{message}}`. Values are HTML-escaped.
+//! and, in the maintenance page, `{{message}}`, `{{app}}` (the app's
+//! `display_name`, else the host), `{{since}}` and `{{until}}` (RFC 3339, empty
+//! when not set). Values are HTML-escaped.
 //! `{{request_id}}` is the response's request-ID header (`[server]
 //! request_id_header`, `X-Request-Id` by default) if it has one, else the
 //! request's ID, else empty.
@@ -168,6 +173,18 @@ impl ErrorPages {
     /// through `read_tenant_file` (regular files only, non-blocking open,
     /// 64 KiB), and an app's pages together are capped at 256 KiB.
     pub fn load_for_site(site: &Path, follow_symlinks: bool) -> anyhow::Result<Option<Self>> {
+        let mut pages = Self::load_site_dir(site, follow_symlinks)?;
+        // The page an app ships with its code, when `error_pages/` has none.
+        if pages.as_ref().is_none_or(|p| p.maintenance.is_none()) {
+            if let Some(page) = read_site_file(site, "public", "maintenance.html", follow_symlinks)?
+            {
+                pages.get_or_insert_with(Self::default).maintenance = Some(page);
+            }
+        }
+        Ok(pages)
+    }
+
+    fn load_site_dir(site: &Path, follow_symlinks: bool) -> anyhow::Result<Option<Self>> {
         let dir = site.join("error_pages");
         if follow_symlinks {
             if !dir.is_dir() {
@@ -271,12 +288,68 @@ fn open_dir_nofollow(dir: &Path) -> std::io::Result<Option<DirFd>> {
     }
 }
 
+/// Read `<site>/<dir>/<name>` as a tenant file: a regular file, 64 KiB at
+/// most. Without `follow_symlinks` (multi-tenant), `<dir>` is opened without
+/// following a symlink and the file is read through that descriptor, so a
+/// tenant cannot point it at a file of the host's.
+pub(crate) fn read_site_file(
+    site: &Path,
+    dir: &str,
+    name: &str,
+    follow_symlinks: bool,
+) -> anyhow::Result<Option<String>> {
+    let dir_path = site.join(dir);
+    if follow_symlinks {
+        if !dir_path.is_dir() {
+            return Ok(None);
+        }
+        return crate::app::read_tenant_file(&dir_path.join(name), true);
+    }
+    let handle = match open_dir_nofollow(&dir_path) {
+        Ok(Some(handle)) => handle,
+        Ok(None) => return Ok(None),
+        Err(e) => anyhow::bail!("{}: {}", dir_path.display(), e),
+    };
+    let via_fd = PathBuf::from(format!("/proc/self/fd/{}/{}", handle.as_raw(), name));
+    crate::app::read_tenant_file(&via_fd, false)
+}
+
+/// [`read_site_file`] for bytes, up to `max_bytes`: a maintenance page's
+/// stylesheet or logo.
+pub(crate) fn read_site_bytes(
+    site: &Path,
+    dir: &str,
+    name: &str,
+    follow_symlinks: bool,
+    max_bytes: u64,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    let dir_path = site.join(dir);
+    if follow_symlinks {
+        if !dir_path.is_dir() {
+            return Ok(None);
+        }
+        return crate::app::read_tenant_bytes(&dir_path.join(name), true, max_bytes);
+    }
+    let handle = match open_dir_nofollow(&dir_path) {
+        Ok(Some(handle)) => handle,
+        Ok(None) => return Ok(None),
+        Err(e) => anyhow::bail!("{}: {}", dir_path.display(), e),
+    };
+    let via_fd = PathBuf::from(format!("/proc/self/fd/{}/{}", handle.as_raw(), name));
+    crate::app::read_tenant_bytes(&via_fd, false, max_bytes)
+}
+
 /// The values a page is filled with.
+#[derive(Default)]
 pub(crate) struct PageVars<'a> {
     pub status: StatusCode,
     pub host: &'a str,
     pub request_id: &'a str,
     pub message: &'a str,
+    /// The maintenance page's `{{app}}`, `{{since}}` and `{{until}}`.
+    pub app: &'a str,
+    pub since: &'a str,
+    pub until: &'a str,
 }
 
 /// Fill a template's `{{variables}}`, escaping each value. Unknown
@@ -298,6 +371,9 @@ pub(crate) fn render(template: &str, vars: &PageVars<'_>) -> String {
             "host" => Some(vars.host),
             "request_id" => Some(vars.request_id),
             "message" => Some(vars.message),
+            "app" => Some(vars.app),
+            "since" => Some(vars.since),
+            "until" => Some(vars.until),
             _ => None,
         };
         match value {
@@ -441,6 +517,7 @@ pub fn apply(
             host,
             request_id: &request_id,
             message: "",
+            ..PageVars::default()
         },
     );
     Ok(html_response(resp, html))
@@ -486,6 +563,7 @@ mod tests {
             host: "<b>evil.example</b>",
             request_id: "abc\"123",
             message: "",
+            ..PageVars::default()
         }
     }
 
@@ -518,6 +596,57 @@ mod tests {
 
     fn write(dir: &Path, name: &str, content: &str) {
         std::fs::write(dir.join(name), content).unwrap();
+    }
+
+    #[test]
+    fn an_app_maintenance_page_can_live_in_public() {
+        let site = tempfile::tempdir().unwrap();
+        assert!(ErrorPages::load_for_site(site.path(), true)
+            .unwrap()
+            .is_none());
+
+        std::fs::create_dir_all(site.path().join("public")).unwrap();
+        write(
+            &site.path().join("public"),
+            "maintenance.html",
+            "from public",
+        );
+        for follow in [true, false] {
+            let pages = ErrorPages::load_for_site(site.path(), follow)
+                .unwrap()
+                .unwrap();
+            assert_eq!(pages.maintenance(), Some("from public"), "follow={follow}");
+        }
+
+        // error_pages/ is the more specific place, and wins.
+        std::fs::create_dir_all(site.path().join("error_pages")).unwrap();
+        write(
+            &site.path().join("error_pages"),
+            "maintenance.html",
+            "from error_pages",
+        );
+        let pages = ErrorPages::load_for_site(site.path(), true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(pages.maintenance(), Some("from error_pages"));
+    }
+
+    #[test]
+    fn maintenance_templates_get_app_since_and_until() {
+        let html = render(
+            "{{app}}|{{since}}|{{until}}|{{message}}",
+            &PageVars {
+                app: "La <Boutique>",
+                since: "2026-10-06T12:00:00Z",
+                until: "2026-10-06T14:30:00Z",
+                message: "m",
+                ..PageVars::default()
+            },
+        );
+        assert_eq!(
+            html,
+            "La &lt;Boutique&gt;|2026-10-06T12:00:00Z|2026-10-06T14:30:00Z|m"
+        );
     }
 
     #[test]

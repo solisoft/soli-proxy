@@ -55,6 +55,8 @@ pub struct DashboardView<'a> {
     pub stream_connected: bool,
     pub daemon: Option<DaemonView>,
     pub memory: MemoryView,
+    /// What the daemon has closed for maintenance; `None` while unknown.
+    pub maintenance: Option<&'a crate::tui::app::MaintenanceInfo>,
 }
 
 /// Right-hand column width, when the terminal is wide enough for it.
@@ -177,6 +179,7 @@ fn kind_color(kind: EventKind) -> ratatui::style::Color {
         EventKind::Done => theme::SUCCESS,
         EventKind::Failed | EventKind::Error => theme::DANGER,
         EventKind::Asleep => theme::MAGENTA,
+        EventKind::Maintenance => theme::WARN,
     }
 }
 
@@ -281,6 +284,17 @@ fn render_strip(
         ),
         (" 5xx".into(), muted),
     ]);
+    if let Some(global) = view.maintenance.and_then(|m| m.global.as_ref()) {
+        let until = global
+            .until
+            .as_deref()
+            .map(|u| format!(" until {}", crate::tui::app::fmt_until(u)))
+            .unwrap_or_default();
+        groups.push(vec![(
+            format!("◆ whole proxy in maintenance{until}"),
+            Style::default().fg(theme::DANGER).bold(),
+        )]);
+    }
     if let Some(circuits) = view.circuits {
         let open = circuits.iter().filter(|(_, c)| c.state == "open").count();
         if open > 0 {
@@ -354,6 +368,8 @@ fn render_strip(
 /// One app row of the traffic panel.
 struct Branch<'a> {
     app: &'a AppInfo,
+    /// Until when it is closed for maintenance, when it is and that is set.
+    closed_until: Option<String>,
     life: Life,
     rps: f64,
     eps: f64,
@@ -435,7 +451,13 @@ fn render_flow(f: &mut Frame, area: Rect, ctx: &TuiContext, view: &DashboardView
         let stats = view.app_stats.get(name);
         let deploy = view.deploys.get(name);
         let waking = view.waking.iter().any(|w| w == name);
-        let l = life(app, stats, deploy, waking);
+        let closed = view.maintenance.and_then(|m| m.closed(name));
+        let l = life(app, stats, deploy, waking, closed.is_some());
+        let closed_until = closed
+            .as_ref()
+            .and_then(|c| c.window())
+            .and_then(|w| w.until.as_deref())
+            .map(crate::tui::app::fmt_until);
         let rps = stats.map_or(0.0, |s| s.rps);
         let eps = stats.map_or(0.0, |s| s.eps);
         // Smoothed traffic keeps an app on the panel for a while after its
@@ -445,11 +467,15 @@ fn render_flow(f: &mut Frame, area: Rect, ctx: &TuiContext, view: &DashboardView
             || recent
             || eps > 0.0
             || deploy.is_some()
-            || matches!(l, Life::Waking | Life::Failed | Life::Unhealthy)
+            || matches!(
+                l,
+                Life::Waking | Life::Failed | Life::Unhealthy | Life::Maintenance
+            )
             || (l == Life::Asleep && recently_asleep.contains(&name));
         if shown {
             branches.push(Branch {
                 app,
+                closed_until,
                 life: l,
                 rps,
                 eps,
@@ -547,6 +573,20 @@ fn render_flow(f: &mut Frame, area: Rect, ctx: &TuiContext, view: &DashboardView
         };
         put(buf, area, l1 + 4, y, &theme::fit(name, name_w), name_style);
         match b.life {
+            Life::Maintenance => {
+                let text = match &b.closed_until {
+                    Some(u) => format!("maintenance → {u}"),
+                    None => "maintenance".to_string(),
+                };
+                put(
+                    buf,
+                    area,
+                    rate_x,
+                    y,
+                    &text,
+                    Style::default().fg(theme::WARN),
+                );
+            }
             Life::Asleep => {
                 let z = anim.snore();
                 put(buf, area, rate_x, y, z, Style::default().fg(theme::MAGENTA));

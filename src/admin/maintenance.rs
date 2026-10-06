@@ -4,8 +4,9 @@
 //! - `PUT /api/v1/maintenance` — the whole proxy;
 //! - `PUT /api/v1/apps/{name}/maintenance` — one app.
 //!
-//! The `PUT`s take `{"enabled": bool, "retry_after"?: seconds, "message"?:
-//! string}` and persist the result to `run/maintenance.json`.
+//! The `PUT`s take `{"enabled": bool, "message"?: string, "for_secs"?:
+//! seconds | "until"?: RFC 3339, "retry_after"?: seconds}` and persist the
+//! result to `run/maintenance.json`. A window with an end closes by itself.
 
 use super::{error_response, ok_response, AdminState, BoxBody};
 use crate::response::maintenance::{MaintenanceState, Toggle, Window};
@@ -16,8 +17,8 @@ use std::sync::Arc;
 fn parse_toggle(body: &str) -> Result<Option<Window>, String> {
     let toggle: Toggle = serde_json::from_str(body).map_err(|e| {
         format!(
-            "Invalid body: {} (expected {{\"enabled\": bool, \"retry_after\"?: seconds, \
-             \"message\"?: string}})",
+            "Invalid body: {} (expected {{\"enabled\": bool, \"message\"?: string, \
+             \"for_secs\"?: seconds or \"until\"?: RFC 3339, \"retry_after\"?: seconds}})",
             e
         )
     })?;

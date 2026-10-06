@@ -64,6 +64,79 @@ pub struct DaemonInfo {
     pub uptime_secs: u64,
 }
 
+/// What the daemon has closed for maintenance (`/api/v1/maintenance`).
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+pub struct MaintenanceInfo {
+    #[serde(default)]
+    pub global: Option<WindowInfo>,
+    #[serde(default)]
+    pub apps: HashMap<String, WindowInfo>,
+    /// Apps closed by their `maintenance.flag` file.
+    #[serde(default)]
+    pub flagged: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+pub struct WindowInfo {
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub since: Option<String>,
+    #[serde(default)]
+    pub until: Option<String>,
+}
+
+/// Why an app is closed.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Closed {
+    /// The whole proxy is.
+    Proxy(WindowInfo),
+    /// Through the admin API (`M`, `soli-proxy maintenance`).
+    App(WindowInfo),
+    /// By its `maintenance.flag` file.
+    Flag,
+}
+
+impl Closed {
+    pub fn window(&self) -> Option<&WindowInfo> {
+        match self {
+            Closed::Proxy(w) | Closed::App(w) => Some(w),
+            Closed::Flag => None,
+        }
+    }
+}
+
+impl MaintenanceInfo {
+    pub fn closed(&self, app: &str) -> Option<Closed> {
+        if let Some(w) = &self.global {
+            return Some(Closed::Proxy(w.clone()));
+        }
+        if let Some(w) = self.apps.get(app) {
+            return Some(Closed::App(w.clone()));
+        }
+        self.flagged
+            .iter()
+            .any(|f| f == app)
+            .then_some(Closed::Flag)
+    }
+}
+
+/// `until` (RFC 3339) as local wall-clock time: `14:30`, or `Tue 14:30`
+/// when it is not today.
+pub fn fmt_until(until: &str) -> String {
+    match chrono::DateTime::parse_from_rfc3339(until) {
+        Ok(t) => {
+            let local = t.with_timezone(&chrono::Local);
+            if local.date_naive() == chrono::Local::now().date_naive() {
+                local.format("%H:%M").to_string()
+            } else {
+                local.format("%a %H:%M").to_string()
+            }
+        }
+        Err(_) => until.to_string(),
+    }
+}
+
 /// Weight of the newest sample in the smoothed traffic that orders apps:
 /// about a ten-second memory, so rows do not swap places every second.
 const RANK_WEIGHT: f64 = 0.1;
@@ -137,6 +210,7 @@ struct DaemonSample {
     apps: HashMap<String, AppMetricsJson>,
     global: Option<MetricsSnapshot>,
     info: Option<DaemonInfo>,
+    maintenance: Option<MaintenanceInfo>,
     /// Circuit-breaker state per target; `None` when the daemon could not be
     /// asked (shown as "unavailable", never as an empty list).
     circuits: Option<CircuitList>,
@@ -247,6 +321,7 @@ async fn poll_daemon(
         .replace("[::]:", "127.0.0.1:");
     let apps_url = format!("http://{}/api/v1/app-metrics", admin_addr);
     let status_url = format!("http://{}/api/v1/status", admin_addr);
+    let maintenance_url = format!("http://{}/api/v1/maintenance", admin_addr);
     let global_url = format!("http://{}/api/v1/metrics", admin_addr);
     let circuits_url = format!("http://{}/api/v1/circuit-breaker", admin_addr);
 
@@ -280,7 +355,7 @@ async fn poll_daemon(
         }
     };
 
-    let (apps, global, circuits, info) = tokio::join!(
+    let (apps, global, circuits, info, maintenance) = tokio::join!(
         async {
             let resp = fetch(&apps_url).await?;
             resp.json::<Envelope<HashMap<String, AppMetricsJson>>>()
@@ -323,6 +398,13 @@ async fn poll_daemon(
                 .await
                 .ok()
                 .map(|e| e.data)
+        },
+        async {
+            let resp = fetch(&maintenance_url).await?;
+            resp.json::<Envelope<MaintenanceInfo>>()
+                .await
+                .ok()
+                .map(|e| e.data)
         }
     );
 
@@ -338,6 +420,7 @@ async fn poll_daemon(
         apps: apps.unwrap_or_default(),
         global,
         info,
+        maintenance,
         circuits,
         status,
         seq: 0,
@@ -366,6 +449,18 @@ pub enum Modal {
     AppActionResult(String),           // result message
     LogViewer(String, String),
     ErrorDetail(usize), // index into TuiApp::errors
+    /// Closing an app for maintenance: what was typed so far.
+    Maintenance(MaintenanceForm),
+}
+
+/// The `M` form: how long the app stays closed and what visitors are told.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MaintenanceForm {
+    pub app: String,
+    /// 0 the duration, 1 the message.
+    pub field: usize,
+    pub duration: String,
+    pub message: String,
 }
 
 const APP_ACTIONS: &[&str] = &["Deploy", "Restart", "Stop", "Rollback", "View Logs"];
@@ -452,6 +547,8 @@ pub struct TuiApp {
     errors_filter: screens::errors::ErrorsFilter,
     /// Follows the daemon's log for the errors screen.
     error_log: Option<ErrorLog>,
+    /// What the daemon has closed for maintenance; `None` until known.
+    maintenance: Option<MaintenanceInfo>,
 }
 
 impl TuiApp {
@@ -511,6 +608,7 @@ impl TuiApp {
             system_memory: None,
             errors_filter: screens::errors::ErrorsFilter::default(),
             error_log: None,
+            maintenance: None,
         };
         app.collect_stats();
         app
@@ -533,6 +631,16 @@ impl TuiApp {
         self.last_daemon_seq = seq;
         if fresh {
             self.daemon_info = info.map(|i| (i, Instant::now()));
+            let next = self
+                .daemon
+                .latest
+                .lock()
+                .ok()
+                .and_then(|s| s.maintenance.clone());
+            if let Some(next) = next {
+                self.note_maintenance_changes(&next);
+                self.maintenance = Some(next);
+            }
         }
         // Per-app rates, from the change in each app's totals since the
         // previous fresh sample.
@@ -850,6 +958,50 @@ impl TuiApp {
         apps
     }
 
+    /// Journal the windows that opened or closed since the last sample.
+    fn note_maintenance_changes(&mut self, next: &MaintenanceInfo) {
+        let Some(prev) = &self.maintenance else {
+            return; // first sample: what is closed already is not news
+        };
+        let now = Instant::now();
+        let describe = |w: Option<&WindowInfo>| {
+            let mut text = "maintenance on".to_string();
+            if let Some(u) = w.and_then(|w| w.until.as_deref()) {
+                text.push_str(&format!(" → {}", fmt_until(u)));
+            }
+            text
+        };
+        let mut events: Vec<(String, String)> = Vec::new();
+        match (&prev.global, &next.global) {
+            (None, Some(w)) => events.push(("whole proxy".into(), describe(Some(w)))),
+            (Some(_), None) => events.push(("whole proxy".into(), "maintenance off".into())),
+            _ => {}
+        }
+        let closed = |m: &MaintenanceInfo| -> HashMap<String, Option<WindowInfo>> {
+            m.apps
+                .iter()
+                .map(|(k, w)| (k.clone(), Some(w.clone())))
+                .chain(m.flagged.iter().map(|f| (f.clone(), None)))
+                .collect()
+        };
+        let (before, after) = (closed(prev), closed(next));
+        for (app, w) in &after {
+            if !before.contains_key(app) {
+                events.push((app.clone(), describe(w.as_ref())));
+            }
+        }
+        for app in before.keys() {
+            if !after.contains_key(app) {
+                events.push((app.clone(), "maintenance off".into()));
+            }
+        }
+        if let Ok(mut feed) = self.daemon.events.lock() {
+            for (app, text) in events {
+                feed.push(now, &app, text, EventKind::Maintenance);
+            }
+        }
+    }
+
     /// The error rows the errors screen shows, under its filter.
     fn shown_errors(&self) -> Vec<&ErrorEntry> {
         self.errors
@@ -883,6 +1035,7 @@ impl TuiApp {
                 if let Some(ref mgr) = self.ctx.app_manager {
                     mgr.probe_running_apps();
                 }
+                self.daemon.request_refresh();
                 self.modal = Modal::None;
                 self.show_toast(msg);
             }
@@ -957,6 +1110,7 @@ impl TuiApp {
                 self.render_log_viewer(f, &app_name, &slot);
             }
             Modal::ErrorDetail(idx) => self.render_error_detail(f, *idx),
+            Modal::Maintenance(form) => render_maintenance_form(f, form),
             Modal::None => {}
         }
     }
@@ -980,6 +1134,7 @@ impl TuiApp {
             Modal::AppActionResult(_) => self.handle_app_action_result_key(key),
             Modal::LogViewer(_, _) => self.handle_log_viewer_key(key),
             Modal::ErrorDetail(_) => self.handle_error_detail_key(key),
+            Modal::Maintenance(_) => self.handle_maintenance_key(key),
         }
     }
 
@@ -1072,6 +1227,11 @@ impl TuiApp {
                 self.app_sort = self.app_sort.next();
                 // Keep the same app under the cursor in the new order.
                 self.show_toast(format!("sorted by {}", self.app_sort.label()));
+            }
+            KeyCode::Char('M') if self.current_screen == Screen::Apps => {
+                if let Some(name) = self.selected_app_name() {
+                    self.toggle_maintenance(name);
+                }
             }
             KeyCode::Char(c @ ('D' | 'R' | 'L')) if self.current_screen == Screen::Apps => {
                 if let Some(name) = self.selected_app_name() {
@@ -1351,6 +1511,119 @@ impl TuiApp {
 
         self.pending_action = Some(handle);
         self.modal = Modal::AppActionProgress(app_name.to_string(), action_desc);
+    }
+
+    /// `M` on an app: reopen it when the API closed it, else ask how long
+    /// and why before closing it.
+    fn toggle_maintenance(&mut self, app: String) {
+        match self.maintenance.as_ref().and_then(|m| m.closed(&app)) {
+            Some(Closed::App(_)) => self.admin_put(
+                format!("/api/v1/apps/{app}/maintenance"),
+                serde_json::json!({ "enabled": false }),
+                format!("{app} reopened"),
+            ),
+            Some(Closed::Flag) => self.show_toast(format!(
+                "{app} is closed by its maintenance.flag: remove the file to reopen it"
+            )),
+            Some(Closed::Proxy(_)) => {
+                self.show_toast("the whole proxy is closed: soli-proxy maintenance off all")
+            }
+            None => {
+                self.modal = Modal::Maintenance(MaintenanceForm {
+                    app,
+                    field: 0,
+                    duration: "30m".into(),
+                    message: String::new(),
+                })
+            }
+        }
+    }
+
+    fn handle_maintenance_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        use crossterm::event::KeyCode;
+        let Modal::Maintenance(form) = &mut self.modal else {
+            return false;
+        };
+        let typed = if form.field == 0 {
+            &mut form.duration
+        } else {
+            &mut form.message
+        };
+        match key.code {
+            KeyCode::Esc => self.modal = Modal::None,
+            KeyCode::Tab | KeyCode::BackTab | KeyCode::Up | KeyCode::Down => {
+                form.field = 1 - form.field
+            }
+            KeyCode::Backspace => {
+                typed.pop();
+            }
+            KeyCode::Char(c) if typed.chars().count() < 200 => typed.push(c),
+            KeyCode::Enter => {
+                let form = form.clone();
+                let mut body = serde_json::json!({ "enabled": true });
+                let duration = form.duration.trim();
+                let mut how_long = "until reopened".to_string();
+                if !duration.is_empty() {
+                    match crate::response::maintenance::parse_duration(duration) {
+                        Ok(secs) => {
+                            body["for_secs"] = serde_json::json!(secs);
+                            how_long = format!("for {duration}");
+                        }
+                        Err(e) => {
+                            self.show_toast(e.to_string());
+                            return false;
+                        }
+                    }
+                }
+                if !form.message.trim().is_empty() {
+                    body["message"] = serde_json::json!(form.message.trim());
+                }
+                self.modal = Modal::None;
+                self.admin_put(
+                    format!("/api/v1/apps/{}/maintenance", form.app),
+                    body,
+                    format!("{} closed for maintenance {how_long}", form.app),
+                );
+            }
+            _ => {}
+        }
+        false
+    }
+
+    /// `PUT` `body` to the daemon's admin API at `path`; `done` is the toast
+    /// shown once it answers.
+    fn admin_put(&mut self, path: String, body: serde_json::Value, done: String) {
+        let cfg = self.ctx.config_manager.get_config();
+        if cfg.admin.enabled != Some(true) {
+            self.show_toast("Admin API not enabled");
+            return;
+        }
+        let admin_addr = cfg
+            .admin
+            .bind
+            .replace("0.0.0.0:", "127.0.0.1:")
+            .replace("[::]:", "127.0.0.1:");
+        let url = format!("http://{admin_addr}{path}");
+        let creds = self.ctx.admin_credentials();
+        let handle = self.ctx.runtime.spawn(async move {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .map_err(|e| e.to_string())?;
+            let resp = creds
+                .apply(client.put(&url))
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+            if resp.status().is_success() {
+                Ok(done)
+            } else {
+                let text = resp.text().await.unwrap_or_default();
+                Err(format!("Failed: {text}"))
+            }
+        });
+        self.pending_action = Some(handle);
     }
 
     fn handle_app_action_progress_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
@@ -1790,6 +2063,7 @@ impl TuiApp {
                             apps: self.apps_memory,
                             system: self.system_memory,
                         },
+                        maintenance: self.maintenance.as_ref(),
                     },
                     &mut self.anim,
                 )
@@ -1848,6 +2122,7 @@ impl TuiApp {
                         deploys: &deploys,
                         waking: &waking,
                         memory_total: self.apps_memory.map(|(b, _)| b),
+                        maintenance: self.maintenance.as_ref(),
                     },
                     &mut self.anim,
                 )
@@ -1944,7 +2219,7 @@ impl TuiApp {
             Modal::None => match self.current_screen {
                 Screen::Routes => "1-6 screens  j/k  a add  e edit  d delete  /  ?  q",
                 Screen::Apps => {
-                    "1-6  j/k  Enter actions  D deploy  R restart  L logs  s sort  /  ?  q"
+                    "1-6  j/k  Enter actions  D deploy  R restart  L logs  M maintenance  s sort  /  ?  q"
                 }
                 Screen::Errors => "1-6 screens  j/k  Enter detail  f 5xx/404  y copy  ?  q",
                 Screen::Circuits => "1-6 screens  j/k  r  ?  q",
@@ -1958,6 +2233,7 @@ impl TuiApp {
             Modal::AppActionResult(_) => "Esc/Enter close",
             Modal::LogViewer(_, _) => "j/k scroll  G follow  Esc close",
             Modal::ErrorDetail(_) => "j/k  y copy  Esc",
+            Modal::Maintenance(_) => "Enter close the app  Tab next field  Esc cancel",
         };
 
         let daemon = Span::styled(
@@ -1988,7 +2264,7 @@ impl TuiApp {
     }
 
     fn render_help(&self, f: &mut Frame, area: Rect) {
-        let modal = theme::centered_modal(area, 66, 22);
+        let modal = theme::centered_modal(area, 66, 23);
         f.render_widget(Clear, modal);
         // No line continuation on the first line: `\` + newline would also
         // eat the indentation of the line after it.
@@ -2003,6 +2279,7 @@ impl TuiApp {
 
   Apps    s sort (traffic, name, memory, errors)
           D deploy · R restart · L logs · Enter all actions
+          M maintenance: close for a while, or reopen
   Routes  a add · e edit · d delete
   Errors  f all / 5xx / 404 · Enter detail · y copy (OSC 52)
 
@@ -2548,6 +2825,56 @@ fn with_cursor(text: &str, cursor_pos: usize) -> String {
         display.push('|');
     }
     display
+}
+
+fn render_maintenance_form(f: &mut Frame, form: &MaintenanceForm) {
+    let area = theme::centered_modal(f.area(), 76, 11);
+    f.render_widget(Clear, area);
+    f.render_widget(
+        theme::list_block(&format!("maintenance · {}", form.app)),
+        area,
+    );
+    let inner = theme::body(area);
+    let muted = Style::default().fg(theme::MUTED);
+    let label = |t: &str| Span::styled(format!("{t:<12}"), muted);
+    let input = |text: &str, active: bool| {
+        let (shown, style) = if active {
+            (
+                format!("{text}▏"),
+                Style::default().fg(theme::FG).bg(theme::SELECT_BG),
+            )
+        } else {
+            (text.to_string(), Style::default().fg(theme::FG))
+        };
+        Span::styled(format!(" {shown:<36}"), style)
+    };
+    let lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            label("closed for"),
+            input(&form.duration, form.field == 0),
+            Span::styled("  30m · 2h · 1h30m", muted),
+        ]),
+        Line::from(vec![
+            label(""),
+            Span::styled(" empty: until you reopen it", muted),
+        ]),
+        Line::from(vec![
+            label("message"),
+            input(&form.message, form.field == 1),
+            Span::styled("  optional", muted),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Visitors get a 503 and the maintenance page, the app's own",
+            muted,
+        )),
+        Line::from(Span::styled(
+            "public/maintenance.html if it has one. M again reopens it.",
+            muted,
+        )),
+    ];
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
 #[cfg(test)]

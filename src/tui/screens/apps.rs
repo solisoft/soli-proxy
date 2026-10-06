@@ -104,6 +104,8 @@ pub struct AppsView<'a> {
     pub waking: &'a [String],
     /// Resident memory of all the apps together.
     pub memory_total: Option<u64>,
+    /// What the daemon has closed for maintenance; `None` while unknown.
+    pub maintenance: Option<&'a crate::tui::app::MaintenanceInfo>,
 }
 
 /// Rows the detail panel takes under the list.
@@ -245,7 +247,8 @@ fn render_list(f: &mut Frame, area: Rect, view: &AppsView, anim: &mut Anim) {
         let stats = view.app_stats.get(name);
         let deploy = view.deploys.get(name);
         let waking = view.waking.iter().any(|w| w == name);
-        let l = life(app, stats, deploy, waking);
+        let closed = view.maintenance.and_then(|m| m.closed(name));
+        let l = life(app, stats, deploy, waking, closed.is_some());
         let (glyph, gcolor) = l.glyph(anim);
         put(buf, area, 0, y, &glyph, st(gcolor));
         let quiet = matches!(l, Life::Asleep | Life::Stopped);
@@ -395,7 +398,8 @@ fn render_detail(f: &mut Frame, area: Rect, app: &AppInfo, view: &AppsView, anim
     let stats = view.app_stats.get(name);
     let deploy = view.deploys.get(name);
     let waking = view.waking.iter().any(|w| w == name);
-    let l = life(app, stats, deploy, waking);
+    let closed = view.maintenance.and_then(|m| m.closed(name));
+    let l = life(app, stats, deploy, waking, closed.is_some());
 
     put(
         buf,
@@ -413,7 +417,10 @@ fn render_detail(f: &mut Frame, area: Rect, app: &AppInfo, view: &AppsView, anim
         &format!(" {name} "),
         Style::default().fg(theme::INK).bg(theme::ACCENT).bold(),
     );
-    let (headline, color) = headline(app, l, deploy);
+    let (headline, color) = match &closed {
+        Some(c) => maintenance_headline(c),
+        None => headline(app, l, deploy),
+    };
     let mut x = w + 2;
     x += put(
         buf,
@@ -587,6 +594,25 @@ fn render_detail(f: &mut Frame, area: Rect, app: &AppInfo, view: &AppsView, anim
     }
 }
 
+/// The detail panel's headline for an app closed for maintenance.
+fn maintenance_headline(c: &crate::tui::app::Closed) -> (String, ratatui::style::Color) {
+    use crate::tui::app::{fmt_until, Closed};
+    let mut text = match c {
+        Closed::Proxy(_) => "closed: the whole proxy is in maintenance".to_string(),
+        Closed::App(_) => "closed for maintenance".to_string(),
+        Closed::Flag => "closed by maintenance.flag · remove the file to reopen".to_string(),
+    };
+    if let Some(w) = c.window() {
+        if let Some(u) = w.until.as_deref() {
+            text.push_str(&format!(" until {}", fmt_until(u)));
+        }
+        if let Some(m) = w.message.as_deref() {
+            text.push_str(&format!(" · {m}"));
+        }
+    }
+    (text, theme::WARN)
+}
+
 fn headline(
     app: &AppInfo,
     l: Life,
@@ -614,6 +640,7 @@ fn headline(
         };
     }
     match l {
+        Life::Maintenance => ("closed for maintenance".into(), theme::WARN),
         Life::Running => (
             format!("{} serves the traffic", app.current_slot),
             theme::SUCCESS,
@@ -877,6 +904,7 @@ mod render_tests {
             deploys: &deploys,
             waking: &[],
             memory_total: None,
+            maintenance: None,
         };
         let mut anim = Anim::new(false);
         anim.begin(now);

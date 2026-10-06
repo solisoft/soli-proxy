@@ -80,7 +80,13 @@ soli-proxy restart [-c <conf>] <app_name>   # Restart the currently active slot
 soli-proxy stop    [-c <conf>] <app_name>   # Stop the app
 soli-proxy stop    [-c <conf>] --all        # Stop every app (the proxy keeps running)
 soli-proxy logs    [-c <conf>] <app_name>   # Print deployment logs for both slots
+soli-proxy maintenance [-c <conf>] on <app_name>|all [--for 30m | --until <time>] [-m <message>]
+soli-proxy maintenance [-c <conf>] off <app_name>|all
+soli-proxy maintenance [-c <conf>] status   # What is closed (see Maintenance mode)
 ```
+
+`-c` and `--sites-dir` may also come before the subcommand (`soli-proxy -c /etc/soli-proxy/proxy.conf
+maintenance status`); one given after it wins.
 
 Other subcommands:
 
@@ -141,13 +147,14 @@ failures, each lit up for a moment when it arrives.
 **Apps.** Sorted by traffic (smoothed over about ten seconds, so rows do not trade places every
 second); `s` cycles through traffic, name, memory and errors, and the cursor stays on its app
 when the order changes. Each row shows the app's state as a glyph (a spinner while it deploys or
-wakes, `◐` asleep, `✕` failed), its last minute of traffic as a sparkline, req/s, memory, the
+wakes, `◐` asleep, `✕` failed, `◆` closed for maintenance), its last minute of traffic as a sparkline, req/s, memory, the
 **Soli version** its process runs, its uptime, and **`last`**: how long since its last request
 (green under a minute, `—` when it has had none since the daemon started) — what keeps an app
 awake, or how close it is to sleeping. The detail panel draws the app's two slots:
 packets flow to the one that serves, the other shows `starting…`, `health check…`, `draining 7s`
 or `free`, with the deploy stepper above and CPU and memory bars on the right. `D` deploys, `R`
-restarts, `L` opens the logs, `Enter` lists every action.
+restarts, `L` opens the logs, `M` closes the app for [maintenance](#maintenance-mode) — for how
+long and with what message — or reopens it, `Enter` lists every action.
 
 The version comes from the binary the process actually runs, asked once per binary file
 (`<exe> --version`, only for an executable named `soli*`). A process keeps the binary it started
@@ -947,38 +954,86 @@ the operator's and get it served back as an error page.
 retry_after = 300                 # Retry-After, when a toggle does not say (seconds, max a week)
 allow_ips = ["203.0.113.7", "10.0.0.0/8"]   # served normally (IP or CIDR, v4 or v6)
 allow_paths = ["/up", "/status/*"]          # served normally (exact, or prefix ending in *)
+language = "auto"                 # the built-in page's: "auto" (the browser's), "fr" or "en"
 ```
 
-In maintenance, requests get **503** with `Retry-After` and a page: `maintenance.html` from the
-app's `error_pages/`, else from `[error_pages] dir`, else a built-in one (`{{message}}` is the
-toggle's message). Non-HTML clients get `Service Unavailable: <message>` as text. Requests from
-`allow_ips`, to `allow_paths`, to `/.well-known/acme-challenge/` and to the proxy's own health and
-metrics endpoints go through as usual. `allow_ips` is matched against the client's address — the
-TCP peer, or behind `trusted_proxies` the client they forward for; `allow_paths`
-compares the path literally (a percent-encoded or dot-segment spelling is not allowed through).
+In maintenance, requests get **503** with `Retry-After` and a page. Non-HTML clients get
+`Service Unavailable: <message>` as text. Requests from `allow_ips`, to `allow_paths`, to
+`/.well-known/acme-challenge/` and to the proxy's own health and metrics endpoints go through as
+usual. `allow_ips` is matched against the client's address — the TCP peer, or behind
+`trusted_proxies` the client they forward for; `allow_paths` compares the path literally (a
+percent-encoded or dot-segment spelling is not allowed through).
 
-Two ways to switch it:
+Three ways to switch it:
 
-- **The admin API**, for the whole proxy or one app, persisted to `run/maintenance.json` so a
-  restart in the middle of a window does not reopen the site:
+- **The CLI**, which goes through the running daemon's admin API (address and credentials from
+  `config.toml`):
+
+  ```bash
+  soli-proxy maintenance on shop.example.com --for 30m -m "New catalogue on its way"
+  soli-proxy maintenance on all --until 2026-10-06T14:00:00Z    # the whole proxy
+  soli-proxy maintenance status                                 # what is closed, until when
+  soli-proxy maintenance off shop.example.com
+  ```
+
+  `--for` takes `90s`, `30m`, `2h`, `1h30m`, `1d` (a unit is required); `--until` an RFC 3339
+  time. Either one sets an end: the proxy reopens the site by itself when it passes (checked every
+  five seconds, and logged), and `Retry-After` counts down to it. Without one the site stays
+  closed until `off`. A window is at most a week long.
+
+- **The TUI**: `M` on an app in the Apps screen asks for a duration (default `30m`, empty for no
+  end) and a message, then closes it; `M` again reopens it. Closed apps show `◆ maintenance` with
+  their end time in the dashboard and the Apps screen, and the dashboard journal records each
+  opening and closing.
+
+- **The admin API**, for the whole proxy or one app — what the CLI and the TUI call:
 
   ```bash
   curl -X PUT http://127.0.0.1:9090/api/v1/maintenance -H 'X-Requested-With: cli' \
-       -d '{"enabled": true, "retry_after": 600, "message": "Back at 14:00 UTC"}'
+       -d '{"enabled": true, "for_secs": 3600, "message": "Back at 14:00 UTC"}'
+  curl -X PUT http://127.0.0.1:9090/api/v1/apps/shop.example.com/maintenance \
+       -H 'X-Requested-With: cli' -d '{"enabled": true, "until": "2026-10-06T14:00:00Z"}'
   curl -X PUT http://127.0.0.1:9090/api/v1/apps/shop.example.com/maintenance \
        -H 'X-Requested-With: cli' -d '{"enabled": false}'
-  curl http://127.0.0.1:9090/api/v1/maintenance     # what is closed, and why
+  curl http://127.0.0.1:9090/api/v1/maintenance     # what is closed, since and until when
   ```
+
+  The body is `{"enabled", "retry_after"?, "message"?, "for_secs"? | "until"?}`. Windows are
+  persisted to `run/maintenance.json`, so a restart in the middle of one does not reopen the site.
 
 - **A flag file**, for deploy scripts on the box that have no admin credentials (a tenant's, in
   multi-tenant mode): `touch sites/<domain>/maintenance.flag` closes that app, `rm` reopens it.
-  The sites watcher picks the change up within a couple of seconds.
+  The sites watcher picks the change up within a couple of seconds. A flag has no end time.
 
 There is deliberately no `app.infos` key: maintenance is a state a site is in for an hour, not
 part of its configuration, and a script creating or removing a file is simpler and safer than one
 rewriting TOML. A `run/maintenance.json` that does not parse stops the proxy from starting rather
 than silently reopening every site. `GET /api/v1/apps` reports `"maintenance": true` for an app
 closed either way (or by the global window).
+
+#### The page
+
+The first of these that exists is served:
+
+1. `<site>/error_pages/maintenance.html`, then `<site>/public/maintenance.html` — the app's own
+   page, for requests to its hosts. Both are read at discovery, like the other site error pages
+   (when the site appears or its `app.infos` or `maintenance.flag` changes), capped at 64 KiB.
+2. `maintenance.html` from `[error_pages] dir`.
+3. The built-in page: the app's name, the message, and the time it is back in the visitor's
+   time zone ("back around 14:00 · in about 25 min"), in French or English after the browser's
+   `Accept-Language` (or `language`), light or dark after the system's. It checks every 30
+   seconds whether the site is back and reloads by itself. Under 6 KiB, no external resource.
+
+Templates may use `{{app}}` (the app's `display_name` from `app.infos`, else the host),
+`{{message}}`, `{{since}}` and `{{until}}` (RFC 3339, empty when unset), and the usual
+`{{status}}`, `{{reason}}`, `{{host}}` and `{{request_id}}`, all HTML-escaped.
+
+While an app is closed the proxy also serves the files of `<site>/public/maintenance/` at
+`/maintenance/<file>`, so its own page can have a stylesheet, a logo and a font even though the
+app behind it is stopped or mid-migration: plain file names only (no sub-directories), up to
+1 MiB each, of the types css, js, svg, png, jpg, gif, webp, avif, ico, woff2, woff, json and txt,
+sent with `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`. In multi-tenant mode
+neither these files nor the page may be symlinks.
 
 ## Architecture
 
@@ -1245,6 +1300,7 @@ admin = "$2b$12$..."   # generate with: hash-password (cost 4..=13)
 |---|---|---|---|
 | `name` | string | directory name | Logical app name (used in logs, admin API). |
 | `domain` | string | directory name (when auto-detected) | Domain the app serves. Matched against the `Host` header. |
+| `display_name` | string | — | Human name for the app, shown as `{{app}}` on its maintenance page (else the host). |
 | `start_script` | string | auto-detected (see below) | Command used to launch the app. Supports `$PORT` and `$WORKERS` substitution. Parsed without a shell — no pipes/redirects/globs. |
 | `stop_script` | string | _none_ | Optional command to run when stopping the app. |
 | `health_check` | string | `"/health"` (`"/up"` for an auto-detected Soli app, `"/"` for LuaOnBeans) | HTTP path the proxy polls every 30s to decide if the app is alive. See [App Health Monitoring](#app-health-monitoring). |
@@ -1607,7 +1663,7 @@ Served on `[admin] bind` (loopback `127.0.0.1:9090` by default); see
 | GET / PUT | `/api/v1/acme-challenges` | HTTP-01 tokens pushed by an external ACME orderer |
 | POST | `/api/v1/hash-password` | `{"password": ...}` → bcrypt hash |
 | GET / PUT | `/api/v1/settings` | Admin UI settings (`{"theme": ...}`) |
-| GET / PUT | `/api/v1/maintenance` | Maintenance mode for the whole proxy: `{"enabled", "retry_after"?, "message"?}` (see [Maintenance mode](#maintenance-mode)) |
+| GET / PUT | `/api/v1/maintenance` | Maintenance mode for the whole proxy: `{"enabled", "retry_after"?, "message"?, "for_secs"? \| "until"?}` (see [Maintenance mode](#maintenance-mode)) |
 | PUT | `/api/v1/apps/{name}/maintenance` | Maintenance mode for one app, same body |
 
 `POST /api/v1/config/validate` runs `soli-proxy check`'s checks (sites aside) on the text it is
