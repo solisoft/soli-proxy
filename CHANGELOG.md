@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.7.3](https://github.com/solisoft/soli-proxy/compare/v1.7.2...v1.7.3) (2026-10-06)
+
+### Performance
+
+* **apps: a sleeping app wakes in a tenth of a second.** After starting an app, the proxy polled
+  its health check once a second, and the first poll comes before the app listens, so every
+  wake (and every deploy) took a second at least, whatever the app's own start time. It now
+  polls after 10 ms, doubling up to 250 ms. A request that wakes an app went from 1.01 s to
+  0.08 s on the test bench.
+
 ## [1.7.2](https://github.com/solisoft/soli-proxy/compare/v1.7.1...v1.7.2) (2026-10-06)
 
 ### Bug Fixes
