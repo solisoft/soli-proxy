@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.10.0](https://github.com/solisoft/soli-proxy/compare/v1.9.0...v1.10.0) (2026-10-07)
+
+### Features
+
+* **tui: who is on each app.** The proxy remembers, per app, the client addresses of the last
+  five minutes (bounded, pruned as it goes) and counts its WebSocket tunnels and their clients.
+  The Apps screen has an `on` column, the app's detail line says "3 visitors (5 min) · 2
+  websockets from 1 visitor · 1 streaming", and the dashboard strip sums it (`12 on · 3 ws`).
+  `/api/v1/app-metrics` reports `visitors`, `websockets`, `websocket_visitors` and
+  `open_requests`. It also answers why an app stays up past its `idle_timeout`: an open
+  LiveView socket. A visitor is a client address: people behind one router count once.
+
 ## [1.9.0](https://github.com/solisoft/soli-proxy/compare/v1.8.0...v1.9.0) (2026-10-07)
 
 ### Features
