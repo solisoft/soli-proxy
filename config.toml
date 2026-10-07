@@ -120,10 +120,10 @@ burst_size = 2000
 # stop_on_shutdown = false
 # Scale to zero: an app is stopped after this many seconds without a request
 # (with none still open: streaming responses and WebSockets keep it up) and
-# started again on the next one. Default 900 (15 minutes), 3600 (an hour)
+# started again on the next one. Default 300 (5 minutes), 3600 (an hour)
 # under --dev; 0 = no app sleeps. `idle_timeout` in an app.infos overrides it, e.g. 0 for an
 # app running cron jobs or background workers.
-# idle_timeout = 900
+# idle_timeout = 300
 
 # Circuit Breaker Configuration
 # Tracks backend health and stops sending traffic to failing backends.

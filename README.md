@@ -1466,7 +1466,7 @@ admin = "$2b$12$..."   # generate with: hash-password (cost 4..=13)
 | `docker_options` | string | _none_ | Extra flags appended to `docker run`. Whitespace-split, no shell. Single-tenant: a denylist rejects `--privileged`, `--cap-add`, `--device`, `--security-opt`, `--userns`, `--volumes-from`, `--env-file`, `--group-add`, joining the `host` or another container's namespaces, and docker-socket / root mounts in every spelling (`-v/:/x`, `--mount type=bind,source=/`, `/./`, `/etc/..`). Multi-tenant: only the allowlist below is accepted. |
 | `docker_network` | string | `"soli-apps"` | Docker network the container joins (created automatically if missing). A plain network name only: `host` and `container:<id>` are refused in every mode, since the value goes straight to `--network`. Ignored in multi-tenant mode, where each app gets a private network. |
 | `compress` | bool | _unset_ | `false`: never compress this app's responses. `true`: compress them even with `[compression] enabled = false` — ignored in multi-tenant mode. Unset follows `[compression]`. See [Compression](#compression). |
-| `idle_timeout` | int (seconds) | `[apps].idle_timeout` from `config.toml`, itself `900` (`3600` under `--dev`) | Scale to zero: after this many seconds without a request (and with none still open) the proxy stops the app and starts it again on the next one, holding that request until the app is healthy. `0` means the app never sleeps. See [Scale to zero](#scale-to-zero). |
+| `idle_timeout` | int (seconds) | `[apps].idle_timeout` from `config.toml`, itself `300` (`3600` under `--dev`) | Scale to zero: after this many seconds without a request (and with none still open) the proxy stops the app and starts it again on the next one, holding that request until the app is healthy. `0` means the app never sleeps. See [Scale to zero](#scale-to-zero). |
 | `[auth.users]` | table | _empty_ | `username = "bcrypt hash"` entries. When non-empty, every request to this app's domains must present matching HTTP Basic Auth credentials. Generate a hash with `hash-password`; only bcrypt hashes at cost 4 to 13 are accepted. |
 | `[auth] noauth` | list of strings | _empty_ | Paths served without credentials, for callers that cannot send a password (a payment webhook, a health probe). Exact path, or a prefix ending in `*` — the same syntax as the `@noauth:` route directive, and the same fail-closed rule: a path carrying percent-encoding or a `..` segment is never exempt. Skips forward-auth too. |
 | `[auth] forward` | string | _none_ | Auth service asked before every request to this app's domains, WebSocket upgrades included — the app equivalent of `@forward_auth:`. See [Forward authentication](#forward-authentication). With `[auth.users]` too, Basic Auth runs first and both must pass. In multi-tenant mode it must be covered by `[forward_auth] allowed_urls`. |
@@ -1539,7 +1539,7 @@ reported the same way, with the section named.
 Most fleets are mostly idle: on a box hosting thirty small sites, a day's traffic
 typically touches a handful, and every one of the others holds its full runtime
 in memory for nothing. So the proxy puts an app to sleep — stops its process —
-after **15 minutes without a request**, and starts it again on the next one.
+after **5 minutes without a request**, and starts it again on the next one.
 `idle_timeout` (seconds) changes the threshold, `0` turns it off:
 
 ```toml
@@ -1592,9 +1592,10 @@ idle_timeout = 1800   # apps that don't say otherwise sleep after 30 minutes
 # idle_timeout = 0    # or: no app sleeps unless its app.infos asks
 ```
 
-Before 1.2 the default was `0`, never sleep: after upgrading, apps without an
-`idle_timeout` start sleeping after 15 minutes. Pin the ones that must stay up
-first, or set `[apps] idle_timeout = 0` to keep the old behaviour.
+Before 1.2 the default was `0`, never sleep; from 1.2 to 1.7 it was 15 minutes, and it is 5
+minutes since 1.8, now that a wake costs a fraction of a second. Apps without an
+`idle_timeout` follow the default: pin the ones that must stay up first, set
+`[apps] idle_timeout = 900` to keep 15 minutes, or `0` for no sleep at all.
 
 ### The app's environment
 

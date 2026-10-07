@@ -971,6 +971,40 @@
                         </div>
                     </div>
 
+                    <!-- [apps] -->
+                    <div id="apps" class="mb-8 ml-11" style="scroll-margin-top: 6rem">
+                        <h3 class="text-lg font-semibold text-white mb-1 flex items-center gap-2">
+                            <span class="text-emerald-400 font-mono text-sm">[apps]</span>
+                        </h3>
+                        <p class="text-gray-400 text-sm mb-3">Defaults for the apps the proxy manages. An app sleeps after <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">idle_timeout</code> seconds without a request &mdash; its process is stopped and started again by its next request, which waits for it (a fraction of a second for a Soli app). An app&rsquo;s own <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">idle_timeout</code> in its <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">app.infos</code> wins: <code class="text-cyan-300 text-xs bg-cyan-500/10 px-1.5 py-0.5 rounded">0</code> there for one with cron jobs or background workers.</p>
+                        <div class="code-window rounded-xl bg-gray-900 border border-white/10 overflow-hidden">
+                            <div class="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex gap-1.5"><span class="w-3 h-3 rounded-full bg-red-500/60"></span><span class="w-3 h-3 rounded-full bg-yellow-500/60"></span><span class="w-3 h-3 rounded-full bg-green-500/60"></span></div>
+                                    <span class="text-xs text-gray-500 ml-2">config.toml</span>
+                                </div>
+                                <button onclick="copyCode(this)" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
+                            </div>
+                            <pre class="p-4 text-sm overflow-x-auto"><code><span class="tk">[apps]</span>
+<span class="tf">idle_timeout</span> = <span class="tn">300</span>        <span class="tc"># seconds; 0 = no app sleeps</span>
+<span class="tf">stop_on_shutdown</span> = <span class="tn">false</span></code></pre>
+                        </div>
+                        <div class="mt-3 overflow-x-auto">
+                            <table class="w-full text-sm text-left">
+                                <thead><tr class="border-b border-white/10 text-gray-400">
+                                    <th class="py-2 pr-4 font-medium">Key</th>
+                                    <th class="py-2 pr-4 font-medium">Type</th>
+                                    <th class="py-2 pr-4 font-medium">Default</th>
+                                    <th class="py-2 font-medium">Description</th>
+                                </tr></thead>
+                                <tbody class="text-gray-300">
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">idle_timeout</td><td class="py-2 pr-4">integer</td><td class="py-2 pr-4 text-gray-500">300 (3600 under --dev)</td><td class="py-2">Seconds without a request (and with none still open: streaming responses and WebSockets keep an app up) before an app is put to sleep. <code>0</code>: no app sleeps. At startup, an app that was not running and may sleep waits for its first request instead of starting.</td></tr>
+                                    <tr class="border-b border-white/5"><td class="py-2 pr-4 font-mono text-cyan-300 text-xs">stop_on_shutdown</td><td class="py-2 pr-4">boolean</td><td class="py-2 pr-4 text-gray-500">false (true under --dev)</td><td class="py-2">Whether stopping the proxy stops its apps too. Off: they keep running and the next proxy adopts them.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
                     <!-- [compression] -->
                     <div class="mb-8 ml-11">
                         <h3 class="text-lg font-semibold text-white mb-1 flex items-center gap-2">
