@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.9.0](https://github.com/solisoft/soli-proxy/compare/v1.8.0...v1.9.0) (2026-10-07)
+
+### Features
+
+* **apps: put an app to sleep on demand.** `soli-proxy sleep <app>`, `Z` on the app in the TUI
+  (and "Sleep" in its action menu), or `POST /api/v1/apps/{name}/sleep`: the app is stopped as
+  the reaper stops it and its next request starts it again — even one with `idle_timeout = 0`.
+  An app already stopped is only marked asleep.
+
+### Bug Fixes
+
+* **apps: a restart no longer resets the idle clock.** An app adopted by a restarted proxy, with
+  no request since, counted as idle from the restart, so each restart bought every idle app
+  another `idle_timeout`. With no request seen, an adopted app is now idle since its process
+  started.
+
 ## [1.8.0](https://github.com/solisoft/soli-proxy/compare/v1.7.3...v1.8.0) (2026-10-07)
 
 **Upgrading:** apps without an `idle_timeout` now sleep after 5 minutes without a request

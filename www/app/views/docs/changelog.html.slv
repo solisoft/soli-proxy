@@ -46,11 +46,40 @@
                     </p>
                 </div>
 
+                <!-- 1.9.0 -->
+                <div class="mb-10 reveal-on-scroll">
+                    <div class="flex items-center gap-3 mb-5 flex-wrap">
+                        <h2 class="text-2xl font-bold text-white font-mono">v1.9.0</h2>
+                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
+                        <span class="text-sm text-gray-500">2026-10-07</span>
+                    </div>
+
+                    <div class="space-y-4">
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">feat</span>
+                                <h3 class="text-base font-semibold text-white">Put an app to sleep on demand</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                <code>soli-proxy sleep &lt;app&gt;</code>, <code>Z</code> in the TUI or <code>POST /api/v1/apps/{name}/sleep</code>: the app stops now and its next request starts it again.
+                            </p>
+                        </div>
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">fix</span>
+                                <h3 class="text-base font-semibold text-white">A restart no longer resets the idle clock</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                An adopted app with no request since the restart is idle since its process started, so restarts no longer keep idle apps awake.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- 1.8.0 -->
                 <div class="mb-10 reveal-on-scroll">
                     <div class="flex items-center gap-3 mb-5 flex-wrap">
                         <h2 class="text-2xl font-bold text-white font-mono">v1.8.0</h2>
-                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
                         <span class="text-sm text-gray-500">2026-10-07</span>
                     </div>
 
