@@ -139,7 +139,11 @@ pub const PRESETS: &[(&str, &[&str])] = &[
 /// and `/wp-login.php` — its editors' bookmarks, old links — and banning
 /// them banned a client.
 pub const DEFAULT_TRAP_PATHS: &[&str] = &[
-    "/.env*",
+    // `.env` files at any depth: /.env, /api/.env, /backend/.env.production.
+    // Not `*.env*`: that would also take /docs/the.environment.
+    "*/.env*",
+    "/cgi-bin/*",
+    "/php-cgi/*",
     "/.git/*",
     "/.svn/*",
     "/.aws/*",
@@ -268,10 +272,11 @@ impl BotsConfig {
             );
         }
         for p in self.trap_paths.iter().flatten() {
-            if crate::config::validate_auth_exempt_path(p).is_none() {
+            if !valid_trap_pattern(p) {
                 anyhow::bail!(
-                    "[bots] trap_paths entry {p:?} is invalid: expected an absolute path such as \
-                     /.env or /wp-admin/*, with no '..' segment and no percent-encoding"
+                    "[bots] trap_paths entry {p:?} is invalid: expected an exact path (/HNAP1), a \
+                     prefix (/.git/*), a suffix (*.php) or a fragment (*/.env*), with no \
+                     whitespace, no '..' and no percent-encoding"
                 );
             }
         }
@@ -295,15 +300,35 @@ impl BotsConfig {
 
     fn is_trap(&self, path: &str) -> bool {
         match &self.trap_paths {
-            Some(paths) => crate::config::path_is_auth_exempt(paths, path),
-            None => DEFAULT_TRAP_PATHS
-                .iter()
-                .any(|p| match p.strip_suffix('*') {
-                    Some(prefix) => path.starts_with(prefix),
-                    None => path == *p,
-                }),
+            Some(paths) => paths.iter().any(|p| trap_matches(p, path)),
+            None => DEFAULT_TRAP_PATHS.iter().any(|p| trap_matches(p, path)),
         }
     }
+}
+
+/// A trap pattern against a request path: `/x` exactly, `/x*` a path that
+/// starts with `/x`, `*x` one that ends with it, `*x*` one that contains it
+/// anywhere. Compared literally, case included.
+fn trap_matches(pattern: &str, path: &str) -> bool {
+    match (pattern.strip_prefix('*'), pattern.strip_suffix('*')) {
+        (Some(_), Some(_)) if pattern.len() > 2 => path.contains(&pattern[1..pattern.len() - 1]),
+        (Some(suffix), _) => path.ends_with(suffix),
+        (None, Some(prefix)) => path.starts_with(prefix),
+        (None, None) => path == pattern,
+    }
+}
+
+/// What `trap_paths` accepts: something to match (more than the stars), an
+/// absolute path unless it starts with a star, nothing a request path never
+/// contains literally.
+fn valid_trap_pattern(pattern: &str) -> bool {
+    let core = pattern.trim_matches('*');
+    !core.is_empty()
+        && (pattern.starts_with('/') || pattern.starts_with('*'))
+        && !core.contains('*')
+        && !pattern.contains("..")
+        && !pattern.contains('%')
+        && !pattern.chars().any(char::is_whitespace)
 }
 
 /// `[bots]` in an `app.infos`: what this app changes.
@@ -926,6 +951,19 @@ trap_paths = ["/secret", "/admin/*"]"#,
         );
         assert!(c.bots.is_trap("/admin/x") && c.bots.is_trap("/secret"));
         assert!(!c.bots.is_trap("/.env"));
+        // Suffix and fragment patterns; and what they refuse.
+        let c = config(
+            r#"traps = true
+trap_paths = ["*.php", "*/.git/*"]"#,
+        );
+        assert!(c.bots.is_trap("/old/index.php") && c.bots.is_trap("/a/b/.git/HEAD"));
+        assert!(!c.bots.is_trap("/index.php.html"));
+        for pattern in ["**", "*", "/a*b", "/../x", "/%2e", "/a b"] {
+            assert!(
+                bad(&format!("trap_paths = [\"{pattern}\"]")),
+                "{pattern} should be refused"
+            );
+        }
     }
 
     /// A site migrated from WordPress gets real requests for its old paths —
@@ -938,9 +976,20 @@ trap_paths = ["/secret", "/admin/*"]"#,
             "/wp-admin/",
             "/wp-login.php",
             "/wp-content/uploads/a.jpg",
-            "/cgi-bin/x",
+            "/docs/the.environment",
+            "/environment",
         ] {
             assert!(!c.bots.is_trap(path), "{path}");
+        }
+        // `.env` at any depth, CGI probes.
+        for path in [
+            "/api/.env",
+            "/backend/.env.production",
+            "/.env.local",
+            "/cgi-bin/luci",
+            "/php-cgi/php-cgi.exe",
+        ] {
+            assert!(c.bots.is_trap(path), "{path}");
         }
         for path in [
             "/.env",

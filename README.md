@@ -798,7 +798,8 @@ traps = true                  # a request for /.env, /wp-login.php… bans its c
 max_404_per_minute = 60       # so does a stream of 404s; 0 = off (the default)
 ban_secs = 3600               # how long a ban lasts (at most a week)
 allow_ips = ["203.0.113.7"]   # never refused nor banned (IP or CIDR)
-# trap_paths = ["/.env*", "/wp-admin/*"]    # replaces the built-in list
+# trap_paths = ["*/.env*", "/.git/*", "*.php"]  # replaces the built-in list:
+#                                     # exact, prefix*, *suffix or *fragment*
 ```
 
 Everything is off until the section turns it on; `enabled = false` turns it all off again —
@@ -819,9 +820,12 @@ without case, with a `403`. An entry is a substring of at least three characters
 which the big ones do; one that poses as a browser needs the two defences below, or a challenge.
 
 **`traps`** bans, for `ban_secs`, a client that asks for a path none of the sites behind the
-proxy serves and no visitor ever asks for: `/.env*`, `/.git/*`, `/.svn/*`, `/.aws/*`, `/.ssh/*`,
-`/.DS_Store`, `/wp-config.php*`, `/phpmyadmin*`, `/vendor/phpunit/*`, `/boaform/*`, `/HNAP1` —
-or `trap_paths`, in `@noauth` syntax, instead. The trap answers `404`; the ban that follows
+proxy serves and no visitor ever asks for: a `.env` file at any depth (`*/.env*`: `/.env`,
+`/api/.env`, `/backend/.env.production`), `/.git/*`, `/.svn/*`, `/.aws/*`, `/.ssh/*`,
+`/.DS_Store`, `/cgi-bin/*`, `/php-cgi/*`, `/wp-config.php*`, `/phpmyadmin*`,
+`/vendor/phpunit/*`, `/boaform/*`, `/HNAP1` — or `trap_paths` instead. A pattern is an exact
+path (`/HNAP1`), a prefix (`/.git/*`), a suffix (`*.php`) or a fragment found anywhere
+(`*/.env*`), compared literally. The trap answers `404`; the ban that follows
 answers `403` to everything the client asks, on every site, until it ends. Scanners go down a
 list of such paths, so the first one costs them the rest. **`max_404_per_minute`** bans the same
 way a client past that many 404s in a minute.

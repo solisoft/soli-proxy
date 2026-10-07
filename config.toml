@@ -232,7 +232,8 @@ hook_timeout_ms = 10  # Max execution time per hook call in milliseconds
 # max_404_per_minute = 60               # 0 = off
 # ban_secs = 3600
 # allow_ips = ["203.0.113.7"]
-# trap_paths = ["/.env*", "/wp-admin/*"]  # replaces the built-in list
+# trap_paths = ["*/.env*", "/.git/*", "*.php"]  # replaces the built-in list:
+#                                       # /exact, /prefix*, *suffix, *fragment*
 
 # Authentication
 # There is no [auth] section. HTTP Basic auth is set where it applies —
