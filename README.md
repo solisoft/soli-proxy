@@ -85,7 +85,7 @@ soli-proxy sleep   [-c <conf>] <app_name>   # Put an app to sleep now; its next 
 soli-proxy maintenance [-c <conf>] on <app_name>|all [--for 30m | --until <time>] [-m <message>]
 soli-proxy maintenance [-c <conf>] off <app_name>|all
 soli-proxy maintenance [-c <conf>] status   # What is closed (see Maintenance mode)
-soli-proxy bots [-c <conf>] [status | unban <ip>]   # Bans and refused bots (see Bots and scanners)
+soli-proxy bots [-c <conf>] [status | unban <ip> | trap <path> | untrap <path>]   # Bans, traps (see Bots and scanners)
 ```
 
 `-c` and `--sites-dir` may also come before the subcommand (`soli-proxy -c /etc/soli-proxy/proxy.conf
@@ -829,6 +829,14 @@ path (`/HNAP1`), a prefix (`/.git/*`), a suffix (`*.php`) or a fragment found an
 answers `403` to everything the client asks, on every site, until it ends. Scanners go down a
 list of such paths, so the first one costs them the rest. **`max_404_per_minute`** bans the same
 way a client past that many 404s in a minute.
+
+**Adding traps as you go.** When the TUI's errors screen shows a scanner's 404 (`f` until it lists
+404s), `T` on the row opens it as a trap: edit the path — `/secret-admin/x` into
+`/secret-admin/*` — and Enter adds it. Whoever asks for it next is banned. The same from the
+command line: `soli-proxy bots trap "/old-admin/*"`, `soli-proxy bots untrap "/old-admin/*"`;
+or `POST` / `DELETE /api/v1/bots/traps` with `{"pattern": "…"}`. These traps come on top of
+`trap_paths` (or the built-in list), apply where traps are on, and are kept in
+`run/bots_traps.json` across restarts; `soli-proxy bots` lists them.
 
 There are deliberately no WordPress paths in the list (`/wp-admin/`, `/wp-content/`,
 `/wp-login.php`): a site migrated from WordPress gets real requests for them — its editors'
@@ -1843,6 +1851,7 @@ Served on `[admin] bind` (loopback `127.0.0.1:9090` by default); see
 | POST | `/api/v1/apps/{name}/sleep` | Put an app to sleep now; its next request starts it (see [Scale to zero](#scale-to-zero)) |
 | GET | `/api/v1/bots` | `[bots]`: the bans in force, bans since start, user agents refused by entry (see [Bots and scanners](#bots-and-scanners)) |
 | DELETE | `/api/v1/bots/bans/{ip}` | Lift a ban |
+| POST / DELETE | `/api/v1/bots/traps` | Add or remove a trap path at run time: `{"pattern": "/old-admin/*"}`; kept in `run/bots_traps.json` |
 
 `POST /api/v1/config/validate` runs `soli-proxy check`'s checks (sites aside) on the text it is
 given; a part left out is read from the running proxy's files, so a proposed `proxy.conf` is

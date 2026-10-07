@@ -227,6 +227,8 @@ struct DaemonSample {
     maintenance: Option<MaintenanceInfo>,
     /// The bans `[bots]` has in force (`/api/v1/bots`).
     bans: Option<Vec<BanRow>>,
+    /// The trap paths added at run time, and whether `[bots] traps` is on.
+    traps: Option<(Vec<String>, bool)>,
     /// Circuit-breaker state per target; `None` when the daemon could not be
     /// asked (shown as "unavailable", never as an empty list).
     circuits: Option<CircuitList>,
@@ -375,9 +377,18 @@ async fn poll_daemon(
     #[derive(serde::Deserialize)]
     struct BotsData {
         bans: Vec<BanRow>,
+        #[serde(default)]
+        custom_traps: Vec<String>,
+        #[serde(default)]
+        policy: BotsPolicy,
+    }
+    #[derive(serde::Deserialize, Default)]
+    struct BotsPolicy {
+        #[serde(default)]
+        traps: bool,
     }
 
-    let (apps, global, circuits, info, maintenance, bans) = tokio::join!(
+    let (apps, global, circuits, info, maintenance, bots) = tokio::join!(
         async {
             let resp = fetch(&apps_url).await?;
             resp.json::<Envelope<HashMap<String, AppMetricsJson>>>()
@@ -431,10 +442,7 @@ async fn poll_daemon(
         async {
             // Absent from daemons before 1.4: no journal entries, no error.
             let resp = fetch(&bots_url).await?;
-            resp.json::<Envelope<BotsData>>()
-                .await
-                .ok()
-                .map(|e| e.data.bans)
+            resp.json::<Envelope<BotsData>>().await.ok().map(|e| e.data)
         }
     );
 
@@ -451,7 +459,10 @@ async fn poll_daemon(
         global,
         info,
         maintenance,
-        bans,
+        traps: bots
+            .as_ref()
+            .map(|b| (b.custom_traps.clone(), b.policy.traps)),
+        bans: bots.map(|b| b.bans),
         circuits,
         status,
         seq: 0,
@@ -482,6 +493,8 @@ pub enum Modal {
     ErrorDetail(usize), // index into TuiApp::errors
     /// Closing an app for maintenance: what was typed so far.
     Maintenance(MaintenanceForm),
+    /// Adding a trap path from the errors screen: the pattern being edited.
+    Trap(String),
 }
 
 /// The `M` form: how long the app stays closed and what visitors are told.
@@ -590,6 +603,9 @@ pub struct TuiApp {
     /// The bans already journaled (client and start); `None` until the
     /// first sample, whose bans are not news.
     known_bans: Option<std::collections::HashSet<(String, String)>>,
+    /// Trap paths added at run time, and whether `[bots] traps` is on (from
+    /// the daemon); `None` until known.
+    traps: Option<(Vec<String>, bool)>,
 }
 
 impl TuiApp {
@@ -651,6 +667,7 @@ impl TuiApp {
             error_log: None,
             maintenance: None,
             known_bans: None,
+            traps: None,
         };
         app.collect_stats();
         app
@@ -682,6 +699,9 @@ impl TuiApp {
             if let Some(next) = next {
                 self.note_maintenance_changes(&next);
                 self.maintenance = Some(next);
+            }
+            if let Some(traps) = self.daemon.latest.lock().ok().and_then(|s| s.traps.clone()) {
+                self.traps = Some(traps);
             }
             let bans = self.daemon.latest.lock().ok().and_then(|s| s.bans.clone());
             if let Some(bans) = bans {
@@ -1181,6 +1201,7 @@ impl TuiApp {
             }
             Modal::ErrorDetail(idx) => self.render_error_detail(f, *idx),
             Modal::Maintenance(form) => render_maintenance_form(f, form),
+            Modal::Trap(pattern) => render_trap_form(f, pattern, self.traps.as_ref()),
             Modal::None => {}
         }
     }
@@ -1205,6 +1226,7 @@ impl TuiApp {
             Modal::LogViewer(_, _) => self.handle_log_viewer_key(key),
             Modal::ErrorDetail(_) => self.handle_error_detail_key(key),
             Modal::Maintenance(_) => self.handle_maintenance_key(key),
+            Modal::Trap(_) => self.handle_trap_key(key),
         }
     }
 
@@ -1281,6 +1303,16 @@ impl TuiApp {
             }
             KeyCode::Enter => {
                 self.handle_enter();
+            }
+            KeyCode::Char('T') if self.current_screen == Screen::Errors => {
+                let path = self
+                    .shown_errors()
+                    .get(self.selected_index)
+                    .and_then(|e| e.path.clone());
+                match path {
+                    Some(path) => self.modal = Modal::Trap(path),
+                    None => self.show_toast("no request selected"),
+                }
             }
             KeyCode::Char('f') if self.current_screen == Screen::Errors => {
                 self.errors_filter = self.errors_filter.next();
@@ -1664,9 +1696,49 @@ impl TuiApp {
         false
     }
 
+    fn handle_trap_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        use crossterm::event::KeyCode;
+        let Modal::Trap(pattern) = &mut self.modal else {
+            return false;
+        };
+        match key.code {
+            KeyCode::Esc => self.modal = Modal::None,
+            KeyCode::Backspace => {
+                pattern.pop();
+            }
+            KeyCode::Char(c) if pattern.chars().count() < 200 => pattern.push(c),
+            KeyCode::Enter => {
+                let pattern = pattern.trim().to_string();
+                self.modal = Modal::None;
+                if pattern.is_empty() {
+                    return false;
+                }
+                self.admin_send(
+                    reqwest::Method::POST,
+                    "/api/v1/bots/traps".into(),
+                    serde_json::json!({ "pattern": pattern }),
+                    format!("trap added: {pattern}"),
+                );
+            }
+            _ => {}
+        }
+        false
+    }
+
     /// `PUT` `body` to the daemon's admin API at `path`; `done` is the toast
     /// shown once it answers.
     fn admin_put(&mut self, path: String, body: serde_json::Value, done: String) {
+        self.admin_send(reqwest::Method::PUT, path, body, done);
+    }
+
+    /// `body` to the daemon's admin API with `method` at `path`.
+    fn admin_send(
+        &mut self,
+        method: reqwest::Method,
+        path: String,
+        body: serde_json::Value,
+        done: String,
+    ) {
         let cfg = self.ctx.config_manager.get_config();
         if cfg.admin.enabled != Some(true) {
             self.show_toast("Admin API not enabled");
@@ -1685,7 +1757,7 @@ impl TuiApp {
                 .build()
                 .map_err(|e| e.to_string())?;
             let resp = creds
-                .apply(client.put(&url))
+                .apply(client.request(method, &url))
                 .json(&body)
                 .send()
                 .await
@@ -2295,7 +2367,7 @@ impl TuiApp {
                 Screen::Apps => {
                     "1-6  j/k  Enter actions  D deploy  R restart  L logs  M maintenance  Z sleep  s sort  /  ?  q"
                 }
-                Screen::Errors => "1-6 screens  j/k  Enter detail  f 5xx/404  y copy  ?  q",
+                Screen::Errors => "1-6 screens  j/k  Enter detail  f 5xx/404  y copy  T trap  ?  q",
                 Screen::Circuits => "1-6 screens  j/k  r  ?  q",
                 Screen::Config => "1-6 screens  j/k  r  ?  q",
                 _ => "1-6 screens  Tab cycle  m motion  r  ?  q",
@@ -2308,6 +2380,7 @@ impl TuiApp {
             Modal::LogViewer(_, _) => "j/k scroll  G follow  Esc close",
             Modal::ErrorDetail(_) => "j/k  y copy  Esc",
             Modal::Maintenance(_) => "Enter close the app  Tab next field  Esc cancel",
+            Modal::Trap(_) => "Enter add the trap  Esc cancel",
         };
 
         let daemon = Span::styled(
@@ -2338,7 +2411,7 @@ impl TuiApp {
     }
 
     fn render_help(&self, f: &mut Frame, area: Rect) {
-        let modal = theme::centered_modal(area, 66, 23);
+        let modal = theme::centered_modal(area, 66, 24);
         f.render_widget(Clear, modal);
         // No line continuation on the first line: `\` + newline would also
         // eat the indentation of the line after it.
@@ -2356,6 +2429,7 @@ impl TuiApp {
           M maintenance: close for a while, or reopen
   Routes  a add · e edit · d delete
   Errors  f all / 5xx / 404 · Enter detail · y copy (OSC 52)
+          T trap the path: whoever asks for it again is banned
 
   Any key closes this overlay";
         let block = theme::list_block("help");
@@ -2899,6 +2973,62 @@ fn with_cursor(text: &str, cursor_pos: usize) -> String {
         display.push('|');
     }
     display
+}
+
+fn render_trap_form(f: &mut Frame, pattern: &str, traps: Option<&(Vec<String>, bool)>) {
+    let area = theme::centered_modal(f.area(), 76, 14);
+    f.render_widget(Clear, area);
+    f.render_widget(theme::list_block("trap path"), area);
+    let inner = theme::body(area);
+    let muted = Style::default().fg(theme::MUTED);
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("path  ", muted),
+            Span::styled(
+                format!(" {:<56}", format!("{pattern}▏")),
+                Style::default().fg(theme::FG).bg(theme::SELECT_BG),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "A client asking for it is banned from every site (ban_secs).",
+            muted,
+        )),
+        Line::from(Span::styled(
+            "/exact · /prefix* · *suffix · *fragment*   e.g. /wp-x/*  *.php  */.env*",
+            muted,
+        )),
+    ];
+    match traps {
+        Some((_, false)) => lines.push(Line::from(Span::styled(
+            "[bots] traps is off: it applies only on sites with [bots] traps = true",
+            Style::default().fg(theme::WARN),
+        ))),
+        None => lines.push(Line::from(Span::styled(
+            "the daemon's [bots] state is not known yet",
+            muted,
+        ))),
+        _ => {}
+    }
+    if let Some((custom, _)) = traps.filter(|(c, _)| !c.is_empty()) {
+        lines.push(Line::from(""));
+        let shown: Vec<&str> = custom.iter().rev().take(4).map(String::as_str).collect();
+        lines.push(Line::from(Span::styled(
+            format!(
+                "added before ({}): {}{}",
+                custom.len(),
+                shown.join("  "),
+                if custom.len() > 4 { "  …" } else { "" }
+            ),
+            muted,
+        )));
+        lines.push(Line::from(Span::styled(
+            "soli-proxy bots untrap <path> removes one",
+            muted,
+        )));
+    }
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
 fn render_maintenance_form(f: &mut Frame, form: &MaintenanceForm) {

@@ -300,6 +300,12 @@ enum BotsAction {
     Status,
     /// Lift the ban on a client.
     Unban { ip: String },
+    /// Add a trap path: a client asking for it is banned. An exact path
+    /// (/HNAP1), a prefix (/old-admin/*), a suffix (*.php) or a fragment
+    /// found anywhere (*/.env*). Kept across restarts.
+    Trap { pattern: String },
+    /// Remove a trap path added with `trap` (or from the TUI).
+    Untrap { pattern: String },
 }
 
 /// `soli-proxy -c prod.conf maintenance on all` must reach the proxy of
@@ -1019,6 +1025,37 @@ fn run_bots(config_path: &str, action: BotsAction) -> Result<()> {
             )?;
             println!("{ip} unbanned");
         }
+        BotsAction::Trap { pattern } => {
+            let json = admin_call(
+                config_path,
+                "trap paths are managed",
+                reqwest::Method::POST,
+                "/api/v1/bots/traps",
+                Some(serde_json::json!({ "pattern": pattern })),
+            )?;
+            let data = &json["data"];
+            if data["added"].as_bool() == Some(true) {
+                println!("{pattern} is a trap: a client asking for it is banned");
+            } else {
+                println!("{pattern} was a trap already");
+            }
+            if data["traps_on"].as_bool() == Some(false) {
+                println!(
+                    "note: [bots] traps = false in config.toml; traps apply only on sites that \
+                     turn them on"
+                );
+            }
+        }
+        BotsAction::Untrap { pattern } => {
+            admin_call(
+                config_path,
+                "trap paths are managed",
+                reqwest::Method::DELETE,
+                "/api/v1/bots/traps",
+                Some(serde_json::json!({ "pattern": pattern })),
+            )?;
+            println!("{pattern} is no longer a trap");
+        }
         BotsAction::Status => {
             let json = admin_call(
                 config_path,
@@ -1073,6 +1110,12 @@ fn print_bots_status(data: &serde_json::Value) {
             b["until"].as_str().unwrap_or(""),
             b["reason"].as_str().unwrap_or("")
         );
+    }
+    if let Some(traps) = data["custom_traps"].as_array().filter(|t| !t.is_empty()) {
+        println!("\nTrap paths added at run time (soli-proxy bots untrap <path> removes one):");
+        for t in traps.iter().filter_map(|t| t.as_str()) {
+            println!("  {t}");
+        }
     }
     if let Some(blocked) = data["blocked"].as_object().filter(|b| !b.is_empty()) {
         println!("\nRefused for their user agent:");
@@ -1383,6 +1426,10 @@ async fn run_server(
     config_manager
         .maintenance
         .persist_to(soli_proxy::response::maintenance::STATE_FILE)?;
+    // Trap paths added from the TUI or the admin API outlive a restart too.
+    config_manager
+        .bots
+        .persist_traps_to(soli_proxy::response::bots::TRAPS_FILE)?;
 
     let shutdown = ShutdownCoordinator::new();
     let shutdown_for_signal = shutdown.clone();

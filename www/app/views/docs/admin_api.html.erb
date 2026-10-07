@@ -317,6 +317,11 @@
                                     <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/bots/bans/{ip}</td>
                                     <td class="px-6 py-4 text-gray-400">Lift a ban; an IPv6 address lifts its /64&rsquo;s</td>
                                 </tr>
+                                <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-colors">
+                                    <td class="px-6 py-4"><span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-yellow-500/10 text-yellow-400 border border-yellow-500/20">POST</span> <span class="inline-block px-2.5 py-1 rounded-md text-xs font-bold bg-red-500/10 text-red-400 border border-red-500/20">DELETE</span></td>
+                                    <td class="px-6 py-4 font-mono text-xs text-cyan-300">/api/v1/bots/traps</td>
+                                    <td class="px-6 py-4 text-gray-400">Add or remove a trap path at run time: <code>{"pattern": "/old-admin/*"}</code> (exact, prefix*, *suffix, *fragment*); kept in <code>run/bots_traps.json</code></td>
+                                </tr>
                             </tbody>
                         </table>
                     </div>

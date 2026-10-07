@@ -423,9 +423,109 @@ pub struct Bots {
     misses: Mutex<HashMap<IpAddr, (u64, u32)>>,
     banned_total: AtomicU64,
     blocked: Mutex<HashMap<Arc<str>, u64>>,
+    /// Trap patterns added at run time (the TUI's errors screen, `soli-proxy
+    /// bots trap`, the admin API), on top of `[bots] trap_paths` or the
+    /// built-in list; persisted to [`TRAPS_FILE`].
+    custom_traps: Mutex<Vec<String>>,
+    traps_file: Mutex<Option<std::path::PathBuf>>,
 }
 
+/// Where the traps added at run time are kept, relative to the proxy's
+/// working directory, like `run/maintenance.json`.
+pub const TRAPS_FILE: &str = "./run/bots_traps.json";
+/// Most traps that can be added at run time.
+const MAX_CUSTOM_TRAPS: usize = 500;
+
 impl Bots {
+    /// Load the traps added at run time from `path` (absent: none), and keep
+    /// them there from now on. A file that does not parse stops the start
+    /// rather than dropping the traps silently.
+    pub fn persist_traps_to(&self, path: impl Into<std::path::PathBuf>) -> anyhow::Result<()> {
+        let path = path.into();
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                let traps: Vec<String> = serde_json::from_str(&text)
+                    .map_err(|e| anyhow::anyhow!("{}: {}", path.display(), e))?;
+                let traps: Vec<String> = traps
+                    .into_iter()
+                    .filter(|t| valid_trap_pattern(t))
+                    .collect();
+                if !traps.is_empty() {
+                    tracing::info!(
+                        "{} trap path(s) restored from {}",
+                        traps.len(),
+                        path.display()
+                    );
+                }
+                *self.custom_traps.lock() = traps;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => anyhow::bail!("{}: {}", path.display(), e),
+        }
+        *self.traps_file.lock() = Some(path);
+        Ok(())
+    }
+
+    /// The traps added at run time.
+    pub fn custom_traps(&self) -> Vec<String> {
+        self.custom_traps.lock().clone()
+    }
+
+    /// Add a trap pattern (see `trap_paths` for the syntax). `false` when it
+    /// was there already.
+    pub fn add_trap(&self, pattern: &str) -> anyhow::Result<bool> {
+        let pattern = pattern.trim();
+        if !valid_trap_pattern(pattern) {
+            anyhow::bail!(
+                "{pattern:?} is not a trap pattern: an exact path (/HNAP1), a prefix (/.git/*), a \
+                 suffix (*.php) or a fragment (*/.env*), with no whitespace, no '..' and no \
+                 percent-encoding"
+            );
+        }
+        let mut traps = self.custom_traps.lock();
+        if traps.iter().any(|t| t == pattern) {
+            return Ok(false);
+        }
+        if traps.len() >= MAX_CUSTOM_TRAPS {
+            anyhow::bail!("already {MAX_CUSTOM_TRAPS} trap paths; remove some first");
+        }
+        traps.push(pattern.to_string());
+        self.save_traps(&traps)?;
+        tracing::info!("bots: trap path {} added", pattern);
+        Ok(true)
+    }
+
+    /// Remove a trap added at run time. Whether it was there.
+    pub fn remove_trap(&self, pattern: &str) -> anyhow::Result<bool> {
+        let mut traps = self.custom_traps.lock();
+        let before = traps.len();
+        traps.retain(|t| t != pattern.trim());
+        if traps.len() == before {
+            return Ok(false);
+        }
+        self.save_traps(&traps)?;
+        tracing::info!("bots: trap path {} removed", pattern.trim());
+        Ok(true)
+    }
+
+    fn save_traps(&self, traps: &[String]) -> anyhow::Result<()> {
+        let Some(path) = self.traps_file.lock().clone() else {
+            return Ok(());
+        };
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let json = serde_json::to_vec_pretty(traps)?;
+        crate::config::write_atomic(&path, &json)
+            .map_err(|e| anyhow::anyhow!("cannot write {}: {}", path.display(), e))
+    }
+
+    fn is_custom_trap(&self, path: &str) -> bool {
+        self.custom_traps
+            .lock()
+            .iter()
+            .any(|p| trap_matches(p, path))
+    }
     /// The ban on `ip`, if one is in force. One atomic load when none is.
     pub fn banned(&self, ip: IpAddr, now: Instant) -> bool {
         if self.ban_count.load(Ordering::Relaxed) == 0 {
@@ -681,7 +781,7 @@ pub fn check<B>(
     if app_traps == Some(false) || page_initiated(req) {
         return PASS;
     }
-    if app_traps.unwrap_or(policy.traps) && policy.is_trap(path) {
+    if app_traps.unwrap_or(policy.traps) && (policy.is_trap(path) || bots.is_custom_trap(path)) {
         // Host header, or the authority of an HTTP/2 request.
         let host = req
             .headers()
@@ -964,6 +1064,38 @@ trap_paths = ["*.php", "*/.git/*"]"#,
                 "{pattern} should be refused"
             );
         }
+    }
+
+    /// Traps added at run time ban like the configured ones, are refused
+    /// when malformed, and survive a restart through their file.
+    #[test]
+    fn traps_can_be_added_at_run_time_and_persist() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("run/bots_traps.json");
+        let c = config("traps = true");
+        let bots = Bots::default();
+        bots.persist_traps_to(&file).unwrap();
+        assert!(bots.add_trap("/old-admin/*").unwrap());
+        assert!(!bots.add_trap("/old-admin/*").unwrap(), "already there");
+        assert!(bots.add_trap("not a path").is_err());
+        let v = check(
+            &req("/old-admin/login", "x", "198.51.100.40"),
+            &c,
+            &bots,
+            None,
+            None,
+        );
+        assert_eq!(refused(&v), Some(404));
+        assert!(bots.banned("198.51.100.40".parse().unwrap(), Instant::now()));
+
+        let restarted = Bots::default();
+        restarted.persist_traps_to(&file).unwrap();
+        assert_eq!(restarted.custom_traps(), vec!["/old-admin/*".to_string()]);
+        assert!(restarted.remove_trap("/old-admin/*").unwrap());
+        assert!(!restarted.remove_trap("/old-admin/*").unwrap());
+        let again = Bots::default();
+        again.persist_traps_to(&file).unwrap();
+        assert!(again.custom_traps().is_empty());
     }
 
     /// A site migrated from WordPress gets real requests for its old paths —

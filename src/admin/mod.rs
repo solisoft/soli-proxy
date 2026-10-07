@@ -604,6 +604,14 @@ async fn handle_admin_request(
         (Method::GET, "/api/v1/settings") => handlers::get_settings(&state),
         (Method::GET, "/api/v1/maintenance") => maintenance::get(&state).await,
         (Method::GET, "/api/v1/bots") => bots::get(&state),
+        (Method::POST, "/api/v1/bots/traps") => match read_body(req).await {
+            Ok(body) => bots::add_trap(&state, &body),
+            Err(e) => error_response(413, e),
+        },
+        (Method::DELETE, "/api/v1/bots/traps") => match read_body(req).await {
+            Ok(body) => bots::remove_trap(&state, &body),
+            Err(e) => error_response(413, e),
+        },
         (Method::DELETE, p) if p.starts_with("/api/v1/bots/bans/") => {
             bots::unban(&state, &p["/api/v1/bots/bans/".len()..])
         }
