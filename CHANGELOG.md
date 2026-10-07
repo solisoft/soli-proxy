@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.12.0](https://github.com/solisoft/soli-proxy/compare/v1.11.0...v1.12.0) (2026-10-07)
+
+### Features
+
+* **bots: add trap paths as you go.** `T` on a 404 in the TUI's errors screen opens its path as a
+  trap to edit (`/secret-admin/x` into `/secret-admin/*`); Enter adds it, and whoever asks for it
+  next is banned. Also `soli-proxy bots trap|untrap <pattern>` and `POST` / `DELETE
+  /api/v1/bots/traps`. These traps come on top of `trap_paths` or the built-in list, are kept
+  in `run/bots_traps.json` across restarts, and are listed by `soli-proxy bots`.
+
 ## [1.11.0](https://github.com/solisoft/soli-proxy/compare/v1.10.0...v1.11.0) (2026-10-07)
 
 ### Features
