@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.8.0](https://github.com/solisoft/soli-proxy/compare/v1.7.3...v1.8.0) (2026-10-07)
+
+**Upgrading:** apps without an `idle_timeout` now sleep after 5 minutes without a request
+instead of 15. Set `[apps] idle_timeout = 900` in `config.toml` to keep 15 minutes, or
+`idle_timeout = 0` in an app's `app.infos` for one that must stay up.
+
+### Features
+
+* **apps: apps sleep after 5 minutes by default.** Since 1.7.3 a wake costs a fraction of a
+  second (0.2 s for a Soli app in production), so a shorter default gives memory back sooner
+  for almost nothing. `[apps] idle_timeout` in `config.toml` sets it for every app (now on the
+  site's configuration page too), `idle_timeout` in an `app.infos` for one. Under `--dev` it
+  stays an hour.
+
 ## [1.7.3](https://github.com/solisoft/soli-proxy/compare/v1.7.2...v1.7.3) (2026-10-06)
 
 ### Performance

@@ -46,11 +46,31 @@
                     </p>
                 </div>
 
+                <!-- 1.8.0 -->
+                <div class="mb-10 reveal-on-scroll">
+                    <div class="flex items-center gap-3 mb-5 flex-wrap">
+                        <h2 class="text-2xl font-bold text-white font-mono">v1.8.0</h2>
+                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
+                        <span class="text-sm text-gray-500">2026-10-07</span>
+                    </div>
+
+                    <div class="space-y-4">
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">feat</span>
+                                <h3 class="text-base font-semibold text-white">Apps sleep after 5 minutes by default</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                A wake now costs a fraction of a second, so the default <code>[apps] idle_timeout</code> goes from 15 to 5 minutes (an hour under <code>--dev</code>). Set it in <code>config.toml</code> for every app, or <code>idle_timeout</code> in an <code>app.infos</code> for one; <code>0</code> keeps an app up.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- 1.7.3 -->
                 <div class="mb-10 reveal-on-scroll">
                     <div class="flex items-center gap-3 mb-5 flex-wrap">
                         <h2 class="text-2xl font-bold text-white font-mono">v1.7.3</h2>
-                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
                         <span class="text-sm text-gray-500">2026-10-06</span>
                     </div>
 
