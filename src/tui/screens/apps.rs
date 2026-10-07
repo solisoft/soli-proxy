@@ -173,6 +173,7 @@ struct Cols {
     name_w: usize,
     spark: Option<u16>,
     rps: u16,
+    on: u16,
     mem: u16,
     soli: u16,
     up: u16,
@@ -180,9 +181,9 @@ struct Cols {
 }
 
 fn columns(width: u16) -> Cols {
-    // glyph 2 | name | spark 12+2 | req/s 7+2 | memory 10 | soli 17 | up 6 | last 7
-    let spark = width >= 76;
-    let fixed: u16 = 2 + if spark { 14 } else { 0 } + 9 + 10 + 17 + 6 + 7;
+    // glyph 2 | name | spark 12+2 | req/s 7+2 | on 5+1 | memory 10 | soli 17 | up 6 | last 7
+    let spark = width >= 82;
+    let fixed: u16 = 2 + if spark { 14 } else { 0 } + 9 + 6 + 10 + 17 + 6 + 7;
     let name_w = width.saturating_sub(fixed + 1).clamp(14, 34);
     let mut x = 2 + name_w + 1;
     let spark_x = if spark {
@@ -194,6 +195,8 @@ fn columns(width: u16) -> Cols {
     };
     let rps = x;
     x += 9;
+    let on = x;
+    x += 6;
     let mem = x;
     x += 10;
     let soli = x;
@@ -203,6 +206,7 @@ fn columns(width: u16) -> Cols {
         name_w: name_w as usize,
         spark: spark_x,
         rps,
+        on,
         mem,
         soli,
         up: x,
@@ -220,6 +224,7 @@ fn render_list(f: &mut Frame, area: Rect, view: &AppsView, anim: &mut Anim) {
         put(buf, area, sx, 1, "last minute", head);
     }
     put(buf, area, c.rps + 2, 1, "req/s", head);
+    put(buf, area, c.on + 3, 1, "on", head);
     put(buf, area, c.mem, 1, "memory", head);
     put(buf, area, c.soli, 1, "soli", head);
     put(buf, area, c.up + 4, 1, "up", head);
@@ -288,6 +293,18 @@ fn render_list(f: &mut Frame, area: Rect, view: &AppsView, anim: &mut Anim) {
                 st(if any { theme::ACCENT } else { theme::MUTED }),
             );
         }
+
+        // Who is on it: visitors of the last five minutes, more when a
+        // WebSocket keeps someone connected beyond that.
+        let on = stats.map_or(0, |s| s.visitors.max(s.websocket_visitors));
+        put(
+            buf,
+            area,
+            c.on,
+            y,
+            &format!("{:>5}", if on > 0 { on.to_string() } else { "·".into() }),
+            st(if on > 0 { theme::CYAN } else { theme::MUTED }),
+        );
 
         match l {
             Life::Asleep => {
@@ -458,6 +475,21 @@ fn render_detail(f: &mut Frame, area: Rect, app: &AppInfo, view: &AppsView, anim
                 }
                 if s.avg_response_time_ms > 0.0 {
                     parts.push(format!("{} avg", theme::fmt_ms(s.avg_response_time_ms)));
+                }
+                if s.visitors > 0 {
+                    parts.push(format!("{} visitors (5 min)", s.visitors));
+                }
+                if s.websockets > 0 {
+                    parts.push(format!(
+                        "{} websocket{} from {} visitor{}",
+                        s.websockets,
+                        if s.websockets > 1 { "s" } else { "" },
+                        s.websocket_visitors,
+                        if s.websocket_visitors > 1 { "s" } else { "" }
+                    ));
+                }
+                if s.open_requests > 0 {
+                    parts.push(format!("{} streaming", s.open_requests));
                 }
             }
             put(buf, area, 1, 3, &parts.join(" · "), muted);

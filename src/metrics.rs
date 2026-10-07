@@ -53,6 +53,18 @@ pub struct AppMetricsJson {
     /// a daemon that predates the field.
     #[serde(default)]
     pub asleep: bool,
+    /// Distinct clients with a request in the last five minutes. Filled in by
+    /// the admin API, like `asleep`; defaulted for older daemons.
+    #[serde(default)]
+    pub visitors: u64,
+    /// Open WebSocket tunnels, and the distinct clients they belong to.
+    #[serde(default)]
+    pub websockets: u64,
+    #[serde(default)]
+    pub websocket_visitors: u64,
+    /// Requests still being answered, WebSockets aside.
+    #[serde(default)]
+    pub open_requests: u64,
 }
 
 /// The host's memory, from `/proc/meminfo`.
@@ -274,6 +286,7 @@ impl Metrics {
             memory_rss_bytes: None,
             cpu_percent: None,
             asleep: false,
+            ..Default::default()
         })
     }
 
@@ -301,6 +314,7 @@ impl Metrics {
                         memory_rss_bytes: None,
                         cpu_percent: None,
                         asleep: false,
+                        ..Default::default()
                     },
                 )
             })

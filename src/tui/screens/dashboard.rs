@@ -326,6 +326,24 @@ fn render_strip(
         ),
         (" apps".into(), muted),
     ]);
+    // Visitors summed over apps (one person on two apps counts twice), and
+    // the WebSockets holding some of them.
+    let (visitors, websockets) = view.app_stats.values().fold((0, 0), |(v, w), s| {
+        (v + s.visitors.max(s.websocket_visitors), w + s.websockets)
+    });
+    if visitors > 0 {
+        let mut group = vec![
+            (
+                visitors.to_string(),
+                Style::default().fg(theme::CYAN).bold(),
+            ),
+            (" on".into(), muted),
+        ];
+        if websockets > 0 {
+            group.push((format!(" · {websockets} ws"), muted));
+        }
+        groups.push(group);
+    }
     if let Some((bytes, _)) = view.memory.apps {
         let shown = anim.tween("kpi.apps_mem", bytes as f64);
         groups.push(vec![

@@ -989,6 +989,67 @@ pub struct AppRoute {
 pub struct AppActivity {
     last: AtomicU64,
     open: AtomicUsize,
+    /// Open WebSocket tunnels, a subset of `open`.
+    websockets: AtomicUsize,
+    /// Who is there: clients by address (see [`Presence`]).
+    presence: parking_lot::Mutex<Presence>,
+}
+
+/// How long a client counts as a visitor after its last request.
+pub const VISITOR_WINDOW_MS: u64 = 5 * 60 * 1000;
+/// Most clients remembered per app; past it the oldest are forgotten.
+const MAX_REMEMBERED_CLIENTS: usize = 65_536;
+
+/// The clients of one app: when each was last seen (milliseconds on the
+/// manager's clock), and how many WebSockets each has open. A person is
+/// counted by address — a household behind one router counts once, a phone
+/// moving from wifi to 4G twice.
+#[derive(Debug, Default)]
+struct Presence {
+    seen: HashMap<std::net::IpAddr, u64>,
+    websockets: HashMap<std::net::IpAddr, usize>,
+}
+
+/// Who is on an app right now, for the admin API and the TUI.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PresenceCount {
+    /// Distinct clients with a request in the last [`VISITOR_WINDOW_MS`].
+    pub visitors: u64,
+    /// Open WebSocket tunnels.
+    pub websockets: u64,
+    /// Distinct clients those tunnels belong to.
+    pub websocket_visitors: u64,
+    /// Requests still being answered, WebSockets aside: a streaming
+    /// response, a large download.
+    pub open_requests: u64,
+}
+
+impl AppActivity {
+    fn note_visitor(&self, ip: std::net::IpAddr, now_ms: u64) {
+        let mut presence = self.presence.lock();
+        presence.seen.insert(ip.to_canonical(), now_ms);
+        if presence.seen.len() > MAX_REMEMBERED_CLIENTS {
+            let since = now_ms.saturating_sub(VISITOR_WINDOW_MS);
+            presence.seen.retain(|_, at| *at >= since);
+            if presence.seen.len() > MAX_REMEMBERED_CLIENTS {
+                presence.seen.clear();
+            }
+        }
+    }
+
+    /// Who is there at `now_ms`; forgets the clients past the window.
+    fn presence(&self, now_ms: u64) -> PresenceCount {
+        let since = now_ms.saturating_sub(VISITOR_WINDOW_MS);
+        let mut presence = self.presence.lock();
+        presence.seen.retain(|_, at| *at >= since);
+        let websockets = self.websockets.load(Ordering::Relaxed) as u64;
+        PresenceCount {
+            visitors: presence.seen.len() as u64,
+            websockets,
+            websocket_visitors: presence.websockets.len() as u64,
+            open_requests: (self.open.load(Ordering::Relaxed) as u64).saturating_sub(websockets),
+        }
+    }
 }
 
 impl AppActivity {
@@ -1011,12 +1072,46 @@ impl AppActivity {
 pub struct OpenRequest {
     cell: Arc<AppActivity>,
     epoch: std::time::Instant,
+    /// Set once the request became a WebSocket tunnel: its client, if known.
+    websocket: Option<Option<std::net::IpAddr>>,
 }
 
 impl OpenRequest {
     fn new(cell: Arc<AppActivity>, epoch: std::time::Instant) -> Self {
         cell.open.fetch_add(1, Ordering::Relaxed);
-        Self { cell, epoch }
+        Self {
+            cell,
+            epoch,
+            websocket: None,
+        }
+    }
+
+    fn now_ms(&self) -> u64 {
+        self.epoch.elapsed().as_millis() as u64 + 1
+    }
+
+    /// Count `ip` among the app's visitors (the last five minutes).
+    pub fn note_visitor(&self, ip: std::net::IpAddr) {
+        self.cell.note_visitor(ip, self.now_ms());
+    }
+
+    /// This request is a WebSocket tunnel from `ip`: counted as one until
+    /// the guard drops with the tunnel.
+    pub fn websocket(mut self, ip: Option<std::net::IpAddr>) -> Self {
+        if self.websocket.is_none() {
+            self.cell.websockets.fetch_add(1, Ordering::Relaxed);
+            if let Some(ip) = ip {
+                *self
+                    .cell
+                    .presence
+                    .lock()
+                    .websockets
+                    .entry(ip.to_canonical())
+                    .or_default() += 1;
+            }
+            self.websocket = Some(ip.map(|ip| ip.to_canonical()));
+        }
+        self
     }
 }
 
@@ -1032,6 +1127,18 @@ impl Drop for OpenRequest {
             self.epoch.elapsed().as_millis() as u64 + 1,
             Ordering::Relaxed,
         );
+        if let Some(ip) = self.websocket {
+            self.cell.websockets.fetch_sub(1, Ordering::Relaxed);
+            if let Some(ip) = ip {
+                let mut presence = self.cell.presence.lock();
+                if let Some(n) = presence.websockets.get_mut(&ip) {
+                    *n -= 1;
+                    if *n == 0 {
+                        presence.websockets.remove(&ip);
+                    }
+                }
+            }
+        }
         self.cell.open.fetch_sub(1, Ordering::Relaxed);
     }
 }
@@ -3898,6 +4005,17 @@ impl AppManager {
         }
     }
 
+    /// Who is on each app right now: visitors in the last five minutes,
+    /// WebSockets open and from how many clients, requests in flight.
+    pub fn presence(&self) -> HashMap<String, PresenceCount> {
+        let now = self.now_ms();
+        self.activity
+            .lock()
+            .iter()
+            .map(|(name, cell)| (name.clone(), cell.presence(now)))
+            .collect()
+    }
+
     /// Restart `app_name`'s idle clock.
     fn touch(&self, app_name: &str) {
         self.adopted_since.lock().remove(app_name);
@@ -5760,6 +5878,47 @@ admin = "$2b$12$adminhashadminhashadminhashadminhashadminhashadminhas"
         let route = manager.routes().get("live.example.com").cloned().unwrap();
         assert!(route.target.is_none());
         assert_eq!(&*route.app, "live.example.com");
+    }
+
+    /// Who is on an app: distinct clients of the last five minutes, open
+    /// WebSockets and their clients, requests still streaming.
+    #[test]
+    fn presence_counts_visitors_websockets_and_open_requests() {
+        let cell = Arc::new(AppActivity::default());
+        let epoch = std::time::Instant::now();
+        let ip = |s: &str| s.parse::<std::net::IpAddr>().unwrap();
+        let now = || epoch.elapsed().as_millis() as u64 + 1;
+
+        let page = OpenRequest::new(cell.clone(), epoch);
+        page.note_visitor(ip("203.0.113.1"));
+        page.note_visitor(ip("203.0.113.1"));
+        page.note_visitor(ip("::ffff:203.0.113.2"));
+        let socket = OpenRequest::new(cell.clone(), epoch);
+        socket.note_visitor(ip("203.0.113.2"));
+        let socket = socket.websocket(Some(ip("203.0.113.2")));
+        let other = OpenRequest::new(cell.clone(), epoch).websocket(Some(ip("203.0.113.2")));
+
+        let p = cell.presence(now());
+        assert_eq!(
+            p.visitors, 2,
+            "same address twice, and v4-mapped v6, count once"
+        );
+        assert_eq!(p.websockets, 2);
+        assert_eq!(p.websocket_visitors, 1);
+        assert_eq!(p.open_requests, 1, "the page still streaming");
+
+        drop(other);
+        drop(page);
+        let p = cell.presence(now());
+        assert_eq!(
+            (p.websockets, p.websocket_visitors, p.open_requests),
+            (1, 1, 0)
+        );
+        drop(socket);
+        assert_eq!(cell.presence(now()).websocket_visitors, 0);
+
+        // Five minutes on, nobody is counted any more.
+        assert_eq!(cell.presence(now() + VISITOR_WINDOW_MS + 1).visitors, 0);
     }
 
     /// `soli-proxy sleep`: a running app is stopped and marked asleep, so

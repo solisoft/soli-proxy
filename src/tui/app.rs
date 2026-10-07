@@ -47,6 +47,12 @@ pub struct AppStats {
     /// Unix milliseconds of the app's last request, as the daemon saw it;
     /// `None` if it has had none since the daemon started.
     pub last_request_ms: Option<u64>,
+    /// Distinct clients in the last five minutes, open WebSockets and the
+    /// clients they belong to, requests still being answered (the daemon's).
+    pub visitors: u64,
+    pub websockets: u64,
+    pub websocket_visitors: u64,
+    pub open_requests: u64,
 }
 
 /// Rolling history for sparkline charts.
@@ -764,6 +770,10 @@ impl TuiApp {
                     rps: prev_rps,
                     eps: prev_eps,
                     last_request_ms: m.last_request_ms,
+                    visitors: m.visitors,
+                    websockets: m.websockets,
+                    websocket_visitors: m.websocket_visitors,
+                    open_requests: m.open_requests,
                 })
                 .unwrap_or_default();
             if fresh {

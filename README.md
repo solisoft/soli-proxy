@@ -133,8 +133,9 @@ is reused as the Basic credential, and it polls every 5 s instead of every secon
 request costs the daemon a bcrypt check.
 
 **Dashboard.** A strip of figures (requests, req/s with a sparkline, latency, the share of
-responses that were 5xx, open circuits, the *daemon's* uptime, apps, the memory the apps hold
-and the memory still available, routes), then the traffic panel: each active app is a
+responses that were 5xx, open circuits, the *daemon's* uptime, apps, **who is on** — visitors
+of the last five minutes summed over the apps, and the WebSockets open (`12 on · 3 ws`) — the
+memory the apps hold and the memory still available, routes), then the traffic panel: each active app is a
 branch of the proxy, with packets travelling down it as densely as it receives requests, red
 ones for 5xx, a still dotted line when it is asleep or stopped. An app stays on the panel for a
 while after its last request; the others are summed up on one line ("46 without traffic · 3
@@ -150,7 +151,9 @@ failures, each lit up for a moment when it arrives.
 **Apps.** Sorted by traffic (smoothed over about ten seconds, so rows do not trade places every
 second); `s` cycles through traffic, name, memory and errors, and the cursor stays on its app
 when the order changes. Each row shows the app's state as a glyph (a spinner while it deploys or
-wakes, `◐` asleep, `✕` failed, `◆` closed for maintenance), its last minute of traffic as a sparkline, req/s, memory, the
+wakes, `◐` asleep, `✕` failed, `◆` closed for maintenance), its last minute of traffic as a sparkline, req/s,
+**`on`** — the people on it: distinct client addresses with a request in the last five minutes,
+or connected by a WebSocket — memory, the
 **Soli version** its process runs, its uptime, and **`last`**: how long since its last request
 (green under a minute, `—` when it has had none since the daemon started) — what keeps an app
 awake, or how close it is to sleeping. The detail panel draws the app's two slots:
@@ -1581,6 +1584,10 @@ What happens:
   `"asleep": true`, and the TUI shows it as **Sleeping** (`◐ sleep` on the
   dashboard) rather than Stopped: an app that comes back on the next request,
   not one that stays down until someone acts.
+- Who keeps it up shows in the TUI: the Apps screen's `on` column and the app's detail line
+  ("3 visitors (5 min) · 2 websockets from 1 visitor"), and the same figures in
+  `/api/v1/app-metrics`. A visitor is a client address (the real one behind `trusted_proxies`):
+  people behind one router count once, a phone switching networks twice.
 - Any request resets the clock, crawlers included. A public site that bots
   fetch more often than its threshold never sleeps; its `requests` and
   `last_request_ms` in `/api/v1/app-metrics` show who keeps it up.
@@ -1814,7 +1821,7 @@ Served on `[admin] bind` (loopback `127.0.0.1:9090` by default); see
 | POST | `/api/v1/reload` | Re-read `proxy.conf` and `config.toml` |
 | POST | `/api/v1/certs/reload` | Rescan `certs/` |
 | GET | `/api/v1/metrics` | Prometheus metrics |
-| GET | `/api/v1/app-metrics`, `/api/v1/app-metrics/system`, `/api/v1/apps/{name}/metrics` | Per-app traffic, memory and CPU; `asleep` marks an app stopped by scale to zero |
+| GET | `/api/v1/app-metrics`, `/api/v1/app-metrics/system`, `/api/v1/apps/{name}/metrics` | Per-app traffic, memory and CPU; `asleep` marks an app stopped by scale to zero; `visitors` (distinct clients in the last five minutes), `websockets` and `websocket_visitors` (tunnels open, and from how many clients), `open_requests` (responses still streaming) say who is on it |
 | GET | `/api/v1/events/apps` | Server-Sent Events, one JSON object per `data:` line with a `type`: `DeployStage` (`stage` = `start`, `health`, `switch`, `drain`, then `done` or `failed`; `slot`, `from`, `detail`), `Asleep` (`idle_secs`), `Waking`, `Deployed`, `StatusChanged`, `Stopped`, `Restarted` |
 | GET | `/api/v1/apps`, `/api/v1/apps/{name}`, `/api/v1/apps/by-domain` | Managed apps |
 | POST | `/api/v1/apps/{name}/deploy` \| `restart` \| `rollback` \| `stop` | App lifecycle |

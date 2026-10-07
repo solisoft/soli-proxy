@@ -3905,7 +3905,15 @@ async fn handle_websocket_request(
                     target, auth, open, ..
                 }) = manager.resolve_app_request(h, &|_| true).await
                 {
-                    ws_open = open;
+                    // Counted as a visitor, and as a WebSocket until the
+                    // tunnel closes.
+                    let client_ip = crate::edge::client_ip(req.extensions());
+                    ws_open = open.map(|o| {
+                        if let Some(ip) = client_ip {
+                            o.note_visitor(ip);
+                        }
+                        o.websocket(client_ip)
+                    });
                     // Same gate as the HTTP path: an upgrade must not be a way
                     // around the app's Basic Auth.
                     if let Some(auth) = auth {
@@ -4991,6 +4999,11 @@ async fn handle_regular_request(
                     open,
                 }) = manager.resolve_app_request(h, &available).await
                 {
+                    if let (Some(open), Some(ip)) =
+                        (&open, crate::edge::client_ip(req.extensions()))
+                    {
+                        open.note_visitor(ip);
+                    }
                     // App domains are routed here, not through `config.rules`
                     // (`sync_routes` prunes static rules for them), so a
                     // route's `@auth` can never cover an app. `[auth]` in
