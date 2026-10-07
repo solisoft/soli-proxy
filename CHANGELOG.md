@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.11.0](https://github.com/solisoft/soli-proxy/compare/v1.10.0...v1.11.0) (2026-10-07)
+
+### Features
+
+* **bots: more traps, and patterns that match anywhere.** The default traps now catch a `.env`
+  file at any depth (`*/.env*`: `/api/.env`, `/backend/.env.production`), `/cgi-bin/*` and
+  `/php-cgi/*`. A `trap_paths` pattern can be an exact path, a prefix (`/.git/*`), a suffix
+  (`*.php`) or a fragment found anywhere in the path (`*/.env*`).
+
 ## [1.10.0](https://github.com/solisoft/soli-proxy/compare/v1.9.0...v1.10.0) (2026-10-07)
 
 ### Features
