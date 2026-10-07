@@ -131,9 +131,14 @@ pub fn parse_version(output: &str) -> Option<String> {
         .map(|_| version.to_string())
 }
 
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn started_at(_pid: u32) -> Option<SystemTime> {
+    None
+}
+
 /// When process `pid` started: the boot time plus its start, in clock ticks.
 #[cfg(target_os = "linux")]
-fn started_at(pid: u32) -> Option<SystemTime> {
+pub(crate) fn started_at(pid: u32) -> Option<SystemTime> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let ticks = parse_start_ticks(&stat)?;
     let boot = parse_boot_time(&std::fs::read_to_string("/proc/stat").ok()?)?;

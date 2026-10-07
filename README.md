@@ -81,6 +81,7 @@ soli-proxy restart [-c <conf>] <app_name>   # Restart the currently active slot
 soli-proxy stop    [-c <conf>] <app_name>   # Stop the app
 soli-proxy stop    [-c <conf>] --all        # Stop every app (the proxy keeps running)
 soli-proxy logs    [-c <conf>] <app_name>   # Print deployment logs for both slots
+soli-proxy sleep   [-c <conf>] <app_name>   # Put an app to sleep now; its next request starts it
 soli-proxy maintenance [-c <conf>] on <app_name>|all [--for 30m | --until <time>] [-m <message>]
 soli-proxy maintenance [-c <conf>] off <app_name>|all
 soli-proxy maintenance [-c <conf>] status   # What is closed (see Maintenance mode)
@@ -1569,7 +1570,13 @@ What happens:
 - `soli-proxy restart <app>` or a deploy wakes it too, and resets the clock.
 - A proxy start leaves it asleep too: an app that was not running when the proxy started, and
   may sleep, waits for its first request rather than starting with all the others (see
-  [Restarts and upgrades](#restarts-and-upgrades)).
+  [Restarts and upgrades](#restarts-and-upgrades)). An app the restart adopts, with no request
+  since, counts as idle since its process started (its uptime), not since the restart: one up
+  and unvisited for longer than its threshold sleeps at the reaper's next pass.
+- **Forcing it:** `soli-proxy sleep <app>`, `Z` on the app in the TUI, or
+  `POST /api/v1/apps/{name}/sleep` puts an app to sleep now, whatever its idle clock says — even
+  one with `idle_timeout = 0`, which then stays asleep until its next request. An app already
+  stopped is only marked asleep, so its next request starts it.
 - `/api/v1/app-metrics` and `/api/v1/apps/{name}/metrics` report it with
   `"asleep": true`, and the TUI shows it as **Sleeping** (`◐ sleep` on the
   dashboard) rather than Stopped: an app that comes back on the next request,
@@ -1822,6 +1829,7 @@ Served on `[admin] bind` (loopback `127.0.0.1:9090` by default); see
 | GET / PUT | `/api/v1/settings` | Admin UI settings (`{"theme": ...}`) |
 | GET / PUT | `/api/v1/maintenance` | Maintenance mode for the whole proxy: `{"enabled", "retry_after"?, "message"?, "for_secs"? \| "until"?}` (see [Maintenance mode](#maintenance-mode)) |
 | PUT | `/api/v1/apps/{name}/maintenance` | Maintenance mode for one app, same body |
+| POST | `/api/v1/apps/{name}/sleep` | Put an app to sleep now; its next request starts it (see [Scale to zero](#scale-to-zero)) |
 | GET | `/api/v1/bots` | `[bots]`: the bans in force, bans since start, user agents refused by entry (see [Bots and scanners](#bots-and-scanners)) |
 | DELETE | `/api/v1/bots/bans/{ip}` | Lift a ban |
 

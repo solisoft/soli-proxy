@@ -788,6 +788,11 @@ pub struct AppManager {
     /// discovery left asleep. A request for one of these is held while the
     /// app is started again, instead of answering 421.
     asleep: Arc<parking_lot::Mutex<HashSet<String>>>,
+    /// When each adopted app's process started, until its first request (or
+    /// a deploy) here: with no request seen since this proxy started, the
+    /// app has been idle since it came up, not since the restart — a
+    /// restart must not buy every idle app another `idle_timeout`.
+    adopted_since: Arc<parking_lot::Mutex<HashMap<String, std::time::SystemTime>>>,
     /// Set by the first auto-starting discovery: the apps it finds not
     /// running and allowed to sleep are left asleep rather than started.
     booted: Arc<AtomicBool>,
@@ -1703,6 +1708,7 @@ impl AppManager {
             epoch: std::time::Instant::now(),
             asleep: Arc::new(parking_lot::Mutex::new(HashSet::new())),
             booted: Arc::new(AtomicBool::new(false)),
+            adopted_since: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             stopping: Arc::new(parking_lot::Mutex::new(HashSet::new())),
             aliases: Arc::new(parking_lot::Mutex::new(read_aliases_file())),
             routes: Arc::new(ArcSwap::from_pointee(AppRoutes::default())),
@@ -2561,7 +2567,13 @@ impl AppManager {
         for (app, slot, pid) in adopted {
             let name = app.config.name.clone();
             self.deployment_manager.watch_adopted(&app, &slot, pid);
-            self.touch(&name);
+            match crate::tui::runtime::started_at(pid) {
+                // Its idle clock is its uptime until a request arrives.
+                Some(started) => {
+                    self.adopted_since.lock().insert(name.clone(), started);
+                }
+                None => self.touch(&name),
+            }
             self.emit_event(AppEvent::StatusChanged {
                 app_name: name.clone(),
                 slot,
@@ -3888,6 +3900,7 @@ impl AppManager {
 
     /// Restart `app_name`'s idle clock.
     fn touch(&self, app_name: &str) {
+        self.adopted_since.lock().remove(app_name);
         self.activity_cell(app_name)
             .store(self.now_ms(), Ordering::Relaxed);
     }
@@ -3984,18 +3997,29 @@ impl AppManager {
         for (name, timeout) in candidates {
             let cell = self.activity_cell(&name);
             let last = cell.load(Ordering::Relaxed);
-            if last == 0 {
-                // First sight: start the clock now. An app that came up
-                // before the reaper did is not idle by definition.
-                cell.store(now, Ordering::Relaxed);
-                continue;
-            }
             // A request still streaming, or a WebSocket still up: busy,
             // however long ago it began.
             if cell.open() > 0 {
                 continue;
             }
-            let idle_for = std::time::Duration::from_millis(now.saturating_sub(last));
+            let idle_for = if last == 0 {
+                // No request since this proxy started. An adopted app has
+                // been idle since it came up (its uptime); anything else is
+                // seen for the first time, and its clock starts now.
+                let up =
+                    self.adopted_since.lock().get(&name).and_then(|started| {
+                        std::time::SystemTime::now().duration_since(*started).ok()
+                    });
+                match up {
+                    Some(up) => up,
+                    None => {
+                        cell.store(now, Ordering::Relaxed);
+                        continue;
+                    }
+                }
+            } else {
+                std::time::Duration::from_millis(now.saturating_sub(last))
+            };
             if idle_for.as_secs() < timeout {
                 continue;
             }
@@ -4004,11 +4028,7 @@ impl AppManager {
             }
             match self.stop(&name).await {
                 Ok(()) => {
-                    self.asleep.lock().insert(name.clone());
-                    self.emit_event(AppEvent::Asleep {
-                        app_name: name.clone(),
-                        idle_secs: idle_for.as_secs(),
-                    });
+                    self.mark_asleep(&name, idle_for.as_secs());
                     tracing::info!(
                         "{} put to sleep after {}s without a request (idle_timeout = {}s)",
                         name,
@@ -4019,6 +4039,45 @@ impl AppManager {
                 Err(e) => tracing::warn!("Could not put {} to sleep: {}", name, e),
             }
         }
+    }
+
+    fn mark_asleep(&self, name: &str, idle_secs: u64) {
+        self.asleep.lock().insert(name.to_string());
+        self.emit_event(AppEvent::Asleep {
+            app_name: name.to_string(),
+            idle_secs,
+        });
+    }
+
+    /// Put `app_name` to sleep now, whatever its idle clock says (`soli-proxy
+    /// sleep`, `POST /api/v1/apps/{name}/sleep`, `Z` in the TUI): stopped as
+    /// the reaper stops it, and started again by its next request. An app
+    /// already stopped is only marked asleep, so its next request starts it.
+    /// Works on an app that never sleeps by itself (`idle_timeout = 0`) too:
+    /// asked for, it sleeps until its next request.
+    pub async fn put_to_sleep(&self, app_name: &str) -> Result<(), anyhow::Error> {
+        let running = {
+            let apps = self.apps.lock().await;
+            let app = apps
+                .get(app_name)
+                .ok_or_else(|| anyhow::anyhow!("App not found: {}", app_name))?;
+            app.blue.pid.is_some() || app.green.pid.is_some()
+        };
+        if app_name == "_admin" {
+            anyhow::bail!("_admin does not sleep");
+        }
+        if self.deployment_manager.is_deploying(app_name) {
+            anyhow::bail!("{} is being deployed; try again when it is done", app_name);
+        }
+        if self.is_asleep(app_name) {
+            return Ok(());
+        }
+        if running {
+            self.stop(app_name).await?;
+        }
+        self.mark_asleep(app_name, 0);
+        tracing::info!("{} put to sleep on request", app_name);
+        Ok(())
     }
 
     /// Check for idle apps every 30 seconds. A no-op unless some app opted
@@ -5701,6 +5760,76 @@ admin = "$2b$12$adminhashadminhashadminhashadminhashadminhashadminhas"
         let route = manager.routes().get("live.example.com").cloned().unwrap();
         assert!(route.target.is_none());
         assert_eq!(&*route.app, "live.example.com");
+    }
+
+    /// `soli-proxy sleep`: a running app is stopped and marked asleep, so
+    /// its next request starts it; a stopped one is only marked.
+    #[tokio::test]
+    async fn an_app_can_be_put_to_sleep_on_request() {
+        let temp_dir = TempDir::new().unwrap();
+        let sites = temp_dir.path().join("sites");
+        for name in ["up.example.com", "down.example.com"] {
+            site_with_app_infos(
+                &sites,
+                name,
+                &format!("name = \"{name}\"\ndomain = \"{name}\"\nidle_timeout = 0\n"),
+            );
+        }
+        let manager = test_manager(&temp_dir, &sites);
+        manager.discover_apps_readonly().await.unwrap();
+        mark_running(&manager, "up.example.com").await;
+
+        manager.put_to_sleep("up.example.com").await.unwrap();
+        assert!(manager.is_asleep("up.example.com"));
+        let app = manager.get_app("up.example.com").await.unwrap();
+        assert!(app.blue.pid.is_none() && app.green.pid.is_none());
+
+        manager.put_to_sleep("down.example.com").await.unwrap();
+        assert!(manager.is_asleep("down.example.com"));
+        // Asleep already: nothing to do, no error.
+        manager.put_to_sleep("down.example.com").await.unwrap();
+        assert!(manager.put_to_sleep("nope.example.com").await.is_err());
+    }
+
+    /// After a proxy restart, an adopted app with no request since has been
+    /// idle since its process started (its uptime), not since the restart:
+    /// one up and unvisited for longer than `idle_timeout` sleeps at once.
+    /// An app with no known start keeps the old rule: the clock starts now.
+    #[tokio::test]
+    async fn an_adopted_app_is_idle_since_it_came_up() {
+        let temp_dir = TempDir::new().unwrap();
+        let sites = temp_dir.path().join("sites");
+        for name in ["old.example.com", "new.example.com"] {
+            site_with_app_infos(
+                &sites,
+                name,
+                &format!("name = \"{name}\"\ndomain = \"{name}\"\nidle_timeout = 60\n"),
+            );
+        }
+        let manager = test_manager(&temp_dir, &sites);
+        manager.discover_apps_readonly().await.unwrap();
+        mark_running(&manager, "old.example.com").await;
+        mark_running(&manager, "new.example.com").await;
+        manager.adopted_since.lock().insert(
+            "old.example.com".into(),
+            std::time::SystemTime::now() - std::time::Duration::from_secs(600),
+        );
+
+        manager.reap_idle().await;
+        assert!(manager.is_asleep("old.example.com"), "up 10 min, unvisited");
+        assert!(
+            !manager.is_asleep("new.example.com"),
+            "no start known: clock starts now"
+        );
+
+        // A request is what counts once there is one.
+        manager.adopted_since.lock().insert(
+            "new.example.com".into(),
+            std::time::SystemTime::now() - std::time::Duration::from_secs(600),
+        );
+        manager.note_activity("new.example.com").await;
+        manager.reap_idle().await;
+        assert!(!manager.is_asleep("new.example.com"), "just had a request");
     }
 
     /// A request still open — a streaming response, a WebSocket — keeps its

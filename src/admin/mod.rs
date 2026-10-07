@@ -697,6 +697,13 @@ async fn handle_admin_request(
                 } else {
                     handlers::post_app_rollback(&state, name).await
                 }
+            } else if method == Method::POST && app_name.ends_with("/sleep") {
+                let name = app_name.strip_suffix("/sleep").unwrap_or("");
+                if name.is_empty() {
+                    error_response(400, "Invalid app name")
+                } else {
+                    handlers::post_app_sleep(&state, name).await
+                }
             } else if method == Method::POST && app_name.ends_with("/stop") {
                 let name = app_name.strip_suffix("/stop").unwrap_or("");
                 if name.is_empty() {

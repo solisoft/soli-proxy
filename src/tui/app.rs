@@ -488,7 +488,14 @@ pub struct MaintenanceForm {
     pub message: String,
 }
 
-const APP_ACTIONS: &[&str] = &["Deploy", "Restart", "Stop", "Rollback", "View Logs"];
+const APP_ACTIONS: &[&str] = &[
+    "Deploy",
+    "Restart",
+    "Stop",
+    "Sleep",
+    "Rollback",
+    "View Logs",
+];
 
 /// How long a transient status flash stays on screen.
 const TOAST_TTL: Duration = Duration::from_secs(2);
@@ -1286,14 +1293,17 @@ impl TuiApp {
                     self.toggle_maintenance(name);
                 }
             }
-            KeyCode::Char(c @ ('D' | 'R' | 'L')) if self.current_screen == Screen::Apps => {
+            KeyCode::Char(c @ ('D' | 'R' | 'L' | 'Z')) if self.current_screen == Screen::Apps => {
                 if let Some(name) = self.selected_app_name() {
-                    let idx = match c {
-                        'D' => 0,
-                        'R' => 1,
-                        _ => 4,
+                    let action = match c {
+                        'D' => "Deploy",
+                        'R' => "Restart",
+                        'Z' => "Sleep",
+                        _ => "View Logs",
                     };
-                    self.execute_app_action(&name, idx);
+                    if let Some(idx) = APP_ACTIONS.iter().position(|a| *a == action) {
+                        self.execute_app_action(&name, idx);
+                    }
                 }
             }
             KeyCode::Char('a') if self.current_screen == Screen::Routes => {
@@ -1540,6 +1550,7 @@ impl TuiApp {
             "Deploy" => "deploy",
             "Restart" => "restart",
             "Stop" => "stop",
+            "Sleep" => "sleep",
             "Rollback" => "rollback",
             _ => return,
         };
@@ -2272,7 +2283,7 @@ impl TuiApp {
             Modal::None => match self.current_screen {
                 Screen::Routes => "1-6 screens  j/k  a add  e edit  d delete  /  ?  q",
                 Screen::Apps => {
-                    "1-6  j/k  Enter actions  D deploy  R restart  L logs  M maintenance  s sort  /  ?  q"
+                    "1-6  j/k  Enter actions  D deploy  R restart  L logs  M maintenance  Z sleep  s sort  /  ?  q"
                 }
                 Screen::Errors => "1-6 screens  j/k  Enter detail  f 5xx/404  y copy  ?  q",
                 Screen::Circuits => "1-6 screens  j/k  r  ?  q",
@@ -2331,7 +2342,7 @@ impl TuiApp {
   q              Quit
 
   Apps    s sort (traffic, name, memory, errors)
-          D deploy · R restart · L logs · Enter all actions
+          D deploy · R restart · L logs · Z sleep · Enter all actions
           M maintenance: close for a while, or reopen
   Routes  a add · e edit · d delete
   Errors  f all / 5xx / 404 · Enter detail · y copy (OSC 52)

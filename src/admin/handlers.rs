@@ -147,6 +147,21 @@ pub async fn post_app_rollback(state: &Arc<AdminState>, name: &str) -> Response<
     }
 }
 
+/// `POST /api/v1/apps/{name}/sleep` — put an app to sleep now; its next
+/// request starts it again.
+pub async fn post_app_sleep(state: &Arc<AdminState>, name: &str) -> Response<BoxBody> {
+    match &state.app_manager {
+        Some(manager) => match manager.put_to_sleep(name).await {
+            Ok(()) => ok_response(serde_json::json!({
+                "message": "App put to sleep; its next request starts it",
+                "app": name
+            })),
+            Err(e) => error_response(409, &format!("Cannot put {} to sleep: {:#}", name, e)),
+        },
+        None => error_response(501, "App management not configured"),
+    }
+}
+
 pub async fn post_app_stop(state: &Arc<AdminState>, name: &str) -> Response<BoxBody> {
     match &state.app_manager {
         Some(manager) => match manager.stop(name).await {

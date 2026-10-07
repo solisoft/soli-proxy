@@ -235,6 +235,14 @@ enum Commands {
         #[command(subcommand)]
         action: MaintenanceAction,
     },
+    /// Put an app to sleep now (stopped; its next request starts it again).
+    /// Goes through the running daemon's admin API.
+    Sleep {
+        #[arg(short, long, default_value = "./proxy.conf")]
+        conf: String,
+
+        app_name: String,
+    },
     /// Who `[bots]` banned and what it refused, or lift a ban. Goes through
     /// the running daemon's admin API.
     Bots {
@@ -335,6 +343,7 @@ fn inherit_global_paths(cli: &mut Cli) {
         | Some(Commands::Restart { conf: c, .. })
         | Some(Commands::Maintenance { conf: c, .. })
         | Some(Commands::Bots { conf: c, .. })
+        | Some(Commands::Sleep { conf: c, .. })
         | Some(Commands::Logs { conf: c, .. }) => conf(c),
         _ => {}
     }
@@ -405,6 +414,19 @@ fn main() -> Result<()> {
 
     if let Some(Commands::Maintenance { conf, action }) = cli.command {
         return run_maintenance(&conf, action);
+    }
+
+    if let Some(Commands::Sleep { conf, app_name }) = cli.command {
+        let path = format!("/api/v1/apps/{app_name}/sleep");
+        admin_call(
+            &conf,
+            "apps are put to sleep",
+            reqwest::Method::POST,
+            &path,
+            None,
+        )?;
+        println!("{app_name} is asleep; its next request starts it");
+        return Ok(());
     }
 
     if let Some(Commands::Bots { conf, action }) = cli.command {
