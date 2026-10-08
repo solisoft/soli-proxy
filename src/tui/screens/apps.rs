@@ -447,8 +447,26 @@ fn render_detail(f: &mut Frame, area: Rect, app: &AppInfo, view: &AppsView, anim
         &headline,
         Style::default().fg(color).bold(),
     );
+    // The hosts it serves (its domain when the name differs, then
+    // `domains`), and the ones it redirects (`redirect_from → domain`).
+    let mut hosts: Vec<&str> = Vec::new();
     if app.config.domain != app.config.name {
-        put(buf, area, x + 3, 1, &app.config.domain, muted);
+        hosts.push(&app.config.domain);
+    }
+    hosts.extend(app.config.domains.iter().map(String::as_str));
+    let mut text = hosts.join(" · ");
+    if !app.config.redirect_from.is_empty() {
+        if !text.is_empty() {
+            text.push_str("   ");
+        }
+        text.push_str(&format!(
+            "{} → {}",
+            app.config.redirect_from.join(", "),
+            app.config.domain
+        ));
+    }
+    if !text.is_empty() {
+        put(buf, area, x + 3, 1, &text, muted);
     }
 
     // Row 3: the stepper while deploying, else the essentials.

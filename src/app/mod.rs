@@ -232,6 +232,80 @@ pub struct AppConfig {
     /// `[bots]`: this app's exceptions to `config.toml`'s `[bots]`.
     #[serde(default)]
     pub bots: crate::response::bots::AppBots,
+    /// More hosts the app serves besides `domain`: a migration's preprod
+    /// URL and the domain it will take over. Each gets its certificate.
+    #[serde(default)]
+    pub domains: Vec<String>,
+    /// Hosts that answer with a redirect to `domain`, path and query kept:
+    /// a site's old names. Served without waking the app.
+    #[serde(default)]
+    pub redirect_from: Vec<String>,
+    /// The status of those redirects: 301 (the default), 302, 307 or 308.
+    #[serde(default)]
+    pub redirect_status: Option<u16>,
+}
+
+/// Most hosts `domains` or `redirect_from` may list.
+const MAX_EXTRA_DOMAINS: usize = 50;
+
+impl AppConfig {
+    /// The redirect status for `redirect_from` hosts.
+    pub fn redirect_status(&self) -> u16 {
+        self.redirect_status.unwrap_or(301)
+    }
+
+    /// Check `domains`, `redirect_from` and `redirect_status`, lowercasing
+    /// the hosts. Run once `domain` is final (after auto-detection).
+    fn validate_extra_domains(
+        &mut self,
+        folder_name: &str,
+        multi_tenant: bool,
+    ) -> Result<(), anyhow::Error> {
+        if let Some(status) = self.redirect_status {
+            if !matches!(status, 301 | 302 | 307 | 308) {
+                anyhow::bail!("redirect_status = {status}: expected 301, 302, 307 or 308");
+            }
+        }
+        if self.domains.is_empty() && self.redirect_from.is_empty() {
+            return Ok(());
+        }
+        if multi_tenant {
+            anyhow::bail!(
+                "domains and redirect_from are not allowed in multi_tenant mode: a tenant \
+                 answers for its site directory's name only"
+            );
+        }
+        if self.domain.is_empty() {
+            anyhow::bail!(
+                "domains and redirect_from need a domain: it is the one served first and the \
+                 target of the redirects"
+            );
+        }
+        let primary = self.domain.to_ascii_lowercase();
+        let mut seen: std::collections::HashSet<String> = std::iter::once(primary).collect();
+        for (label, list) in [
+            ("domains", &mut self.domains),
+            ("redirect_from", &mut self.redirect_from),
+        ] {
+            if list.len() > MAX_EXTRA_DOMAINS {
+                anyhow::bail!(
+                    "{label} lists {} hosts; at most {MAX_EXTRA_DOMAINS}",
+                    list.len()
+                );
+            }
+            for host in list.iter_mut() {
+                *host = host.trim().to_ascii_lowercase();
+                validate_hostname_field(host, label, folder_name)?;
+                if !seen.insert(host.clone()) {
+                    anyhow::bail!(
+                        "{label} entry {host:?} is listed twice (domain, domains and \
+                         redirect_from must not overlap)"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Default for AppConfig {
@@ -257,6 +331,9 @@ impl Default for AppConfig {
             compress: None,
             display_name: None,
             bots: Default::default(),
+            domains: Vec::new(),
+            redirect_from: Vec::new(),
+            redirect_status: None,
         }
     }
 }
@@ -284,7 +361,7 @@ const ENV_SECTIONS: [&str; 2] = ["development", "production"];
 ///
 /// `known_root_keys_match_app_config` fails if a field is added to
 /// `AppConfig` without being listed here.
-const KNOWN_ROOT_KEYS: [&str; 20] = [
+const KNOWN_ROOT_KEYS: [&str; 23] = [
     "name",
     "domain",
     "start_script",
@@ -305,6 +382,9 @@ const KNOWN_ROOT_KEYS: [&str; 20] = [
     "compress",
     "display_name",
     "bots",
+    "domains",
+    "redirect_from",
+    "redirect_status",
 ];
 
 /// Parse an `app.infos`, folding in the overlay for the environment this proxy
@@ -686,6 +766,7 @@ impl AppInfo {
                 config.domain = app_name.clone();
             }
         }
+        config.validate_extra_domains(folder_name, multi_tenant)?;
 
         Ok(Self {
             config,
@@ -974,9 +1055,20 @@ pub struct AppRoute {
     pub display_name: Option<Arc<str>>,
     /// `[bots]` from `app.infos`, when it sets anything.
     pub bots: Option<Arc<crate::response::bots::AppBotsPolicy>>,
+    /// Set on a host of the app's `redirect_from`: answer with a redirect to
+    /// this, never proxy (nor wake the app).
+    pub redirect_to: Option<AppRedirect>,
     /// The app's idle clock (see `AppManager::touch`), shared by all of its
     /// hosts and across rebuilds: a request records itself with one store.
     activity: Arc<AppActivity>,
+}
+
+/// Where a `redirect_from` host sends its requests: the app's `domain`, with
+/// `redirect_status`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppRedirect {
+    pub host: Arc<str>,
+    pub status: u16,
 }
 
 /// An app's idle clock: when it last had a request, and how many of its
@@ -1276,7 +1368,7 @@ fn build_routes(
     ordered.sort_by(|a, b| a.config.name.cmp(&b.config.name));
 
     // An entry per claimed host; an app's entries share its idle clock.
-    let mut entry = |app: &AppInfo, claim: Claim| AppRoute {
+    let mut entry = |app: &AppInfo, claim: Claim, redirect_to: Option<AppRedirect>| AppRoute {
         app: Arc::from(app.config.name.as_str()),
         claim,
         target: live_port(app).and_then(slot_url),
@@ -1294,10 +1386,11 @@ fn build_routes(
         site: Arc::from(app.path.as_path()),
         display_name: app.config.display_name.as_deref().map(Arc::from),
         bots: app.config.bots.compiled(),
+        redirect_to,
         activity: activity.entry(app.config.name.clone()).or_default().clone(),
     };
     let mut routes = AppRoutes::default();
-    let mut claim = |host: String, app: &AppInfo, kind: Claim| {
+    let mut claim = |host: String, app: &AppInfo, kind: Claim, redirect: Option<AppRedirect>| {
         if let Some(existing) = routes.hosts.get(&host) {
             if kind == Claim::Declared {
                 tracing::error!(
@@ -1317,7 +1410,9 @@ fn build_routes(
             }
             return;
         }
-        routes.hosts.insert(host, Arc::new(entry(app, kind)));
+        routes
+            .hosts
+            .insert(host, Arc::new(entry(app, kind, redirect)));
     };
 
     // The bundled `_admin` app is served only via the authenticated admin
@@ -1329,8 +1424,21 @@ fn build_routes(
     // `Host: <admin-domain>`. Same for an alias pointing at it.
     let routable = |app: &AppInfo| app.config.name != "_admin" && !app.config.domain.is_empty();
 
+    // An app's own hosts: `domain`, then `domains` (served too), then
+    // `redirect_from` (redirected to `domain`). All declared: they are the
+    // operator's, written in the app's manifest.
     for app in ordered.iter().copied().filter(|app| routable(app)) {
-        claim(app.config.domain.clone(), app, Claim::Declared);
+        claim(app.config.domain.clone(), app, Claim::Declared, None);
+        for host in &app.config.domains {
+            claim(host.clone(), app, Claim::Declared, None);
+        }
+        let redirect = AppRedirect {
+            host: Arc::from(app.config.domain.as_str()),
+            status: app.config.redirect_status(),
+        };
+        for host in &app.config.redirect_from {
+            claim(host.clone(), app, Claim::Declared, Some(redirect.clone()));
+        }
     }
 
     // Aliases resolve to whatever their target app is serving right now, so
@@ -1341,17 +1449,19 @@ fn build_routes(
     alias_list.sort();
     for (alias, target) in alias_list {
         if let Some(app) = apps.get(target).filter(|app| app.config.name != "_admin") {
-            claim(alias.clone(), app, Claim::Alias);
+            claim(alias.clone(), app, Claim::Alias, None);
         }
     }
 
     for app in ordered.iter().copied().filter(|app| routable(app)) {
-        if let Some(apex) = strip_www(&app.config.domain) {
-            claim(apex, app, Claim::Derived);
-        }
-        if dev_mode {
-            if let Some(dev) = dev_domain(&app.config.domain) {
-                claim(dev, app, Claim::Derived);
+        for served in std::iter::once(&app.config.domain).chain(&app.config.domains) {
+            if let Some(apex) = strip_www(served) {
+                claim(apex, app, Claim::Derived, None);
+            }
+            if dev_mode {
+                if let Some(dev) = dev_domain(served) {
+                    claim(dev, app, Claim::Derived, None);
+                }
             }
         }
     }
@@ -2019,7 +2129,11 @@ impl AppManager {
             if !apps.contains_key(app) {
                 anyhow::bail!("App not found: {}", app);
             }
-            if let Some(owner) = apps.values().find(|info| info.config.domain == domain) {
+            if let Some(owner) = apps.values().find(|info| {
+                info.config.domain == domain
+                    || info.config.domains.contains(&domain)
+                    || info.config.redirect_from.contains(&domain)
+            }) {
                 anyhow::bail!(
                     "{} is already the site domain of app {}",
                     domain,
@@ -2238,6 +2352,15 @@ impl AppManager {
                 }
             }
         }
+        // `redirect_from` hosts answer without the app, so they keep their
+        // certificate whatever state it is in.
+        domains.extend(
+            self.routes()
+                .hosts
+                .iter()
+                .filter(|(_, route)| route.redirect_to.is_some())
+                .map(|(host, _)| host.clone()),
+        );
         domains.extend(self.external_routes.domains());
         domains.sort();
         domains.dedup();
@@ -3974,15 +4097,18 @@ impl AppManager {
         if config.domain.is_empty() {
             return out;
         }
-        out.push(config.domain.clone());
-        if let Some(non_www) = strip_www(&config.domain) {
-            out.push(non_www);
-        }
-        if self.dev_mode {
-            if let Some(dev) = dev_domain(&config.domain) {
-                out.push(dev);
+        for served in std::iter::once(&config.domain).chain(&config.domains) {
+            out.push(served.clone());
+            if let Some(non_www) = strip_www(served) {
+                out.push(non_www);
+            }
+            if self.dev_mode {
+                if let Some(dev) = dev_domain(served) {
+                    out.push(dev);
+                }
             }
         }
+        out.extend(config.redirect_from.iter().cloned());
         out
     }
 
@@ -5122,6 +5248,128 @@ port_range_end = 30000
         app_path
     }
 
+    /// `domains` and `redirect_from`: lowercased, and refused when they
+    /// overlap, are not hostnames, have no `domain` to send redirects to,
+    /// in multi-tenant mode, or with a redirect status that is not one.
+    #[test]
+    fn extra_domains_are_checked() {
+        let dir = TempDir::new().unwrap();
+        let load = |name: &str, body: &str, multi_tenant: bool| {
+            let path = site_with_app_infos(dir.path(), name, body);
+            AppInfo::from_path(&path, false, multi_tenant)
+        };
+        let ok = load(
+            "shop.example.com",
+            "domain = \"shop.example.com\"\nstart_script = \"true\"\n\
+             domains = [\"Preprod.Example.com\"]\nredirect_from = [\"old.example.com\"]\n",
+            false,
+        )
+        .unwrap();
+        assert_eq!(ok.config.domains, vec!["preprod.example.com"]);
+        assert_eq!(ok.config.redirect_status(), 301);
+
+        let bad = |name: &str, body: &str, multi_tenant: bool| {
+            let full = format!("domain = \"{name}\"\nstart_script = \"true\"\n{body}");
+            let err = load(name, &full, multi_tenant).unwrap_err().to_string();
+            assert!(!err.is_empty());
+            err
+        };
+        assert!(bad("a.example.com", "domains = [\"a.example.com\"]\n", false).contains("twice"));
+        assert!(bad(
+            "b.example.com",
+            "domains = [\"x.example.com\"]\nredirect_from = [\"x.example.com\"]\n",
+            false
+        )
+        .contains("twice"));
+        assert!(bad("c.example.com", "domains = [\"bad host\"]\n", false).contains("hostname"));
+        assert!(bad("d.example.com", "redirect_status = 303\n", false).contains("303"));
+        assert!(
+            bad("e.example.com", "domains = [\"x.example.net\"]\n", true).contains("multi_tenant")
+        );
+        let no_domain = load(
+            "f.example.com",
+            "start_script = \"true\"\nredirect_from = [\"old.example.com\"]\n",
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(no_domain.contains("need a domain"), "{no_domain}");
+
+        // An environment overlay may set them, like any key.
+        let overlay = load(
+            "g.example.com",
+            "domain = \"g.example.com\"\nstart_script = \"true\"\n\
+             [production]\ndomains = [\"g-preprod.example.com\"]\n",
+            false,
+        )
+        .unwrap();
+        assert_eq!(overlay.config.domains, vec!["g-preprod.example.com"]);
+    }
+
+    /// Hosts of `domains` serve the app; hosts of `redirect_from` redirect to
+    /// its domain; a host another app already declares stays the other's; an
+    /// alias cannot take any of them; a sleeping app keeps all of them.
+    #[tokio::test]
+    async fn extra_domains_serve_and_redirect_from_redirects() {
+        let temp_dir = TempDir::new().unwrap();
+        let sites = temp_dir.path().join("sites");
+        site_with_app_infos(
+            &sites,
+            "a.example.com",
+            "name = \"a.example.com\"\ndomain = \"a.example.com\"\n\
+             domains = [\"pre.example.com\", \"www.new.example.com\"]\n\
+             redirect_from = [\"old.example.com\", \"taken.example.com\"]\nredirect_status = 302\n",
+        );
+        site_with_app_infos(
+            &sites,
+            "b.example.com",
+            "name = \"b.example.com\"\ndomain = \"taken.example.com\"\n",
+        );
+        let manager = test_manager(&temp_dir, &sites);
+        manager.discover_apps_readonly().await.unwrap();
+        let routes = manager.routes();
+
+        let pre = routes.get("pre.example.com").unwrap();
+        assert_eq!(&*pre.app, "a.example.com");
+        assert!(pre.redirect_to.is_none());
+        let apex = routes.get("new.example.com").unwrap();
+        assert_eq!((&*apex.app, apex.claim), ("a.example.com", Claim::Derived));
+
+        let old = routes.get("old.example.com").unwrap();
+        assert_eq!(
+            old.redirect_to,
+            Some(AppRedirect {
+                host: Arc::from("a.example.com"),
+                status: 302
+            })
+        );
+        // `a` sorts first, so it keeps taken.example.com as a redirect.
+        assert_eq!(
+            &*routes.get("taken.example.com").unwrap().app,
+            "a.example.com"
+        );
+
+        assert!(manager
+            .set_alias("pre.example.com", "b.example.com")
+            .await
+            .is_err());
+        assert!(manager
+            .set_alias("old.example.com", "b.example.com")
+            .await
+            .is_err());
+
+        let a = manager.get_app("a.example.com").await.unwrap();
+        let hosts = manager.domains_of(&a.config);
+        for host in [
+            "a.example.com",
+            "pre.example.com",
+            "new.example.com",
+            "old.example.com",
+        ] {
+            assert!(hosts.iter().any(|h| h == host), "{host} in {hosts:?}");
+        }
+    }
+
     /// One manifest, two environments: `--dev` takes `[development]` and
     /// everything else takes `[production]`.
     #[test]
@@ -5273,6 +5521,9 @@ typo_here = true
                 traps: Some(false),
                 block_agents: Some(vec!["ai-training".to_string()]),
             },
+            domains: vec!["preprod.example.com".to_string()],
+            redirect_from: vec!["old.example.com".to_string()],
+            redirect_status: Some(302),
         };
 
         let toml::Value::Table(table) = toml::Value::try_from(config).unwrap() else {

@@ -485,18 +485,24 @@ pub fn check_sites(
             continue;
         }
         names.insert(name.clone(), path.clone());
-        if !app.config.domain.is_empty() {
-            if let Some(owner) = domains.get(&app.config.domain) {
+        // `domain`, `domains` and `redirect_from` are all the app's own
+        // hosts: a second app listing one of them loses it.
+        let own_hosts = std::iter::once(&app.config.domain)
+            .filter(|d| !d.is_empty())
+            .chain(&app.config.domains)
+            .chain(&app.config.redirect_from);
+        for host in own_hosts {
+            if let Some(owner) = domains.get(host) {
                 report.warn(
                     &manifest,
                     None,
                     format!(
                         "domain {} is also declared by {}, which keeps it",
-                        app.config.domain, owner
+                        host, owner
                     ),
                 );
             } else {
-                domains.insert(app.config.domain.clone(), name.clone());
+                domains.insert(host.clone(), name.clone());
             }
         }
 

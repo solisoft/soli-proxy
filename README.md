@@ -1467,6 +1467,9 @@ admin = "$2b$12$..."   # generate with: hash-password (cost 4..=13)
 | `name` | string | directory name | Logical app name (used in logs, admin API). |
 | `domain` | string | directory name (when auto-detected) | Domain the app serves. Matched against the `Host` header. |
 | `display_name` | string | — | Human name for the app, shown as `{{app}}` on its maintenance page (else the host). |
+| `domains` | list of strings | `[]` | More hosts the app serves besides `domain`, each with its certificate. See [Several domains](#several-domains). |
+| `redirect_from` | list of strings | `[]` | Hosts that redirect to `https://<domain><path>?<query>`, without waking the app. See [Several domains](#several-domains). |
+| `redirect_status` | int | `301` | The status of those redirects: `301`, `302`, `307` or `308`. |
 | `[bots]` | table | — | `enabled = false` (none of `[bots]` on this site) or `true` (on here even when off globally), `traps = false` (requests to this app never ban anyone) or `true`, and `block_agents` replacing `config.toml`'s list. See [Bots and scanners](#bots-and-scanners). |
 | `start_script` | string | auto-detected (see below) | Command used to launch the app. Supports `$PORT` and `$WORKERS` substitution. Parsed without a shell — no pipes/redirects/globs. |
 | `stop_script` | string | _none_ | Optional command to run when stopping the app. |
@@ -1496,6 +1499,32 @@ written (an empty or malformed hash, a bcrypt cost outside 4–13, a `noauth` pa
 not compare literally, a `forward` URL that is not `http(s)://` with a host, a `forward_headers`
 name the proxy manages or without `forward`) makes the app fail to load and be skipped, rather
 than come up unprotected.
+
+### Several domains
+
+`domain` is the app's main host. Two lists add more, the way a site migration needs them:
+
+```toml
+domain = "letelegraphe.org"                   # the main host: where redirects go
+domains = ["v2.letelegraphe.org"]             # served too: the preprod URL, kept after the switch
+redirect_from = ["www.letelegraphe.org", "old.letelegraphe.org"]   # 301 to letelegraphe.org
+# redirect_status = 302                       # while the switch is not final: browsers cache a 301
+```
+
+- A host in `domains` is served like `domain`: same app, same certificate handling (one per
+  host, through ACME), and its `www.`-less twin and `.test` twin (under `--dev`) are derived as
+  for `domain`.
+- A host in `redirect_from` answers `https://<domain><path>?<query>` with `redirect_status` —
+  in one hop from plain HTTP, WebSocket upgrades included — and never wakes a sleeping app. Its
+  ACME challenges are answered, so it keeps a valid certificate, whatever state the app is in.
+- All three are the app's own declared hosts: the first app (by name) that lists a host keeps
+  it, a second is logged as an error and `soli-proxy check` warns about it, and an
+  [alias](#domain-aliases) cannot take one. A whole-domain `proxy.conf` rule for one of them is
+  set aside for the app, as for `domain`.
+- Hosts are lowercased; each list holds at most 50; the three must not overlap, and the lists
+  need a `domain` (the redirects' target). `[development]` / `[production]` may set them, e.g.
+  a preprod host only in production.
+- Not in multi-tenant mode, where a tenant answers for its site directory's name only.
 
 ### Per-environment settings
 
@@ -1758,7 +1787,8 @@ With it on:
     tenant's spelling. Named volumes, other mount types, propagation and relabel options are
     rejected.
 - `name` and `domain` in `app.infos` are bound to the site directory: `name` must equal it,
-  `domain` must be it or its `www.` twin (or empty). A tenant cannot claim another site's `Host`
+  `domain` must be it or its `www.` twin (or empty), and `domains` / `redirect_from` are
+  refused. A tenant cannot claim another site's `Host`
   or take over another app's entry; a directory whose manifest breaks the rule is skipped and
   logged. Names starting with `_` are reserved for bundled apps (`_admin`) in every mode.
 - `name`, `domain` and `health_check` are checked at load time in every mode: hostname
@@ -1879,7 +1909,8 @@ directly. Call it from your renewal hook when an external tool writes the files 
 
 ## Domain Aliases
 
-A site directory gives an app exactly one domain, which ties *the URL* to *the checkout behind
+An app's own extra hosts belong in its `app.infos` ([Several domains](#several-domains)).
+Aliases are the operator's, set at run time. A site directory gives an app one main domain, which ties *the URL* to *the checkout behind
 it*. Aliases break that coupling: several domains can point at one running app, and repointing
 an alias is an atomic map swap — no restart, no rebuild, effective on the next request. That is
 what makes instant rollback and per-branch preview URLs possible.

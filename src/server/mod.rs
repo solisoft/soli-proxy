@@ -2895,6 +2895,17 @@ async fn handle_request_inner(
             .unwrap());
     }
 
+    // A `redirect_from` host of an app: straight to its `domain` over HTTPS,
+    // in one hop even from plain HTTP (before force_https), WebSocket
+    // upgrades included, and without waking the app. After the ACME
+    // challenge above, so the redirected host still gets its certificate.
+    if let Some(manager) = &app_manager {
+        if let Some(response) = app_redirect(&req, manager, &config) {
+            metrics.record_request(0, 0, response.status().as_u16(), start_time.elapsed());
+            return Ok(response);
+        }
+    }
+
     // HTTP to HTTPS redirect when TLS is off and force_https is enabled —
     // unless a trusted proxy in front already terminated HTTPS (it would be
     // redirected to where it already is, forever).
@@ -5440,6 +5451,46 @@ fn resolve_target_url(
 /// `resolve_target_url`; only the scheme is swapped to https. Redirect rules
 /// always point at an https destination — the proxy itself only serves
 /// redirects for domains it terminates TLS for.
+/// The redirect for a request to a host an app lists in `redirect_from`:
+/// `https://<its domain><path>?<query>`, with the app's `redirect_status`.
+/// `None` for any other host.
+fn app_redirect<B>(
+    req: &Request<B>,
+    manager: &AppManager,
+    config: &crate::config::Config,
+) -> Option<Response<BoxBody>> {
+    let raw_host = req
+        .headers()
+        .get(hyper::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .or_else(|| req.uri().host())?;
+    let (host, _) = parse_host_port(raw_host)?;
+    let route =
+        manager.serving_route(&host.to_ascii_lowercase(), static_route(req, &config.rules))?;
+    let redirect = route.redirect_to.as_ref()?;
+    let query = req
+        .uri()
+        .query()
+        .map(|q| format!("?{q}"))
+        .unwrap_or_default();
+    let location = format!("https://{}{}{}", redirect.host, req.uri().path(), query);
+    let status = hyper::StatusCode::from_u16(redirect.status)
+        .unwrap_or(hyper::StatusCode::MOVED_PERMANENTLY);
+    Some(match HeaderValue::from_str(&location) {
+        Ok(loc) => Response::builder()
+            .status(status)
+            .header(hyper::header::LOCATION, loc)
+            .body(full(Bytes::from(
+                status.canonical_reason().unwrap_or("Moved").to_string(),
+            )))
+            .unwrap(),
+        Err(_) => Response::builder()
+            .status(400)
+            .body(full(Bytes::from("Bad Request")))
+            .unwrap(),
+    })
+}
+
 fn build_redirect_response(target_url: &str) -> Response<BoxBody> {
     let rest = target_url.strip_prefix("redirect://").unwrap_or(target_url);
     let location = format!("https://{}", rest);

@@ -516,6 +516,44 @@ async fn global_maintenance_through_the_admin_api() {
     assert!(proxy.config.maintenance.snapshot().global.is_none());
 }
 
+/// `redirect_from` hosts of an app answer with a redirect to its domain, the
+/// path and query kept, in one hop from plain HTTP, without a running app;
+/// ACME challenges on them are not redirected.
+#[tokio::test]
+async fn redirect_from_hosts_redirect_to_the_app_domain() {
+    let sites = tempfile::tempdir().unwrap();
+    let site = sites.path().join("shop.test");
+    std::fs::create_dir_all(&site).unwrap();
+    std::fs::write(
+        site.join("app.infos"),
+        "name = \"shop.test\"\ndomain = \"shop.test\"\ndomains = [\"preprod-shop.test\"]\n\
+         redirect_from = [\"old-shop.test\"]\n",
+    )
+    .unwrap();
+    let proxy = start_proxy("", "", Some(sites.path())).await;
+
+    let resp = get(&proxy, "old-shop.test", "/fr/agenda/12?x=1&y=2", &[]).await;
+    assert_eq!(resp.status(), 301);
+    assert_eq!(
+        header(&resp, "location"),
+        Some("https://shop.test/fr/agenda/12?x=1&y=2")
+    );
+    let resp = get(&proxy, "OLD-shop.test:80", "/", &[]).await;
+    assert_eq!(resp.status(), 301, "host matched without case or port");
+
+    // Not redirected: ACME challenges, and the hosts the app serves.
+    let resp = get(
+        &proxy,
+        "old-shop.test",
+        "/.well-known/acme-challenge/unknown",
+        &[],
+    )
+    .await;
+    assert_ne!(resp.status(), 301);
+    let resp = get(&proxy, "preprod-shop.test", "/", &[]).await;
+    assert_ne!(resp.status(), 301);
+}
+
 /// An app's own `error_pages/` and `maintenance.flag`, and per-app maintenance
 /// through the admin API.
 #[tokio::test]
