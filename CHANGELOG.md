@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.13.0](https://github.com/solisoft/soli-proxy/compare/v1.12.0...v1.13.0) (2026-10-08)
+
+### Features
+
+* **apps: several domains per app.** For a site migration, `app.infos` lists more hosts than
+  `domain`: `domains` are served by the app (each with its certificate), and `redirect_from`
+  hosts answer with a redirect to `https://<domain><path>?<query>` — `redirect_status` 301 by
+  default, or 302, 307, 308 — in one hop from plain HTTP and without waking the app. They are
+  the app's declared hosts (an alias cannot take them), may be set per environment, and are
+  refused in multi-tenant mode. The TUI's app detail shows them.
+
 ## [1.12.0](https://github.com/solisoft/soli-proxy/compare/v1.11.0...v1.12.0) (2026-10-07)
 
 ### Features
