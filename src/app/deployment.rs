@@ -2391,17 +2391,23 @@ impl DeploymentManager {
         let mut last_err: Option<String> = None;
         let started = std::time::Instant::now();
         let deadline = started + Duration::from_secs(timeout_secs);
-        // Polled fast at first, then every 250 ms: a Soli app is up in about
-        // a tenth of a second, and every waking request waits on this. One
-        // poll a second made each wake cost a second at least, whatever the
-        // app's own start time. A refused connection costs nothing to retry.
-        let mut pause = Duration::from_millis(10);
+        // Polled every 10 ms for the first two seconds, then every 250 ms: a
+        // Soli app is up in about a tenth of a second, and every waking request
+        // waits on this. One poll a second made each wake cost a second at
+        // least; a pause that doubled from 10 ms polled at 150 then 310 ms, so
+        // an app ready at 160 ms was reported (and its requests held) at 310.
+        // A refused connection on loopback costs nothing to retry.
+        let fast_until = started + Duration::from_secs(2);
         let mut i = 0u32;
 
         while i == 0 || std::time::Instant::now() < deadline {
             if i > 0 {
+                let pause = if std::time::Instant::now() < fast_until {
+                    Duration::from_millis(10)
+                } else {
+                    Duration::from_millis(250)
+                };
                 sleep(pause).await;
-                pause = (pause * 2).min(Duration::from_millis(250));
             }
             i += 1;
 
