@@ -19,5 +19,12 @@ real TUI:
 python3 scripts/tui_screenshots.py   # needs Pillow
 ```
 
+The website's landing page replays the dashboard too, as live text rather than
+an image: `www/public/js/tui.js`. Same sources, same rule. It also mirrors the
+dashboard's geometry (`render_strip`, `render_flow`, `render_side`), the glyphs
+in `screens/common.rs` and `anim.rs`, and the journal wording in `events.rs` and
+`app.rs`. Its header comment lists which function each part follows. Its
+sidebar version comes from `data-version` in `www/app/views/home/index.html.erb`.
+
 A mockup that has drifted from the shipped UI is worse than no mockup — if you
 cannot keep these current, delete them rather than leaving them stale.

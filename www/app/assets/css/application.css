@@ -2,14 +2,181 @@
 @tailwind components;
 @tailwind utilities;
 
+/* The palette is the terminal UI's, value for value: src/tui/theme.rs. */
+@layer base {
+    :root {
+        --ink: #0a0c10;          /* INK */
+        --panel: #12161c;        /* SIDEBAR_BG */
+        --select: #0f3734;       /* SELECT_BG */
+        --fg: #f8f8f2;           /* FG */
+        --muted: #6272a4;        /* MUTED: labels, never body text (contrast) */
+        --soft: #a3abc6;         /* secondary prose; 8.4:1 on ink */
+        --accent: #00d4aa;       /* ACCENT */
+        --accent-dim: #007864;   /* ACCENT_DIM */
+        --ok: #50fa7b;           /* SUCCESS */
+        --warn: #ffb86c;         /* WARN */
+        --danger: #ff5555;       /* DANGER */
+        --magenta: #bd93f9;      /* MAGENTA */
+        --cyan: #8be9fd;         /* CYAN */
+        --fresh-bg: #3a2a12;     /* FRESH_BG */
+        --fading-bg: #261d10;    /* FADING_BG */
+        --fading-fg: #e8c592;    /* FADING_FG */
+        --rule: rgb(255 255 255 / 0.08);
+        --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+        color-scheme: dark;
+    }
+
+    html { background: var(--ink); }
+    body { font-family: 'Geist', ui-sans-serif, system-ui, sans-serif; }
+    code, pre, kbd, samp { font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace; }
+    ::selection { background: var(--select); color: var(--fg); }
+
+    :focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+    }
+}
+
 @layer components {
+    /* Flat buttons: no glow, no hover growth. Press is the only motion. */
     .btn {
-        @apply px-6 py-3 rounded-xl font-semibold transition-all duration-300 text-sm;
+        @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-md font-mono text-sm font-medium;
+        transition-property: background-color, color, border-color, scale;
+        transition-duration: 150ms;
+        transition-timing-function: var(--ease-out);
     }
+    .btn:active { scale: 0.96; }
     .btn-primary {
-        @apply bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-500/25 hover:shadow-emerald-500/40 hover:scale-105;
+        @apply bg-accent text-ink;
     }
+    .btn-primary:hover { background-color: #2ee0bd; }
     .btn-outline {
-        @apply ring-1 ring-white/20 hover:ring-white/40 hover:bg-white/5 text-white backdrop-blur-sm;
+        @apply text-fg;
+        box-shadow: inset 0 0 0 1px var(--rule);
     }
+    .btn-outline:hover { box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.2); }
+
+    /* The terminal UI's section label: ink on an accent block. */
+    .chip {
+        @apply inline-block font-mono text-xs font-semibold leading-5 px-1.5 bg-accent text-ink;
+    }
+
+    .link {
+        @apply text-fg underline decoration-1 underline-offset-4;
+        text-decoration-color: var(--accent-dim);
+        transition: text-decoration-color 150ms ease;
+    }
+    .link:hover { text-decoration-color: var(--accent); }
+
+    /* Still scrolls (touch, shift+wheel), without a bar under one line. */
+    .no-scrollbar { scrollbar-width: none; }
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+
+    .mobile-nav { display: none; }
+    .mobile-nav.open { display: block; }
+
+    .doc-sidebar a.active {
+        color: var(--accent);
+        background: var(--select);
+    }
+
+    /* Syntax highlighting, in the TUI's colours. */
+    .tk { color: var(--magenta); }
+    .ts { color: var(--ok); }
+    .tc { color: var(--muted); }
+    .tf { color: var(--cyan); }
+    .tn { color: var(--warn); }
+    .tt { color: #ff79c6; }
+
+    /* ── the terminal replica (public/js/tui.js) ───────────────────── */
+    .term {
+        background: var(--ink);
+        box-shadow: 0 0 0 1px var(--rule);
+        border-radius: 6px;
+        overflow: hidden;
+    }
+    .term-bar {
+        @apply flex items-center justify-between px-3 h-8 font-mono text-xs text-muted bg-panel;
+        border-bottom: 1px solid var(--rule);
+    }
+    .term-screen {
+        position: relative;
+        font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13px;
+        line-height: 1.25;
+        font-variant-ligatures: none;
+        overflow: hidden;
+    }
+    @media (max-width: 640px) {
+        .term-screen { font-size: 11px; }
+    }
+    .term-screen pre {
+        margin: 0;
+        font: inherit;
+        line-height: inherit;
+        white-space: pre;
+        color: var(--fg);
+    }
+    .term-screen { min-height: calc(28 * 1.25em); }
+    @media (max-width: 1023px) {
+        .term-screen { min-height: calc(24 * 1.25em); }
+    }
+    /* A non-ASCII glyph (box drawing, braille, blocks) may come from a
+       fallback font with another advance: box it to exactly one cell. */
+    .term-screen i {
+        font-style: normal;
+        display: inline-block;
+        width: 1ch;
+        overflow: hidden;
+        text-align: center;
+        vertical-align: top;
+    }
+    /* Backgrounds fill the whole row height, as a terminal cell does. */
+    .term-screen [class*="b-"] {
+        display: inline-block;
+        vertical-align: top;
+    }
+    .term-probe {
+        position: absolute;
+        visibility: hidden;
+        white-space: pre;
+    }
+    /* One class per (colour, background, weight) the TUI uses. */
+    .c-fg { color: var(--fg); }
+    .c-mu { color: var(--muted); }
+    .c-ac { color: var(--accent); }
+    .c-ad { color: var(--accent-dim); }
+    .c-ok { color: var(--ok); }
+    .c-wa { color: var(--warn); }
+    .c-da { color: var(--danger); }
+    .c-ma { color: var(--magenta); }
+    .c-cy { color: var(--cyan); }
+    .c-ff { color: var(--fading-fg); }
+    .c-ink { color: var(--ink); }
+    .b-ac { background: var(--accent); }
+    .b-wa { background: var(--warn); }
+    .b-se { background: var(--select); }
+    .b-pa { background: var(--panel); }
+    .b-fr { background: var(--fresh-bg); }
+    .b-fa { background: var(--fading-bg); }
+    .w-b { font-weight: 600; }
+
+    /* Chapters under the terminal, synced to the loop. */
+    .chapter {
+        border-left: 2px solid var(--rule);
+        transition: border-color 150ms ease;
+    }
+    .chapter .chapter-title,
+    .chapter .chapter-body {
+        transition: color 150ms ease;
+    }
+    .chapter[aria-current="step"] { border-color: var(--accent); }
+    .chapter[aria-current="step"] .chapter-title { color: var(--fg); }
+    .chapter[aria-current="step"] .chapter-body { color: var(--soft); }
+    .chapter-seek {
+        transition-property: color, scale;
+        transition-duration: 150ms;
+        transition-timing-function: var(--ease-out);
+    }
+    .chapter-seek:active { scale: 0.96; }
 }

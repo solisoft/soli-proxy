@@ -20,9 +20,25 @@ module.exports = {
         sans: ['Geist', ...defaultTheme.fontFamily.sans],
         mono: ['"Geist Mono"', ...defaultTheme.fontFamily.mono],
       },
+      // The terminal UI's palette (src/tui/theme.rs), as CSS variables set in
+      // app/assets/css/application.css. The site wears the product's colours.
       colors: {
         primary: '#059669',
         secondary: '#06b6d4',
+        ink: 'var(--ink)',
+        panel: 'var(--panel)',
+        select: 'var(--select)',
+        fg: 'var(--fg)',
+        muted: 'var(--muted)',
+        soft: 'var(--soft)',
+        accent: 'var(--accent)',
+        'accent-dim': 'var(--accent-dim)',
+        ok: 'var(--ok)',
+        warn: 'var(--warn)',
+        danger: 'var(--danger)',
+        magenta: 'var(--magenta)',
+        cyan: 'var(--cyan)',
+        rule: 'var(--rule)',
       }
     },
   },

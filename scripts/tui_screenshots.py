@@ -11,6 +11,10 @@ below are therefore kept in lockstep with the real code by hand:
 
 If you change any of those, re-run this script and eyeball the result against
 the real thing. A mockup that has drifted from the UI is worse than no mockup.
+
+The website's landing page carries a second hand-made replica of the
+dashboard, animated: www/public/js/tui.js. It mirrors the same sources and
+needs the same care.
 """
 
 from pathlib import Path
