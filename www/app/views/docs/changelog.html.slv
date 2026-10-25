@@ -46,11 +46,40 @@
                     </p>
                 </div>
 
+                <!-- 1.13.2 -->
+                <div class="mb-10 reveal-on-scroll">
+                    <div class="flex items-center gap-3 mb-5 flex-wrap">
+                        <h2 class="text-2xl font-bold text-white font-mono">v1.13.2</h2>
+                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
+                        <span class="text-sm text-gray-500">2026-10-25</span>
+                    </div>
+
+                    <div class="space-y-4">
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">fix</span>
+                                <h3 class="text-base font-semibold text-white">A refused WebSocket keeps its status</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                When an app refuses a WebSocket upgrade, the client gets the app&rsquo;s own 429 or 503 and its <code>Retry-After</code> instead of a 502. An app at its socket limit no longer reads, in the logs or in the browser, as an app that is down.
+                            </p>
+                        </div>
+                        <div class="rounded-xl border border-white/5 bg-white/[0.02] p-5">
+                            <div class="flex items-center gap-3 mb-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">fix</span>
+                                <h3 class="text-base font-semibold text-white">Heartbeats keep a WebSocket open</h3>
+                            </div>
+                            <p class="text-gray-400 leading-relaxed">
+                                <code>websocket_idle_timeout_secs</code> closes a tunnel only once both directions have been silent, as documented. A client pinging a server that never answers is no longer cut every five minutes.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- 1.13.1 -->
                 <div class="mb-10 reveal-on-scroll">
                     <div class="flex items-center gap-3 mb-5 flex-wrap">
                         <h2 class="text-2xl font-bold text-white font-mono">v1.13.1</h2>
-                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">latest</span>
                         <span class="text-sm text-gray-500">2026-10-25</span>
                     </div>
 

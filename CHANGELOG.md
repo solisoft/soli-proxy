@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.13.2](https://github.com/solisoft/soli-proxy/compare/v1.13.1...v1.13.2) (2026-10-25)
+
+### Bug Fixes
+
+* **websockets: a refused upgrade keeps the backend's status.** Any non-101 answer to an upgrade
+  became a 502, so a backend's 429 (its per-client socket cap) or 503 read, in the access log and
+  to the client, as a backend that was down — bonfire's `/ws/comments` showed millions of 502s
+  for a week while the app was up and refusing sockets. The client now gets the backend's 4xx/5xx
+  and its `Retry-After`; a reply that is not a status line is still a 502.
+* **websockets: a tunnel that talks one way is not idle.** `websocket_idle_timeout_secs` closed a
+  tunnel when *either* direction had been silent that long, not both as documented: a client
+  heartbeating a server that never answers was cut every five minutes, and each cut was a
+  reconnect. The two halves now share one activity clock.
+
 ## [1.13.1](https://github.com/solisoft/soli-proxy/compare/v1.13.0...v1.13.1) (2026-10-25)
 
 ### Fixes
