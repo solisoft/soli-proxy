@@ -7,7 +7,8 @@ use soli_proxy::admin::{run_admin_server, AdminState};
 use soli_proxy::app::{AppManager, PortManager};
 use soli_proxy::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 use soli_proxy::{
-    new_challenge_store, new_metrics, ConfigManager, ProxyServer, ShutdownCoordinator,
+    build_rate_limiter, new_challenge_store, new_metrics, ConfigManager, ProxyServer,
+    ShutdownCoordinator,
 };
 use std::io::{Read, Write};
 use std::sync::Arc;
@@ -153,6 +154,7 @@ async fn start_proxy(conf: &str, toml_extra: &str, sites: Option<&std::path::Pat
         None => None,
     };
     let breaker = Arc::new(CircuitBreaker::new(CircuitBreakerConfig::default()));
+    let rate_limiter = build_rate_limiter(&manager);
     let shutdown = ShutdownCoordinator::new();
     let server = ProxyServer::new(
         manager.clone(),
@@ -162,7 +164,7 @@ async fn start_proxy(conf: &str, toml_extra: &str, sites: Option<&std::path::Pat
         None,
         breaker.clone(),
         app_manager.clone(),
-        None,
+        rate_limiter.clone(),
     )
     .unwrap();
     tokio::spawn(async move {
@@ -174,7 +176,7 @@ async fn start_proxy(conf: &str, toml_extra: &str, sites: Option<&std::path::Pat
         start_time: Instant::now(),
         circuit_breaker: breaker,
         app_manager,
-        rate_limiter: None,
+        rate_limiter,
         tls_manager: None,
         challenge_store: None,
     });
@@ -552,6 +554,41 @@ async fn redirect_from_hosts_redirect_to_the_app_domain() {
     assert_ne!(resp.status(), 301);
     let resp = get(&proxy, "preprod-shop.test", "/", &[]).await;
     assert_ne!(resp.status(), 301);
+}
+
+/// Each app has its own rate-limit budget per client: a tab hammering one app
+/// does not get the same address answered 429 on another. Hosts no app
+/// claims share one budget, so a made-up `Host` buys no fresh one.
+#[tokio::test]
+async fn rate_limits_are_per_app() {
+    let sites = tempfile::tempdir().unwrap();
+    for name in ["one.test", "two.test"] {
+        let site = sites.path().join(name);
+        std::fs::create_dir_all(&site).unwrap();
+        std::fs::write(
+            site.join("app.infos"),
+            format!("name = \"{name}\"\ndomain = \"{name}\"\ndomains = [\"www.{name}\"]\n"),
+        )
+        .unwrap();
+    }
+    let proxy = start_proxy(
+        "",
+        "[rate_limiting]\nenabled = true\nrequests_per_second = 1\nburst_size = 1\n",
+        Some(sites.path()),
+    )
+    .await;
+
+    assert_ne!(get(&proxy, "one.test", "/", &[]).await.status(), 429);
+    assert_eq!(get(&proxy, "one.test", "/", &[]).await.status(), 429);
+    assert_eq!(
+        get(&proxy, "WWW.one.test:80", "/", &[]).await.status(),
+        429,
+        "every host of an app spends the same budget"
+    );
+    assert_ne!(get(&proxy, "two.test", "/", &[]).await.status(), 429);
+
+    assert_ne!(get(&proxy, "unknown-a.test", "/", &[]).await.status(), 429);
+    assert_eq!(get(&proxy, "unknown-b.test", "/", &[]).await.status(), 429);
 }
 
 /// An app's own `error_pages/` and `maintenance.flag`, and per-app maintenance

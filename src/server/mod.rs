@@ -36,15 +36,76 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::timeout;
 use tokio_rustls::TlsAcceptor;
 
-/// Per-IP token-bucket rate limiter shared across the whole proxy AND
+/// Per-client token-bucket rate limiter shared across the whole proxy AND
 /// the admin API. Re-exported from `crate::lib` so `main.rs` (which owns
 /// the construction site) can plumb a single Arc to both surfaces — that
 /// way the configured RPS budget is global, not per-listener.
 pub type IpRateLimiter = GovernorRateLimiter<
-    IpAddr,
-    governor::state::keyed::DefaultKeyedStateStore<IpAddr>,
+    RateKey,
+    governor::state::keyed::DefaultKeyedStateStore<RateKey>,
     governor::clock::DefaultClock,
 >;
+
+/// What one `[rate_limiting]` budget is charged to: a client (see
+/// `client_key`) on one surface.
+///
+/// A single budget per client let one app throttle every other: a browser
+/// tab reconnecting a failing WebSocket on one app in a loop spent the whole
+/// budget of its address, and everyone behind that address — an office NAT —
+/// was answered 429 on every app they used. Each app now has its own budget.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RateKey {
+    pub client: IpAddr,
+    pub scope: RateScope,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum RateScope {
+    /// A host claimed by this app (its `domain` or `domains`).
+    App(Arc<str>),
+    /// The admin API.
+    Admin,
+    /// Everything else: routing rules, cluster routes, unknown hosts. One
+    /// budget for all of them, so inventing `Host` values buys no new ones.
+    Other,
+}
+
+impl RateKey {
+    pub fn new(ip: IpAddr, scope: RateScope) -> Self {
+        RateKey {
+            client: client_key(ip),
+            scope,
+        }
+    }
+}
+
+/// The budget a request's `Host` is charged to: the app that claims the
+/// host, or `Other`. A claim is enough here — this only partitions budgets,
+/// it decides nothing about who serves the request.
+fn rate_scope<B>(req: &Request<B>, app_manager: Option<&AppManager>) -> RateScope {
+    let Some(manager) = app_manager else {
+        return RateScope::Other;
+    };
+    let host = req
+        .headers()
+        .get(hyper::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .or_else(|| req.uri().host())
+        .and_then(parse_host_port);
+    let Some((host, _)) = host else {
+        return RateScope::Other;
+    };
+    let routes = manager.routes();
+    let route = if host.bytes().any(|b| b.is_ascii_uppercase()) {
+        routes.get(&host.to_ascii_lowercase())
+    } else {
+        routes.get(host)
+    };
+    match route {
+        Some(route) => RateScope::App(route.app.clone()),
+        None => RateScope::Other,
+    }
+}
 
 #[cfg(feature = "scripting")]
 use crate::scripting::{Hook, LuaEngine, LuaRequest, RequestHookResult, RouteHookResult};
@@ -2856,12 +2917,13 @@ async fn handle_request_inner(
         return Ok(response);
     }
 
-    // Per-IP rate limiting. Applied after ACME so issuance can't be denied
-    // by a noisy neighbour, and before all routing so denied requests
-    // never touch upstream connection pools or Lua hooks. Requests with
-    // no observable peer (UNIX socket, error path) skip the check.
+    // Per-client, per-app rate limiting. Applied after ACME so issuance
+    // can't be denied by a noisy neighbour, and before all routing so denied
+    // requests never touch upstream connection pools or Lua hooks. Requests
+    // with no observable peer (UNIX socket, error path) skip the check.
     if let (Some(limiter), Some(who)) = (rate_limiter.as_ref(), client_info) {
-        if limiter.check_key(&client_key(who.ip)).is_err() {
+        let key = RateKey::new(who.ip, rate_scope(&req, app_manager.as_deref()));
+        if limiter.check_key(&key).is_err() {
             let duration = start_time.elapsed();
             metrics.record_request(0, 0, 429, duration);
             let body = full(Bytes::from_static(b"Rate limit exceeded"));

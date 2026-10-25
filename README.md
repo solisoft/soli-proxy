@@ -237,7 +237,7 @@ liveness_path = "/health/live"
 readiness_path = "/health/ready"
 
 [rate_limiting]
-enabled = true            # per client IP, token bucket, shared by the proxy and admin API
+enabled = true            # token bucket per client IP and per app (admin API: its own)
 requests_per_second = 1000
 burst_size = 2000
 
@@ -698,6 +698,11 @@ a proxy](#client-ip-behind-a-proxy-or-cdn).
 
 `[rate_limiting]` also keys IPv6 clients by /64: a subscriber can pick a new source
 address inside its /64 for every request, and per-address buckets were no limit at all.
+
+Each client has one bucket **per app** (all of an app's `domain` and `domains`), one for the
+admin API, and one shared by everything else — routing rules, cluster routes, unknown hosts, so
+a made-up `Host` buys no fresh bucket. A browser tab hammering one app thus exhausts only that
+app's budget: everyone behind the same address (an office NAT) keeps using the other apps.
 
 #### Sources (left of `->`)
 

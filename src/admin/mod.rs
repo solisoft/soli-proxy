@@ -8,7 +8,7 @@ use crate::circuit_breaker::SharedCircuitBreaker;
 use crate::config::ConfigManager;
 use crate::metrics::SharedMetrics;
 use crate::proxy_headers::strip_hop_by_hop;
-use crate::server::{client_key, IpRateLimiter};
+use crate::server::{client_key, IpRateLimiter, RateKey, RateScope};
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use http_body_util::BodyExt;
@@ -473,10 +473,14 @@ async fn handle_admin_request(
     }
     let client_info = admin_client(req.extensions(), peer_addr);
 
-    // Per-IP rate limit applied BEFORE auth so a rejected client can't
-    // burn bcrypt rounds by replaying a wrong password under the limit.
+    // Per-client rate limit applied BEFORE auth so a rejected client can't
+    // burn bcrypt rounds by replaying a wrong password under the limit. The
+    // admin API has its own budget: traffic to the apps does not spend it.
     if let (Some(limiter), Some(who)) = (state.rate_limiter.as_ref(), client_info) {
-        if limiter.check_key(&client_key(who.ip)).is_err() {
+        if limiter
+            .check_key(&RateKey::new(who.ip, RateScope::Admin))
+            .is_err()
+        {
             let body = full(Bytes::from_static(b"Rate limit exceeded"));
             return Ok(Response::builder()
                 .status(429)

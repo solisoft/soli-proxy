@@ -30,6 +30,6 @@ pub use metrics::{new_metrics, Metrics, SharedMetrics};
 pub use pool::{ConnectionPool, ProxyClient};
 #[cfg(feature = "scripting")]
 pub use scripting::LuaEngine;
-pub use server::{build_rate_limiter, IpRateLimiter, ProxyServer};
+pub use server::{build_rate_limiter, IpRateLimiter, ProxyServer, RateKey, RateScope};
 pub use shutdown::ShutdownCoordinator;
 pub use tls::TlsManager;
