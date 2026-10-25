@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.13.1](https://github.com/solisoft/soli-proxy/compare/v1.13.0...v1.13.1) (2026-10-25)
+
+### Fixes
+
+* **rate limiting: each app has its own budget per client.** One budget per client address let
+  one app throttle every other: a browser tab reconnecting a failing WebSocket in a loop spent
+  its address's whole budget, and everyone behind that address (an office NAT) was answered
+  `Rate limit exceeded` on every app. A client now has one bucket per app (all of its `domain`
+  and `domains`), one for the admin API, and one shared by everything else — routing rules,
+  cluster routes, unknown hosts — so a made-up `Host` buys no fresh bucket.
+
+### Performance
+
+* **apps: a waking app is polled every 10 ms for its first two seconds.** The pause between
+  health polls doubled up to 250 ms, so an app ready at 160 ms was reported awake at 310 ms and
+  the requests held behind its wake waited until then.
+
 ## [1.13.0](https://github.com/solisoft/soli-proxy/compare/v1.12.0...v1.13.0) (2026-10-08)
 
 ### Features
