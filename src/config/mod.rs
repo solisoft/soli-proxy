@@ -683,8 +683,8 @@ pub struct LimitsConfig {
     pub max_request_size: Option<usize>,
     pub keep_alive_timeout: Option<u64>,
     pub request_timeout: Option<u64>,
-    /// Drop a forwarded WebSocket if either direction is silent for longer
-    /// than this many seconds. Default 300.
+    /// Drop a forwarded WebSocket once both directions have been silent for
+    /// longer than this many seconds. Default 300.
     pub websocket_idle_timeout_secs: Option<u64>,
     /// Absolute lifetime cap on a forwarded WebSocket. Default 3600 (1h).
     pub websocket_max_lifetime_secs: Option<u64>,

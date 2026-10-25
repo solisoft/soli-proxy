@@ -1132,9 +1132,10 @@ async fn proxy_websocket_to_admin_app(
                 }
 
                 // Admin traffic is not counted toward proxy byte metrics.
+                let activity = crate::server::WsActivity::new();
                 tokio::select! {
-                    _ = crate::server::forward_ws_half(br, cw, ws_idle, ws_deadline, ws_max_bytes, None) => {},
-                    _ = crate::server::forward_ws_half(cr, bw, ws_idle, ws_deadline, ws_max_bytes, None) => {},
+                    _ = crate::server::forward_ws_half(br, cw, ws_idle, ws_deadline, ws_max_bytes, None, activity.clone()) => {},
+                    _ = crate::server::forward_ws_half(cr, bw, ws_idle, ws_deadline, ws_max_bytes, None, activity) => {},
                 }
             }
             Err(e) => {

@@ -1353,11 +1353,42 @@ fn build_connection_limit(config: &ConfigManager) -> Option<Arc<Semaphore>> {
         .map(|n| Arc::new(Semaphore::new(n as usize)))
 }
 
+/// When a forwarded WebSocket last carried bytes, in either direction. Its two
+/// halves share one, so the idle guard closes a tunnel that is silent rather
+/// than one that only talks one way: a client sending heartbeats to a server
+/// that never answers them used to be cut every `websocket_idle_timeout_secs`,
+/// and each cut was a reconnect.
+#[derive(Clone)]
+pub(crate) struct WsActivity {
+    start: tokio::time::Instant,
+    last_ms: Arc<AtomicU64>,
+}
+
+impl WsActivity {
+    pub(crate) fn new() -> Self {
+        Self {
+            start: tokio::time::Instant::now(),
+            last_ms: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    fn touch(&self) {
+        let elapsed = self.start.elapsed().as_millis() as u64;
+        self.last_ms.fetch_max(elapsed, Ordering::Relaxed);
+    }
+
+    /// How long neither direction has carried a byte.
+    fn quiet_for(&self) -> Duration {
+        let last = Duration::from_millis(self.last_ms.load(Ordering::Relaxed));
+        self.start.elapsed().saturating_sub(last)
+    }
+}
+
 /// Forward one half of a bidirectional WebSocket connection (reader→writer)
-/// with three DoS guards: idle-read timeout, absolute lifetime deadline,
-/// and a per-direction byte cap. Returns when any guard trips, when EOF
-/// is observed, or when the writer errors. Used by both the proxy and the
-/// admin app passthrough.
+/// with three DoS guards: idle timeout (no bytes in either direction, per
+/// `activity`), absolute lifetime deadline, and a per-direction byte cap.
+/// Returns when any guard trips, when EOF is observed, or when the writer
+/// errors. Used by both the proxy and the admin app passthrough.
 pub(crate) async fn forward_ws_half<R, W>(
     mut reader: R,
     mut writer: W,
@@ -1365,6 +1396,7 @@ pub(crate) async fn forward_ws_half<R, W>(
     deadline: std::time::Instant,
     max_bytes: u64,
     byte_counter: Option<Arc<AtomicU64>>,
+    activity: WsActivity,
 ) -> tokio::io::Result<()>
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -1377,13 +1409,14 @@ where
     // rather than a fresh `timeout` (a new timer-wheel entry) per frame.
     let idle = tokio::time::sleep(idle_timeout);
     tokio::pin!(idle);
+    let mut wait = idle_timeout;
     loop {
         let now = std::time::Instant::now();
         if now >= deadline {
             return Ok(());
         }
         let until_deadline = deadline.saturating_duration_since(now);
-        let next_timeout = std::cmp::min(idle_timeout, until_deadline);
+        let next_timeout = std::cmp::min(wait, until_deadline);
         idle.as_mut()
             .reset(tokio::time::Instant::now() + next_timeout);
 
@@ -1394,8 +1427,19 @@ where
                 Ok(n) => n,
                 Err(e) => return Err(e),
             },
-            _ = &mut idle => return Ok(()),
+            _ = &mut idle => {
+                // This direction is quiet; the tunnel is idle only if the
+                // other one is too. Otherwise wait out what is left.
+                let quiet = activity.quiet_for();
+                if quiet >= idle_timeout {
+                    return Ok(());
+                }
+                wait = idle_timeout - quiet;
+                continue;
+            }
         };
+        activity.touch();
+        wait = idle_timeout;
         let new_total = total.saturating_add(n as u64);
         if new_total > max_bytes {
             return Ok(());
@@ -4371,8 +4415,7 @@ async fn handle_websocket_request(
             response_str.lines().next().unwrap_or("")
         );
         metrics.inc_errors();
-        let body = full(Bytes::from("Backend rejected WebSocket upgrade"));
-        return Ok(Response::builder().status(502).body(body).unwrap());
+        return Ok(ws_upgrade_refusal(&response_str));
     }
 
     // Extract headers from backend 101 response
@@ -4451,9 +4494,10 @@ async fn handle_websocket_request(
                 // either direction terminates (EOF, timeout, byte cap, or
                 // error), the other half is dropped — a half-closed forwarder
                 // is useless and would otherwise hold both ends open.
+                let activity = WsActivity::new();
                 tokio::select! {
-                    _ = forward_ws_half(br, cw, ws_idle, ws_deadline, ws_max_bytes, Some(ws_bytes_sent)) => {},
-                    _ = forward_ws_half(cr, bw, ws_idle, ws_deadline, ws_max_bytes, Some(ws_bytes_received)) => {},
+                    _ = forward_ws_half(br, cw, ws_idle, ws_deadline, ws_max_bytes, Some(ws_bytes_sent), activity.clone()) => {},
+                    _ = forward_ws_half(cr, bw, ws_idle, ws_deadline, ws_max_bytes, Some(ws_bytes_received), activity) => {},
                 }
             }
             Err(e) => {
@@ -4499,6 +4543,34 @@ pub(crate) fn ws_upgrade_response_headers(
         }
     }
     Some((accept_key, resp_protocol))
+}
+
+/// The client's answer to a backend that refused a WebSocket upgrade: the
+/// backend's own 4xx/5xx status, with its `Retry-After`, or a 502 when the
+/// reply is not a status line at all. Every refusal used to become a 502, so
+/// a backend's 429 (its per-client socket cap) read in the logs, and to the
+/// client, as a backend that was down.
+pub(crate) fn ws_upgrade_refusal(response_str: &str) -> Response<BoxBody> {
+    let status = response_str
+        .lines()
+        .next()
+        .filter(|line| line.starts_with("HTTP/"))
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse::<u16>().ok())
+        .filter(|code| (400..600).contains(code))
+        .unwrap_or(502);
+    let retry_after = response_str
+        .lines()
+        .skip(1)
+        .take_while(|line| !line.trim().is_empty())
+        .filter_map(|line| line.split_once(':'))
+        .find(|(name, _)| name.trim().eq_ignore_ascii_case("retry-after"))
+        .and_then(|(_, value)| HeaderValue::from_str(value.trim()).ok());
+    let mut resp = plain_response(status, "Backend rejected WebSocket upgrade");
+    if let Some(value) = retry_after {
+        resp.headers_mut().insert(hyper::header::RETRY_AFTER, value);
+    }
+    resp
 }
 
 /// Returns (Response, target_url_for_logging, route_scripts)
@@ -5944,6 +6016,76 @@ mod tests {
         let (accept, proto) = ws_upgrade_response_headers("HTTP/1.1 101 x\r\n\r\n").unwrap();
         assert_eq!(accept, "");
         assert!(proto.is_none());
+    }
+
+    #[test]
+    fn a_refused_ws_upgrade_keeps_the_backends_status() {
+        // A backend's per-client socket cap: the client sees the 429 and when
+        // to come back, not a 502 that reads as an outage.
+        let capped = ws_upgrade_refusal(
+            "HTTP/1.1 429 Too Many Requests\r\nretry-after: 5\r\n\r\nToo many sockets",
+        );
+        assert_eq!(capped.status(), 429);
+        assert_eq!(capped.headers()["retry-after"], "5");
+        let full = ws_upgrade_refusal("HTTP/1.1 503 Service Unavailable\r\n\r\n");
+        assert_eq!(full.status(), 503);
+        assert!(full.headers().get("retry-after").is_none());
+        // Not a refusal status, or not HTTP at all: still the proxy's 502.
+        assert_eq!(ws_upgrade_refusal("HTTP/1.1 200 OK\r\n\r\n").status(), 502);
+        assert_eq!(
+            ws_upgrade_refusal("HTTP/1.1 302 Found\r\n\r\n").status(),
+            502
+        );
+        assert_eq!(ws_upgrade_refusal("garbage 429 x").status(), 502);
+        assert_eq!(ws_upgrade_refusal("HTTP/1.1 999 x\r\n\r\n").status(), 502);
+    }
+
+    #[tokio::test]
+    async fn a_ws_tunnel_that_talks_one_way_is_not_idle() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        // The client heartbeats, the backend never answers: the backend→client
+        // half is silent past the idle timeout, the tunnel is not.
+        let idle = Duration::from_millis(150);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let activity = WsActivity::new();
+        let (_backend, backend_side) = tokio::io::duplex(64);
+        let (_client_sink, client_side) = tokio::io::duplex(64);
+        let silent = tokio::spawn(forward_ws_half(
+            backend_side,
+            client_side,
+            idle,
+            deadline,
+            u64::MAX,
+            None,
+            activity.clone(),
+        ));
+        let (mut client, client_source) = tokio::io::duplex(64);
+        let (mut backend_sink, to_backend) = tokio::io::duplex(64);
+        let talking = tokio::spawn(forward_ws_half(
+            client_source,
+            to_backend,
+            idle,
+            deadline,
+            u64::MAX,
+            None,
+            activity,
+        ));
+        let mut byte = [0u8; 1];
+        for _ in 0..6 {
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            client.write_all(b"p").await.unwrap();
+            backend_sink.read_exact(&mut byte).await.unwrap();
+        }
+        assert!(
+            !silent.is_finished(),
+            "360ms in, the quiet half must still be open: the other one talks"
+        );
+        // Both quiet now: both halves give up within about one idle timeout.
+        let both = tokio::time::timeout(Duration::from_secs(2), async {
+            silent.await.unwrap().unwrap();
+            talking.await.unwrap().unwrap();
+        });
+        assert!(both.await.is_ok(), "a tunnel silent both ways must close");
     }
 
     #[test]
