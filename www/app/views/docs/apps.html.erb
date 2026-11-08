@@ -298,6 +298,10 @@ health_check = <span class="ts">"/"</span></code></pre>
                     <div><code class="text-sm text-cyan-300">$WORKERS</code><div class="text-xs text-gray-500 mt-1">Number of workers from app.infos config</div></div>
                     <span class="text-xs font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded">Always set</span>
                 </div>
+                <div class="flex items-center justify-between gap-4 p-4 rounded-xl bg-gray-900 border border-white/10">
+                    <div><code class="text-sm text-cyan-300">$SOLI_APP_HOSTS</code><div class="text-xs text-gray-500 mt-1">The app's <code>domain</code> and <code>domains</code>, merged with the <code>SOLI_APP_HOSTS</code> its own <code>.env</code> lists. Behind the proxy a Soli app sees <code>127.0.0.1:&lt;port&gt;</code> as the request authority, so without its public hosts its CSRF check refuses every form POST. A <code>.env.&lt;APP_ENV&gt;</code> file still overrides it.</div></div>
+                    <span class="text-xs font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded whitespace-nowrap">Native apps</span>
+                </div>
             </div>
         </div>
 

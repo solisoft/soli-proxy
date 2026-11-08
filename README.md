@@ -1728,6 +1728,8 @@ Two things to get right on a server:
 
 The same values are also exported as **environment variables** (`PORT`, `WORKERS`, and `HEALTH_CHECK` for Docker), so scripts that don't use `$VAR` substitution can still read them from the environment.
 
+Native apps also get **`SOLI_APP_HOSTS`**: the app's `domain`, its `domains`, then whatever `SOLI_APP_HOSTS` the app's own `.env` already lists, comma-separated and without duplicates. Behind the proxy a Soli app sees `127.0.0.1:<port>` as the request authority, never the browser's `Origin`, so its CSRF check refuses every form POST (`CSRF check failed: Origin shop.test does not match request authority 127.0.0.1:20111`) until it knows its public hosts. Soli does not let `.env` override a variable that is already set, which is why the proxy merges the `.env` value instead of replacing it; a `.env.<APP_ENV>` file still overrides it. A multi-tenant site has no `domain` and gets only what its `.env` lists.
+
 ### Auto-detection
 
 If `start_script` is omitted, the proxy tries to infer one from the app directory:

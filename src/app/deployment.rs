@@ -1636,6 +1636,15 @@ impl DeploymentManager {
         }
         env.push(("PORT".into(), port.to_string()));
         env.push(("WORKERS".into(), app.config.workers.to_string()));
+        // The hosts the app is served under. Behind this proxy a soli app sees
+        // `127.0.0.1:<port>` as the request authority, never the browser's
+        // `Origin`, so its CSRF gate refuses every form POST until the app
+        // lists its public hosts in `SOLI_APP_HOSTS` — which `soli new` does
+        // not write. Soli lets a variable already set win over `.env`, so the
+        // hosts the app's own `.env` lists are merged in rather than masked.
+        if let Some(hosts) = app_hosts_env(app) {
+            env.push(("SOLI_APP_HOSTS".into(), hosts));
+        }
         // A cleared environment is the right default, but a handful of
         // variables have to survive it or the child cannot do its job:
         // a shared toolchain cache, an outbound proxy, a custom CA bundle.
@@ -2605,6 +2614,55 @@ const DOCKER_PASSTHROUGH_ENV: &[&str] = &[
     "no_proxy",
 ];
 
+/// `SOLI_APP_HOSTS` for an app: its `domain`, its `domains`, then the hosts
+/// its own `.env` already lists, lowercased and without duplicates. `None` when
+/// the proxy knows no host for it (a multi-tenant site) and the `.env` lists
+/// none either.
+fn app_hosts_env(app: &AppInfo) -> Option<String> {
+    let from_env_file = std::fs::read_to_string(app.path.join(".env"))
+        .ok()
+        .and_then(|contents| dotenv_value(&contents, "SOLI_APP_HOSTS"))
+        .unwrap_or_default();
+    merge_hosts(
+        std::iter::once(app.config.domain.as_str())
+            .chain(app.config.domains.iter().map(String::as_str))
+            .chain(from_env_file.split(',')),
+    )
+}
+
+/// Comma-join `hosts`, trimmed and lowercased, empty ones and repeats dropped,
+/// first occurrence kept. `None` when nothing is left.
+fn merge_hosts<'a>(hosts: impl Iterator<Item = &'a str>) -> Option<String> {
+    let mut seen = HashSet::new();
+    let merged: Vec<String> = hosts
+        .map(|h| h.trim().to_ascii_lowercase())
+        .filter(|h| !h.is_empty() && seen.insert(h.clone()))
+        .collect();
+    (!merged.is_empty()).then(|| merged.join(","))
+}
+
+/// The value `key` has in a `.env` file's text, read the way soli's own
+/// loader reads it (`serve::env_loader` in soli-lang): blank and `#` lines
+/// skipped, `KEY=value` split at the first `=`, quotes trimmed from both ends,
+/// and the first occurrence wins — soli does not override a variable it has
+/// already set, so a later line is ignored.
+fn dotenv_value(contents: &str, key: &str) -> Option<String> {
+    contents.lines().find_map(|line| {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            return None;
+        }
+        let (name, value) = line.split_once('=')?;
+        (name.trim() == key).then(|| {
+            value
+                .trim()
+                .trim_matches('"')
+                .trim_matches('\'')
+                .to_string()
+        })
+    })
+}
+
 /// The `(key, value)` pairs of `keys` that are set and non-empty on the proxy.
 fn passthrough_env(keys: &[&str]) -> Vec<(String, String)> {
     keys.iter()
@@ -2704,6 +2762,31 @@ fn resolve_group(group: &str) -> Result<u32> {
 
 #[cfg(test)]
 mod tests {
+
+    /// The proxy hands an app the hosts it serves, merged with the ones its
+    /// `.env` lists, so a soli app's CSRF gate accepts its own forms.
+    #[test]
+    fn app_hosts_merge_the_proxy_domains_with_the_app_env() {
+        assert_eq!(
+            super::merge_hosts(
+                ["Shop.test", "www.shop.test", "", "shop.test", " localhost "].into_iter()
+            ),
+            Some("shop.test,www.shop.test,localhost".to_string())
+        );
+        assert_eq!(super::merge_hosts(["", " "].into_iter()), None);
+
+        let env =
+            "# hosts\nSOLI_APP_HOSTS=\"a.test,localhost\"\nSOLI_APP_HOSTS=later.test\nOTHER=1\n";
+        assert_eq!(
+            super::dotenv_value(env, "SOLI_APP_HOSTS").as_deref(),
+            Some("a.test,localhost"),
+            "the first line wins, as in soli's loader"
+        );
+        assert_eq!(
+            super::dotenv_value("SOLI_APP_HOSTSX=c\n", "SOLI_APP_HOSTS"),
+            None
+        );
+    }
 
     /// A process a 0.35 proxy left behind is recognised by what it is — its
     /// own session leader, our uid, the app's directory, the app's program —
