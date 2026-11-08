@@ -869,6 +869,13 @@ pub struct AppManager {
     /// discovery left asleep. A request for one of these is held while the
     /// app is started again, instead of answering 421.
     asleep: Arc<parking_lot::Mutex<HashSet<String>>>,
+    /// Apps leaving `asleep` whose deploy has not finished yet: no longer
+    /// asleep, not yet serving. A request that finds one of these with no
+    /// target is held like a request for a sleeping app — between the start
+    /// of the deploy and the traffic switch the route has no target, and
+    /// without this the request saw neither "asleep" nor a target and got
+    /// 421.
+    waking: Arc<parking_lot::Mutex<HashSet<String>>>,
     /// When each adopted app's process started, until its first request (or
     /// a deploy) here: with no request seen since this proxy started, the
     /// app has been idle since it came up, not since the restart — a
@@ -1924,6 +1931,7 @@ impl AppManager {
             activity: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             epoch: std::time::Instant::now(),
             asleep: Arc::new(parking_lot::Mutex::new(HashSet::new())),
+            waking: Arc::new(parking_lot::Mutex::new(HashSet::new())),
             booted: Arc::new(AtomicBool::new(false)),
             adopted_since: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             stopping: Arc::new(parking_lot::Mutex::new(HashSet::new())),
@@ -2229,7 +2237,7 @@ impl AppManager {
         let mut route = self.serving_route(host, StaticRoute::None);
         if let Some(ref r) = route {
             r.activity.store(self.now_ms(), Ordering::Relaxed);
-            if r.target.is_none() && self.is_asleep(&r.app) {
+            if r.target.is_none() && (self.is_asleep(&r.app) || self.is_waking(&r.app)) {
                 match self.wake(&r.app).await {
                     // Woken and healthy: this request is the one that woke
                     // it, and it should be served, not told 421.
@@ -3425,7 +3433,27 @@ impl AppManager {
         // it — a held request or an operator — it is awake from here on, and
         // its idle clock restarts so the reaper does not stop it again at once.
         // Only the deploy holding the lock gets here, so it is said once.
-        if self.asleep.lock().remove(app_name) {
+        //
+        // Until this deploy returns, the app is `waking`: it has no process
+        // or no healthy one yet, so the route has no target, and a request
+        // arriving now must be held until the switch, not answered 421.
+        let was_asleep = {
+            let mut asleep = self.asleep.lock();
+            let was = asleep.remove(app_name);
+            if was {
+                // Under the same lock: never seen as neither asleep nor waking.
+                self.waking.lock().insert(app_name.to_string());
+            }
+            was
+        };
+        let waking = self.waking.clone();
+        let waking_name = app_name.to_string();
+        let _waking_guard = scopeguard::guard((), move |_| {
+            if was_asleep {
+                waking.lock().remove(&waking_name);
+            }
+        });
+        if was_asleep {
             self.emit_event(AppEvent::Waking {
                 app_name: app_name.to_string(),
             });
@@ -4154,6 +4182,12 @@ impl AppManager {
         self.asleep.lock().contains(app_name)
     }
 
+    /// Whether `app_name` is being started out of sleep right now: its
+    /// deploy has begun but has not switched traffic (or failed) yet.
+    pub fn is_waking(&self, app_name: &str) -> bool {
+        self.waking.lock().contains(app_name)
+    }
+
     /// Every app the reaper has stopped for inactivity.
     pub fn asleep_apps(&self) -> Vec<String> {
         self.asleep.lock().iter().cloned().collect()
@@ -4178,15 +4212,25 @@ impl AppManager {
     }
 
     /// Start a sleeping app on its current slot and return once it answers its
-    /// health check.
+    /// health check and traffic has switched to it.
     ///
     /// Concurrent wakes serialise on the deploy lock: the first caller runs
-    /// the deploy, the others see "already in progress" and poll until a PID
-    /// appears. Bounded, because a wake that cannot finish must fail the held
-    /// requests rather than park them forever.
+    /// the deploy, the others wait for that deploy to *finish* — not merely
+    /// for a PID to appear, which happens before the health check passes and
+    /// the route gets its target. Bounded, because a wake that cannot finish
+    /// must fail the held requests rather than park them forever.
     pub async fn wake(&self, app_name: &str) -> Result<(), anyhow::Error> {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
         loop {
+            // Someone else's deploy is in flight: wait for it to end, then
+            // look at what it left.
+            if self.is_waking(app_name) || self.deployment_manager.is_deploying(app_name) {
+                if std::time::Instant::now() >= deadline {
+                    anyhow::bail!("timed out waiting for {} to wake", app_name);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                continue;
+            }
             let (running, slot) = {
                 let apps = self.apps.lock().await;
                 let app = apps
@@ -4204,17 +4248,18 @@ impl AppManager {
                 self.touch(app_name);
                 return Ok(());
             }
+            // Not running and not asleep: a wake that already ran and failed.
+            // Report it rather than start another deploy per held request.
+            if !self.is_asleep(app_name) {
+                anyhow::bail!("{} did not come up", app_name);
+            }
             match self.deploy(app_name, &slot).await {
                 Ok(()) => {
                     tracing::info!("{} woke up on slot {}", app_name, slot);
                     return Ok(());
                 }
-                Err(e) if e.to_string().contains("already in progress") => {
-                    if std::time::Instant::now() >= deadline {
-                        anyhow::bail!("timed out waiting for {} to wake", app_name);
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                }
+                // Lost the race for the deploy lock: wait for the winner.
+                Err(e) if e.to_string().contains("already in progress") => {}
                 Err(e) => return Err(e),
             }
         }
@@ -6501,6 +6546,51 @@ admin = "$2b$12$adminhashadminhashadminhashadminhashadminhashadminhas"
     }
 
     /// Give `name` a live blue slot, as a deploy would.
+    /// A request arriving while another one's wake is in flight — asleep
+    /// already cleared, process up or not, health check pending — is held
+    /// until the deploy has switched traffic, never answered 421. Neither a
+    /// PID alone nor "not asleep" means the app serves.
+    #[tokio::test]
+    async fn a_request_during_a_wake_waits_for_the_switch() {
+        let temp_dir = TempDir::new().unwrap();
+        let sites = temp_dir.path().join("sites");
+        let name = "nap.example.com";
+        site_with_app_infos(
+            &sites,
+            name,
+            &format!("name = \"{name}\"\ndomain = \"{name}\"\n"),
+        );
+        let manager = Arc::new(test_manager(&temp_dir, &sites));
+        manager.discover_apps_readonly().await.unwrap();
+
+        // The state deploy() leaves while it waits for the health check.
+        assert!(manager.deployment_manager.mark_deploying(name));
+        manager.waking.lock().insert(name.to_string());
+
+        let held = {
+            let manager = manager.clone();
+            tokio::spawn(async move { manager.resolve_app_target(name).await })
+        };
+        // The process exists, but its health check has not passed.
+        {
+            let mut apps = manager.apps.lock().await;
+            apps.get_mut(name).unwrap().blue.pid = Some(4242);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(!held.is_finished(), "answered before the switch");
+
+        // Health check passed, traffic switched, deploy returns.
+        mark_running(&manager, name).await;
+        manager.waking.lock().remove(name);
+        manager.deployment_manager.unmark_deploying(name);
+
+        let target = tokio::time::timeout(std::time::Duration::from_secs(2), held)
+            .await
+            .expect("still held after the switch")
+            .unwrap();
+        assert!(target.is_some(), "421 for a request held during a wake");
+    }
+
     async fn mark_running(manager: &AppManager, name: &str) {
         let mut apps = manager.apps.lock().await;
         let app = apps.get_mut(name).unwrap();
