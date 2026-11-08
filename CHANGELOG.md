@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.13.3](https://github.com/solisoft/soli-proxy/compare/v1.13.2...v1.13.3) (2026-11-08)
+
+### Bug Fixes
+
+* **wake: a request arriving while an app wakes is held, not answered 421.** A deploy cleared the
+  app's "asleep" flag before its process existed, so a second request landing in that window found
+  a route with no target and an app that was not asleep, and got `421 no route found for host`.
+  A burst of checks against a sleeping app (an uptime monitor) reliably hit it. Concurrent wakes
+  also returned as soon as the process had a PID, before its health check passed and traffic
+  switched. An app leaving sleep is now `waking` until its deploy returns, requests for it are held
+  like requests for a sleeping app, and concurrent wakes wait for the deploy to finish.
+* **apps: a new Soli app's forms work behind the proxy.** Soli's CSRF check compares the browser's
+  `Origin` with the request authority, which behind the proxy is `127.0.0.1:<port>`, so every form
+  POST of an app without `SOLI_APP_HOSTS` in its `.env` was refused (`CSRF check failed: Origin
+  shop.test does not match request authority 127.0.0.1:20111`) — every app `soli new` creates. A
+  native app is now started with `SOLI_APP_HOSTS` set to its `domain` and `domains`, merged with
+  the hosts its own `.env` lists (soli lets a variable already set win over `.env`, so replacing it
+  would have masked them). A `.env.<APP_ENV>` still overrides it. Apps adopted from a previous
+  proxy restart once, since their launch environment changed.
+
 ## [1.13.2](https://github.com/solisoft/soli-proxy/compare/v1.13.1...v1.13.2) (2026-10-25)
 
 ### Bug Fixes
