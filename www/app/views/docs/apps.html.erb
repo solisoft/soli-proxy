@@ -285,6 +285,37 @@ health_check = <span class="ts">"/"</span></code></pre>
             <p class="text-sm text-gray-500">If no <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">start_script</code> is set and neither layout matches, deployment fails with <code class="text-red-300 text-xs bg-red-500/10 px-1 rounded">No start script configured</code>.</p>
         </div>
 
+        <!-- Pinned Soli versions -->
+        <div class="mb-16" id="soli-version">
+            <h2 class="text-xl font-bold text-white mb-4">Pinning the Soli version</h2>
+            <p class="text-gray-400 mb-4">Every native Soli app on a server starts <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">soli</code> from the <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">PATH</code>. Replace that binary and <strong class="text-white">every app</strong> moves to the new interpreter the next time it restarts &mdash; production included, on whatever deploy or crash comes first. Pin the version in the app instead, so each app moves when its own code says so.</p>
+
+            <div class="rounded-2xl bg-gray-950 ring-1 ring-white/10 overflow-hidden code-window mb-6">
+                <div class="flex items-center justify-between px-4 py-3 border-b border-white/5 bg-white/5">
+                    <span class="text-xs text-gray-500 font-mono">sites/myapp.example.com/soli.toml</span>
+                    <button class="text-xs text-gray-500 hover:text-white px-2 py-1 rounded hover:bg-white/10 transition-all" onclick="copyCode(this)">Copy</button>
+                </div>
+                <div class="p-6">
+<pre class="text-sm leading-7"><code>soli_version = <span class="ts">"=2.36.4"</span>   <span class="tc"># "=" : exactly this version. Without it, a minimum.</span></code></pre>
+                </div>
+            </div>
+
+            <p class="text-gray-400 mb-4">The proxy needs no setting for this. It starts an app with the app directory as its working directory, and <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">soli</code> (2.0.6 or later) finds the pin by walking up from there, switches to that version, and caches it under <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">~/.cache/soli/runtimes/v&lt;version&gt;/</code> of the app's user. <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">app.infos</code> keeps <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">soli serve &hellip;</code> unchanged. Because <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1.5 py-0.5 rounded">soli.toml</code> ships with the code, the version follows the branch: a staging deploy can run a newer Soli while production stays where it is.</p>
+
+            <ul class="space-y-3 text-sm text-gray-400 mb-6">
+                <li class="flex gap-3"><span class="text-emerald-400">&bull;</span><span><strong class="text-white">Fill the cache during the deploy, not at start-up.</strong> A new slot has 30 seconds to pass its health check; a first start after a new pin spends part of them downloading. Run any app command in the site directory before touching <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">restart.txt</code> &mdash; <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">soli db:migrate up</code> does &mdash; or place a binary you verified yourself at <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">~/.cache/soli/runtimes/v&lt;version&gt;/soli-linux-amd64</code>.</span></li>
+                <li class="flex gap-3"><span class="text-emerald-400">&bull;</span><span><strong class="text-white">Run the new binary on the server before the deploy relies on it.</strong> A Linux binary needs the glibc it was built against: the 2.36.1&ndash;2.36.3 releases were built on Ubuntu 26.04 and refuse to start on 24.04 and other glibc 2.39 hosts (<code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">GLIBC_2.43 not found</code>). <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">~/.cache/soli/runtimes/v2.36.4/soli-linux-amd64 --version</code> on the server settles it before any code moves.</span></li>
+                <li class="flex gap-3"><span class="text-emerald-400">&bull;</span><span><strong class="text-white">One cache per user.</strong> Apps running as different users each download their own copy. Set <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">XDG_CACHE_HOME</code> on the proxy &mdash; one of the few variables it passes through to apps &mdash; to share a directory they can all read.</span></li>
+                <li class="flex gap-3"><span class="text-emerald-400">&bull;</span><span><strong class="text-white">A fetched pin is verified</strong> against the release's published <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">.sha256</code>, and a release without one is refused. Deploys that pin checksums in their own repository can pre-fill the cache instead, as above.</span></li>
+                <li class="flex gap-3"><span class="text-emerald-400">&bull;</span><span><code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">SOLI_NO_PIN=1</code> on the proxy ignores every pin and runs the <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">PATH</code> soli &mdash; for an incident, or a host without network. <code class="text-emerald-300 text-xs bg-emerald-500/10 px-1 rounded">soli which</code>, in the app directory, says which version will run and whether it is cached.</span></li>
+            </ul>
+
+            <div class="rounded-xl bg-amber-500/5 border border-amber-500/20 p-5">
+                <h4 class="font-semibold text-amber-300 text-sm mb-2">The shared services stay shared</h4>
+                <p class="text-sm text-gray-400">A pin covers the Soli interpreter only. SoliDB and the proxy itself are one process for every app on the host: upgrading either still moves all of them at once.</p>
+            </div>
+        </div>
+
         <!-- Environment Variables -->
         <div class="mb-16">
             <h2 class="text-xl font-bold text-white mb-4">Environment Variables</h2>
