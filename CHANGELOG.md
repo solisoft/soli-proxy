@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.13.4](https://github.com/solisoft/soli-proxy/compare/v1.13.3...v1.13.4) (2026-11-20)
+
+### Bug Fixes
+
+* **apps: slot logs survive `logrotate copytruncate`.** An app's `run/logs/<app>/<slot>.log` was
+  opened with truncation and handed to the app with its own write offset, so after an external
+  `copytruncate` the app's next write landed at the old offset and recreated a sparse file of the
+  old apparent size. Slot logs are now opened in append mode: writes always go to the current end
+  of file, and the log is no longer wiped on each deploy — history spans deploys, and retention is
+  logrotate's job (add a rule for `run/logs/*/*.log` if you have none).
+
 ## [1.13.3](https://github.com/solisoft/soli-proxy/compare/v1.13.2...v1.13.3) (2026-11-08)
 
 ### Bug Fixes
