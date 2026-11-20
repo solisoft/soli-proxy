@@ -3690,13 +3690,16 @@ mod tests {
             .into_iter()
             .find(|p| Path::new(p).is_file())
             .expect("a sleep binary");
-        let program = site.path().join("soli-test");
+        // Named `sleep`, not after the app: on uutils coreutils (Ubuntu
+        // 26.04+) `sleep` is one multi-call binary that dispatches on argv[0],
+        // so a copy under another name exits at once instead of sleeping.
+        let program = site.path().join("sleep");
         std::fs::copy(sleep_bin, &program).unwrap();
         let app = AppInfo {
             config: AppConfig {
                 name: "native.example.com".to_string(),
                 domain: "native.example.com".to_string(),
-                start_script: Some("./soli-test 60".to_string()),
+                start_script: Some("./sleep 60".to_string()),
                 ..AppConfig::default()
             },
             path: site.path().to_path_buf(),
@@ -3740,7 +3743,7 @@ mod tests {
         // the copy, the command's program is `env` — not a replacement.
         let wrapped = AppInfo {
             config: AppConfig {
-                start_script: Some("env TZ=Europe/Paris ./soli-test 60".to_string()),
+                start_script: Some("env TZ=Europe/Paris ./sleep 60".to_string()),
                 ..app.config.clone()
             },
             ..app.clone()
@@ -3748,7 +3751,7 @@ mod tests {
         assert!(!manager.runs_replaced_binary(&wrapped, "blue", pid));
 
         // Installed the way upgrades install: a new file renamed over it.
-        let fresh = site.path().join("soli-test.new");
+        let fresh = site.path().join("sleep.new");
         std::fs::copy(sleep_bin, &fresh).unwrap();
         std::fs::rename(&fresh, &program).unwrap();
         assert!(manager.runs_replaced_binary(&app, "blue", pid));
