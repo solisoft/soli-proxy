@@ -833,6 +833,22 @@ pub(crate) struct SpawnRegistry {
     records: Mutex<HashMap<u32, SpawnRecord>>,
 }
 
+/// Opens a slot's `run/logs/<app>/<slot>.log` for the child's stdout/stderr.
+///
+/// O_APPEND, and no truncation: the descriptor is handed to the app, which
+/// keeps it for its whole life, so the file has to survive an external
+/// `logrotate ... copytruncate`. With O_APPEND every write lands at the
+/// current end of file, i.e. at zero right after a truncation; a plain
+/// `File::create` descriptor keeps its own offset and would recreate a sparse
+/// file of the old apparent size on its next write. Deploys append instead of
+/// wiping, so the history spans deploys and retention is logrotate's job.
+fn open_slot_log(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+}
+
 impl SpawnRegistry {
     fn in_memory() -> Self {
         Self {
@@ -1294,7 +1310,7 @@ impl DeploymentManager {
         let output_file = PathBuf::from(format!("run/logs/{}/{}.log", app.config.name, slot));
         std::fs::create_dir_all(output_file.parent().unwrap())?;
 
-        let output = std::fs::File::create(&output_file)?;
+        let output = open_slot_log(&output_file)?;
 
         let isolated_for = self.multi_tenant.then_some(app.config.name.as_str());
         ensure_docker_network(&docker_network, isolated_for).await?;
@@ -1698,7 +1714,7 @@ impl DeploymentManager {
         let output_file = PathBuf::from(format!("run/logs/{}/{}.log", app.config.name, slot));
         std::fs::create_dir_all(output_file.parent().unwrap())?;
 
-        let output = std::fs::File::create(&output_file)?;
+        let output = open_slot_log(&output_file)?;
 
         // stdout and stderr go straight to the slot's log file, never through
         // a pipe the proxy holds: an app outlives the proxy that started it
