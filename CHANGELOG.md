@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.13.5](https://github.com/solisoft/soli-proxy/compare/v1.13.4...v1.13.5) (2026-11-23)
+
+### Bug Fixes
+
+* **scripting: vendored Lua is current again.** mlua 0.10 pinned `lua-src` to 547.x (Lua 5.4.7,
+  June 2024), so `cargo update` could never pick up fixes to the C interpreter that runs Lua hooks.
+  mlua is now 0.12.3 with `lua-src` 551.1.1. A hook whose execution timeout cannot be armed now
+  fails closed (the request is denied) instead of running unbounded, and new tests pin the sandbox:
+  hooks cannot reach `os`, `io`, `package`, `debug` or the chunk loaders, and bytecode scripts are
+  refused.
+
 ## [1.13.4](https://github.com/solisoft/soli-proxy/compare/v1.13.3...v1.13.4) (2026-11-20)
 
 ### Bug Fixes
