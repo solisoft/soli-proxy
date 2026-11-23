@@ -57,7 +57,7 @@ x509-parser = "0.16"
 instant-acme = "0.8"
 libc = "0.2"
 socket2 = { version = "0.5", features = ["all"] }
-mlua = { version = "0.10", features = ["lua54", "vendored", "send"], optional = true }
+mlua = { version = "0.12", features = ["lua54", "vendored", "send"], optional = true }
 # zlib-rs: gzip ~1.7x faster than the default miniz_oxide backend
 # (benches/compression.rs); pure Rust, so no C toolchain for any target.
 flate2 = { version = "1.1.9", default-features = false, features = ["zlib-rs"] }

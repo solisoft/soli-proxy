@@ -1156,6 +1156,43 @@ mod scripting_tests {
     }
 
     #[test]
+    fn hooks_cannot_reach_os_io_or_loaders() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("sandbox.lua"),
+            r#"
+            local names = { "os", "io", "package", "debug", "coroutine",
+                            "dofile", "loadfile", "load", "loadstring", "require" }
+            function on_request(req)
+                for _, name in ipairs(names) do
+                    if _G[name] ~= nil then
+                        return req:deny(500, "reachable: " .. name)
+                    end
+                end
+                req:set_header("x-sandbox", "ok")
+            end
+            "#,
+        )
+        .unwrap();
+
+        let engine = LuaEngine::new(dir.path(), 1, Duration::from_millis(100), &[]).unwrap();
+        let mut req = make_request("GET", "/test");
+        let result = engine.call_on_request(&mut req);
+        assert!(
+            matches!(result, RequestHookResult::Continue(_)),
+            "sandbox leaked: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn bytecode_scripts_are_refused() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("compiled.lua"), b"\x1bLua\x54\x00junk").unwrap();
+        assert!(LuaEngine::new(dir.path(), 1, Duration::from_millis(100), &[]).is_err());
+    }
+
+    #[test]
     fn base64_decode_returns_nil_on_bad_input() {
         let dir = tempdir().unwrap();
         std::fs::write(

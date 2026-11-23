@@ -391,7 +391,7 @@ impl LuaEngine {
 
         // Arm the timeout guard for the top-level chunk execution below. Hook
         // calls re-arm it per invocation (see `arm_hook_timeout`).
-        Self::arm_hook_timeout(&lua, hook_timeout);
+        Self::arm_hook_timeout(&lua, hook_timeout)?;
 
         // Register built-in modules
         Self::register_log_module(&lua)?;
@@ -407,7 +407,7 @@ impl LuaEngine {
                 anyhow::bail!("Lua bytecode loading is disabled");
             }
             lua.load(source.as_str())
-                .set_mode(mlua::ChunkMode::Text)
+                .set_mode(mlua::chunk::ChunkMode::Text)
                 .set_name(name)
                 .exec()
                 .map_err(|e| anyhow::anyhow!("Error loading Lua script '{}': {}", name, e))?;
@@ -457,7 +457,7 @@ impl LuaEngine {
     ///    pcalls, so `set_hook` is called again each time — `lua_sethook`
     ///    resets `hookcount`, giving every call a fresh 10,000-instruction
     ///    window before the first check.
-    fn arm_hook_timeout(lua: &Lua, hook_timeout: Duration) {
+    fn arm_hook_timeout(lua: &Lua, hook_timeout: Duration) -> LuaResult<()> {
         let timeout_ms = hook_timeout.as_millis() as u32;
         lua.set_app_data(HookDeadline(Instant::now() + hook_timeout));
         lua.set_hook(
@@ -477,7 +477,7 @@ impl LuaEngine {
                 }
                 Ok(mlua::VmState::Continue)
             },
-        );
+        )
     }
 
     fn register_log_module(lua: &Lua) -> LuaResult<()> {
@@ -821,7 +821,7 @@ impl LuaEngine {
         // Build the request table
         let req_table = self.lua_request_table(lua, req)?;
 
-        Self::arm_hook_timeout(lua, self.inner.hook_timeout);
+        Self::arm_hook_timeout(lua, self.inner.hook_timeout)?;
         let result: Value = func.call(req_table.clone())?;
 
         match result {
@@ -905,7 +905,7 @@ impl LuaEngine {
         let func: Function = lua.globals().get("on_route")?;
         let req_table = self.lua_request_table(lua, req)?;
 
-        Self::arm_hook_timeout(lua, self.inner.hook_timeout);
+        Self::arm_hook_timeout(lua, self.inner.hook_timeout)?;
         let result: Value = func.call((req_table, matched_target.to_string()))?;
 
         match result {
@@ -1033,7 +1033,7 @@ impl LuaEngine {
             })?,
         )?;
 
-        Self::arm_hook_timeout(lua, self.inner.hook_timeout);
+        Self::arm_hook_timeout(lua, self.inner.hook_timeout)?;
         let _result: Value = func.call((req_table, resp_table))?;
 
         // Read back modifications
@@ -1117,7 +1117,7 @@ impl LuaEngine {
         let resp_table = lua.create_table()?;
         resp_table.set("status", status)?;
 
-        Self::arm_hook_timeout(lua, self.inner.hook_timeout);
+        Self::arm_hook_timeout(lua, self.inner.hook_timeout)?;
         func.call::<()>((req_table, resp_table, duration_ms, target.to_string()))?;
 
         Ok(())
